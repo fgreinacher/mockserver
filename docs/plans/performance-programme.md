@@ -739,6 +739,12 @@ while catching a total AppCDS loss, so it is a backstop, not the signal.
   starts, `preAllocatedVUs == maxVUs`, warm-every-path, a `K6_REG_SETTLE` exclusion, and the
   `settle_excluded`/`delivery_ratio` guards). Carry **all** of those into `proxy.js`; do not
   copy the four-orders-of-magnitude bug back in by starting from a pre-fix revision.
+  **Shipped 2026-09-17:** `mockserver-performance-test/k6/proxy.js` (mode `forward`)
+  cloning the fixed shape; `forward_absolute_proxy` / `forward_connect_proxy` land in
+  `.behaviours` (covered by the existing `behaviours.*` budgets, resetting the k6 arm
+  set once, as intended). `setup()` fails loud if the CONNECT tunnel carried no TLS
+  handshake at all (it measures the proxy CONNECT path; MockServer may itself
+  terminate the tunnel TLS with a generated cert). 9b (SOCKS5) and 9c (JMH relay) remain.
 - **9b:** a SOCKS5 rung. k6 supports an HTTP proxy but not SOCKS, so this needs a small
   driver or a SOCKS-aware sidecar; if awkward, downgrade to a JMH benchmark of the handshake
   handlers rather than skipping the dimension.
@@ -826,6 +832,17 @@ consumer; the laptop profile pays one per test class. Measure handshakes/second,
 allocation per handshake, across TLS 1.3 server-only and mTLS, plus an arm with the native
 provider absent — the Dockerfile carries a documented fallback that nothing exercises under
 load.
+
+**Shipped 2026-09-17, sharing item 9a's run:** `proxy.js` mode `handshake` drives the three
+arms (`tls13` / `mtls` / `jdk`) with `noConnectionReuse` (a fresh handshake per iteration —
+proven against a reuse control that collapses handshake time to 0). The native-absent arm
+forces Netty's JDK provider via `-Dio.netty.handler.ssl.noOpenSsl=true` (verified to flip
+`SslContext.defaultServerProvider()` from `OPENSSL` to `JDK`). `perf-test-run.sh` emits
+`.tls_handshake` per arm — `handshakes_per_s`, `handshake_p50/p95_ms`, `cpu_ms_per_handshake`
+(docker-stats CPU integrated) and `alloc_kb_per_handshake` — the last enabled by a new
+`jvm_memory_allocated_bytes` JVM metric (a monotonic thread-allocation counter; the figure is
+its delta ÷ the `requests_received_count` delta on that arm's SUT). All `tls_handshake.*`
+budgets are notify-only.
 
 #### 15. Cheap feature arms on measurements that already run — **near-free**
 

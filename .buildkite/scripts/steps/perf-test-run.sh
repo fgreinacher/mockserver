@@ -82,9 +82,14 @@ SWEEP_K6="k6-sweep-${RUN_ID}"
 cleanup() {
   [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" >/dev/null 2>&1 || true
   [ -n "$SWEEP_SAMPLER_PID" ] && kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true
-  docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" >/dev/null 2>&1 || true
+  [ -n "${HS_CPU_PID:-}" ] && kill "$HS_CPU_PID" >/dev/null 2>&1 || true
+  # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
+  # so an early exit before the proxy block's own cleanup never leaks them.
+  docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" \
+    "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
+  [ -n "${HS_CERT_DIR:-}" ] && rm -rf "$HS_CERT_DIR" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -569,6 +574,233 @@ if [ "$FORWARD_EXIT" -ne 0 ]; then
 fi
 FORWARD_JSON="$(cat "$OUT_DIR/forward.json" 2>/dev/null || echo '{}')"
 
+# --- proxy.js: item 9a (forward proxy) + item 14 (TLS/mTLS handshake) ----------
+# ONE run, TWO phases (the plan: item 14 shares item 9a's containers and run):
+#   9a  forward mode — MockServer AS A PROXY. The k6 container gets HTTP_PROXY /
+#       HTTPS_PROXY pointed at the SUT, so an http:// upstream target becomes an
+#       absolute-URI forward and an https:// target a CONNECT tunnel carrying TLS
+#       through the SUT to the upstream already started for the run (MockServer may
+#       terminate that tunnel TLS itself with a generated cert). Emits a
+#       .behaviours object (forward_absolute_proxy / forward_connect_proxy) that
+#       perf-test-compare.sh picks up via its existing behaviours.* budgets with NO
+#       jq change — which DOES grow the k6 arm-set fingerprint and so resets the k6
+#       baseline ONCE (intended: the arm set changed). The SUT is NOT reset/seeded
+#       for this — an absolute-URI/CONNECT request addressed to the UPSTREAM is
+#       proxied regardless of the SUT's own expectations.
+#   14  handshake mode — MockServer's INBOUND TLS handshake cost, which the
+#       https_h2 regression run reuses-away to ~0. k6 hits three DISTINCT SUTs with
+#       noConnectionReuse (a fresh TCP+TLS handshake every iteration): TLS 1.3
+#       server-only (the main SUT), mTLS-required, and native-provider-absent (the
+#       Dockerfile's documented JDK-provider fallback, forced via
+#       -Dio.netty.handler.ssl.noOpenSsl=true — nothing else exercises it under
+#       load). Emits a .tls_handshake object; this step augments each arm with
+#       server CPU + JVM allocation per handshake, sampled per-SUT across the run.
+# BEST-EFFORT / NON-FATAL (like the laptop profile): a proxy/handshake failure must
+# never cost the k6/growth result its place in the baseline. Both blocks default to
+# {} and compare is head-driven, so an absent block simply emits zero metrics.
+MTLS="mockserver-mtls-${RUN_ID}"
+JDK_SUT="mockserver-jdk-${RUN_ID}"
+HS_CERT_DIR=""
+cleanup_proxy() {
+  docker rm -f "$MTLS" "$JDK_SUT" >/dev/null 2>&1 || true
+  [ -n "${HS_CERT_DIR:-}" ] && rm -rf "$HS_CERT_DIR" >/dev/null 2>&1 || true
+}
+PROXY_FWD_JSON='{}'
+HANDSHAKE_JSON='{}'
+if [ "${PERF_PROXY_PROFILE:-true}" = "true" ]; then
+  # -- 9a: forward-proxy latency arms (behaviours) --
+  echo "--- proxy.js (item 9a: forward-proxy — absolute-URI + CONNECT tunnel)"
+  # shellcheck disable=SC2046
+  docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+    -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+    -v "$OUT_DIR:/out" \
+    -e "K6_PROXY_MODE=forward" \
+    -e "HTTP_PROXY=http://${SERVER_ALIAS}:1080" -e "HTTPS_PROXY=http://${SERVER_ALIAS}:1080" \
+    -e "http_proxy=http://${SERVER_ALIAS}:1080" -e "https_proxy=http://${SERVER_ALIAS}:1080" \
+    -e "NO_PROXY=" -e "no_proxy=" \
+    -e "FORWARD_UPSTREAM_HOST=mockserver-upstream:1080" \
+    -e "K6_PROXY_RESULT_PATH=/out/proxy-forward.json" \
+    ${K6_PROXY_RATE:+-e K6_PROXY_RATE="$K6_PROXY_RATE"} \
+    ${K6_PROXY_DURATION:+-e K6_PROXY_DURATION="$K6_PROXY_DURATION"} \
+    ${K6_PROXY_WARMUP:+-e K6_PROXY_WARMUP="$K6_PROXY_WARMUP"} \
+    "$K6_IMAGE" run /k6/proxy.js || echo "WARNING: proxy.js forward mode failed — no proxy behaviours this run (notify-only)" >&2
+  PROXY_FWD_JSON="$(cat "$OUT_DIR/proxy-forward.json" 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$PROXY_FWD_JSON" || PROXY_FWD_JSON='{}'
+
+  # -- 14: TLS/mTLS/native-absent handshake arms --
+  # openssl generates a throwaway CA + client cert (the mTLS arm presents the
+  # client cert; the mTLS SUT trusts the CA). No openssl => skip handshake (the
+  # forward arms above still stand). Runs on the agent, not in a container.
+  if command -v openssl >/dev/null 2>&1; then
+    HS_CERT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-hs-certs.XXXXXX")"
+    chmod 0755 "$HS_CERT_DIR"
+    (
+      cd "$HS_CERT_DIR"
+      openssl req -x509 -newkey rsa:2048 -keyout ca.key -out ca.pem -days 2 -nodes -subj "/CN=perf-mtls-ca" 2>/dev/null
+      openssl req -newkey rsa:2048 -keyout client.key -out client.csr -nodes -subj "/CN=perf-mtls-client" 2>/dev/null
+      openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial -out client.pem -days 2 2>/dev/null
+      chmod 0644 ca.pem client.pem client.key
+    )
+    if [ -s "$HS_CERT_DIR/client.pem" ] && [ -s "$HS_CERT_DIR/ca.pem" ]; then
+      echo "--- item 14 handshake SUTs: mTLS (trusts generated CA) + native-absent (noOpenSsl)"
+      # mTLS SUT: require + trust our CA. native-absent SUT: force Netty's JDK
+      # provider (the documented fallback). Metrics ENABLED on both so the
+      # per-handshake CPU/alloc sampling below can read their counters.
+      # shellcheck disable=SC2046
+      docker run -d --rm --name "$MTLS" --network "$NETWORK" --network-alias mockserver-mtls \
+        $(cpuset_arg "$UPSTREAM_CPUS") -v "$HS_CERT_DIR:/hs-certs:ro" \
+        -e MOCKSERVER_LOG_LEVEL=ERROR -e MOCKSERVER_DISABLE_SYSTEM_OUT=true -e MOCKSERVER_METRICS_ENABLED=true \
+        -e MOCKSERVER_TLS_MUTUAL_AUTHENTICATION_REQUIRED=true \
+        -e MOCKSERVER_TLS_MUTUAL_AUTHENTICATION_CERTIFICATE_CHAIN=/hs-certs/ca.pem \
+        "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null 2>&1 || true
+      # shellcheck disable=SC2046
+      docker run -d --rm --name "$JDK_SUT" --network "$NETWORK" --network-alias mockserver-jdk \
+        $(cpuset_arg "$UPSTREAM_CPUS") \
+        -e MOCKSERVER_LOG_LEVEL=ERROR -e MOCKSERVER_DISABLE_SYSTEM_OUT=true -e MOCKSERVER_METRICS_ENABLED=true \
+        -e JAVA_TOOL_OPTIONS="-Dio.netty.handler.ssl.noOpenSsl=true" \
+        "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null 2>&1 || true
+      wait_ready "$MTLS" || true
+      wait_ready "$JDK_SUT" || true
+      # Seed /simple over PLAIN HTTP on each SUT (port unification: mTLS gates only
+      # TLS handshakes, so a plain-HTTP control-plane call needs no client cert).
+      # tls13 arm hits the main SUT ($SERVER_ALIAS), which forward.js reset — reseed.
+      for alias in "$SERVER_ALIAS" mockserver-mtls mockserver-jdk; do
+        docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
+          "http://${alias}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
+          -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"simple"},"times":{"unlimited":true}}]' \
+          -o /dev/null -w "seed ${alias} HTTP %{http_code}\n" || true
+      done
+
+      # mTLS NEGATIVE control (committed assertion): a TLS request WITHOUT a client
+      # cert MUST be rejected. The k6 mtls arm is positive-only (it always presents a
+      # cert), so on its own it cannot distinguish "mTLS enforced + cert accepted"
+      # from "mTLS not enforced at all" — a positive-only probe is exactly the shape
+      # that has bitten this repo before. Here curl with NO cert must fail the
+      # handshake (curl exit 35/56, no 2xx). If it returns a 2xx, mTLS is NOT being
+      # enforced and the mtls arm's number is not an mTLS measurement — record that on
+      # the arm (mtls_enforced:false) and warn loudly, rather than baselining it as if
+      # it were. Non-fatal (the whole handshake phase is notify-only best-effort).
+      MTLS_ENFORCED=null   # unknown until positively proven either way
+      # Fail CLOSED, not open. A no-cert probe that merely fails to get a 2xx proves
+      # nothing: a timeout, a curl image that would not start, or any transport fault
+      # would otherwise be recorded as "mTLS enforced" - a control confirming something
+      # it never tested. So require POSITIVE evidence of a TLS-layer rejection (curl 35
+      # SSL connect error / 56 recv failure) before claiming enforcement, and emit null
+      # (unknown) for anything else.
+      MTLS_NOCERT_CODE="$(docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 \
+        -s -k -o /dev/null -w '%{http_code}' --max-time 8 "https://mockserver-mtls:1080/simple" 2>/dev/null)" || MTLS_NOCERT_RC=$?
+      MTLS_NOCERT_RC="${MTLS_NOCERT_RC:-0}"
+      if printf '%s' "${MTLS_NOCERT_CODE:-000}" | grep -qE '^2..$'; then
+        MTLS_ENFORCED=false
+        echo "WARNING: mTLS negative control FAILED — https://mockserver-mtls:1080/simple returned ${MTLS_NOCERT_CODE} with NO client cert, so tlsMutualAuthenticationRequired is NOT being enforced; the mtls handshake arm is therefore not a true mTLS measurement this run." >&2
+      elif [ "$MTLS_NOCERT_RC" = "35" ] || [ "$MTLS_NOCERT_RC" = "56" ]; then
+        MTLS_ENFORCED=true
+        echo "--- mTLS negative control OK: no-cert request rejected at the TLS layer (curl exit ${MTLS_NOCERT_RC}), so mutual auth IS enforced"
+      else
+        MTLS_ENFORCED=null
+        echo "WARNING: mTLS negative control INCONCLUSIVE — no-cert probe neither got a 2xx nor failed at the TLS layer (curl exit ${MTLS_NOCERT_RC}, http_code ${MTLS_NOCERT_CODE:-000}); enforcement is UNPROVEN this run, so mtls_enforced is recorded as null rather than assumed true." >&2
+      fi
+
+      # Per-SUT resource snapshot: cumulative JVM allocation counter (monotonic —
+      # end-start is exact allocation over the window; null on an image predating
+      # jvm_memory_allocated_bytes) + requests_received_count (the EXACT handshake
+      # denominator, since noConnectionReuse => 1 request per fresh handshake, and a
+      # delta matches the same window as the resource delta). Scraped over the
+      # network so no host port publishing is needed.
+      hs_metric() { # alias  metric_prefix
+        docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s --max-time 5 \
+          "http://$1:1080/mockserver/metrics" 2>/dev/null \
+          | awk -v p="$2" '$1==p {print $2; exit}' || true
+      }
+      declare -A HS_ALIAS=( [tls13]="$SERVER_ALIAS" [mtls]=mockserver-mtls [jdk]=mockserver-jdk )
+      declare -A A0 R0
+      for arm in tls13 mtls jdk; do
+        A0[$arm]="$(hs_metric "${HS_ALIAS[$arm]}" jvm_memory_allocated_bytes)"
+        R0[$arm]="$(hs_metric "${HS_ALIAS[$arm]}" requests_received_count)"
+      done
+
+      # Background per-SUT CPU sampler (docker stats — host-side, no container spawn)
+      # over the handshake window; integrated to CPU-seconds below.
+      HS_CPU_LOG="$OUT_DIR/handshake-cpu.csv"; echo "ts,arm,cpu_pct" > "$HS_CPU_LOG"
+      HS_CPU_PID=""
+      hs_cpu_sampler() {
+        while true; do
+          local ts; ts="$(date -u +%s)"
+          for arm in tls13 mtls jdk; do
+            local nm cpu
+            case "$arm" in tls13) nm="$SERVER";; mtls) nm="$MTLS";; jdk) nm="$JDK_SUT";; esac
+            cpu="$(docker stats --no-stream --format '{{.CPUPerc}}' "$nm" 2>/dev/null | tr -d '% ' || echo '')"
+            [ -n "$cpu" ] && printf '%s,%s,%s\n' "$ts" "$arm" "$cpu" >> "$HS_CPU_LOG"
+          done
+          sleep "${PERF_HS_SAMPLE_INTERVAL:-2}"
+        done
+      }
+      hs_cpu_sampler & HS_CPU_PID=$!
+      HS_T0="$(date -u +%s)"
+
+      echo "--- proxy.js (item 14: TLS 1.3 + mTLS + native-absent handshake cost)"
+      # shellcheck disable=SC2046
+      docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+        -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+        -v "$OUT_DIR:/out" -v "$HS_CERT_DIR:/hs-certs:ro" \
+        -e "K6_PROXY_MODE=handshake" \
+        -e "K6_HS_TLS13_URL=https://${SERVER_ALIAS}:1080" \
+        -e "K6_HS_MTLS_URL=https://mockserver-mtls:1080" \
+        -e "K6_HS_JDK_URL=https://mockserver-jdk:1080" \
+        -e "K6_HS_CLIENT_CERT=/hs-certs/client.pem" -e "K6_HS_CLIENT_KEY=/hs-certs/client.key" \
+        -e "K6_PROXY_RESULT_PATH=/out/proxy-handshake.json" \
+        ${K6_HS_RATE:+-e K6_HS_RATE="$K6_HS_RATE"} \
+        ${K6_HS_DURATION:+-e K6_HS_DURATION="$K6_HS_DURATION"} \
+        "$K6_IMAGE" run /k6/proxy.js || echo "WARNING: proxy.js handshake mode failed — no tls_handshake block this run (notify-only)" >&2
+
+      kill "$HS_CPU_PID" >/dev/null 2>&1 || true
+      HS_T1="$(date -u +%s)"; HS_WINDOW_S=$(( HS_T1 - HS_T0 )); [ "$HS_WINDOW_S" -gt 0 ] || HS_WINDOW_S=1
+
+      HANDSHAKE_JSON="$(cat "$OUT_DIR/proxy-handshake.json" 2>/dev/null || echo '{}')"
+      jq -e . >/dev/null 2>&1 <<<"$HANDSHAKE_JSON" || HANDSHAKE_JSON='{}'
+
+      # Augment each arm with cpu_ms_per_handshake + alloc_kb_per_handshake.
+      # denominator = requests_received delta on that arm's SUT (exact handshakes in
+      # the window). alloc delta / handshakes -> bytes; cpu-seconds = mean(cpu%)/100
+      # * window / handshakes. Any missing piece (metric absent, zero handshakes)
+      # leaves that field null (compare drops nulls) rather than emitting a bogus 0.
+      for arm in tls13 mtls jdk; do
+        a1="$(hs_metric "${HS_ALIAS[$arm]}" jvm_memory_allocated_bytes)"
+        r1="$(hs_metric "${HS_ALIAS[$arm]}" requests_received_count)"
+        hs="$(awk -v a="${R0[$arm]:-}" -v b="${r1:-}" 'BEGIN{ if(a!=""&&b!=""&&(b-a)>0) printf "%d", b-a; else print "" }')"
+        alloc_kb="$(awk -v a="${A0[$arm]:-}" -v b="${a1:-}" -v n="$hs" 'BEGIN{ if(a!=""&&b!=""&&n!=""&&n+0>0&&(b-a)>0) printf "%.3f", (b-a)/n/1024; else print "null" }')"
+        cpu_ms="$(awk -F',' -v arm="$arm" -v w="$HS_WINDOW_S" -v n="$hs" '
+          $2==arm { s+=$3; c++ }
+          END{ if(c>0 && n!=""&& n+0>0){ mean=s/c; printf "%.4f", (mean/100.0*w*1000.0)/n } else print "null" }' "$HS_CPU_LOG")"
+        HANDSHAKE_JSON="$(jq -c --arg arm "$arm" --argjson akb "${alloc_kb:-null}" --argjson cms "${cpu_ms:-null}" --argjson hs "${hs:-null}" '
+          if (.tls_handshake[$arm]) then
+            .tls_handshake[$arm].alloc_kb_per_handshake = $akb
+            | .tls_handshake[$arm].cpu_ms_per_handshake = $cms
+            | .tls_handshake[$arm].resource_handshakes = $hs
+          else . end' <<<"$HANDSHAKE_JSON" 2>/dev/null || echo "$HANDSHAKE_JSON")"
+      done
+      # Record the mTLS-enforcement verdict from the negative control on the mtls arm
+      # (a boolean, not a budgeted metric — compare ignores it) so a reader can see
+      # whether the mtls figure is a true mTLS measurement or (mtls_enforced:false) a
+      # server that did not require the cert. The jdk arm carries no equivalent
+      # committed assertion: nothing MockServer exposes at runtime reports which Netty
+      # SslProvider is active, and io.netty.handler.ssl.OpenSsl availability is cached
+      # at class-init, so an in-JVM assertion would need a forked JVM with the property
+      # — not cheap. The flip from OPENSSL to JDK under -Dio.netty.handler.ssl.noOpenSsl
+      # is a documented Netty invariant (verified out-of-band against this build's
+      # Netty), and the container carries the property (see the JDK_SUT run above); the
+      # jdk arm's higher handshake cost vs tls13 is the expected corroborating signal.
+      HANDSHAKE_JSON="$(jq -c --argjson enf "$MTLS_ENFORCED" 'if (.tls_handshake.mtls) then .tls_handshake.mtls.mtls_enforced = $enf else . end' <<<"$HANDSHAKE_JSON" 2>/dev/null || echo "$HANDSHAKE_JSON")"
+      echo "--- tls_handshake augmented: $(jq -c '.tls_handshake | to_entries | map({(.key): {p50:.value.handshake_p50_ms, hps:.value.handshakes_per_s, cpu_ms:.value.cpu_ms_per_handshake, alloc_kb:.value.alloc_kb_per_handshake}})' <<<"$HANDSHAKE_JSON" 2>/dev/null)"
+    else
+      echo "WARNING: openssl produced no client cert — skipping handshake arms (forward arms still recorded)" >&2
+    fi
+  else
+    echo "WARNING: openssl unavailable — skipping item 14 handshake arms (forward arms still recorded)" >&2
+  fi
+  cleanup_proxy
+fi
+
 # --- item 8: laptop startup + footprint profile (notify-only) -----------------
 # Runs LAST, after every k6 phase, so the box is quiet: the docker sub-items (8a
 # ready-median-of-9, idle RSS + threads at --memory 256m/512m/1g, 8d compressed
@@ -722,6 +954,8 @@ jq -n \
   --arg peak_achieved_rps "$PEAK_ACHIEVED_RPS" \
   --argjson forward "$FORWARD_JSON" \
   --arg forward_exit "$FORWARD_EXIT" \
+  --argjson proxyfwd "$PROXY_FWD_JSON" \
+  --argjson handshake "$HANDSHAKE_JSON" \
   --argjson validity "$VALIDITY_JSON" \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
@@ -741,7 +975,22 @@ jq -n \
     agent: { instance_type: $instance_type, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
     config: $config,
     mockserver_image: $image,
-    behaviours: (($http[0].behaviours // {}) + ($https[0].behaviours // {})),
+    # regression (http + https_h2) + proxy.js FORWARD arms all live in .behaviours
+    # (same shape), so the compare step behaviours.* budgets cover them with no jq
+    # change. Adding the two forward_*_proxy arms grows the k6 arm-set fingerprint,
+    # so compare resets the k6 baseline ONCE (intended — see item 9a). CONSEQUENCE
+    # for whoever reads the first post-landing runs: because the fingerprint changed,
+    # ALL behaviours.* arms (the existing match/forward/template/large arms included)
+    # go :new: / no-baseline and are NOT flagged until MIN_BASELINE arm-set-matching
+    # runs accrue — a one-off, expected gap in behaviour-arm coverage, surfaced by the
+    # compare step "k6 behaviour baseline reset" note. (These arms are notify-only,
+    # so no GATING coverage is lost; forward.error_rate and the JMH gates are
+    # unaffected as they are not behaviours.* and not fingerprint-filtered.)
+    behaviours: (($http[0].behaviours // {}) + ($https[0].behaviours // {}) + ($proxyfwd.behaviours // {})),
+    # item 14 — TLS/mTLS/native-absent handshake cost (proxy.js handshake mode +
+    # per-SUT CPU/alloc augmentation above). NOT part of .behaviours, so it does not
+    # touch the k6 fingerprint; compare reads it as its own non-gating metric family.
+    tls_handshake: ($handshake.tls_handshake // {}),
     growth: {
       duration_s: ($growth.duration_s // null),
       p95_ms: ($growth.p95_ms // null),

@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `java_runtime_version`, `java_vendor` and `vm_name`. The value is always `1` — the information is in the
   labels, matching the existing `mock_server_build_info` metric. This lets a scrape record which JVM and GC
   produced a given set of measurements, which could not previously be determined from the metrics endpoint.
+- New `jvm_memory_allocated_bytes` metric on the Prometheus endpoint (`/mockserver/metrics`), a monotonic
+  gauge reporting the cumulative bytes allocated across all threads since JVM start. Unlike the existing
+  `jvm_memory_used_bytes` level (which garbage-collection saw-tooths), the difference between two scrapes of
+  this counter is the exact allocation churn over that window — the basis for an allocation-per-operation
+  figure. It is **absent on a JVM that does not implement HotSpot allocation accounting** (the metric is
+  simply not emitted rather than reported as zero), so on such a JVM the series will not appear.
 
 ### Changed
 - Upgraded the dashboard's diagram dependency `mermaid` from 11 to 12 (`mockserver-ui`). The diagram output

@@ -34,6 +34,21 @@ public class JvmMetricsCollectorTest {
     }
 
     @Test
+    public void exposesCumulativeThreadAllocationCounter() {
+        // HotSpot (the JVM these tests run on) implements com.sun.management
+        // ThreadMXBean, so the allocation counter is present and positive — this
+        // JVM has already allocated. On a JVM without the extension the collector
+        // suppresses the metric entirely (never a fabricated zero); this test
+        // asserts the supported path, which is the one the perf run measures under.
+        MetricSnapshots snapshots = new JvmMetricsCollector().collect();
+
+        GaugeSnapshot allocated = gauge(snapshots, "jvm_memory_allocated_bytes");
+        assertThat(allocated, notNullValue());
+        assertThat(allocated.getDataPoints().size(), is(1));
+        assertThat(allocated.getDataPoints().get(0).getValue(), greaterThan(0.0));
+    }
+
+    @Test
     public void exposesRuntimeInfoWithGcAndJdkLabels() {
         MetricSnapshots snapshots = new JvmMetricsCollector().collect();
 
@@ -57,7 +72,7 @@ public class JvmMetricsCollectorTest {
     @Test
     public void listsItsPrometheusNames() {
         assertThat(new JvmMetricsCollector().getPrometheusNames(), hasItems(
-            "jvm_memory_used_bytes", "jvm_threads_current", "jvm_gc_collection_count", "jvm_runtime_info"));
+            "jvm_memory_used_bytes", "jvm_memory_allocated_bytes", "jvm_threads_current", "jvm_gc_collection_count", "jvm_runtime_info"));
     }
 
     private static GaugeSnapshot gauge(MetricSnapshots snapshots, String name) {

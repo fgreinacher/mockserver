@@ -179,6 +179,7 @@ rate(mock_server_requests_received_total[5m])</code></pre>
         <tr><td><span class="inline_code">jvm_memory_used_bytes</span></td><td><span class="inline_code">area</span> = heap / nonheap</td><td>Memory currently used</td></tr>
         <tr><td><span class="inline_code">jvm_memory_committed_bytes</span></td><td><span class="inline_code">area</span></td><td>Memory committed by the JVM</td></tr>
         <tr><td><span class="inline_code">jvm_memory_max_bytes</span></td><td><span class="inline_code">area</span></td><td>Max memory (-1 if undefined)</td></tr>
+        <tr><td><span class="inline_code">jvm_memory_allocated_bytes</span></td><td>&mdash;</td><td>Cumulative bytes allocated across all threads since JVM start (monotonic counter; a difference of two scrapes is the allocation churn in that window). Absent on a JVM without HotSpot allocation accounting.</td></tr>
         <tr><td><span class="inline_code">jvm_threads_current</span></td><td>&mdash;</td><td>Live thread count</td></tr>
         <tr><td><span class="inline_code">jvm_threads_daemon</span></td><td>&mdash;</td><td>Daemon thread count</td></tr>
         <tr><td><span class="inline_code">jvm_gc_collection_count</span></td><td>&mdash;</td><td>Total GC collections</td></tr>

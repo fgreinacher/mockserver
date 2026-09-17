@@ -35,6 +35,17 @@ public class JvmMetricsCollector implements MultiCollector {
     private static final String MEMORY_USED = "jvm_memory_used_bytes";
     private static final String MEMORY_COMMITTED = "jvm_memory_committed_bytes";
     private static final String MEMORY_MAX = "jvm_memory_max_bytes";
+    // Cumulative bytes allocated across all threads since JVM start. Unlike
+    // jvm_memory_used_bytes (a LEVEL that GC saw-tooths, so a difference of two
+    // samples measures net retention, not churn), this is a monotonically rising
+    // COUNTER, so (sample_end - sample_start) is exactly the bytes allocated in the
+    // window — the only faithful basis for an allocation-per-operation figure (e.g.
+    // the TLS-handshake allocation cost the performance programme measures under
+    // load). Sourced from HotSpot's com.sun.management ThreadMXBean; absent on a JVM
+    // that does not implement it, in which case the metric is simply not emitted
+    // (never a fabricated zero). Exposed as a gauge for parity with the other
+    // cumulative jvm_* series here (GC_COUNT / GC_SECONDS are likewise gauges).
+    private static final String MEMORY_ALLOCATED = "jvm_memory_allocated_bytes";
     private static final String THREADS_CURRENT = "jvm_threads_current";
     private static final String THREADS_DAEMON = "jvm_threads_daemon";
     private static final String GC_COUNT = "jvm_gc_collection_count";
@@ -62,6 +73,11 @@ public class JvmMetricsCollector implements MultiCollector {
 
         snapshots.add(simpleGauge(THREADS_CURRENT, "Current live thread count", THREADS.getThreadCount()));
         snapshots.add(simpleGauge(THREADS_DAEMON, "Daemon thread count", THREADS.getDaemonThreadCount()));
+
+        long allocated = totalAllocatedBytes();
+        if (allocated >= 0) {
+            snapshots.add(simpleGauge(MEMORY_ALLOCATED, "Cumulative bytes allocated across all threads since JVM start (monotonic)", allocated));
+        }
 
         long gcCount = 0;
         long gcTimeMillis = 0;
@@ -124,10 +140,32 @@ public class JvmMetricsCollector implements MultiCollector {
             .build();
     }
 
+    /**
+     * Cumulative bytes allocated across all threads, from HotSpot's
+     * {@code com.sun.management.ThreadMXBean.getTotalThreadAllocatedBytes()}.
+     * Returns {@code -1} (metric suppressed) when the running JVM does not
+     * implement that extension or has thread-allocation accounting disabled, so a
+     * non-HotSpot JVM never emits a fabricated value. Any reflective/linkage
+     * failure degrades to {@code -1} rather than breaking the scrape.
+     */
+    private static long totalAllocatedBytes() {
+        try {
+            if (THREADS instanceof com.sun.management.ThreadMXBean) {
+                com.sun.management.ThreadMXBean sunThreads = (com.sun.management.ThreadMXBean) THREADS;
+                if (sunThreads.isThreadAllocatedMemorySupported() && sunThreads.isThreadAllocatedMemoryEnabled()) {
+                    return sunThreads.getTotalThreadAllocatedBytes();
+                }
+            }
+        } catch (Throwable ignore) {
+            // no allocation accounting available on this JVM — suppress the metric
+        }
+        return -1;
+    }
+
     @Override
     public List<String> getPrometheusNames() {
         return Arrays.asList(
-            MEMORY_USED, MEMORY_COMMITTED, MEMORY_MAX,
+            MEMORY_USED, MEMORY_COMMITTED, MEMORY_MAX, MEMORY_ALLOCATED,
             THREADS_CURRENT, THREADS_DAEMON,
             GC_COUNT, GC_SECONDS, RUNTIME_INFO
         );

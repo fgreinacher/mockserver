@@ -137,6 +137,7 @@ This mirrors the *newer* metrics (`mock_server_slow_requests`, `mock_server_forw
 | `jvm_memory_used_bytes` | `area` = `heap` / `nonheap` | Memory currently used |
 | `jvm_memory_committed_bytes` | `area` | Memory committed by the JVM |
 | `jvm_memory_max_bytes` | `area` | Max memory (`-1` if undefined) |
+| `jvm_memory_allocated_bytes` | — | Cumulative bytes allocated across all threads since JVM start (monotonic). A *counter*, unlike the `used`/`committed`/`max` levels, so `end − start` over a window is the exact allocation churn in it — the basis for an allocation-per-operation figure (e.g. TLS-handshake allocation cost). Sourced from HotSpot's `com.sun.management` `ThreadMXBean`; **absent on a JVM that does not implement it** (never a fabricated zero). |
 | `jvm_threads_current` | — | Live thread count |
 | `jvm_threads_daemon` | — | Daemon thread count |
 | `jvm_gc_collection_count` | — | Total GC collections across all collectors |

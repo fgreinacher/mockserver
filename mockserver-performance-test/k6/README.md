@@ -17,6 +17,7 @@ regression gates), and Grafana-native dashboards.
 | `regression.js` | Daily regression harness. Four `constant-arrival-rate` scenarios (`match`, `forward`, `template`, `large`) each tagged `op:<name>`. A warmup scenario runs first and touches **every** measured path (incl. `/large`). To keep the measured percentiles describing the SERVER not the client rig, the four scenarios start **staggered** (`K6_REG_STAGGER`), the VU pool is fixed with `preAllocatedVUs == maxVUs` (`K6_REG_PRE_VUS`/`K6_REG_MAX_VUS`, no mid-run allocation storm), and a per-scenario **settle window** (`K6_REG_SETTLE`) at the start of the measured window is tagged `op:<op>_settle` and excluded from the percentiles (load still runs; only the start transient is dropped). Run twice per CI job — once `BASE_URL=http://...` and once `BASE_URL=https://... PROTO=https_h2` (HTTPS negotiates HTTP/2 via ALPN). Writes per-behaviour `{p50_ms, p95_ms, p99_ms, throughput_rps, offered_rps, dropped_iterations, delivery_ratio, error_rate, settle_excluded, measured_window_s}` keyed `<op>_<proto>` to `K6_RESULT_PATH`. `K6_REG_MATCH_DELAY_MS>0` is a self-test knob that seeds a fixed server delay on the match response to prove the percentiles still track a real slowdown. See `docs/plans/performance-programme.md` Finding 3. | Notify-only (no k6 thresholds gate the CI build). |
 | `growth.js` | Resource-growth regression harness. Validates that latency does not climb as the request log fills (see issue #2329: O(n) eviction once the 100k `maxLogEntries` ring is full). Runs a sustained `load` scenario on the match path at a rate that fills `maxLogEntries` early; `window:first` and `window:last` probes measure the latency slope. Writes first/last-window p95 + ratio. | Notify-only. |
 | `sweep.js` | Throughput-vs-latency "knee" curve. Offers the match path (`GET /simple`) at an ascending LADDER of fixed arrival rates (`K6_SWEEP_RATES`); each rate is a staggered `constant-arrival-rate` step tagged `rate:<offered>`. Per step it records the ACHIEVED throughput, latency percentiles (p50/p90/p95/p99/p99.9), and error rate. Writes `{proto, points:[{offered_rps, achieved_rps, p50_ms…p999_ms, error_rate}]}` to `K6_SWEEP_RESULT_PATH` — the series plotted as a load-vs-latency knee curve on the docs site. | Notify-only (NO aborting thresholds — dropped iterations / degradation at the top of the ladder are the point). |
+| `proxy.js` | Proxy-path + TLS-handshake harness (performance-programme items 9a + 14). **TWO modes** (`K6_PROXY_MODE`), run as separate invocations because they need mutually exclusive process-global settings. **`forward`**: drives MockServer AS A FORWARD PROXY — the k6 container gets `HTTP_PROXY`/`HTTPS_PROXY` pointed at the SUT, so an `http://upstream` target becomes an **absolute-URI forward** and an `https://upstream` target a **CONNECT tunnel carrying TLS** through the SUT (which MockServer may itself terminate with a generated cert). Emits `.behaviours` keyed `forward_absolute_proxy` / `forward_connect_proxy` (same shape as `regression.js`, so `perf-test-compare.sh` picks them up via `behaviours.*` with no change — which resets the k6 arm-set baseline once). **`handshake`**: MockServer's INBOUND TLS handshake cost, which the `https_h2` run amortises to ~0 by reusing connections. Hits three distinct SUTs with `noConnectionReuse` (a fresh TCP+TLS handshake per iteration): **TLS 1.3 server-only**, **mTLS-required** (presents a client cert via `tlsAuth`), and **native-provider-absent** (`-Dio.netty.handler.ssl.noOpenSsl=true`, the Dockerfile's documented JDK-provider fallback). Emits `.tls_handshake` per arm `{handshake_p50/p95/p99_ms, handshakes_per_s, cpu_ms_per_handshake, alloc_kb_per_handshake, error_rate}` — the CPU/alloc-per-handshake fields are filled in by `perf-test-run.sh` from per-SUT sampling. Clones `regression.js`'s FIXED measured-window shape (stagger, `preAllocatedVUs == maxVUs`, warm-every-path, settle exclusion, `MIN_TAIL_SAMPLES`). `setup()` fails loud if the CONNECT tunnel carried no TLS handshake at all or an enabled handshake arm cannot handshake. | Notify-only. |
 
 ## Running
 
@@ -136,6 +137,39 @@ k6 run -e K6_FORWARD_SELF=true mockserver-performance-test/k6/forward.js
   `K6_FWD_P95_MS` / `K6_FWD_P99_MS`.
 - `checks` — every forward returns a 200 from the upstream.
 
+### Proxy-path + TLS handshake (`proxy.js`)
+
+Two modes, run as **separate** invocations (they need mutually exclusive
+process-global settings — a proxy env vs `noConnectionReuse`):
+
+```bash
+# item 9a — MockServer as a forward proxy. The proxy env is set on the CLIENT,
+# and the request targets the UPSTREAM (routed through the SUT):
+#   http://upstream  -> absolute-URI forward ;  https://upstream -> CONNECT tunnel
+HTTP_PROXY=http://mockserver:1080 HTTPS_PROXY=http://mockserver:1080 \
+  k6 run -e K6_PROXY_MODE=forward \
+         -e FORWARD_UPSTREAM_HOST=mockserver-upstream:1080 \
+         mockserver-performance-test/k6/proxy.js
+
+# item 14 — inbound TLS/mTLS handshake cost (fresh handshake per iteration). Each
+# arm targets its own SUT; the mTLS arm presents a client cert via tlsAuth.
+k6 run -e K6_PROXY_MODE=handshake \
+       -e K6_HS_TLS13_URL=https://mockserver:1080 \
+       -e K6_HS_MTLS_URL=https://mockserver-mtls:1080 \
+       -e K6_HS_JDK_URL=https://mockserver-jdk:1080 \
+       -e K6_HS_CLIENT_CERT=/certs/client.pem -e K6_HS_CLIENT_KEY=/certs/client.key \
+       mockserver-performance-test/k6/proxy.js
+```
+
+`perf-test-run.sh` drives both against the run's existing upstream/SUT, starts the
+mTLS SUT (`tlsMutualAuthenticationRequired=true`, trusting a generated CA) and the
+native-provider-absent SUT (`-Dio.netty.handler.ssl.noOpenSsl=true`), and augments
+each handshake arm with per-handshake server **CPU** (`docker stats`, integrated)
+and **allocation** (`jvm_memory_allocated_bytes` delta ÷ `requests_received_count`
+delta). `setup()` fails the run loudly if the CONNECT tunnel carried no TLS
+handshake at all (i.e. not a real HTTPS CONNECT path) or an enabled handshake arm
+cannot handshake (mTLS cert rejected, etc.).
+
 ## Environment variables
 
 All tunables are env-driven (see `lib/config.js`). Connection target resolves as
@@ -198,6 +232,23 @@ All tunables are env-driven (see `lib/config.js`). Connection target resolves as
 | `K6_SWEEP_PRE_VUS` / `K6_SWEEP_MAX_VUS` | `200` / `4000` | VU pool for the sweep arrival-rate executors (pre-allocate enough so high rungs are not VU-starved) |
 | `PROTO` | `http` | Protocol tag recorded in the result (`https_h2` for an HTTPS+H2 run) |
 | `K6_SWEEP_RESULT_PATH` | `sweep-result.json` | File path where `handleSummary()` writes the knee-curve result JSON |
+
+**proxy.js additional variables** (defined in `lib/config.js` `PROXY` block):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `K6_PROXY_MODE` | `forward` | `forward` (item 9a proxy latency) or `handshake` (item 14 TLS handshake cost) |
+| `K6_PROXY_RATE` | `200` | Offered req/s per forward-proxy arm |
+| `K6_PROXY_DURATION` / `K6_PROXY_WARMUP` | `2m` / `30s` | Measured window / warmup (both modes) |
+| `K6_PROXY_STAGGER` / `K6_PROXY_SETTLE` | `5s` / `10s` | Scenario stagger / per-scenario settle exclusion (Finding 3 shape) |
+| `K6_PROXY_PRE_VUS` / `K6_PROXY_MAX_VUS` | `50` / `50` | VU pool — **kept equal** (no mid-run allocation ramp) |
+| `FORWARD_UPSTREAM_HOST` | `mockserver-upstream:1080` | Upstream the proxy forwards/tunnels to (shared with forward.js) |
+| `HTTP_PROXY` / `HTTPS_PROXY` | – | **Set on the k6 process/container** (not in the script) to point forward-mode requests through the SUT |
+| `K6_HS_RATE` / `K6_HS_DURATION` | `50` / `1m` | Fresh-handshake rate + window per handshake arm |
+| `K6_HS_TLS13_URL` / `K6_HS_MTLS_URL` / `K6_HS_JDK_URL` | – | Per-arm direct-TLS targets (empty ⇒ arm absent) |
+| `K6_HS_CLIENT_CERT` / `K6_HS_CLIENT_KEY` | – | PEM paths the mTLS arm presents via `tlsAuth` |
+| `PROTO` | `proxy` | Transport tag folded into result keys |
+| `K6_PROXY_RESULT_PATH` | `proxy-result.json` | File path where `handleSummary()` writes the result JSON |
 
 ## Seeded expectations
 

@@ -352,4 +352,91 @@ export const FORWARD_LOAD = {
   p99: num('K6_FWD_P99_MS', 200),
 };
 
+// Proxy-path + TLS-handshake scenario tunables (proxy.js — performance-programme
+// items 9a and 14). ONE file, TWO modes selected by K6_PROXY_MODE because the two
+// workloads need MUTUALLY EXCLUSIVE process-global settings and so cannot share a
+// k6 process:
+//   forward   — MockServer AS A FORWARD PROXY. k6 is pointed at the upstream and
+//               routed THROUGH MockServer via the HTTP_PROXY / HTTPS_PROXY env the
+//               run step sets on the k6 container: an http:// target becomes an
+//               absolute-URI GET to the proxy (absolute-URI forwarding), an https://
+//               target becomes a CONNECT tunnel carrying TLS through the SUT to the
+//               upstream (MockServer may terminate that TLS itself with a generated
+//               cert — see expectations.js getProxiedConnect). Connections are REUSED
+//               (keep-alive), like a real proxy
+//               client. Emits a .behaviours object (op_proto keys) so
+//               perf-test-compare.sh picks the arms up with ZERO script changes
+//               (its metric loop iterates .behaviours | to_entries[]).
+//   handshake — MockServer's INBOUND TLS handshake cost (item 14). k6 hits the SUT
+//               directly over HTTPS with noConnectionReuse:true so EVERY iteration
+//               pays a fresh TCP+TLS handshake (the https_h2 regression run reuses
+//               one connection per VU, so handshake cost is amortised to ~0 and
+//               appears in no measured number). No proxy env here — a proxy env
+//               would tunnel these and defeat the measurement. Emits a .tls_handshake
+//               object; perf-test-run.sh augments each arm with server CPU + JVM
+//               allocation per handshake sampled across the arm's window.
+//
+// Both modes clone regression.js's FIXED measured-window shape (Finding 3): a
+// warmup scenario, STAGGERED scenario starts, preAllocatedVUs == maxVUs (no mid-run
+// VU/connection ramp), a K6_PROXY_SETTLE exclusion window tagged op:<op>_settle, the
+// MIN_TAIL_SAMPLES tail suppression, and the heavy/warm load-time contract. Copying
+// a pre-fix regression.js revision would reintroduce the four-orders-of-magnitude
+// tail bug, so these are cloned from the current (post-2026-09-16) shape.
+export const PROXY = {
+  mode: env('K6_PROXY_MODE', 'forward'),
+  // --- forward mode ---------------------------------------------------------
+  // Offered req/s per proxy arm. Retained-heap arithmetic (the same event-log ring
+  // reasoning as REGRESSION's large_* arms): a PROXIED request is still recorded in
+  // the SUT's count-bounded log ring, holding request + response bodies. Here the
+  // bodies are TINY — the forward arms GET /simple, whose upstream response body is
+  // ~8 bytes ("UPSTREAM") and request is header-only — so at r rps the retained
+  // bytes are r × residence × ~200 B (entry + small body). With residence ≈
+  // maxLogEntries/total_rps and total forward rps ≈ 400 (2 arms × 200), residence ≈
+  // 100000/400 ≈ 250 s and retention ≈ 400 × 250 × 200 B ≈ 20 MB — negligible
+  // against the 1.5 GB SUT heap, so no rate throttling / heavy flag is needed. (This
+  // is why the forward arms relay a SMALL body deliberately: a proxy relaying MB
+  // bodies would need the same rate-bounding the large_* arms use.)
+  rate: num('K6_PROXY_RATE', 200),
+  duration: env('K6_PROXY_DURATION', '2m'),
+  warmup: env('K6_PROXY_WARMUP', '30s'),
+  stagger: env('K6_PROXY_STAGGER', '5s'),
+  settle: env('K6_PROXY_SETTLE', '10s'),
+  // preAllocatedVUs == maxVUs — the Finding-3 no-mid-run-allocation invariant.
+  preAllocatedVUs: num('K6_PROXY_PRE_VUS', 50),
+  maxVUs: num('K6_PROXY_MAX_VUS', 50),
+  // The upstream the proxy forwards/tunnels to (host:port), reachable on the run's
+  // docker network. Shared with the FORWARD block so the run seeds one upstream.
+  upstreamHost: env('FORWARD_UPSTREAM_HOST', 'mockserver-upstream:1080'),
+  // Self-test knob (default 0 = off): a fixed server-side delay (ms) on the upstream
+  // /simple response so a run can prove the proxy percentiles still track a real
+  // slowdown. Applied by seeding the UPSTREAM, so it exercises the relay path.
+  matchDelayMs: num('K6_PROXY_MATCH_DELAY_MS', 0),
+  // --- handshake mode (item 14) ---------------------------------------------
+  // Fresh-handshake rate per arm. Kept modest (each iteration opens a new TCP+TLS
+  // connection, so this is also the connection-open rate) to avoid ephemeral-port
+  // exhaustion on the client while still yielding thousands of handshakes over the
+  // window. Bodies are header-only GET /simple, so log-ring retention is trivially
+  // bounded exactly as the forward arms above.
+  handshakeRate: num('K6_HS_RATE', 50),
+  handshakeDuration: env('K6_HS_DURATION', '1m'),
+  // Per-arm DIRECT-TLS targets (distinct SUT containers: server-only TLS 1.3, mTLS
+  // required, and native-provider-absent). Empty => that arm is absent (an explicit,
+  // documented omission, not a silent zero); proxy.js probes each enabled arm in
+  // setup() and fails loud if it cannot handshake.
+  tls13Url: env('K6_HS_TLS13_URL', ''),
+  mtlsUrl: env('K6_HS_MTLS_URL', ''),
+  jdkUrl: env('K6_HS_JDK_URL', ''),
+  // Client cert + key (PEM paths, read at init) presented to the mTLS arm's SUT.
+  // Required only when mtlsUrl is set; without them the mTLS handshake is rejected
+  // by the server (which is exactly the negative control the run also exercises).
+  clientCertPath: env('K6_HS_CLIENT_CERT', ''),
+  clientKeyPath: env('K6_HS_CLIENT_KEY', ''),
+  // --- shared ---------------------------------------------------------------
+  // Transport label folded into the result key (<op>_<proto>). Fixed ('proxy')
+  // rather than derived from a scheme: each proxy/handshake arm has ONE transport,
+  // so unlike regression.js there is no http-vs-https axis to disambiguate.
+  proto: env('PROTO', 'proxy'),
+  resultPath: env('K6_PROXY_RESULT_PATH', 'proxy-result.json'),
+};
+
 export { env, num, bool };

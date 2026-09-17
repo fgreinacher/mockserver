@@ -14,7 +14,7 @@
 import http from 'k6/http';
 import { check, fail } from 'k6';
 import { SharedArray } from 'k6/data';
-import { CONFIG, FORWARD, REGRESSION } from './config.js';
+import { CONFIG, FORWARD, REGRESSION, PROXY } from './config.js';
 
 // The 4 seeded expectations — byte-for-byte the same shapes as the legacy
 // expectations.json so recorded baselines remain comparable.
@@ -410,4 +410,101 @@ export function getLargeFile(extraTags) {
   });
   check(res, { 'large_file: 200': (r) => r.status === 200 });
   return res;
+}
+
+// --- proxy.js: item 9a (forward proxy) + item 14 (TLS handshake) actions ------
+//
+// The SUT under measurement in proxy.js's FORWARD mode is configured as a forward
+// PROXY, so these arms do NOT seed it — they route a request at the UPSTREAM and
+// let MockServer relay it. The run step seeds the upstream's /simple; k6 only
+// probes the arms in setup() (verifyProxyForwardArms) and fails loud if the relay
+// does not work, never recording a silent 100%-error arm.
+
+// item 9a — absolute-URI forwarding. With HTTP_PROXY pointed at the SUT, an http://
+// target is sent to the SUT as an absolute-URI GET; the SUT forwards it to the
+// upstream and relays the response. Keep-Alive so connections are reused (a real
+// proxy client), which keeps the measured latency about the RELAY, not handshakes.
+export function getProxiedAbsolute(extraTags) {
+  const res = http.get(`http://${PROXY.upstreamHost}/simple`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'forward_absolute', name: 'GET http://upstream/simple (absolute-URI)', ...(extraTags || {}) },
+  });
+  check(res, { 'forward_absolute: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 9a — CONNECT tunnel carrying HTTPS. With HTTPS_PROXY pointed at the SUT, an
+// https:// target makes k6 issue CONNECT <upstream> to the SUT, which establishes a
+// tunnel; k6 then performs a TLS handshake over that tunnel and the request reaches
+// the upstream (the response body confirms the relay landed there). NOTE: this
+// measures the proxy CONNECT PATH, not necessarily an end-to-end-to-upstream TLS
+// session — MockServer's forward proxy may terminate the CONNECT TLS itself with a
+// dynamically generated certificate (a MITM), in which case http_req_tls_handshaking
+// is timed against the SUT. Either way a NON-ZERO http_req_tls_handshaking proves a
+// real TLS handshake was carried over the tunnel (the arm is genuinely a TLS path,
+// not a plain request), which is what the setup() guard asserts.
+export function getProxiedConnect(extraTags) {
+  const res = http.get(`https://${PROXY.upstreamHost}/simple`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op: 'forward_connect', name: 'GET https://upstream/simple (CONNECT tunnel)', ...(extraTags || {}) },
+  });
+  check(res, { 'forward_connect: 200': (r) => r.status === 200 });
+  return res;
+}
+
+// item 14 — a direct-TLS GET against a handshake SUT's seeded /simple. With
+// noConnectionReuse (proxy.js handshake mode) every call is a fresh TCP+TLS
+// handshake, so http_req_tls_handshaking is paid on EVERY iteration (never
+// amortised). The body is header-only/tiny so the handshake dominates.
+export function getHandshakeSimple(baseUrl, op, extraTags) {
+  const res = http.get(`${baseUrl}/simple`, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op, name: `GET ${op} /simple (fresh TLS)`, ...(extraTags || {}) },
+  });
+  check(res, { [`${op}: 200`]: (r) => r.status === 200 });
+  return res;
+}
+
+// Fail-loud probe of the FORWARD-mode arms: the absolute-URI and CONNECT relays
+// must each return 200 from the upstream. Called from proxy.js setup().
+export function verifyProxyForwardArms() {
+  const abs = http.get(`http://${PROXY.upstreamHost}/simple`, { headers: CONFIG.keepAliveHeaders });
+  if (abs.status !== 200) {
+    fail(`forward_absolute arm: GET http://${PROXY.upstreamHost}/simple via proxy returned HTTP ${abs.status} — the SUT is not forwarding absolute-URI requests to the upstream (check HTTP_PROXY + upstream seed). Body: ${abs.body}`);
+  }
+  const conn = http.get(`https://${PROXY.upstreamHost}/simple`, { headers: CONFIG.keepAliveHeaders });
+  if (conn.status !== 200) {
+    fail(`forward_connect arm: GET https://${PROXY.upstreamHost}/simple via CONNECT tunnel returned HTTP ${conn.status} — the SUT is not tunnelling CONNECT to the upstream (check HTTPS_PROXY + upstream TLS). Body: ${conn.body}`);
+  }
+  // The CONNECT arm MUST have carried a real TLS handshake over the tunnel (whether
+  // terminated at the upstream or at the SUT's MITM cert); a zero handshake time
+  // would mean no TLS occurred, i.e. this is not a real HTTPS CONNECT path. Fail the
+  // run loudly rather than baseline an arm that never carried TLS.
+  if (!(conn.timings && conn.timings.tls_handshaking > 0)) {
+    fail(`forward_connect arm: CONNECT to ${PROXY.upstreamHost} completed with tls_handshaking=${conn.timings ? conn.timings.tls_handshaking : 'n/a'} ms — no TLS handshake was carried over the tunnel, so this is NOT a real HTTPS CONNECT path.`);
+  }
+}
+
+// Fail-loud probe of the HANDSHAKE-mode arms: each ENABLED direct-TLS SUT must
+// answer /simple with 200, over a genuine TLS handshake. Called from proxy.js
+// setup(). An enabled arm that cannot handshake aborts the run rather than
+// recording a silent 100%-error / zero-handshake arm.
+export function verifyHandshakeArms() {
+  const arms = [
+    ['tls13', PROXY.tls13Url],
+    ['mtls', PROXY.mtlsUrl],
+    ['jdk', PROXY.jdkUrl],
+  ];
+  for (const [name, url] of arms) {
+    if (!url) {
+      continue;
+    }
+    const res = http.get(`${url}/simple`, { headers: CONFIG.keepAliveHeaders });
+    if (res.status !== 200) {
+      fail(`handshake_${name} arm: GET ${url}/simple returned HTTP ${res.status} — the SUT is not reachable over TLS / not seeded / (mtls) rejected the client certificate. Body: ${res.body}`);
+    }
+    if (!(res.timings && res.timings.tls_handshaking > 0)) {
+      fail(`handshake_${name} arm: ${url}/simple answered but tls_handshaking=${res.timings ? res.timings.tls_handshaking : 'n/a'} ms — no TLS handshake was measured, so the handshake numbers would be meaningless.`);
+    }
+  }
 }

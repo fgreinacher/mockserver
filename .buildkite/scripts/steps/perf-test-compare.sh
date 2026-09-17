@@ -354,6 +354,23 @@ def metrics:
       {name:($k+".rss_mb"),           value:$v.rss_mb,           bkey:"laptop.*.rss_mb"},
       {name:($k+".threads"),          value:$v.threads,          bkey:"laptop.*.threads"},
       {name:($k+".compressed_bytes"), value:$v.compressed_bytes, bkey:"laptop.*.compressed_bytes"} ) ),
+  ((.tls_handshake // {}) | to_entries[] | .key as $k | .value as $v |
+    # item 14 — TLS/mTLS/native-absent inbound-handshake cost (proxy.js handshake
+    # mode). Keyed by arm: tls13, mtls, jdk. handshake_p50/p95_ms is the TLS
+    # handshake time (dir up = worse); handshakes_per_s is the fresh-handshake
+    # throughput (dir DOWN = worse, so it uses its own budget dir); cpu_ms_per_handshake
+    # + alloc_kb_per_handshake are the per-handshake server cost the run step samples
+    # (null on an image predating jvm_memory_allocated_bytes, so they drop out via the
+    # select(.value != null) in $headmetrics). All NON-GATING (their perf-budgets.json
+    # entries omit gating). Rides the full-baseline else-branch (not fingerprint
+    # filtered) like growth/peak: the arm set is stable and the numbers are not keyed
+    # on the mutable snapshot image digest.
+    ( {name:($k+".handshake_p50_ms"),      value:$v.handshake_p50_ms,      bkey:"tls_handshake.*.handshake_p50_ms"},
+      {name:($k+".handshake_p95_ms"),      value:$v.handshake_p95_ms,      bkey:"tls_handshake.*.handshake_p95_ms"},
+      {name:($k+".handshakes_per_s"),      value:$v.handshakes_per_s,      bkey:"tls_handshake.*.handshakes_per_s"},
+      {name:($k+".cpu_ms_per_handshake"),  value:$v.cpu_ms_per_handshake,  bkey:"tls_handshake.*.cpu_ms_per_handshake"},
+      {name:($k+".alloc_kb_per_handshake"),value:$v.alloc_kb_per_handshake,bkey:"tls_handshake.*.alloc_kb_per_handshake"},
+      {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
   # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
