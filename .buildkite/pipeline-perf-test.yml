@@ -15,7 +15,9 @@ steps:
   - label: ":k6: k6 load test"
     command: ".buildkite/scripts/steps/perf-test-load.sh"
     timeout_in_minutes: 20
-    if: "build.source == 'ui' || build.source == 'schedule'"
+    # Exclude the weekly soak build (its schedule carries [perf-soak]): a soak
+    # build must run ONLY the soak step, not the ad-hoc load test.
+    if: "(build.source == 'ui' || build.source == 'schedule') && build.message !~ /\\[perf-soak\\]/"
     agents:
       queue: "default"
     retry:
@@ -34,10 +36,40 @@ steps:
     timeout_in_minutes: 10
     # `[perf-run]` in the build message is an explicit, safe force-trigger for a
     # manual/API run (orchestrator/commit builds never carry it, so the daily-only
-    # design is preserved). UI and scheduled builds dispatch as before.
-    if: "build.source == 'ui' || build.source == 'schedule' || build.message =~ /\\[perf-run\\]/"
+    # design is preserved). UI and scheduled builds dispatch as before — EXCEPT the
+    # weekly soak build (its schedule carries [perf-soak]): the perf queue is
+    # max_size=1, so a soak build must NOT also dispatch the daily regression run
+    # onto the same queue (that is the collision item 10 avoids by scheduling the
+    # soak out of the daily's slot).
+    if: "(build.source == 'ui' || build.source == 'schedule' || build.message =~ /\\[perf-run\\]/) && build.message !~ /\\[perf-soak\\]/"
     agents:
       queue: "trigger"
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+
+  # WEEKLY SOAK run (item 10 of the performance programme). Dispatched by a
+  # SEPARATE weekly schedule (terraform/buildkite-pipelines/pipelines.tf) whose
+  # message carries [perf-soak] — NOT by the daily 04:00 regression schedule. The
+  # perf queue is max_size=1, so a 2h soak sharing the daily's slot would block
+  # that day's regression entirely; the weekly schedule fires well clear of the
+  # 04:00 regression and 16:00 baseline-freshness slots. soak.js runs match/create
+  # under sustained load with two low-rate event-log queries (verify +
+  # retrieveRecordedRequests — item 10b) whose latency is recorded AGAINST log
+  # occupancy. NOTIFY-ONLY: the soak result (perf-soak.json) is NOT fed to the
+  # daily baseline compare until ~8 weekly runs of variance exist (~2 months); but
+  # a k6 threshold breach (data-plane p99 drift / error rate) OR a missing/empty
+  # result still reds this build.
+  - label: ":zzz: perf soak — weekly (2h, event-log fill)"
+    command: ".buildkite/scripts/steps/perf-test-soak.sh"
+    if: "build.message =~ /\\[perf-soak\\]/"
+    # 2h soak + boot + summary + teardown. ~48m margin over 120m under cloud noise.
+    timeout_in_minutes: 170
+    agents:
+      queue: "perf"
     retry:
       automatic:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)

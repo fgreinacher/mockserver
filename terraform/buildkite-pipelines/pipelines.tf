@@ -185,6 +185,36 @@ resource "buildkite_pipeline_schedule" "infra_baseline_freshness_daily" {
   message     = "Scheduled: assert perf baseline freshness (safety-net)"
 }
 
+# Weekly performance SOAK run (item 10 of the performance programme). soak.js runs
+# for 2h on the `perf` queue under sustained load, surfacing slow degradation a
+# short regression run cannot (data-plane p99 drift as the event log fills, leaks
+# over hours) and measuring the cost of verify / retrieveRecordedRequests against a
+# FULL log (item 10b).
+#
+# WHY SUNDAY 08:00 UTC — NOT the daily regression's slot. The `perf` queue is
+# max_size = 1 (terraform/buildkite-agents, perf_max_size), so at most one perf job
+# runs at a time. A 2h soak sharing the daily regression's 04:00 window would block
+# that day's regression entirely. The daily regression (perf_regression_daily,
+# 04:00) occupies the perf queue for up to ~2.5h worst case (run 45m + microbench
+# 70m + h2-multiplex 30m + compare 10m), i.e. until ~06:35; the soak's 08:00 start
+# clears that by ~85 min and its 08:00–10:00 window is well clear of the 06:00
+# cleanup and the 16:00 baseline-freshness check (the freshness check runs in the
+# infra pipeline, a different queue, so there is no queue contention with it in any
+# case). Sunday is the lowest-commit day, so the commit-gated daily regression most
+# often skips and an ad-hoc [perf-run]/[perf-inject] is least likely to contend the
+# single perf agent. The [perf-soak] marker routes this build to the soak step ONLY
+# (pipeline-perf-test.yml gates the daily guard and load test OFF for a [perf-soak]
+# build), so the soak never triggers the daily regression dispatch. No queue-
+# capacity change is needed: this only enqueues a build; the perf ASG scales from
+# and back to min_size = 0 on demand (which MUST stay 0).
+resource "buildkite_pipeline_schedule" "perf_soak_weekly" {
+  pipeline_id = buildkite_pipeline.pipeline["perf-test"].id
+  label       = "Weekly performance soak"
+  cronline    = "0 8 * * 0"
+  branch      = "master"
+  message     = "Scheduled: weekly performance soak [perf-soak]"
+}
+
 locals {
   # Audit finding F-BK-CLOUD-02: pipelines that load secrets via AWS Secrets
   # Manager must be PRIVATE so their build logs are not world-readable. The

@@ -200,7 +200,18 @@ fi
 # --- 3. isolate the producer's SCHEDULED builds -------------------------------
 # Only source==schedule builds prove the CRON is alive; a manual UI build does
 # not. Builds come newest-first from the API.
-SCHED="$(printf '%s' "$BODY" | jq -c '[ .[] | select(.source == "schedule") ]')"
+#
+# EXCLUDE the weekly SOAK schedule ([perf-soak] in its message). The perf-test
+# pipeline now has TWO scheduled-build types: the DAILY regression producer (whose
+# liveness this check exists to assert) and the weekly soak (item 10). The soak is
+# NOT the baseline producer, so counting it here would corrupt both checks — on a
+# Sunday the newest scheduled build would be the 08:00 soak, so a passing soak
+# could mask that day's failed daily (the terminal-state check at :239), and a
+# fresh soak would reset "newest age" to ~0h and suppress a STALLED alert if the
+# daily schedule had died (the age check at :225). Filtering at this single SCHED
+# selection flows to BOTH downstream checks (newest/age below, terminal at :239),
+# so the exclusion is applied consistently in one place.
+SCHED="$(printf '%s' "$BODY" | jq -c '[ .[] | select(.source == "schedule" and ((.message // "") | test("\\[perf-soak\\]") | not)) ]')"
 SCHED_COUNT="$(printf '%s' "$SCHED" | jq 'length')"
 if [ "${SCHED_COUNT:-0}" -eq 0 ]; then
   fail "NO_SCHEDULE (producer has no scheduled builds)" \
