@@ -40,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- A response body whose bytes were already materialised in the charset it is served in is no longer
+  encoded a second time on the way to the wire. When the body declares its own charset -- `withBody(json,
+  APPLICATION_JSON_UTF_8)`, `json(str, JSON_UTF_8)`, `withBody(str, charset)` -- that charset always wins
+  over the header, so the model's bytes are already the wire bytes and are now reused. Around half the
+  allocation and half the latency of writing a 256 KB explicit-charset JSON response. Bodies with no
+  declared charset (`withBody(String)`) still re-encode: their bytes use the ISO-8859-1 default and can
+  differ from a UTF-8 wire, so reusing them would emit a lossy body. One consequence worth knowing for
+  record-and-replay: a recorded body whose `Content-Type` declared a charset but whose bytes are malformed
+  for it is now replayed verbatim, where before it was decoded with replacement characters and re-encoded.
 - HTTP/3 requests with a text body (JSON, XML, plain text) no longer allocate the body twice on the way
   in. The bridge decoded the accumulated QUIC buffer into a `byte[]` and then re-read that array into a
   `String`; it now decodes straight from the buffer, so a single-component body skips the intermediate

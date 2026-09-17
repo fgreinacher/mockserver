@@ -67,7 +67,23 @@ public class BodyDecoderEncoder {
             } else if (body.getValue() instanceof String) {
                 Charset contentTypeCharset = MediaType.parse(contentTypeHeader).getCharsetOrDefault();
                 Charset bodyCharset = body.getCharset(contentTypeCharset);
-                return ((String) body.getValue()).getBytes(bodyCharset != null ? bodyCharset : MediaType.DEFAULT_TEXT_HTTP_CHARACTER_SET);
+                Charset wireCharset = bodyCharset != null ? bodyCharset : MediaType.DEFAULT_TEXT_HTTP_CHARACTER_SET;
+                // When the body carries its OWN declared charset (e.g. withBody(json, JSON_UTF_8) or
+                // withBody(string, charset)), StringBody/JsonBody/XmlBody already materialised rawBytes
+                // in exactly that charset, and the wire charset always resolves to that same declared
+                // charset (a declared charset wins over the header - see getCharset). So the model bytes
+                // are byte-identical to value.getBytes(wireCharset): reuse them and skip a second
+                // whole-body encode and its allocation. This is a pure charset-object comparison, no
+                // per-byte scan, so it costs the hot path nothing. It deliberately does NOT fire when the
+                // body has no declared charset (declaredCharset == null) - the withBody(String) shape,
+                // whose rawBytes use the ISO-8859-1 default and can differ from a UTF-8 wire - forcing the
+                // correct re-encode there and never emitting a lossy body.
+                Charset declaredCharset = body.getCharset(null);
+                byte[] materialised = body.getRawBytes();
+                if (materialised != null && declaredCharset != null && declaredCharset.equals(wireCharset)) {
+                    return materialised;
+                }
+                return ((String) body.getValue()).getBytes(wireCharset);
             } else {
                 return body.getRawBytes();
             }

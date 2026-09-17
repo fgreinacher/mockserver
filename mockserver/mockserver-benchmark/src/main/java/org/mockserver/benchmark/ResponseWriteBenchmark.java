@@ -1,10 +1,13 @@
 package org.mockserver.benchmark;
 
+import io.netty.buffer.ByteBuf;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.HttpResponseEncoder;
+import org.mockserver.codec.BodyDecoderEncoder;
 import org.mockserver.codec.MockServerHttpToNettyHttpResponseEncoder;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpResponse;
+import org.mockserver.model.MediaType;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
 import org.openjdk.jmh.annotations.Fork;
@@ -67,6 +70,25 @@ public class ResponseWriteBenchmark {
     @Param({"1024", "16384", "262144"})
     public int responseSize;
 
+    /**
+     * Whether the response body declares its own charset.
+     * <ul>
+     *   <li>{@code false} — {@code withBody(String)}: the body has no declared charset, so its
+     *       materialised bytes use the ISO-8859-1 default while the JSON wire charset is UTF-8. The
+     *       outbound path must re-encode; this is the implicit-charset arm (the pre-existing shape),
+     *       kept so its untouched behaviour stays visible.</li>
+     *   <li>{@code true} — {@code withBody(String, APPLICATION_JSON_UTF_8)}: the body declares UTF-8,
+     *       which is exactly the wire charset, so the outbound path may reuse the already-materialised
+     *       bytes with no second encode. This is the explicit-charset arm the reuse optimisation targets
+     *       ({@code withBody(json, JSON_UTF_8)} / {@code json(str, JSON_UTF_8)} / {@code withBody(str,
+     *       charset)} usage).</li>
+     * </ul>
+     * Both arms emit the identical UTF-8 wire body and Content-Length, so the only difference measured
+     * is whether the body-materialisation copy happens once or twice.
+     */
+    @Param({"false", "true"})
+    public boolean declareBodyCharset;
+
     /** The two-handler outbound pipeline (MockServer response encoder + Netty HTTP encoder), reused per op. */
     private EmbeddedChannel channel;
 
@@ -85,6 +107,45 @@ public class ResponseWriteBenchmark {
             new MockServerHttpToNettyHttpResponseEncoder(new MockServerLogger())
         );
         payload = new String(buildJsonPayload(responseSize), StandardCharsets.UTF_8);
+        assertArmMeasuresTheShapeItClaims();
+    }
+
+    /**
+     * Fails the trial unless each arm actually exercises the path it is named for. Without this a
+     * change to how the encoder resolves a content type would leave both arms silently measuring
+     * the same shape, and the benchmark would keep reporting a difference it was no longer
+     * measuring. Identity of the backing array is the observable signal: the outbound buffer wraps
+     * the body's own {@code rawBytes} when reuse fires, and a freshly-encoded array when it does not.
+     */
+    private void assertArmMeasuresTheShapeItClaims() {
+        HttpResponse probe = HttpResponse.response()
+            .withStatusCode(200)
+            .withHeader("content-type", "application/json");
+        if (declareBodyCharset) {
+            probe.withBody(payload, MediaType.APPLICATION_JSON_UTF_8);
+        } else {
+            probe.withBody(payload);
+        }
+
+        byte[] materialised = probe.getBody().getRawBytes();
+        ByteBuf wire = new BodyDecoderEncoder().bodyToByteBuf(probe.getBody(), "application/json");
+        boolean reused;
+        try {
+            reused = wire.hasArray() && wire.array() == materialised;
+        } finally {
+            io.netty.util.ReferenceCountUtil.release(wire);
+        }
+
+        if (declareBodyCharset && !reused) {
+            throw new IllegalStateException(
+                "declareBodyCharset=true arm is NOT reusing the body's materialised bytes -- it is "
+                    + "measuring the re-encode path, so its numbers do not describe the optimisation");
+        }
+        if (!declareBodyCharset && reused) {
+            throw new IllegalStateException(
+                "declareBodyCharset=false arm IS reusing the body's materialised bytes -- the "
+                    + "implicit-charset control is no longer a control");
+        }
     }
 
     @TearDown(Level.Trial)
@@ -125,8 +186,14 @@ public class ResponseWriteBenchmark {
         // the mapper from the materialised body.
         HttpResponse response = HttpResponse.response()
             .withStatusCode(200)
-            .withHeader("content-type", "application/json")
-            .withBody(payload);
+            .withHeader("content-type", "application/json");
+        if (declareBodyCharset) {
+            // Body declares UTF-8 (== the wire charset): eligible for zero-copy reuse of its bytes.
+            response.withBody(payload, MediaType.APPLICATION_JSON_UTF_8);
+        } else {
+            // Body has no declared charset: the outbound path must re-encode (implicit-charset arm).
+            response.withBody(payload);
+        }
 
         channel.writeOutbound(response);
 
