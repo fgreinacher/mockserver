@@ -222,8 +222,27 @@ VM_NAME="$(metric_label jvm_runtime_info vm_name)"
 GC_IN_USE="$(metric_label jvm_runtime_info gc)"
 HEAP_MAX_BYTES="$(metric_heap_max)"
 # The immutable content id the SUT image actually resolved to (RepoDigest), or the
-# local image id when built without a digest (locally-built image).
-IMAGE_DIGEST="$(docker inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Image}}{{end}}' "$SERVER" 2>/dev/null || true)"
+# local image id when built without a digest (locally-built image). RepoDigests is
+# an IMAGE property and does NOT exist on a container, so we must resolve the
+# container's image id first (.Image) and inspect the IMAGE — NOT the container.
+# Inspecting the container reads a key that is absent there: older Docker CLIs
+# (missingkey=invalid) rendered that as empty and silently fell through to the
+# container's .Image (the image id, never the RepoDigest), but Docker 29.x
+# (missingkey=error) makes the missing key a hard template error, so the value
+# came back empty and tripped the fail-closed guard below for a digest that is in
+# fact perfectly resolvable. On the image, RepoDigests is always a present key
+# (an empty list for a locally-built image), so the {{if}} degrades cleanly to the
+# documented .Id fallback rather than erroring. Only a genuine inability to inspect
+# the image at all leaves this empty — which is meant to fail closed.
+#
+# HISTORY: schema_version 2 runs stored BEFORE this fix carry a bare image-config
+# ID here, not a repo digest, labelled sources.image_digest="observed". They are
+# wrong rather than absent, so do not read a pre-fix image_digest as provenance.
+# The failure direction is safe: the field is display-only in the compare step
+# today, and a bare-ID-vs-digest mismatch can only SUPPRESS the planned ratchet
+# (which requires an identical config across runs), never falsely tighten a budget.
+SERVER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVER" 2>/dev/null || true)"
+IMAGE_DIGEST="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "${SERVER_IMAGE_ID:-$MOCKSERVER_IMAGE}" 2>/dev/null || true)"
 # Log level + system-out suppression are BOTH non-defaults every CI perf run sets,
 # and neither was ever recorded. Read them off the container that ran (observed);
 # only if absent there fall back to the shell env we exported (declared).
@@ -245,7 +264,7 @@ K6_CFG_CORES="$(k6_core_count "${K6_CPUS:-}")"; K6_CFG_PIN_PCT=$((K6_CFG_CORES *
 # genuine "cannot record what this run was" and is meant to fail here.
 CONFIG_ERRORS=()
 [ -n "$MS_VERSION" ]        || CONFIG_ERRORS+=("mockserver version (mock_server_build_info{version}) not readable from ${SERVER_METRICS_URL}")
-[ -n "$IMAGE_DIGEST" ]      || CONFIG_ERRORS+=("image digest not resolvable via 'docker inspect ${SERVER}'")
+[ -n "$IMAGE_DIGEST" ]      || CONFIG_ERRORS+=("image digest not resolvable — 'docker image inspect' of ${SERVER}'s image (${SERVER_IMAGE_ID:-<unresolved>}) yielded no RepoDigest or .Id")
 [ -n "$JDK_BUILD" ]        || CONFIG_ERRORS+=("JDK build (jvm_runtime_info{java_runtime_version}) not readable — image predates the jvm_runtime_info metric?")
 [ -n "$GC_IN_USE" ]        || CONFIG_ERRORS+=("GC in use (jvm_runtime_info{gc}) not readable — image predates the jvm_runtime_info metric?")
 awk -v v="$HEAP_MAX_BYTES" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("resolved heap (jvm_memory_max_bytes{area=\"heap\"}) not a positive value: '${HEAP_MAX_BYTES}'")
