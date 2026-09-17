@@ -1389,6 +1389,36 @@ CPU_RATIO="$(ratio "$CPU_END" "$CPU_START")"
 # no forced GC and much less noise. REPLACES the old instantaneous heap ratio.
 HEAP_RATIO="$(ratio "$HEAP_MIN_LAST" "$HEAP_MIN_FIRST")"
 
+# --- item 18: req/s per core for the SERVING path -----------------------------
+# Pin ONE SUT to C cores in {1,2,4,8,16} and drive the sweep ladder against it
+# from a k6 on DISJOINT cores, recording peak_achieved_rps, healthy_ceiling_rps
+# and rps_per_core per C (lib/perf-percore.sh does the work + the C=16 feasibility
+# handling + the pinning proof). DEFAULT OFF (opt-in): unlike the streaming /
+# clustered arms, this does NOT share the main SUT — it spins up and tears down one
+# fresh pinned SUT per core-count and runs a full ladder against each, ~4-5 extra
+# SUT lifecycles, so it is scheduled deliberately (the plan's Tier-3 classification)
+# rather than added to every daily regression run. Enable with PERF_SERVING_PERCORE=true.
+# Every serving_percore.* metric is NOTIFY-ONLY (perf-budgets.json). Records INTENT
+# (`serving_percore_attempted`) separately from success so compare can tell "attempted
+# and produced no points" (RED) apart from "profile disabled" (silent), the same
+# two-axis split the laptop profile uses.
+SERVING_PERCORE_JSON='{}'
+SERVING_PERCORE_ATTEMPTED=false
+if [ "${PERF_SERVING_PERCORE:-false}" = "true" ]; then
+  SERVING_PERCORE_ATTEMPTED=true
+  echo "--- item 18 serving per-core (opt-in; PERF_SERVING_PERCORE=true)"
+  # NOT an add_check on failure by itself: the presence gate lives in compare
+  # (serving_percore_attempted + a non-empty points/skipped set), matching laptop.
+  if MOCKSERVER_IMAGE="$MOCKSERVER_IMAGE" PERF_PERCORE_REPO_ROOT="$REPO_ROOT" \
+       bash "$SCRIPT_DIR/lib/perf-percore.sh" "$OUT_DIR/serving-percore.json"; then
+    SERVING_PERCORE_JSON="$(cat "$OUT_DIR/serving-percore.json" 2>/dev/null || echo '{}')"
+    jq -e . >/dev/null 2>&1 <<<"$SERVING_PERCORE_JSON" || SERVING_PERCORE_JSON='{}'
+    echo "--- serving_percore: points=$(jq -r '(.points|length)//0' <<<"$SERVING_PERCORE_JSON") max_cores_measured=$(jq -r '.max_cores_measured//"?"' <<<"$SERVING_PERCORE_JSON") skipped=$(jq -r '(.skipped|length)//0' <<<"$SERVING_PERCORE_JSON")"
+  else
+    echo "WARNING: serving per-core profile failed — result carries no serving_percore points this run (notify-only)" >&2
+  fi
+fi
+
 # --- assemble result JSON -----------------------------------------------------
 COMMIT="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
 BRANCH="${BUILDKITE_BRANCH:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
@@ -1498,6 +1528,8 @@ jq -n \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
   --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
+  --argjson serving_percore "$SERVING_PERCORE_JSON" \
+  --argjson serving_percore_attempted "$SERVING_PERCORE_ATTEMPTED" \
   --arg cpu_start "$CPU_START" --arg cpu_end "$CPU_END" --arg cpu_peak "$CPU_PEAK" --arg cpu_ratio "$CPU_RATIO" \
   --arg heap_start "$HEAP_START" --arg heap_end "$HEAP_END" --arg heap_peak "$HEAP_PEAK" --arg heap_ratio "$HEAP_RATIO" \
   --arg heap_min_first "$HEAP_MIN_FIRST" --arg heap_min_last "$HEAP_MIN_LAST" \
@@ -1589,7 +1621,14 @@ jq -n \
     # separate `laptop_attempted` flag lets compare RED a wholesale failure (attempted
     # but empty/docker-incomplete) instead of mistaking it for a disabled profile.
     laptop: ($laptop.laptop // {}),
-    laptop_attempted: $laptop_attempted
+    laptop_attempted: $laptop_attempted,
+    # item 18 — req/s per core for the SERVING path. `{}` when the profile was
+    # disabled or its measurement failed; compare iterates .serving_percore.points,
+    # so an empty object emits zero serving_percore.* metrics (no missing-budget
+    # trip). serving_percore_attempted lets compare RED a wholesale failure
+    # (attempted but no points) apart from a disabled profile — the laptop split.
+    serving_percore: $serving_percore,
+    serving_percore_attempted: $serving_percore_attempted
   }' > "$RESULT_JSON"
 
 echo "--- result.json"
@@ -1597,11 +1636,18 @@ cat "$RESULT_JSON"
 
 # Standalone sweep artifact (also embedded under .sweep in result.json above).
 cp "$OUT_DIR/sweep.json" "$REPO_ROOT/perf-sweep.json" 2>/dev/null || echo '{}' > "$REPO_ROOT/perf-sweep.json"
+# Standalone serving per-core artifact (also embedded under .serving_percore).
+# Emitted only when the profile ran; the website's serving per-core chart (item 19)
+# and a dated trend read this file, mirroring perf-sweep.json / inject-percore.json.
+if [ -f "$OUT_DIR/serving-percore.json" ]; then
+  cp "$OUT_DIR/serving-percore.json" "$REPO_ROOT/serving-percore.json" 2>/dev/null || true
+fi
 
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
   buildkite-agent artifact upload "perf-result.json" || true
   buildkite-agent artifact upload "perf-sweep.json" || true
+  [ -f "$REPO_ROOT/serving-percore.json" ] && buildkite-agent artifact upload "serving-percore.json" || true
   # Record the commit this run actually executed against. perf-test-guard.sh
   # reads this (via last_perf_run_commit) to decide "new commit since last run"
   # — keyed off real runs, NOT the lint build that passes on every push.

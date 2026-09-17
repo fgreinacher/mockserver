@@ -145,6 +145,16 @@ export function handleSummary(data) {
       p95_ms: round(v['p(95)']),
       p99_ms: round(v['p(99)']),
       p999_ms: round(v['p(99.9)']),
+      // Completed-request count for THIS rung. Additive field (older/other
+      // consumers ignore unknown keys; the website renderer's key-presence check
+      // does not include it). It lets a downstream aggregator apply the repo's
+      // MIN_TAIL_SAMPLES rule (regression.js/proxy.js/streaming.js) and suppress a
+      // tail percentile a rung's own sample count cannot support — the per-core
+      // serving curve (perf-percore.sh, item 18) needs this because its low-C, low
+      // arrival-rate rungs can dip below that floor. The percentiles above are left
+      // UNSUPPRESSED here so the published knee/percentile charts keep their exact
+      // contract; suppression is applied by the consumer that needs it.
+      sample_count: round(count, 0),
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
       // Client-side drop count for this rung: > 0 means k6 could not keep up
       // with the offered arrival rate (VU starvation), so achieved_rps is bounded

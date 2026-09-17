@@ -1046,6 +1046,54 @@ at C = 16 the SUT wants more cores than the client has. On a 16 vCPU box you can
 the server and still have a k6. Either the top rung moves to a second box or the curve stops
 at C = 8 and says so.
 
+**Shipped 2026-09-17.** `.buildkite/scripts/steps/lib/perf-percore.sh` pins ONE SUT to C cores
+in {1, 2, 4, 8, 16} with `--cpuset-cpus` (item 17's lever — the JVM's `availableProcessors()`
+follows it, sizing `actionHandlerThreadCount()` and its derived pools) and drives the `sweep.js`
+ladder against it from a k6 on DISJOINT cores. Per C it records `peak_achieved_rps` (max achieved
+over CLIENT-SOUND rungs — client CPU headroom + low error; dropped iterations *with* client
+headroom are the server-saturation signal, `server_saturated`, NOT a client limit), the reused
+Finding-1 `healthy_ceiling_rps` (each C's sweep is fed to `lib/perf-website-figures.jq` and its
+headline read back — not a third copy of the rule), and `rps_per_core = healthy_ceiling_rps / C`.
+Behind `PERF_SERVING_PERCORE` (opt-in; it spins a fresh pinned SUT per core-count, so it is
+scheduled deliberately, not added to every daily run). Emits `.serving_percore` into `result.json`
++ a `serving-percore.json` artifact; `perf-test-compare.sh` reads `serving_percore.*` NON-GATING on
+the FULL baseline, with a `serving_percore_attempted` presence gate (attempted-but-empty → RED).
+
+**Pinning is PROVEN per C** (a one-shot probe container on the SAME image + cpuset prints
+`availableProcessors()`; a C whose probe != C fails loud), warm-up is a separate un-measured drive
+(the first-rung-vs-second p50 check flags residual warm-up bias rather than averaging it in),
+per-rung spread is p50/p95/p99 with MIN_TAIL_SAMPLES suppression, event-log residence
+(`maxLogEntries / achieved_rps`) is computed PER RUNG (it lengthens as rps falls), and readiness is
+`PUT /mockserver/status`.
+
+**C = 16 stops the curve, and the artifact says so** — on the 14-core measurement laptop it needs
+16 SUT + client + reserve cores; it is recorded in `.serving_percore.skipped[]` with a reason,
+`max_cores_measured`/`curve_complete_to_16` make the limit explicit, and compare surfaces
+"curve stops at C=8" in the annotation body. **But the more important limit is MEASURED, not
+skipped, and attributed with SUT-side CPU data rather than asserted:** the harness samples BOTH the
+k6 client and the SUT container CPU each rung. On a single Docker-Desktop-for-Mac box the peak
+throughput is flat at ~14.4k rps regardless of SUT cores (peak 14.7k C=1, 14.4k C=2, 14.5k C=4,
+14.4k C=8), and the SUT-CPU series shows WHY: at C = 1 the SUT saturates its core (peak-rung SUT
+CPU 101 % of its 100 % pin → `peak_limited_by: server`), but as cores grow the SUT tops out at a
+FALLING fraction of its pin — 60 % (C=2), 45 % (C=4), just **20 % at C=8** — i.e. the 8-core server
+sits ~80 % idle while throughput does not rise (`peak_limited_by: load_path_or_virtualization`).
+So the server demonstrably has spare CPU it cannot use. That rules out MockServer being **CPU**-bound
+at C >= 2, and strongly indicates the binding constraint is the containerised load path (k6 + the VM's
+virtualised network). Be precise about what is and is not established: a server-internal NON-CPU
+bottleneck — event-log disruptor backpressure, lock or stage serialisation, a GC-stall pattern — would
+also present as low SUT CPU with flat throughput, and the CPU series cannot exclude it. The C = 1
+datum weakens that alternative considerably (a server-internal serialisation cap would show below
+100 % CPU even at C = 1, and it sits at 101 %), but does not eliminate it. The distinction matters
+because the remedy differs: a load-path cap goes away on a bigger box, a serialisation cap follows
+you there. Only **C = 1 is a clean server-side figure** here (1 core ≈ 8k healthy / 14.7k peak of
+trivial `GET /simple`); C >= 2 is limited by something outside MockServer's CPU, and the re-run on a
+real box — which records `peak_limited_by` per C — is what will say which. The clean per-core serving curve therefore needs a DEDICATED load
+generator on a separate host (native-Linux, >= 16 cores) — the plan's "second box" fallback, needed
+from C = 2 upward on this box, not only at C = 16. The harness is correct and re-runnable there
+unchanged (env-overridable ladder/cores), and it now records `sut_cpu_frac_of_pin`, `sut_cpu_peak_pct`
+and `peak_limited_by` per C so the next run on a real box states which side bound each rung. What
+stopped short is the measurement box, not the method.
+
 #### 19. Close the loop from S3 back to the website
 
 *Cost: 2-3 days. Where: tail of the daily run, non-gating.*

@@ -236,6 +236,55 @@ The run set \`laptop_attempted: true\` but its \`.laptop\` block is missing dock
   fi
 fi
 
+# --- 2c. serving per-core PRESENCE assertion (item 18) ------------------------
+# Same two-axis split as the laptop gate: serving_percore VALUES stay notify-only,
+# but PRESENCE is loud. `serving_percore_attempted:true` means the producer tried
+# to run the per-core sweep; if `.serving_percore` then carries NEITHER a measured
+# point NOR a skip reason, the whole profile failed wholesale (docker/probe error,
+# k6 unreachable, a producer crash) and would otherwise vanish as a green build,
+# since compare is head-driven and zero serving_percore metrics trip nothing. A run
+# that legitimately measured nothing still records WHY under .skipped (e.g. every C
+# infeasible on a small box), so "points + skipped both empty" is the unambiguous
+# wholesale-failure signal. Runs AFTER the S3 persist so this never costs the k6
+# result its baseline place. A run with no `serving_percore_attempted` (profile
+# disabled — the default — or an older producer) is exempt.
+# PC_NOTE is BUILT here and folded into EXTRA below (like CLU_NOTE / STREAM_NOTE),
+# NOT echo'd — an echo lands only in the raw job log, so a dark skip would read as a
+# clean pass in the Buildkite annotation (the exact false green this note prevents).
+PC_NOTE=""
+if [ "$(jq -r '.serving_percore_attempted // false' "$RESULT")" = "true" ]; then
+  PC_POINTS="$(jq -r '(.serving_percore.points // []) | length' "$RESULT")"
+  PC_SKIPPED="$(jq -r '(.serving_percore.skipped // []) | length' "$RESULT")"
+  # Failure-typed skips (pin proof failed, SUT never ready, sweep produced no points)
+  # are RIG FAILURES; infeasible-typed skips (C too big for the box) are expected.
+  # A run that measured NOTHING is only benign when every skip is infeasibility —
+  # zero points with any failure skip (or with no skip at all) is a broken profile
+  # that must go RED, not a green build with the failure buried in stdout.
+  PC_FAIL_SKIPS="$(jq -r '[(.serving_percore.skipped // [])[] | select((.type // "") == "failure")] | length' "$RESULT")"
+  if [ "$PC_POINTS" = "0" ] && { [ "$PC_SKIPPED" = "0" ] || [ "$PC_FAIL_SKIPS" != "0" ]; }; then
+    FAIL_DETAIL="$(jq -r '[(.serving_percore.skipped // [])[] | select((.type // "") == "failure") | "C="+(.cores|tostring)+" ("+.reason+")"] | join("; ")' "$RESULT")"
+    annotate "error" ":no_entry: **Serving per-core profile FAILED to produce — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The run set \`serving_percore_attempted: true\` but its \`.serving_percore\` block measured NO core-count and its only skips (if any) are RIG FAILURES, not infeasibility${FAIL_DETAIL:+: **${FAIL_DETAIL}**}. That means the per-core sweep (\`lib/perf-percore.sh\`, item 18) failed wholesale — a docker/probe error, an unreachable k6, a pin-proof mismatch, or a producer crash — rather than measuring or DELIBERATELY skipping (infeasible) any core-count. Compare is head-driven, so a missing block would otherwise emit zero serving_percore metrics and pass GREEN with no signal — the false green this gate exists to stop. The run was still persisted to the baseline history above, so the k6 result is not lost. Notify-only serving_percore VALUES are unaffected — this gate is about PRESENCE, not regression."
+    exit 1
+  fi
+  # A curve that stops before C=16 is EXPECTED on a box that cannot host it, but it
+  # must be VISIBLE IN THE ANNOTATION, not silent (item 18): surface the ceiling of
+  # the ladder and any skipped rungs so an early-ending curve never reads as
+  # "measured to 16". Any failure-typed skip alongside measured points is called out
+  # separately (a rung broke mid-run even though others succeeded).
+  PC_MAXC="$(jq -r '.serving_percore.max_cores_measured // 0' "$RESULT")"
+  if [ "$PC_SKIPPED" != "0" ]; then
+    PC_SKIP_LIST="$(jq -r '[.serving_percore.skipped[] | "C="+(.cores|tostring)+" ["+(.type // "?")+"] ("+.reason+")"] | join("; ")' "$RESULT")"
+    PC_NOTE="
+
+:information_source: **Serving per-core curve stops at C=${PC_MAXC}** (item 18) — skipped: ${PC_SKIP_LIST}. Measured ${PC_POINTS} core-count(s). Infeasibility is the item-18 prerequisite (a box cannot pin C server cores AND leave the k6 client disjoint cores once C approaches the host core count)."
+    if [ "$PC_FAIL_SKIPS" != "0" ]; then
+      PC_NOTE="${PC_NOTE} :warning: ${PC_FAIL_SKIPS} of those are RIG FAILURES, not infeasibility — investigate."
+    fi
+  fi
+fi
+
 # --- 3. pull the last N PRIOR runs --------------------------------------------
 BASE_DIR="$WORK/baseline"; mkdir -p "$BASE_DIR"
 if [ -n "${PERF_BASELINE_DIR:-}" ]; then
@@ -416,6 +465,23 @@ def metrics:
       {name:("clustered_state."+$k+".p95_ratio"),          value:$v.p95_ratio,          bkey:"clustered_state.*.p95_ratio"},
       {name:("clustered_state."+$k+".throughput_ratio"),   value:$v.throughput_ratio,   bkey:"clustered_state.*.throughput_ratio"},
       {name:("clustered_state."+$k+".clustered_error_rate"),value:$v.clustered_error_rate,bkey:"clustered_state.*.clustered_error_rate"} ) ),
+  # item 18 — req/s per core for the SERVING path. One point per pinned core-count
+  # C under .serving_percore.points; keyed serving_percore.<C>c.<metric> so a
+  # wildcard bkey (serving_percore.*.<metric>) covers every C. NOT part of
+  # .behaviours, so it does not touch the k6 arm-set fingerprint; it rides the FULL
+  # baseline (the arm set here is the stable {1,2,4,8,...} core ladder). All
+  # NON-GATING (perf-budgets.json omits `gating`). A disabled/failed profile leaves
+  # .serving_percore {} (no points), so this emits ZERO metrics rather than a
+  # fail-closed missing-budget error — the wholesale-failure case is caught by the
+  # serving_percore_attempted PRESENCE gate below, not here. healthy_ceiling_rps
+  # (dir DOWN = a drop is worse) is the headline; rps_per_core (DOWN) is the
+  # per-core efficiency; peak_achieved_rps (DOWN) is the degraded-overload top;
+  # healthy_ceiling_p50_ms (UP) guards the latency at the ceiling.
+  ((.serving_percore.points // []) | .[] | ("serving_percore." + (.cores|tostring) + "c") as $pc |
+    ( {name:($pc+".healthy_ceiling_rps"),   value:.healthy_ceiling_rps,   bkey:"serving_percore.*.healthy_ceiling_rps"},
+      {name:($pc+".rps_per_core"),          value:.rps_per_core,          bkey:"serving_percore.*.rps_per_core"},
+      {name:($pc+".peak_achieved_rps"),     value:.peak_achieved_rps,     bkey:"serving_percore.*.peak_achieved_rps"},
+      {name:($pc+".healthy_ceiling_p50_ms"),value:.healthy_ceiling_p50_ms,bkey:"serving_percore.*.healthy_ceiling_p50_ms"} ) ),
   # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
   # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
   # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
@@ -670,7 +736,7 @@ fi
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}"
+${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did
