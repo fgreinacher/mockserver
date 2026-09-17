@@ -190,6 +190,8 @@ scripts/release/
 │                                 # publish group reads the new version
 ├── finalize.sh                   # SNAPSHOT bump + deploy to Sonatype
 ├── preflight.sh                  # verify host has docker + bash + git + jq …
+├── check-release-credentials.sh  # CI-agnostic credential liveness probe (gate)
+├── check-perf-preflight.sh       # CI-agnostic performance preflight probe (gate)
 └── components/                   # one script per deployable artifact
     ├── maven-central.sh          # build + sign + Sonatype + publish + wait
     ├── maven-plugin.sh           # mockserver-maven-plugin release
@@ -218,11 +220,13 @@ scripts/release/
 
 .buildkite/scripts/
 ├── release-runner.sh             # Buildkite adapter (meta-data → env vars);
-│                                 # `check-credentials` dispatches the gate below
+│                                 # `check-credentials` / `check-perf` dispatch the gates below
 ├── release-verify-totp.sh        # Buildkite-only TOTP gate
 └── steps/
-    └── check-release-credentials.sh  # preflight credential-gate wrapper
-                                       # (annotates + fails the build)
+    ├── check-release-credentials.sh  # preflight credential-gate wrapper
+    │                                  # (annotates + fails the build)
+    └── check-perf-preflight.sh       # preflight PERFORMANCE-gate wrapper
+                                       # (deepens clone, annotates + fails the build)
 
 .buildkite/release-pipeline.yml          # flat list of steps; each step is one
                                          # release-runner.sh invocation
@@ -234,6 +238,63 @@ credential for **liveness** (not mere presence) and runs automatically as a hard
 non-`soft_fail` gate in the preflight pipeline on the release queue — see
 [Release Preflight Credential Gate](../infrastructure/ci-cd.md#release-preflight-credential-gate).
 It is also worth running by hand before a release.
+
+### Release preflight performance gate
+
+`scripts/release/check-perf-preflight.sh` stops a release from publishing on top of
+a known, unreviewed performance regression — the "we shipped a 2× slowdown" failure.
+It reads **one S3 query** (the newest run for the branch in
+`s3://mockserver-ci-perf-results/runs/<branch>/`) and **one JSON read**
+(`mockserver-performance-test/perf-budgets.json`) and grades three things, fail-closed:
+
+- **Validity** — the newest run's own `.validity.valid` must be `true`. A run that
+  measured nothing trustworthy is not evidence.
+- **Recency** — keyed off **git ancestry, not wall-clock age**. The daily producer is
+  commit-gated (it writes no new object when master has not moved), so an object-age
+  rule would cry wolf on a quiet master. Instead the run's `.commit` must be an
+  ancestor-or-equal of the release commit: equal ⇒ this exact code was measured
+  (`CURRENT`); a proper ancestor with N intervening commits ⇒ the release contains
+  unmeasured code (`STALE`, blocks); not an ancestor ⇒ `DIVERGENT` (blocks).
+- **Budgets** — the **blocking set is read from the budget file's own `gating` field**,
+  never hard-coded. Only `gating:true` budgets can block. Those with an **absolute
+  floor** (today: `forward.error_rate`) are evaluated directly against the newest run;
+  a breach blocks unless a reviewed acceptance covers it. **Relative-only** gating
+  budgets (`microbench.*`, floor `null`) cannot be judged from a single run — they are
+  reported as a delegated seam, covered by the daily `perf-test-compare.sh` gate, the
+  baseline-freshness watchdog, and the recency check. `premerge_alloc.*` gating budgets
+  are per-merge (`perf-alloc-gate.sh`) and out of scope for a daily run object.
+
+Every state it cannot resolve is its **own loud outcome, never a silent pass**:
+`NO_SESSION`/`S3_DENIED` (exit 3), `NO_HISTORY` (exit 1), `MALFORMED`/`INDETERMINATE`
+(exit 2). Exit codes: `0` pass, `1` finding (INVALID/STALE/DIVERGENT/BREACH/NO_HISTORY),
+`2` indeterminate, `3` precondition. It runs automatically as a hard, non-`soft_fail`
+gate in the preflight pipeline **on the `perf` queue** — the queue whose IAM role holds
+the perf-results S3 grant. `--self-test` unit-tests the grader without AWS.
+
+**Accepted regressions** are recorded — the only way to silence a `BREACH` — in
+`mockserver-performance-test/perf-accepted-regressions.json` (a reviewed diff, owned by
+the perf owner). It MUST be a JSON array (a malformed or non-array file is a hard
+`INDETERMINATE`, so a hand-edit typo cannot silently disable budget evaluation). Each
+entry is `{ "metric", "commit", "max_value", "reason", "accepted_by", "date" }` and an
+entry silences a breach only when **all three bindings** hold:
+
+- `metric` equals the budget key (e.g. `forward.error_rate`);
+- `commit` is a **concrete ≥7-character prefix** of the run commit — there is **no
+  `"*"` wildcard**. Because a PASS requires the run commit to equal the release commit
+  (`CURRENT`), a commit-bound acceptance covers exactly **one release** and self-expires
+  when the next commit lands; a recurring flap must earn a fresh reviewed entry (that
+  forcing function is the point).
+- `max_value` is present and the breaching value is `<=` it, so an acceptance recorded
+  for a small breach cannot silence a later, worse one — a worse regression re-blocks.
+
+`reason`/`accepted_by`/`date` are required for the audit trail but do not gate. An absent
+file means nothing is accepted (the safe default).
+
+> **Queue note.** The gate runs on the `perf` queue, which is `max_size = 1`. If a
+> release preflight is triggered while the weekly ~2-hour soak occupies the agent, the
+> step **waits for the agent** rather than failing — the Buildkite `timeout_in_minutes`
+> counts execution time, not queue wait. An operator who sees "waiting for agent" should
+> check the perf pipeline schedule rather than assume the gate is stuck.
 
 ### SwaggerHub versioning convention
 
@@ -257,6 +318,13 @@ Uploading under the full patch version (e.g. `7.0.0`) rather than `7.0.x` leaves
 #     not mere presence. Read-only; never prints secret values. This is the same
 #     check the preflight pipeline runs automatically on the release queue.
 ./scripts/release/check-release-credentials.sh
+
+# 1c. (needs perf-results S3 read) Assert the current performance picture is
+#     acceptable before releasing: the newest perf run is valid, measures the
+#     release commit's history, and breaches no gating budget. Reads S3 + the
+#     committed budget file; fails closed on anything it cannot evaluate. This is
+#     the same gate the preflight pipeline runs automatically on the perf queue.
+./scripts/release/check-perf-preflight.sh
 
 # 2. Run the entire pipeline in dry-run mode. Builds everything, but skips
 #    every external write (npm publish, twine upload, S3 sync, gh release

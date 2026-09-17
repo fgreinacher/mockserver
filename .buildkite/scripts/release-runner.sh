@@ -36,6 +36,17 @@ if [[ "$STAGE" == "check-credentials" ]]; then
   exec "$REPO_ROOT/.buildkite/scripts/steps/check-release-credentials.sh"
 fi
 
+# ---- Preflight PERFORMANCE gate: dispatch BEFORE the release-stage plumbing --
+# Same reasoning as check-credentials above: the perf-preflight probe is a
+# CI-agnostic GATE, not a release stage. It translates no meta-data, writes no
+# cross-step outputs, and takes no --execute/--dry-run flag (the generic dispatch
+# below would append one). Hand it straight to its step wrapper, which deepens the
+# clone for the ancestry check, annotates a failure, and exits with the probe's own
+# status. `exec` so the wrapper's exit code becomes this runner's exit code.
+if [[ "$STAGE" == "check-perf" ]]; then
+  exec "$REPO_ROOT/.buildkite/scripts/steps/check-perf-preflight.sh"
+fi
+
 # ---- Translate Buildkite meta-data into env vars --------------------------
 get_meta() { buildkite-agent meta-data get "$1" 2>/dev/null || echo ""; }
 set_meta() { buildkite-agent meta-data set "$1" "$2"; }

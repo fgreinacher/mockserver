@@ -19,6 +19,20 @@ steps:
         agents:
           queue: "release"
 
+      # Performance preflight GATE — MUST run on the `perf` queue: it reads
+      # s3://mockserver-ci-perf-results, whose IAM grant lives on the perf queue
+      # role (the same grant perf-test-compare.sh uses), NOT on the release queue.
+      # A red build here means the newest perf run is stale relative to the release
+      # commit, invalid, or in an unaccepted gating-budget breach — i.e. the release
+      # would publish on top of an unreviewed performance regression (the class of
+      # failure this is meant to catch). Reads S3 + perf-budgets.json only; fails
+      # closed on anything it cannot evaluate. Deliberately NOT soft_fail.
+      - label: ":chart_with_downwards_trend: Release performance preflight gate (perf queue)"
+        command: ".buildkite/scripts/release-runner.sh check-perf"
+        timeout_in_minutes: 10
+        agents:
+          queue: "perf"
+
       - label: ":mag: Preflight (default queue)"
         command: ".buildkite/scripts/release-runner.sh preflight"
         timeout_in_minutes: 5

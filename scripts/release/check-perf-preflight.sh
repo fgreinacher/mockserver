@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+# Release-preflight PERFORMANCE gate for MockServer.
+#
+# WHY THIS EXISTS
+#   A release must not publish on top of a known, unreviewed performance
+#   regression, and must not publish "blind" on top of code no perf run has ever
+#   measured. The daily perf pipeline already stores every valid run in S3
+#   (s3://<bucket>/runs/<branch>/<iso>__<sha>.json) and the committed, reviewed
+#   budgets live in mockserver-performance-test/perf-budgets.json. This gate reads
+#   the newest successful run for the release branch and the budget file, and
+#   refuses the release when the performance picture is stale, invalid, or in an
+#   unaccepted gating-budget breach. See docs/plans/performance-programme.md ->
+#   "Mechanism 1: the release-preflight gate needs no human" and
+#   "What should block a merge".
+#
+# THE 8.0.0 LESSON THIS FOLLOWS
+#   8.0.0 half-published because a check confirmed a credential *existed* without
+#   proving it could *authenticate*, and a state that could not be proven was
+#   reported as a pass. This gate applies the same grading discipline as its
+#   sibling scripts/release/check-release-credentials.sh: existence != validity !=
+#   capability, and an UNPROVABLE state is its own loud outcome, NEVER a green pass.
+#
+# WHAT IT CHECKS (against the newest successful run for the branch)
+#   1. VALIDITY   the run's own `.validity.valid` must be true. A run that could
+#                 not measure anything trustworthy is not evidence.
+#   2. RECENCY    keyed off GIT ANCESTRY, not wall-clock object age. The daily
+#                 producer is COMMIT-GATED (it writes no new object when master
+#                 has not moved), so object age cries wolf on a quiet master — the
+#                 exact trap the sibling baseline-freshness watchdog documents. So
+#                 instead: the run's `.commit` must be an ancestor-or-equal of the
+#                 release commit. Equal => this exact code was measured (CURRENT).
+#                 A proper ancestor => the release contains N commits no perf run
+#                 measured (STALE, blocks; remedy: run perf on the release commit,
+#                 or record an acceptance). Not an ancestor => the newest run is on
+#                 a different history than the release (DIVERGENT, blocks).
+#   3. BUDGETS    for every budget marked `gating:true` in perf-budgets.json:
+#                 - ABSOLUTE-floored gating budgets are evaluated DIRECTLY against
+#                   this run's value (today: forward.error_rate). A breach BLOCKS
+#                   unless an acceptance record covers it. A gating metric that is
+#                   absent from the run (e.g. the forward guard did not run) is
+#                   INDETERMINATE (fail-closed), never skipped.
+#                 - RELATIVE-only gating budgets (floor:null, e.g. microbench.*
+#                   time/alloc per op) CANNOT be judged from a single run — they
+#                   need the rolling baseline the daily compare step owns. This gate
+#                   does NOT recompute that math (it belongs to perf-test-compare.sh);
+#                   it reports them as a DELEGATED SEAM and says who covers them,
+#                   rather than passing them silently. See "RESIDUAL SEAM" below.
+#                 - premerge_alloc.* gating budgets are per-MERGE (perf-alloc-gate.sh)
+#                   and are structurally not part of a daily run object, so they are
+#                   explicitly out of scope here (reported as such, not a finding).
+#
+# BLOCKING vs ADVISORY — DERIVED, NOT ASSUMED
+#   The blocking set is read from the budget file's own `gating` field. Only
+#   `gating:true` budgets can block; a `gating:false` / gating-absent budget is
+#   notify-only (it has not yet earned a history-derived budget — the programme's
+#   "10 runs before a budget" rule) and is NEVER consulted for a release block.
+#   The gate cannot be "wrong to block on a notify-only metric" because it reads
+#   the same source of truth the daily compare step does.
+#
+# RESIDUAL SEAM (stated, not hidden — the 8.0.0 discipline)
+#   A RELATIVE gating regression (a microbench time/alloc slowdown vs baseline)
+#   is not visible from a single S3 object, so this gate does not evaluate it.
+#   Coverage for that class is: (a) the daily perf-test-compare.sh exits non-zero
+#   on such a regression, turning the daily build red; (b) the baseline-freshness
+#   watchdog (pipeline-infra.yml) fails unless the daily producer's last completed
+#   scheduled build PASSED; and (c) this gate's RECENCY check blocks a release whose
+#   commit the newest run never measured. This gate deliberately reads only S3 +
+#   the budget file (no Buildkite API, no baseline recompute) to stay simple and
+#   locally runnable; the seam is recorded here rather than papered over.
+#
+# OUTCOMES, KEPT DISTINCT (this is the whole point)
+#   PASS         valid + current-or-not-stale + no unaccepted gating breach
+#   INVALID      newest run's validity is false/absent          (finding)
+#   STALE        newest run measured a proper ancestor of the release commit;
+#                the release contains commits never measured    (finding)
+#   DIVERGENT    newest run's commit is not an ancestor of the release commit
+#                (measured a different line of development)      (finding)
+#   BREACH       a gating ABSOLUTE budget is breached, unaccepted (finding)
+#   NO_HISTORY   no perf runs exist for the branch at all        (finding)
+#   MALFORMED    the newest run object is unparseable / missing required fields
+#   INDETERMINATE a gating metric could not be evaluated, git ancestry could not
+#                be resolved, or the budget file is missing/corrupt (fail-closed)
+#   S3_DENIED    an AWS session exists but the bucket could not be listed
+#   NO_SESSION   no usable AWS session, so nothing could be read
+#
+# EXIT CODES (aligned with scripts/release/check-release-credentials.sh)
+#   0  PASS
+#   1  a FINDING — INVALID / STALE / DIVERGENT / BREACH / NO_HISTORY
+#   2  INDETERMINATE / MALFORMED — could not conclude; fail-closed, never a pass
+#   3  precondition — NO_SESSION / S3_DENIED (nothing could be read)
+#   64 bad arguments (a wiring bug must never silently no-op into a false green)
+#
+# INPUTS (env vars only — this script is CI-agnostic, see release-principles.md #1)
+#   PERF_RESULTS_BUCKET            S3 bucket (default mockserver-ci-perf-results)
+#   PERF_PREFLIGHT_BRANCH          run-history branch (default master)
+#   PERF_PREFLIGHT_RELEASE_COMMIT  release candidate commit for the recency check
+#                                  (default: git rev-parse HEAD in the repo)
+#   PERF_BUDGETS_FILE              default mockserver-performance-test/perf-budgets.json
+#   PERF_ACCEPTED_REGRESSIONS_FILE default mockserver-performance-test/perf-accepted-regressions.json
+#                                  (ABSENT = nothing accepted — the safe default)
+#   AWS_REGION                     default eu-west-2
+#   PERF_PREFLIGHT_LOCAL_DIR       TEST-ONLY: read run *.json from this directory
+#                                  instead of S3 (newest = last lexical name), so the
+#                                  full grading path runs with no AWS. Never set in CI.
+#   PERF_PREFLIGHT_AWS_BIN         aws binary (default aws) — test injection point
+#
+# USAGE
+#   scripts/release/check-perf-preflight.sh [--self-test]
+#   AWS auth comes from the ambient environment, like the other release scripts.
+
+set -uo pipefail
+
+# ---------------------------------------------------------------------------
+# Config / arguments
+# ---------------------------------------------------------------------------
+BUCKET="${PERF_RESULTS_BUCKET:-mockserver-ci-perf-results}"
+BRANCH="${PERF_PREFLIGHT_BRANCH:-master}"
+REGION="${AWS_REGION:-eu-west-2}"
+AWS_BIN="${PERF_PREFLIGHT_AWS_BIN:-aws}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-budgets.json}"
+ACCEPT_FILE="${PERF_ACCEPTED_REGRESSIONS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-accepted-regressions.json}"
+
+RUN_SELF_TEST=false
+for arg in "$@"; do
+  case "$arg" in
+    --self-test) RUN_SELF_TEST=true ;;
+    -h|--help)   awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
+    *) echo "ERROR: unknown argument: $arg" >&2; exit 64 ;;
+  esac
+done
+
+log()  { printf '%s\n' "$*"; }
+err()  { printf '%s\n' "$*" >&2; }
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/perf-preflight.XXXXXX")"
+trap 'rm -rf "$WORK"' EXIT
+
+# ---------------------------------------------------------------------------
+# Pure grading helpers (unit-tested by --self-test; no AWS, no network)
+# ---------------------------------------------------------------------------
+
+# classify_budgets <run.json> <budgets.json> <accept.json|-> <run_commit>
+# Emits one TSV row per gating budget: STATUS<TAB>bkey<TAB>detail
+# STATUS in: OK | BREACH | ACCEPTED | ABSENT | UNKNOWN_MAPPING | SKIP_PREMERGE | RELATIVE_DELEGATED
+# Non-gating budgets are ignored entirely (they can never block).
+classify_budgets() {
+  local run="$1" budgets="$2" accept="$3" commit="$4"
+  local acc_arg='[]'
+  if [[ "$accept" != "-" && -f "$accept" ]]; then
+    acc_arg="$(cat "$accept")"
+  fi
+  jq -r \
+    --slurpfile run "$run" \
+    --argjson accept "$acc_arg" \
+    --arg commit "$commit" '
+    # Locate a gating ABSOLUTE budget metric value in the run object. Only the
+    # keys this gate has been TAUGHT resolve; an untaught absolute gating key
+    # returns "unknown" so it fails closed (INDETERMINATE) rather than passing.
+    def gval($bkey):
+      ($run[0]) as $r |
+      if   $bkey == "forward.error_rate" then { known:true, value:($r.forward_guard.error_rate) }
+      else { known:false, value:null } end;
+
+    # Does an acceptance record cover this metric+commit+VALUE? A record matches
+    # only when ALL of these hold (the only way to silence a breach):
+    #   - .metric == the budget key
+    #   - .commit is a CONCRETE >=7-char prefix of the run commit. There is NO
+    #     wildcard: a PASS requires the run commit == release commit (CURRENT), so a
+    #     commit-bound acceptance covers exactly ONE release and self-expires when
+    #     the next commit lands — a recurring flap must earn a fresh reviewed entry.
+    #   - .max_value is present AND the breaching value is <= it, so an acceptance
+    #     recorded for a small breach cannot silence a later, worse one (even a
+    #     re-run at the same commit): a worse regression re-blocks.
+    # TYPE-SAFE by construction: jq total ordering puts every number before every
+    # string, so `number <= "0.1"` is UNCONDITIONALLY true — a string max_value (or a
+    # non-string commit reaching startswith) would silently defeat the guard. So each
+    # comparison asserts the operand type FIRST, and only then compares. This is
+    # defence-in-depth with the file-boundary pre-validation, which rejects the same
+    # mistyped fields loudly.
+    def accepted($bkey; $value):
+      ($accept // []) | any(
+        (.commit // "") as $c |
+        (.metric == $bkey)
+        and (($c | type) == "string") and (($c | length) >= 7)
+        and ($commit | startswith($c))
+        and ((.max_value | type) == "number")
+        and ($value <= .max_value)
+      );
+
+    # NOTE: .budgets can carry non-budget entries whose value is an ARRAY (e.g.
+    # "_comment_streaming"), so guard on object type before indexing .gating.
+    (.budgets // {}) | to_entries[]
+    | select((.value | type) == "object" and .value.gating == true)
+    | .key as $bkey | .value as $b
+    | if ($bkey | startswith("premerge_alloc.")) then
+        "SKIP_PREMERGE\t\($bkey)\tper-merge allocation gate (perf-alloc-gate.sh); not part of a daily run object"
+      elif ($b.floor == null) then
+        # Relative-only gating budget: not judgeable from a single run.
+        "RELATIVE_DELEGATED\t\($bkey)\trelative (floor:null) — needs the rolling baseline; covered by daily compare + freshness watchdog + recency check"
+      else
+        gval($bkey) as $g
+        | if ($g.known | not) then
+            "UNKNOWN_MAPPING\t\($bkey)\tgating absolute budget with no value mapping in this gate — teach check-perf-preflight.sh this metric (fail-closed)"
+          elif ($g.value == null) then
+            "ABSENT\t\($bkey)\tgating absolute budget but the run has no value for it (e.g. producer did not run this arm)"
+          elif (($g.value | type) != "number") then
+            # A non-numeric run value would make `number vs string` ordering lie; fail closed.
+            "ABSENT\t\($bkey)\tgating value is non-numeric (\($g.value | type)) — cannot compare safely (fail-closed)"
+          elif (($b.floor | type) != "number") then
+            # A non-numeric floor (budget-file typo) would make `value > "0.01"` read
+            # false and silence a real breach — the same total-ordering trap. Fail closed.
+            "UNKNOWN_MAPPING\t\($bkey)\tbudget floor is non-numeric (\($b.floor | type)) — cannot compare safely (fail-closed)"
+          else
+            ($g.value) as $v | ($b.floor) as $f | ($b.dir) as $dir
+            | (if $dir == "down" then ($v < $f) else ($v > $f) end) as $breached
+            | if $breached then
+                (if accepted($bkey; $v) then "ACCEPTED" else "BREACH" end) as $st
+                | "\($st)\t\($bkey)\thead=\($v) floor=\($f) dir=\($dir)"
+              else
+                "OK\t\($bkey)\thead=\($v) floor=\($f) dir=\($dir)"
+              end
+          end
+      end
+    ' "$budgets"
+}
+
+# ---------------------------------------------------------------------------
+# Self-test: prove the grader tells good / bad / unprovable apart. No AWS.
+# ---------------------------------------------------------------------------
+run_self_test() {
+  log "Self-test: does the perf-preflight grader distinguish good / bad / unprovable?"
+  local fails=0 d="$WORK/selftest"
+  mkdir -p "$d"
+
+  # A minimal budget file with the real gating shapes.
+  cat > "$d/budgets.json" <<'JSON'
+{ "budgets": {
+  "forward.error_rate":              { "dir":"up",   "min_pct":0, "floor":0.01, "gating":true },
+  "microbench.*.time_per_op":        { "dir":"up",   "min_pct":0.05, "floor":null, "gating":true },
+  "premerge_alloc.MatchingBenchmark.alloc_bytes_per_op": { "dir":"up","min_pct":0,"floor":1850000,"gating":true },
+  "behaviours.*.error_rate":         { "dir":"up",   "min_pct":0, "floor":0.005, "gating":false }
+} }
+JSON
+
+  expect_status() { # label expected-status bkey rows
+    local label="$1" want="$2" bkey="$3" rows="$4" got
+    got="$(printf '%s\n' "$rows" | awk -F'\t' -v k="$bkey" '$2==k{print $1; exit}')"
+    if [[ "$got" == "$want" ]]; then
+      echo "  ✓ $label -> $got"
+    else
+      echo "  ✗ $label -> ${got:-<none>} (expected $want)"; fails=$((fails+1))
+    fi
+  }
+
+  # 1) forward.error_rate within floor -> OK
+  echo '{"commit":"abc123def456","forward_guard":{"error_rate":0.002}}' > "$d/ok.json"
+  local rows_ok; rows_ok="$(classify_budgets "$d/ok.json" "$d/budgets.json" - abc123def456)"
+  expect_status "forward.error_rate 0.002 <= 0.01" OK "forward.error_rate" "$rows_ok"
+  # relative gating metric is delegated, never OK/BREACH
+  expect_status "microbench relative gating" RELATIVE_DELEGATED "microbench.*.time_per_op" "$rows_ok"
+  # premerge is out of scope for a daily run object
+  expect_status "premerge_alloc out of scope" SKIP_PREMERGE "premerge_alloc.MatchingBenchmark.alloc_bytes_per_op" "$rows_ok"
+
+  # 2) forward.error_rate over floor, no acceptance -> BREACH
+  echo '{"commit":"abc123def456","forward_guard":{"error_rate":0.5}}' > "$d/breach.json"
+  local rows_breach; rows_breach="$(classify_budgets "$d/breach.json" "$d/budgets.json" - abc123def456)"
+  expect_status "forward.error_rate 0.5 > 0.01" BREACH "forward.error_rate" "$rows_breach"
+
+  # 3) same breach WITH a commit-bound acceptance whose value ceiling covers it -> ACCEPTED
+  echo '[{"metric":"forward.error_rate","commit":"abc123d","max_value":0.6,"reason":"known infra flap","accepted_by":"perf-owner","date":"2026-09-17"}]' > "$d/accept.json"
+  local rows_acc; rows_acc="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept.json" abc123def456)"
+  expect_status "breach with commit+ceiling acceptance" ACCEPTED "forward.error_rate" "$rows_acc"
+
+  # 4) an acceptance for a DIFFERENT commit must NOT silence the breach
+  echo '[{"metric":"forward.error_rate","commit":"9999999","max_value":0.6,"reason":"other","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-wrong.json"
+  local rows_wrong; rows_wrong="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-wrong.json" abc123def456)"
+  expect_status "acceptance for wrong commit" BREACH "forward.error_rate" "$rows_wrong"
+
+  # 4a) a WILDCARD "*" commit is no longer honoured -> BREACH (MAJOR 2: no blanket bypass)
+  echo '[{"metric":"forward.error_rate","commit":"*","max_value":0.6,"reason":"blanket","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-star.json"
+  local rows_star; rows_star="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-star.json" abc123def456)"
+  expect_status "wildcard '*' acceptance rejected" BREACH "forward.error_rate" "$rows_star"
+
+  # 4b) a value EXCEEDING the acceptance ceiling must re-block -> BREACH (breach 0.5 > ceiling 0.1)
+  echo '[{"metric":"forward.error_rate","commit":"abc123d","max_value":0.1,"reason":"small flap only","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-low.json"
+  local rows_low; rows_low="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-low.json" abc123def456)"
+  expect_status "value above acceptance ceiling" BREACH "forward.error_rate" "$rows_low"
+
+  # 4c) an acceptance WITHOUT a max_value ceiling is incomplete -> BREACH (mandatory ceiling)
+  echo '[{"metric":"forward.error_rate","commit":"abc123d","reason":"no ceiling","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-noceil.json"
+  local rows_noceil; rows_noceil="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-noceil.json" abc123def456)"
+  expect_status "acceptance without max_value" BREACH "forward.error_rate" "$rows_noceil"
+
+  # 4d) a STRING max_value must NOT silence a breach -> BREACH. jq total-ordering makes
+  #     `number <= "0.1"` always true; the type guard defeats this quoting typo.
+  echo '[{"metric":"forward.error_rate","commit":"abc123d","max_value":"0.1","reason":"typo","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-strceil.json"
+  local rows_strceil; rows_strceil="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-strceil.json" abc123def456)"
+  expect_status "string max_value (quoting typo)" BREACH "forward.error_rate" "$rows_strceil"
+
+  # 4e) a numeric max_value that covers the breach still ACCEPTS (control for 4d)
+  echo '[{"metric":"forward.error_rate","commit":"abc123d","max_value":0.6,"reason":"ok","accepted_by":"x","date":"2026-09-17"}]' > "$d/accept-numceil.json"
+  local rows_numceil; rows_numceil="$(classify_budgets "$d/breach.json" "$d/budgets.json" "$d/accept-numceil.json" abc123def456)"
+  expect_status "numeric max_value control" ACCEPTED "forward.error_rate" "$rows_numceil"
+
+  # 5) gating absolute metric ABSENT from the run -> ABSENT (fail-closed), not OK
+  echo '{"commit":"abc123def456","forward_guard":{"status":"infra_error"}}' > "$d/absent.json"
+  local rows_absent; rows_absent="$(classify_budgets "$d/absent.json" "$d/budgets.json" - abc123def456)"
+  expect_status "gating metric absent" ABSENT "forward.error_rate" "$rows_absent"
+
+  # 6) an untaught gating ABSOLUTE budget -> UNKNOWN_MAPPING (fail-closed)
+  cat > "$d/budgets-unknown.json" <<'JSON'
+{ "budgets": { "some.new.gating_metric": { "dir":"up","min_pct":0,"floor":5,"gating":true } } }
+JSON
+  echo '{"commit":"abc123def456"}' > "$d/any.json"
+  local rows_unknown; rows_unknown="$(classify_budgets "$d/any.json" "$d/budgets-unknown.json" - abc123def456)"
+  expect_status "untaught gating absolute budget" UNKNOWN_MAPPING "some.new.gating_metric" "$rows_unknown"
+
+  # 7) dir:down gating budget (throughput-shaped) breaches when BELOW floor
+  cat > "$d/budgets-down.json" <<'JSON'
+{ "budgets": { "forward.error_rate": { "dir":"down","min_pct":0,"floor":0.01,"gating":true } } }
+JSON
+  echo '{"commit":"abc123def456","forward_guard":{"error_rate":0.5}}' > "$d/downhigh.json"
+  local rows_down; rows_down="$(classify_budgets "$d/downhigh.json" "$d/budgets-down.json" - abc123def456)"
+  expect_status "dir:down 0.5 not below floor 0.01" OK "forward.error_rate" "$rows_down"
+
+  if [[ $fails -eq 0 ]]; then
+    log "Self-test PASSED — the grader distinguishes ok, breach, accepted, absent, unmapped"
+    return 0
+  fi
+  err "Self-test FAILED: $fails case(s) misclassified"
+  return 1
+}
+
+require_cmd() { command -v "$1" >/dev/null 2>&1 || { err "ERROR: required tool not found: $1"; exit 3; }; }
+
+require_cmd jq
+require_cmd git
+
+if [[ "$RUN_SELF_TEST" == "true" ]]; then
+  run_self_test
+  exit $?
+fi
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+log "--- Release-preflight performance gate"
+log "    bucket=s3://${BUCKET}  branch=${BRANCH}  budgets=${BUDGETS_FILE}"
+
+# Budget file must exist and parse, or we cannot know what gates. Fail-closed.
+if [[ ! -f "$BUDGETS_FILE" ]] || ! jq -e '.budgets' "$BUDGETS_FILE" >/dev/null 2>&1; then
+  err "INDETERMINATE: budget file missing or unparseable: $BUDGETS_FILE"
+  err "Cannot know which metrics gate a release, so this fails closed (not a pass)."
+  exit 2
+fi
+
+# Pre-validate the acceptance file BEFORE it is fed to the grader. It is a
+# hand-maintained JSON file, so an empty file, a trailing comma, or a typo is
+# entirely plausible — and a malformed file handed to jq via --argjson would abort
+# the grader for every budget, silently emptying its output. Left unchecked, a real
+# breach would then never be evaluated and a CURRENT run would pass (the 8.0.0
+# present-but-dead-input failure, reproduced inside this gate).
+#
+# Validate the LOAD-BEARING per-entry types, not merely "is an array": each entry must
+# carry a string `metric`, a string `commit` of >=7 chars, and a NUMERIC `max_value`.
+# A string max_value (`"0.1"` instead of 0.1) would otherwise defeat the value ceiling
+# — jq's total ordering makes `number <= "0.1"` unconditionally true — so a quoting
+# typo could silence any breach. Checking only the top-level array type (the easy
+# property) while leaving the field types (the load-bearing property) unchecked is
+# exactly the failure shape this programme keeps finding, so both layers assert it.
+if [[ -f "$ACCEPT_FILE" ]]; then
+  if ! jq -e 'type == "array"' "$ACCEPT_FILE" >/dev/null 2>&1; then
+    err "INDETERMINATE: acceptance file exists but is not a parseable JSON array: $ACCEPT_FILE"
+    err "A malformed acceptance file must NOT silently disable budget evaluation."
+    err "Fail-closed: fix or remove it, then re-run. This is NOT a pass."
+    exit 2
+  fi
+  if ! jq -e 'all(.[];
+        (type == "object")
+        and ((.metric | type) == "string")
+        and ((.commit | type) == "string") and ((.commit | length) >= 7)
+        and ((.max_value | type) == "number"))' "$ACCEPT_FILE" >/dev/null 2>&1; then
+    err "INDETERMINATE: an acceptance entry in $ACCEPT_FILE is malformed."
+    err "Each entry MUST have: a string \"metric\", a string \"commit\" (>=7 chars), and a NUMERIC \"max_value\""
+    err "(a quoted \"max_value\" is the trap — a string ceiling would silently silence any breach)."
+    err "Fail-closed: fix the entry, then re-run. This is NOT a pass."
+    exit 2
+  fi
+fi
+
+# --- 1. Fetch the newest run for the branch ---------------------------------
+NEWEST="$WORK/newest.json"
+NEWEST_KEY=""
+if [[ -n "${PERF_PREFLIGHT_LOCAL_DIR:-}" ]]; then
+  # TEST-ONLY local mode: newest = last lexical *.json in the dir (ISO-named,
+  # exactly like the S3 keys), so the full grading path runs with no AWS.
+  log "    (local-dir mode: ${PERF_PREFLIGHT_LOCAL_DIR})"
+  # Run files are ISO-named (like the S3 keys), so a lexical sort is chronological.
+  # shellcheck disable=SC2012  # controlled, alphanumeric filenames; mirrors the S3 awk|sort path
+  NEWEST_KEY="$(ls -1 "${PERF_PREFLIGHT_LOCAL_DIR}"/*.json 2>/dev/null | sort | tail -n1 || true)"
+  if [[ -z "$NEWEST_KEY" ]]; then
+    err "NO_HISTORY: no run *.json files in ${PERF_PREFLIGHT_LOCAL_DIR}"
+    err "A release cannot be judged with zero performance history. This is a finding, not a pass."
+    exit 1
+  fi
+  cp "$NEWEST_KEY" "$NEWEST"
+else
+  # Real path: require an AWS session (precondition), then list + fetch newest.
+  if ! "$AWS_BIN" sts get-caller-identity >/dev/null 2>&1; then
+    err "NO_SESSION: no usable AWS session (aws sts get-caller-identity failed)."
+    err "Nothing could be read from S3, so the performance picture is UNKNOWN."
+    err "Fail-closed: re-authenticate (e.g. aws sso login) and re-run. This is NOT a pass."
+    exit 3
+  fi
+  log "    AWS session OK: $("$AWS_BIN" sts get-caller-identity --query Arn --output text 2>/dev/null)"
+  LS_ERR="$WORK/ls.err"
+  if ! "$AWS_BIN" s3 ls "s3://${BUCKET}/runs/${BRANCH}/" --recursive --region "$REGION" >"$WORK/ls.out" 2>"$LS_ERR"; then
+    if grep -qiE 'AccessDenied|not authorized|Forbidden' "$LS_ERR"; then
+      err "S3_DENIED: the AWS session cannot list s3://${BUCKET}/runs/${BRANCH}/ (access denied)."
+      err "Distinct from NO_SESSION: a session exists but lacks the perf-results grant."
+      err "Detail: $(head -c 300 "$LS_ERR")"
+      exit 3
+    fi
+    err "S3_DENIED: could not list s3://${BUCKET}/runs/${BRANCH}/ (transport/bucket error)."
+    err "Detail: $(head -c 300 "$LS_ERR")"
+    exit 3
+  fi
+  NEWEST_KEY="$(awk '{print $4}' "$WORK/ls.out" | grep -E '\.json$' | sort | tail -n1 || true)"
+  if [[ -z "$NEWEST_KEY" ]]; then
+    err "NO_HISTORY: no perf runs exist under s3://${BUCKET}/runs/${BRANCH}/."
+    err "A release cannot be judged with zero performance history. This is a finding, not a pass."
+    exit 1
+  fi
+  if ! "$AWS_BIN" s3 cp "s3://${BUCKET}/${NEWEST_KEY}" "$NEWEST" --only-show-errors --region "$REGION" 2>"$WORK/cp.err"; then
+    err "INDETERMINATE: could not download the newest run s3://${BUCKET}/${NEWEST_KEY}."
+    err "Detail: $(head -c 300 "$WORK/cp.err")"
+    exit 2
+  fi
+fi
+
+log "    newest run: ${NEWEST_KEY}"
+
+# --- 2. Parse required fields (MALFORMED if unusable) -----------------------
+if ! jq -e '.' "$NEWEST" >/dev/null 2>&1; then
+  err "MALFORMED: the newest run object is not valid JSON: ${NEWEST_KEY}"
+  err "Fail-closed: a run that cannot be parsed proves nothing. This is NOT a pass."
+  exit 2
+fi
+RUN_COMMIT="$(jq -r '.commit // empty' "$NEWEST")"
+RUN_VALID="$(jq -r '.validity.valid // "absent"' "$NEWEST")"
+RUN_BRANCH="$(jq -r '.branch // empty' "$NEWEST")"
+RUN_TS="$(jq -r '.timestamp_utc // empty' "$NEWEST")"
+if [[ -z "$RUN_COMMIT" ]]; then
+  err "MALFORMED: the newest run has no .commit field: ${NEWEST_KEY}"
+  err "Fail-closed: recency cannot be judged without the measured commit. NOT a pass."
+  exit 2
+fi
+log "    run commit=${RUN_COMMIT:0:12} branch=${RUN_BRANCH:-?} ts=${RUN_TS:-?} validity=${RUN_VALID}"
+
+# Accumulate findings/indeterminates; report ALL, then exit on the worst class.
+declare -a FINDINGS=() INDETS=() NOTES=()
+
+# --- 3. VALIDITY ------------------------------------------------------------
+if [[ "$RUN_VALID" != "true" ]]; then
+  FAILED="$(jq -r '(.validity.checks // []) | map(select(.ok != true) | "\(.name): \(.detail)") | join("; ")' "$NEWEST" 2>/dev/null)"
+  FINDINGS+=("INVALID: newest run's validity is '${RUN_VALID}' — it measured nothing trustworthy. Failing checks: ${FAILED:-<no validity block>}")
+else
+  NOTES+=("VALIDITY ok: .validity.valid == true")
+fi
+
+# --- 4. RECENCY (git ancestry, not wall-clock) ------------------------------
+REL_COMMIT="${PERF_PREFLIGHT_RELEASE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+if [[ -z "$REL_COMMIT" ]]; then
+  INDETS+=("INDETERMINATE (recency): could not resolve the release commit (set PERF_PREFLIGHT_RELEASE_COMMIT or run inside the release checkout).")
+elif ! git -C "$REPO_ROOT" cat-file -e "${REL_COMMIT}^{commit}" 2>/dev/null; then
+  INDETS+=("INDETERMINATE (recency): release commit ${REL_COMMIT:0:12} is not present in this clone (shallow/unfetched) — cannot judge ancestry.")
+elif ! git -C "$REPO_ROOT" cat-file -e "${RUN_COMMIT}^{commit}" 2>/dev/null; then
+  INDETS+=("INDETERMINATE (recency): the newest run's commit ${RUN_COMMIT:0:12} is not present in this clone — cannot judge ancestry against the release. Fetch it, or run a fresh perf run on the release commit.")
+else
+  REL_FULL="$(git -C "$REPO_ROOT" rev-parse "${REL_COMMIT}^{commit}")"
+  RUN_FULL="$(git -C "$REPO_ROOT" rev-parse "${RUN_COMMIT}^{commit}")"
+  if [[ "$RUN_FULL" == "$REL_FULL" ]]; then
+    NOTES+=("RECENCY ok (CURRENT): the newest perf run measured the exact release commit ${REL_FULL:0:12}.")
+  elif git -C "$REPO_ROOT" merge-base --is-ancestor "$RUN_FULL" "$REL_FULL" 2>/dev/null; then
+    N="$(git -C "$REPO_ROOT" rev-list --count "${RUN_FULL}..${REL_FULL}" 2>/dev/null || echo '?')"
+    FINDINGS+=("STALE: the newest perf run measured ${RUN_FULL:0:12}, an ancestor of the release commit ${REL_FULL:0:12}, with ${N} commit(s) in between that NO perf run has measured. The release could contain an unmeasured regression. Remedy: run the daily perf pipeline on the release commit, or record an acceptance in ${ACCEPT_FILE}.")
+  else
+    FINDINGS+=("DIVERGENT: the newest perf run's commit ${RUN_FULL:0:12} is NOT an ancestor of the release commit ${REL_FULL:0:12} — it measured a different line of development. The stored baseline does not describe this release.")
+  fi
+fi
+
+# --- 5. BUDGETS (gating only; blocking set derived from the file) -----------
+# FAIL CLOSED on a grader failure. The committed budget file ALWAYS has gating
+# entries (at least forward.error_rate, plus the delegated microbench.* and premerge
+# families), so an empty or short grader result cannot be a benign "nothing to gate"
+# — it means the grader ERRORED (a malformed input, a jq fault) and a real breach was
+# never evaluated. So: count the gating budgets the file declares, run the grader
+# capturing its exit status (NOT `|| true`, which swallowed the error the review
+# caught), and require exactly one row per gating budget. Any non-zero exit, a
+# zero-gating budget file, or a row-count shortfall is INDETERMINATE — never a pass.
+EXPECTED_GATING="$(jq '[ (.budgets // {}) | to_entries[] | select((.value|type)=="object" and .value.gating==true) ] | length' "$BUDGETS_FILE" 2>/dev/null || echo 0)"
+BUDGET_ROWS="$(classify_budgets "$NEWEST" "$BUDGETS_FILE" "$ACCEPT_FILE" "$RUN_COMMIT")"; CB_RC=$?
+ROW_COUNT="$(printf '%s' "$BUDGET_ROWS" | grep -c . || true)"
+gate_ok=0 gate_breach=0 gate_accepted=0 gate_absent=0 gate_unknown=0 gate_rel=0 gate_premerge=0
+if [[ "$CB_RC" -ne 0 ]]; then
+  INDETS+=("INDETERMINATE (budget): the gating-budget grader exited non-zero (rc=${CB_RC}) — it could not evaluate the budgets (malformed input or jq fault). Fail-closed; a real breach may not have been checked.")
+elif [[ "${EXPECTED_GATING:-0}" -eq 0 ]]; then
+  INDETS+=("INDETERMINATE (budget): ${BUDGETS_FILE} declares NO gating:true budgets — this cannot be the committed budget file (which always gates at least forward.error_rate). Fail-closed rather than pass with nothing enforced.")
+elif [[ "$ROW_COUNT" -ne "$EXPECTED_GATING" ]]; then
+  INDETS+=("INDETERMINATE (budget): the grader produced ${ROW_COUNT} row(s) for ${EXPECTED_GATING} gating budget(s) — it dropped rows (malformed input or jq fault). Fail-closed rather than pass on a partial evaluation.")
+else
+  while IFS=$'\t' read -r st bkey detail; do
+    [[ -z "$st" ]] && continue
+    case "$st" in
+      OK)        gate_ok=$((gate_ok+1)) ;;
+      ACCEPTED)  gate_accepted=$((gate_accepted+1)); NOTES+=("BUDGET ACCEPTED: ${bkey} breached but covered by a commit+value-bound acceptance record (${detail}).") ;;
+      BREACH)    gate_breach=$((gate_breach+1));     FINDINGS+=("BREACH: gating budget ${bkey} breached (${detail}). Not covered by any acceptance record — the release is blocked until it is fixed or an acceptance is recorded in ${ACCEPT_FILE}.") ;;
+      ABSENT)    gate_absent=$((gate_absent+1));     INDETS+=("INDETERMINATE (budget): gating budget ${bkey} could not be evaluated — ${detail}.") ;;
+      UNKNOWN_MAPPING) gate_unknown=$((gate_unknown+1)); INDETS+=("INDETERMINATE (budget): ${bkey} — ${detail}.") ;;
+      RELATIVE_DELEGATED) gate_rel=$((gate_rel+1)) ;;
+      SKIP_PREMERGE)      gate_premerge=$((gate_premerge+1)) ;;
+    esac
+  done <<< "$BUDGET_ROWS"
+fi
+
+if [[ $gate_rel -gt 0 ]]; then
+  NOTES+=("BUDGETS delegated: ${gate_rel} relative gating metric(s) (floor:null) are not judgeable from a single run — covered by the daily compare gate, the baseline-freshness watchdog, and the recency check above (see RESIDUAL SEAM in the script header).")
+fi
+[[ $gate_premerge -gt 0 ]] && NOTES+=("BUDGETS out-of-scope: ${gate_premerge} premerge_alloc.* gating metric(s) are per-merge (perf-alloc-gate.sh), not part of a daily run object.")
+[[ $gate_ok -gt 0 ]] && NOTES+=("BUDGETS ok: ${gate_ok} gating absolute metric(s) within floor.")
+
+# ---------------------------------------------------------------------------
+# Report + verdict
+# ---------------------------------------------------------------------------
+echo
+echo "=============================== PERF PREFLIGHT ==============================="
+echo "Newest run : ${NEWEST_KEY}"
+echo "Run commit : ${RUN_COMMIT:0:12}   Release commit : ${REL_COMMIT:0:12}"
+echo "Validity   : ${RUN_VALID}"
+echo "-----------------------------------------------------------------------------"
+for n in "${NOTES[@]:-}";    do [[ -n "$n" ]] && echo "  · $n"; done
+for i in "${INDETS[@]:-}";   do [[ -n "$i" ]] && echo "  ? $i"; done
+for f in "${FINDINGS[@]:-}"; do [[ -n "$f" ]] && echo "  ✗ $f"; done
+echo "============================================================================="
+echo
+
+if [[ ${#FINDINGS[@]} -gt 0 ]]; then
+  err "FAIL: ${#FINDINGS[@]} finding(s) — do NOT release (see ✗ rows above)."
+  [[ ${#INDETS[@]} -gt 0 ]] && err "      (also ${#INDETS[@]} INDETERMINATE item(s))."
+  exit 1
+fi
+if [[ ${#INDETS[@]} -gt 0 ]]; then
+  err "INCONCLUSIVE: ${#INDETS[@]} item(s) could not be evaluated (see ? rows above)."
+  err "              Fail-closed: resolve them and re-run before releasing. This is NOT a pass."
+  exit 2
+fi
+log "PASS: the newest perf run is valid, measures the release commit's history, and no gating budget is in an unaccepted breach."
+exit 0
