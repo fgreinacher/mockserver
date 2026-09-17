@@ -13,9 +13,9 @@ lastmod: 2026-06-24T08:00:00+01:00
 keywords: mockserver performance, mockserver benchmark, mock server throughput, api mock latency
 schema_faq:
   - question: "How fast is MockServer?"
-    answer: "On six CPU cores a single instance holds sub-millisecond median latency up to 32,000 requests/sec, saturating near 36,000 req/s. Latency stays flat until that knee — p50 is 0.19 ms, p95 around 4 ms — then degrades predictably rather than collapsing."
+    answer: "On six CPU cores a single instance holds sub-millisecond median latency up to a healthy ceiling of about 32,000 requests/sec — p50 around 0.19 ms, p95 around 4 ms. Push past that and it enters overload: the most it ever achieves is roughly 36,000 req/s, but median latency has climbed to tens of milliseconds by then, so size a deployment against the 32,000 healthy ceiling, not the overload peak."
   - question: "How many requests per second can MockServer handle?"
-    answer: "A single six-core instance sustains up to 32,000 requests/sec at sub-millisecond median latency, saturating near 36,000 req/s. Beyond one instance, run several instances behind a load balancer — serving capacity scales horizontally."
+    answer: "A single six-core instance sustains a healthy ceiling of about 32,000 requests/sec at sub-millisecond median latency. It can be pushed to a degraded peak near 36,000 req/s, but latency rises sharply there, so provision for the healthy ceiling. Beyond one instance, run several behind a load balancer — serving capacity scales horizontally."
   - question: "Does MockServer slow down with many expectations?"
     answer: "No. MockServer indexes expectations so each request is compared only against a small candidate set rather than scanning every expectation. At 5,000 expectations matching is up to 177× faster than a naive linear scan, keeping matching cost nearly flat as expectations grow."
   - question: "How do I tune MockServer for high throughput?"
@@ -24,12 +24,35 @@ schema_faq:
 
 <!--
   All numbers on this page are produced by the automated performance pipeline and
-  regenerated for each measurement run — they are not hand-picked. The charts are
-  rendered from the pipeline's JSON output by images/perf-charts/render_perf_charts.py
-  and the figures here were refreshed from perf build #64 (ZGC, six server cores).
+  regenerated for each measurement run — they are not hand-picked. The figures in
+  the throughput table and the provenance block are rendered from the committed
+  data file _data/perf_figures.json; the charts are rendered from the pipeline's
+  JSON output by images/perf-charts/render_perf_charts.py.
+
+  Closing the loop (performance-programme item 19): the daily perf run writes a
+  dated, self-describing result to S3, and .buildkite/scripts/steps/perf-website-publish.sh
+  regenerates _data/perf_figures.json from the latest VALID run and OPENS A PR when
+  the committed figures are >30 days old or a headline metric has moved >10%. It
+  publishes only the healthy-ceiling knee curve (peak labelled degraded) and, from a
+  post-fix regression.js run, per-behaviour percentiles; it never publishes the
+  internal-only regression detectors (see the plan's publish-versus-gate section).
+
+  GENERATED regions (rendered from _data/perf_figures.json — the auto-refresh PR
+  rewrites the data file, so do NOT hand-edit their numbers):
+    * the itemprop headline, the "at a glance" throughput bullet, and the
+      per-instance paragraph below (throughput numbers only);
+    * the Measurement provenance block;
+    * the "Throughput vs latency" table + its caption;
+    * the "Latency by action" table (shown only for a post-fix run).
+  HUMAN-MAINTAINED regions the auto-refresh does NOT touch — reconcile these by
+  hand when a refresh PR moves a headline (the PR body lists them): the page
+  `description` and the JSON-LD `schema_faq` answers in the front matter (Jekyll
+  does not render Liquid in front matter, and Google surfaces the FAQ), and the
+  matcher-scaling figures (a separate JMH source, not in the daily result).
 -->
 
-<p itemprop="headline">A single MockServer instance holds sub-millisecond median latency up to 32,000 requests/sec on six CPU cores, and request matching stays flat &mdash; up to 177&times; faster than a linear scan &mdash; as you scale to thousands of expectations.</p>
+{% assign figures = site.data.perf_figures %}
+<p itemprop="headline">A single MockServer instance holds sub-millisecond median latency up to a healthy ceiling of {{ figures.headline.healthy_ceiling_rps_display | default: "32,000" }} requests/sec on six CPU cores, and request matching stays flat &mdash; up to 177&times; faster than a linear scan &mdash; as you scale to thousands of expectations.</p>
 
 <table class="table-standard">
     <thead>
@@ -57,7 +80,7 @@ schema_faq:
 <p>MockServer is built for high throughput and low, <em>predictable</em> latency from a single instance. The figures below come from an automated performance suite that runs on a dedicated, core-pinned CI machine; every chart is regenerated from the measured data on each run, so what you see is reproducible rather than cherry-picked. Jump to <a href="#how_tested">how MockServer is performance tested</a> for the methodology, or run the suite yourself from <span class="inline_code">mockserver-performance-test/</span>.</p>
 
 <ul>
-    <li><strong>Throughput &amp; latency:</strong> on six CPU cores a single instance holds a <strong>sub-millisecond median</strong> with a <strong>p99 around half a millisecond</strong> all the way to <strong>16,000 requests/sec</strong>, stays sub-millisecond at the median through <strong>32,000 requests/sec</strong>, and saturates near <strong>36,000 requests/sec</strong> &mdash; latency stays flat until that knee, then degrades gracefully (see the <a href="#chart_throughput">throughput vs latency</a> chart).</li>
+    <li><strong>Throughput &amp; latency:</strong> on six CPU cores a single instance holds a <strong>sub-millisecond median</strong> with a <strong>p99 around half a millisecond</strong> all the way to <strong>16,000 requests/sec</strong>, and stays sub-millisecond at the median through a <strong>healthy ceiling of about {{ figures.headline.healthy_ceiling_rps_display | default: "32,000" }} requests/sec</strong>. Pushed past that it enters overload &mdash; it can still <em>achieve</em> around {{ figures.headline.peak_achieved_rps_display | default: "36,000" }} req/s, but median latency has risen to tens of milliseconds, so that peak is a point on the overload curve, not an operating target (see the <a href="#chart_throughput">throughput vs latency</a> chart).</li>
     <li><strong>Scales with expectations:</strong> request matching cost stays <strong>nearly flat</strong> as the number of registered expectations grows &mdash; <strong>up to 177&times; faster than a naive linear scan at 5,000 expectations</strong> &mdash; thanks to MockServer's candidate-matching index (see the <a href="#chart_matching">matcher scaling</a> chart).</li>
     <li><strong>Protocol coverage:</strong> HTTP/1.1, HTTPS and HTTP/2 are all served with low overhead, measured side by side on every run (see <a href="#chart_protocols">latency by action</a>).</li>
 </ul>
@@ -106,40 +129,63 @@ schema_faq:
         <ul>
             <li><strong>load</strong> &mdash; steady throughput at a target rate; the CI pass/fail gate.</li>
             <li><strong>sweep</strong> &mdash; steps the arrival rate up a ladder to find the throughput/latency knee (the <a href="#chart_throughput">first chart</a>).</li>
-            <li><strong>stress</strong> &mdash; pushes past the knee to find the breaking point.</li>
-            <li><strong>soak</strong> &mdash; sustained load over time to surface memory growth, GC pressure and leaks.</li>
             <li><strong>regression / growth</strong> &mdash; fixed-rate latency per behaviour (match, forward, template, large body) over HTTP and HTTPS+HTTP/2, plus a check that latency and memory do not creep upward over a run.</li>
             <li><strong>microbenchmarks</strong> &mdash; JMH measurement of matching time and allocation per request, including the candidate-index <a href="#chart_matching">scaling sweep</a>.</li>
+            <li><strong>stress</strong> and <strong>soak</strong> &mdash; scenarios included in the suite for you to run on demand: stress pushes past the knee to find the breaking point, soak holds sustained load to surface memory growth and leaks. The figures on this page come from the load, sweep, regression/growth and microbenchmark runs above.</li>
         </ul>
     </li>
     <li><strong>Reproducible and core-pinned.</strong> Measurement runs on a dedicated CI machine with the server, upstream and load generator pinned to separate CPU cores so they do not steal cycles from each other &mdash; the single biggest factor in number quality. Every chart is regenerated from the pipeline's JSON output.</li>
     <li><strong>Automated regression detection.</strong> Each run is stored and compared against a rolling baseline using a robust median + MAD test, so a real slowdown is flagged without false alarms from run-to-run noise.</li>
 </ul>
 
-<p><strong>Measurement environment for the figures on this page:</strong> a single MockServer instance (current snapshot build) pinned to <strong>six CPU cores</strong> on a dedicated CI host, running the low-pause <span class="inline_code">ZGC</span> garbage collector with an 8&nbsp;GB heap and <strong>full request logging enabled</strong> (the default &mdash; every request is recorded for later verification). The load generator runs on separate cores so it never steals cycles from the server. Real-world throughput and latency depend on your hardware, core count, payload size, expectation complexity and JVM/configuration tuning &mdash; more CPU cores and disabling request logging both raise peak throughput &mdash; so treat these as a solid reference and benchmark your own workload.</p>
+<a id="measurement_provenance" class="anchor" href="#measurement_provenance">&nbsp;</a>
+{% assign figures = site.data.perf_figures %}
+{% if figures and figures.source %}
+{% assign prov = figures.source %}
+<p><strong>Measurement provenance for the figures on this page.</strong> Every number below is dated and tied to the run that produced it &mdash; a figure without that context is how these claims went stale before:</p>
+<table class="results">
+    <tbody>
+    <tr><td>measured</td><td>{{ prov.run_timestamp_utc }}{% if prov.build_number %} &middot; build&nbsp;#{{ prov.build_number }}{% endif %}{% if prov.commit %} &middot; commit&nbsp;{{ prov.commit }}{% endif %}</td></tr>
+    <tr><td>MockServer version</td><td>{{ prov.mockserver_version | default: "not recorded" }}</td></tr>
+    <tr><td>hardware</td><td>{% if prov.instance_type and prov.instance_type != "not recorded" %}{{ prov.instance_type }}, {% endif %}server pinned to {{ prov.server_cpus }}; load generator on separate cores</td></tr>
+    <tr><td>JVM / GC / heap</td><td>{% if prov.config_recorded %}JDK {{ prov.jdk }}, {{ prov.gc }}{% if prov.heap_max_mib %}, {{ prov.heap_max_mib }}&nbsp;MiB max heap{% endif %}{% else %}<em>not recorded in this run's artefact</em> (predates the self-describing result schema){% endif %}</td></tr>
+    <tr><td>log level</td><td>{{ prov.log_level }}{% if prov.disable_system_out %}, system-out disabled{% endif %} &mdash; reduced below the shipped <span class="inline_code">INFO</span> default for measurement, so these are <strong>not</strong> default-configuration figures</td></tr>
+    </tbody>
+</table>
+<p style="font-size:0.9em">{{ prov.note }}</p>
+{% endif %}
+<p>Real-world throughput and latency depend on your hardware, core count, payload size, expectation complexity and JVM/configuration tuning &mdash; more CPU cores raise peak throughput, and reducing request logging (<span class="inline_code">logLevel</span>, <span class="inline_code">disableSystemOut</span>, or <span class="inline_code">maxLogEntries</span>) frees heap and cuts allocation on the matching path &mdash; so treat these as a solid, dated reference and benchmark your own workload.</p>
 
 <h2>Detailed results</h2>
 
 <h3>Throughput vs latency</h3>
-<p>Offered request rate against achieved throughput and response-latency percentiles for a single instance matching a simple expectation:</p>
+<p>Offered request rate against achieved throughput and response-latency percentiles for a single instance matching a simple expectation. The <strong>healthy ceiling</strong> is the highest offered rate where the instance kept up (achieved within 5&thinsp;% of offered) <em>and</em> latency stayed flat; rows past it are shaded &mdash; they are the overload curve, published for honesty rather than as an operating target.</p>
+{% assign figures = site.data.perf_figures %}
+{% if figures and figures.throughput_ladder %}
 <table class="results">
     <thead>
-    <tr><td>offered req/s</td><td>achieved req/s</td><td>p50</td><td>p95</td><td>p99</td><td>errors</td></tr>
+    <tr><td>offered req/s</td><td>achieved req/s</td><td>p50</td><td>p95</td><td>p99</td><td>errors</td><td>state</td></tr>
     </thead>
     <tbody>
-    <tr><td>2,000</td><td>1,995</td><td>0.17</td><td>0.26</td><td>0.39</td><td>0%</td></tr>
-    <tr><td>4,000</td><td>3,991</td><td>0.18</td><td>0.29</td><td>0.40</td><td>0%</td></tr>
-    <tr><td>8,000</td><td>8,000</td><td>0.15</td><td>0.22</td><td>0.29</td><td>0%</td></tr>
-    <tr><td>16,000</td><td>16,000</td><td>0.16</td><td>0.28</td><td>0.50</td><td>0%</td></tr>
-    <tr><td>32,000</td><td>31,751</td><td>0.19</td><td>4.14</td><td>9.62</td><td>0%</td></tr>
-    <tr><td>48,000</td><td>36,324</td><td>23.12</td><td>125.14</td><td>195.66</td><td>0%</td></tr>
-    <tr><td>64,000</td><td>30,871</td><td>97.36</td><td>170.66</td><td>230.51</td><td>0%</td></tr>
-    <tr><td>80,000</td><td>33,041</td><td>112.65</td><td>181.17</td><td>262.94</td><td>0%</td></tr>
+    {% for rung in figures.throughput_ladder %}
+    <tr{% if rung.degraded %} style="opacity:0.6"{% endif %}>
+        <td>{{ rung.offered_display }}</td>
+        <td>{{ rung.achieved_display }}</td>
+        <td>{{ rung.p50_ms }}</td>
+        <td>{{ rung.p95_ms }}</td>
+        <td>{{ rung.p99_ms }}</td>
+        <td>{{ rung.error_pct }}%</td>
+        <td>{% if rung.degraded %}degraded{% else %}healthy{% endif %}</td>
+    </tr>
+    {% endfor %}
     </tbody>
 </table>
-<p>Latencies are in milliseconds. Achieved throughput tracks the offered rate up to about 32,000&nbsp;req/s; beyond that the six-core instance saturates near 36,000&nbsp;req/s and latency climbs predictably rather than collapsing. (More CPU cores raise the ceiling; this run pins the server to six.)</p>
+<p>Latencies are in milliseconds. Achieved throughput tracks the offered rate up to the <strong>healthy ceiling of {{ figures.headline.healthy_ceiling_rps_display }}&nbsp;req/s</strong> (median {{ figures.headline.healthy_ceiling_p50_ms }}&nbsp;ms, p95 {{ figures.headline.healthy_ceiling_p95_ms }}&nbsp;ms on {{ figures.headline.server_cores }} cores). Beyond it the instance is in overload: the highest throughput it ever <em>achieves</em> is about {{ figures.headline.peak_achieved_rps_display }}&nbsp;req/s, but by then the median has climbed to {{ figures.headline.peak_p50_ms }}&nbsp;ms &mdash; that peak is a point on the curve on its way down, not a rate to size a deployment for. Provision against the healthy ceiling. (More CPU cores raise it; this run pins the server to {{ figures.headline.server_cores }}.)</p>
+{% else %}
+<p><em>Live throughput figures are being refreshed; see the charts above.</em></p>
+{% endif %}
 
-<p><strong>These figures are per instance.</strong> The ~36,000&nbsp;req/s saturation point is the throughput of a <em>single</em> six-core instance &mdash; you scale beyond it by adding instances. <strong>Scaling beyond one instance:</strong> for more <em>serving</em> capacity (handling more inbound mock traffic) or high availability, run several instances as a <a href="#clustering_mockserver">cluster behind a load balancer</a> &mdash; see <a href="/mock_server/centralized_deployment.html">Centralised Deployment</a>. To drive more <em>load injection</em> (generating more outbound traffic with <a href="/mock_server/load_injection.html">Load Scenarios</a>), run injector instances in parallel &mdash; see <a href="/mock_server/load_injection_performance.html">Load Injection Performance</a>, which measures how injected throughput scales near-linearly with the number of instances.</p>
+<p><strong>These figures are per instance.</strong> The ~{{ figures.headline.healthy_ceiling_rps_display | default: "32,000" }}&nbsp;req/s healthy ceiling is the reliable throughput of a <em>single</em> six-core instance &mdash; you scale beyond it by adding instances. <strong>Scaling beyond one instance:</strong> for more <em>serving</em> capacity (handling more inbound mock traffic) or high availability, run several instances as a <a href="#clustering_mockserver">cluster behind a load balancer</a> &mdash; see <a href="/mock_server/centralized_deployment.html">Centralised Deployment</a>. To drive more <em>load injection</em> (generating more outbound traffic with <a href="/mock_server/load_injection.html">Load Scenarios</a>), run injector instances in parallel &mdash; see <a href="/mock_server/load_injection_performance.html">Load Injection Performance</a>, which measures how injected throughput scales near-linearly with the number of instances.</p>
 
 <h3>Matcher scaling (time per request match)</h3>
 <p>Microbenchmark of a single request match against a growing set of literal expectations, worst case (no match, so every candidate is examined): MockServer's candidate index versus a naive linear scan.</p>
@@ -156,6 +202,22 @@ schema_faq:
     </tbody>
 </table>
 <p>Times are microseconds per match. At one expectation the index adds negligible overhead; as expectations grow it keeps matching cheap where a linear scan grows roughly linearly with the number of expectations.</p>
+
+{% if figures.behaviours %}
+<h3>Latency by action</h3>
+<p>Fixed-rate latency per behaviour &mdash; a simple match, a forwarded request, a templated response and a large body &mdash; over HTTP/1.1 and over HTTPS with HTTP/2, from the same run as the figures above:</p>
+<table class="results">
+    <thead>
+    <tr><td>action</td><td>protocol</td><td>p50</td><td>p95</td><td>p99</td></tr>
+    </thead>
+    <tbody>
+    {% for b in figures.behaviours %}
+    <tr><td>{{ b.op }}</td><td>{{ b.proto }}</td><td>{{ b.p50_ms }}</td><td>{{ b.p95_ms }}</td><td>{{ b.p99_ms }}</td></tr>
+    {% endfor %}
+    </tbody>
+</table>
+<p>Latencies are in milliseconds, measured at a fixed arrival rate on the same six-core instance.</p>
+{% endif %}
 
 <h2>Tuning for your workload</h2>
 <p>The defaults are tuned for general use. For sustained high throughput, large payloads, or long-running instances, the most effective levers are memory/log sizing and a few scalability settings &mdash; covered in detail below. The single most common cause of an instance slowing down over time is the in-memory request log filling the heap; see <a href="#troubleshooting_performance">memory &amp; troubleshooting</a>.</p>

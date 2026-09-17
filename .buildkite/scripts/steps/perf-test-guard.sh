@@ -139,6 +139,23 @@ steps:
     timeout_in_minutes: 10
     agents:
       queue: "perf"
+  # Item 19 — close the loop from S3 back to the website. NON-GATING tail step:
+  # regenerates the published figures from the newest VALID run and opens a PR
+  # (never a direct commit) when the committed figures are >30 days old or a
+  # headline metric moved >10%. Runs AFTER compare (the plain `wait` above means a
+  # gating regression, which reds compare, skips this — a regressed run must not
+  # refresh the public page). `soft_fail: true` because the script deliberately
+  # `exit 1`s on every refuse-to-publish path (unreachable S3, an invalid/pre-fix
+  # run, a healthy-but-quiet master with nothing new) and such a refusal must NOT
+  # red the daily build. On the `perf` queue, which holds the S3 perf-results grant
+  # AND the git/gh credentials the PR needs (the `trigger` queue has neither).
+  - wait: ~
+  - label: ":globe_with_meridians: perf regression — publish figures to website (PR)"
+    command: ".buildkite/scripts/steps/perf-website-publish.sh"
+    timeout_in_minutes: 15
+    soft_fail: true
+    agents:
+      queue: "perf"
 YAML
 
 # Honour the load-injection opt-in alongside the standard regression dispatch.

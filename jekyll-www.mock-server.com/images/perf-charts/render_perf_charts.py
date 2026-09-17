@@ -96,9 +96,42 @@ def _grid(ax):
     ax.set_axisbelow(True)
 
 
+def _healthy_ceiling(pts, keep=0.95, lat_mult=3.0):
+    """Highest offered rung that kept up (achieved within (1-keep) of offered),
+    had zero errors, AND kept p50 within lat_mult x the flat-region p50 — the same
+    definition perf-website-figures.jq publishes (performance-programme Finding 1).
+    Returns the rung dict, or None if no rung qualifies."""
+    s = sorted(pts, key=lambda p: p["offered_rps"])
+    flat = sorted(p["p50_ms"] for p in s[:4] if p.get("p50_ms") is not None)
+    if not flat:
+        return None
+    n = len(flat)
+    flat_p50 = flat[n // 2] if n % 2 else (flat[n // 2 - 1] + flat[n // 2]) / 2
+    thresh = flat_p50 * lat_mult
+    healthy = [p for p in s
+               if p.get("error_rate", 0) == 0
+               and p["offered_rps"] > 0
+               and p["achieved_rps"] >= keep * p["offered_rps"]
+               and p.get("p50_ms") is not None and p["p50_ms"] <= thresh]
+    return max(healthy, key=lambda p: p["offered_rps"]) if healthy else None
+
+
+def _missing(pts, keys):
+    """Return the first required key absent from any point, else None. Lets a chart
+    skip gracefully on a partial run instead of KeyError-ing out of ALL rendering."""
+    for k in keys:
+        if any(p.get(k) is None for p in pts):
+            return k
+    return None
+
+
 # --- chart 1: throughput vs latency "knee" ------------------------------------
 def chart_knee(sweep, out_dir):
     pts = sorted(sweep["points"], key=lambda p: p["offered_rps"])
+    gap = _missing(pts, ("offered_rps", "achieved_rps", "p50_ms", "p95_ms", "p99_ms"))
+    if gap:
+        print(f"  (sweep points missing '{gap}' — skipping knee chart)")
+        return
     offered = [p["offered_rps"] for p in pts]
     achieved = [p["achieved_rps"] for p in pts]
     p50 = [p["p50_ms"] for p in pts]
@@ -123,16 +156,27 @@ def chart_knee(sweep, out_dir):
     axL.set_title("Latency stays flat until the knee", fontweight="bold", fontsize=13)
     axL.legend(frameon=False, loc="upper left")
 
-    # Panel B: achieved vs offered (linear) — throughput tracks load then hits a ceiling.
+    # Panel B: achieved vs offered (linear) — throughput tracks load to a HEALTHY
+    # ceiling, then folds back in overload. Annotate the healthy ceiling (the rate
+    # you can rely on), NOT the max achieved: the peak is a point on the overload
+    # curve on its way down, and labelling it "ceiling" is the stale claim this
+    # closes (performance-programme Finding 1).
     axR.plot(offered, offered, "--", color=GREY, lw=1.4, alpha=0.6,
              label="ideal (keeps up)", zorder=2)
     axR.plot(offered, achieved, "-o", color=BLUE, lw=2.4, ms=5,
              label="achieved", zorder=4)
+    hc = _healthy_ceiling(pts)
     peak = max(achieved)
-    axR.axhline(peak, color=RED, lw=1.0, ls=":", alpha=0.7, zorder=1)
-    axR.annotate(f"ceiling ≈ {peak / 1000:.0f}k req/s",
+    if hc is not None:
+        axR.axhline(hc["achieved_rps"], color=BLUE, lw=1.0, ls=":", alpha=0.7, zorder=1)
+        axR.annotate(f"healthy ceiling ≈ {hc['offered_rps'] / 1000:.0f}k req/s",
+                     xy=(hc["offered_rps"], hc["achieved_rps"]), xytext=(0, 8),
+                     textcoords="offset points", ha="center", va="bottom",
+                     color=BLUE, fontsize=10)
+    axR.axhline(peak, color=RED, lw=1.0, ls=":", alpha=0.5, zorder=1)
+    axR.annotate(f"overload peak ≈ {peak / 1000:.0f}k (degraded)",
                  xy=(offered[-1], peak), xytext=(0, 8), textcoords="offset points",
-                 ha="right", va="bottom", color=RED, fontsize=10)
+                 ha="right", va="bottom", color=RED, fontsize=9)
     _grid(axR)
     axR.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v / 1000)}k"))
     axR.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v / 1000)}k"))
@@ -195,6 +239,11 @@ def chart_percentiles(sweep, out_dir):
     # representative sustained point: the highest offered rate that kept up
     # (achieved within 2% of offered) with no errors.
     pts = sorted(sweep["points"], key=lambda p: p["offered_rps"])
+    gap = _missing(pts, ("offered_rps", "achieved_rps", "error_rate",
+                         "p50_ms", "p90_ms", "p95_ms", "p99_ms", "p999_ms"))
+    if gap:
+        print(f"  (sweep points missing '{gap}' — skipping percentile chart)")
+        return
     sustained = [p for p in pts
                  if p["error_rate"] == 0 and p["achieved_rps"] >= 0.98 * p["offered_rps"]]
     pt = (sustained or pts)[-1]
