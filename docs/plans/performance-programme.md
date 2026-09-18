@@ -1485,6 +1485,76 @@ timestamp passes forever against a producer writing valid empty JSON every day. 
 assert the newest object contains the expected keys with non-null values in plausible
 ranges** — the same plausibility rule demanded of producers, applied to the watchdog itself.
 
+### Note (2026-09-18) — what the first profiled run found, and the three fixes it produced
+
+The diagnostics built for this programme paid for themselves the first time they ran on a
+healthy sweep. Build 290 carried tier-2 instrumentation (`PERF_JVM_DIAGNOSTICS=deep`) and its
+JFR repository chunks survived the container teardown — the `dumponexit` recording did not,
+because the SUT is removed with `docker rm -f` and SIGKILL runs no exit hook, which is why the
+repository lives on the mounted volume. The same teardown is why `PrintNMTStatistics`, which
+prints at exit, produced nothing: **NMT is unavailable for exactly the death we most want it
+for.** Worth fixing separately.
+
+**The load-bearing question was answered.** At the collapse rungs every `jdk.ExecutionSample`
+is `STATE_RUNNABLE`, the host sampler shows 5.5–5.8 of 6 cores busy, the worker event loops
+record **zero** parks, and socket samples are negligible. So the server is **CPU-saturated, not
+blocked and not parked** — which eliminates "add threads" and "find the lock" as directions and
+points entirely at cost per request. Note the sampling trap this had to be checked against:
+JFR's execution sampler only samples runnable threads, so a parked server looks *idle* rather
+than slow, and a hot-methods list alone cannot tell the two apart.
+
+**What got more expensive at the knee was the logging path, not request serving.** Three fixes
+followed, each with the profile share it targeted:
+
+| Finding | Evidence | Fix |
+|---|---|---|
+| Match-failure diffs formatted for **every** field comparison, read or not | `StringFormatter` #1 and #2 allocation sites, ~28–33% of all sampled allocation | `a8898b263` — lazy, snapshotting args to strings at comparison time so a later mutation cannot be reported; 3,486 → 86 B/op on the recording path |
+| Event-log consumer re-resolving `logLevelOverrides` per entry | that single thread **2.1% → 22.6%** of runnable samples, peak → collapse | `65392d6d3` — generation-gated memo, invalidated by a token bumped last in `setProperty`/`clearProperty` so it cannot freeze the way `readPropertyHierarchically` once did |
+| Every `LogEntry` minting a **cryptographically secure** UUID | ~5% of samples, and the run's **only** material lock contention — 261 contended enters on the `SecureRandom` monitor, concentrated in the collapse minute | `0b9cc71a7` — opt-in non-secure path at the call site; 26 uniqueness-only sites switched, 17 security-sensitive ones (session ids, client ids, keystore names) deliberately left secure |
+
+The GC storm in that window (~290 pauses, ~5.4s stop-the-world, ~9% of wall) is a
+**consequence** of the allocation rate, not an independent problem — it nearly stops when load
+drops, and the allocation type mix does not change between peak and collapse. So no GC tuning
+was done, and none should be until the allocation fixes have been re-measured.
+
+**Two gate gaps surfaced while fixing the above, and they matter more than the fixes.**
+
+1. **The allocation gate never measured the largest allocation source.** `MatchingBenchmark`
+   pinned `detailedMatchFailures=false`, the flag gating that path, so neither it nor
+   `premerge_alloc.MatchingBenchmark.*` ever executed it. Fixed in `048cff77c`: both arms are
+   measured with the param pinned to both values (deterministic, `EXPECTED_ROWS` 3 → 4) and the
+   detailed arm carries its own floor — necessarily its own, because the healthy detailed value
+   (2,096,344 B/op) sits *above* the base 1,850,000 floor and a shared floor would have failed
+   every healthy build.
+2. **`ConfigurationCallSiteGuardTest`'s coverage is set by Maven reactor order — still open.**
+   It scans compiled class output, and `mockserver-junit-rule` depends on `mockserver-netty`, so
+   it builds afterwards: on a clean CI build the junit modules have no classes when the guard
+   runs and are silently not scanned. A real violation (`applyDevModeDefault` reading
+   `devMode`/`maxLogEntries`/`maxExpectations` static-only) has sat on master since
+   `ada0619c2` through many green builds, invisible. Its own sanity assertions
+   (`moduleClassRoots > 1`, core and netty scanned) all pass while that is true. **Every module
+   downstream of netty is outside its reach.**
+
+That second one is the programme's own pattern turned on its own instrumentation: not a check
+that cannot fail, but a check whose **scope** silently excludes what it claims to cover. The
+generalisable rule it earns: *a scanning guard must assert what it actually scanned against
+what it was supposed to scan, and fail loudly on a gap.* Coverage is a load-bearing property,
+and an unasserted one is an assumption.
+
+**A memory bound that did not bound.** Separately, `estimatedHeapSize()` — the weigher behind
+`maxEventLogSizeInBytes` — counted raw body bytes and essentially nothing else. Measured by
+degrading a test until it went red: ten retained entries with 10,000-byte bodies weighed
+*exactly* 100,000. Live heap dumps at two body sizes then separated fixed from proportional
+cost (2,054 B overhead at 1 KB, 2,037 B at 8 KB — flat, so ~2 KB of structural graph per entry
+counted as zero; byte arrays scaled 1:1, confirming no hidden second body copy). Corrected in
+`f3ade3b73`: real retention moves from ~2.6× the budget to ~1.0× at WARN, and ~4.8× to
+~1.6–2.2× at INFO. The formatted message is deliberately still not counted — it is
+materialised after the weight is memoised and only at rendering levels, and the default budget
+divisor (`heap/8` at INFO against `heap/4` at WARN) already compensates for it, so counting it
+too would compensate twice. **Open decision:** the divisor was tuned against the under-counting
+weigher, so an honest weigher means the default budget now retains less real heap than before.
+Restoring prior default capacity is a sizing decision, not a fix.
+
 **Note (item 0) — is the pre-fix baseline history still comparable, given every stored
 point has `instance_type:''`?** Yes: no re-baseline is needed, only the field populated from
 here on. The empty field records nothing, but the hardware was in fact *constant* — the perf
