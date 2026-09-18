@@ -107,6 +107,14 @@ public class Configuration {
     private Long http3AltSvcMaxAge;
     private Boolean http3AdvertiseAltSvc;
     private Map<String, String> logLevelOverrides;
+    // Memoised resolution of the JVM-wide logLevelOverrides default, consulted once per log entry by the
+    // single event-log consumer thread via writeToSystemOut(). Only used when this instance has no
+    // override of its own (logLevelOverrides == null); refreshed when the global configuration changes,
+    // detected by ConfigurationProperties.modificationCount(). The resolved value and the generation it
+    // was resolved at are held together in one immutable holder behind a single volatile reference so a
+    // reader can never observe a torn (value, generation) pair while a control-plane thread publishes a
+    // new one. See logLevelOverrides().
+    private volatile ResolvedLogLevelOverrides resolvedLogLevelOverrides;
     private Boolean compactLogFormat;
 
     // dev mode
@@ -1593,15 +1601,54 @@ public class Configuration {
     }
 
     public Map<String, String> logLevelOverrides() {
-        if (logLevelOverrides == null) {
-            return ConfigurationProperties.logLevelOverrides();
+        Map<String, String> instanceOverrides = logLevelOverrides;
+        if (instanceOverrides != null) {
+            return instanceOverrides;
         }
-        return logLevelOverrides;
+        // Fall through to the JVM-wide default. This getter is called ONCE PER LOG ENTRY by the single
+        // event-log consumer thread (writeToSystemOut -> resolveEffectiveLevel), and the underlying
+        // ConfigurationProperties.logLevelOverrides() re-reads the property (a ConcurrentHashMap lookup)
+        // and, when overrides are configured, re-parses their JSON on every call. Memoise the resolved
+        // map and re-resolve only when the global configuration actually changes, detected by the cheap
+        // monotonic modificationCount token — so a runtime change (via ConfigurationProperties or
+        // PUT /mockserver/configuration) is still reflected, while the steady-state per-entry cost is a
+        // volatile read and a long compare rather than a hashed map lookup.
+        long generation = ConfigurationProperties.modificationCount();
+        ResolvedLogLevelOverrides memo = resolvedLogLevelOverrides;
+        if (memo != null && memo.generation == generation) {
+            return memo.value;
+        }
+        Map<String, String> resolved = ConfigurationProperties.logLevelOverrides();
+        // Publish value and generation together via one volatile reference so a concurrent reader sees a
+        // consistent pair. A benign race where two threads both re-resolve is harmless: they compute the
+        // same value for the same generation. Storing a value under a generation older than the current
+        // one only forces one redundant re-resolution on the next read — it never serves a stale value.
+        resolvedLogLevelOverrides = new ResolvedLogLevelOverrides(generation, resolved);
+        return resolved;
     }
 
     public Configuration logLevelOverrides(Map<String, String> logLevelOverrides) {
         this.logLevelOverrides = logLevelOverrides;
+        // Defensive: drop the memoised fall-through resolution. Correctness does NOT depend on this — the
+        // generation check in the getter already re-resolves whenever the global default changes — but
+        // clearing the memo here makes the invalidation obvious and belt-and-suspenders against a future
+        // change that weakened the generation backstop (the exact "resolve once and freeze" bug class).
+        this.resolvedLogLevelOverrides = null;
         return this;
+    }
+
+    /**
+     * Immutable (resolved-value, generation) pair for the memoised {@link #logLevelOverrides()}
+     * fall-through, published atomically behind a single volatile reference.
+     */
+    private static final class ResolvedLogLevelOverrides {
+        private final long generation;
+        private final Map<String, String> value;
+
+        private ResolvedLogLevelOverrides(long generation, Map<String, String> value) {
+            this.generation = generation;
+            this.value = value;
+        }
     }
 
     public Boolean compactLogFormat() {

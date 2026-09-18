@@ -30,6 +30,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -6649,6 +6650,31 @@ public class ConfigurationProperties {
     // defaults). It never affects how any value resolves.
     private static Set<String> programmaticallySetKeys;
 
+    // Monotonic counter bumped on every programmatic property mutation (setProperty / clearProperty).
+    // Lets a caller that memoises a resolved value detect, with a single cheap volatile read, that the
+    // global configuration has changed since it last resolved — WITHOUT re-reading the property (a
+    // ConcurrentHashMap lookup with String hashing) on every use. See Configuration.logLevelOverrides(),
+    // which the single event-log consumer thread invokes once per log entry. The bump is the LAST step
+    // of setProperty / clearProperty so any thread that observes the new count also observes (via this
+    // AtomicLong's happens-before) the property value and cache state that produced it.
+    private static final AtomicLong MODIFICATION_COUNT = new AtomicLong();
+
+    /**
+     * A monotonically increasing token that changes whenever a property is set or cleared
+     * programmatically ({@link #setProperty} / {@link #clearProperty}, the paths used by every
+     * {@code ConfigurationProperties} setter and by {@code PUT /mockserver/configuration}). A memoising
+     * caller can cache both a resolved value and the token it resolved at, then re-resolve only when the
+     * token has moved — turning a per-use property lookup into a per-use {@code long} compare while still
+     * reflecting a live configuration change. Never decreases; the absolute value is meaningless, only
+     * whether it differs from a previously observed value.
+     *
+     * <p>Package-private: the only consumer is {@link Configuration} in this package. Widen the scope
+     * only if another module genuinely needs to memoise against configuration mutation.
+     */
+    static long modificationCount() {
+        return MODIFICATION_COUNT.get();
+    }
+
     private static Map<String, String> getPropertyCache() {
         if (propertyCache == null) {
             propertyCache = new ConcurrentHashMap<>();
@@ -6667,12 +6693,16 @@ public class ConfigurationProperties {
         getPropertyCache().put(systemPropertyKey, value);
         getProgrammaticallySetKeys().add(systemPropertyKey);
         System.setProperty(systemPropertyKey, value);
+        // Bump LAST so a reader that sees the new count also sees the cache/System-property writes above.
+        MODIFICATION_COUNT.incrementAndGet();
     }
 
     private static void clearProperty(String systemPropertyKey) {
         getPropertyCache().remove(systemPropertyKey);
         getProgrammaticallySetKeys().remove(systemPropertyKey);
         System.clearProperty(systemPropertyKey);
+        // Bump LAST so a reader that sees the new count also sees the cache/System-property writes above.
+        MODIFICATION_COUNT.incrementAndGet();
     }
 
     private static String readPropertyHierarchically(Properties properties, String systemPropertyKey, String environmentVariableKey, String defaultValue) {

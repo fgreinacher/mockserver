@@ -3497,6 +3497,134 @@ public class ConfigurationTest {
         }
     }
 
+    /**
+     * The event-log consumer thread resolves the effective log level of every entry through
+     * {@code configuration.logLevelOverrides()} (via {@code MockServerLogger.writeToSystemOut}).
+     * That getter memoises the JVM-wide fall-through resolution so it is not re-read/re-parsed per
+     * entry — this test proves the memo still reflects a RUNTIME change of the global overrides:
+     * it resolves once, changes the overrides at runtime, and asserts the NEW value takes effect
+     * (i.e. a live configuration change is never a silent no-op). Guards against re-introducing the
+     * "resolve once and freeze forever" caching bug.
+     */
+    @Test
+    public void shouldReflectRuntimeChangeToLogLevelOverridesInResolvedEffectiveLevel() {
+        Map<String, String> original = ConfigurationProperties.logLevelOverrides();
+        try {
+            ConfigurationProperties.logLevelOverrides(Collections.emptyMap());
+
+            // resolve once through the memoised fall-through getter — no override, so the effective
+            // level is the supplied global level
+            assertThat(
+                LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(
+                    LogEntry.LogMessageType.EXPECTATION_NOT_MATCHED,
+                    configuration.logLevelOverrides(),
+                    Level.INFO
+                ),
+                equalTo(Level.INFO)
+            );
+
+            // change the overrides at runtime (global setter, as used programmatically and by
+            // PUT /mockserver/configuration when no instance override is set)
+            ConfigurationProperties.logLevelOverrides(ImmutableMap.of("MATCHING", "WARN"));
+
+            // the memo must re-resolve: the NEW override takes effect
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "WARN")));
+            assertThat(
+                LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(
+                    LogEntry.LogMessageType.EXPECTATION_NOT_MATCHED,
+                    configuration.logLevelOverrides(),
+                    Level.INFO
+                ),
+                equalTo(Level.WARN)
+            );
+
+            // change it AGAIN at runtime to a different value — proves the memo is not frozen to the
+            // first non-empty resolution either
+            ConfigurationProperties.logLevelOverrides(ImmutableMap.of("MATCHING", "ERROR"));
+
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "ERROR")));
+            assertThat(
+                LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(
+                    LogEntry.LogMessageType.EXPECTATION_NOT_MATCHED,
+                    configuration.logLevelOverrides(),
+                    Level.INFO
+                ),
+                equalTo(Level.ERROR)
+            );
+
+            // clearing the overrides at runtime is likewise reflected
+            ConfigurationProperties.logLevelOverrides(Collections.emptyMap());
+
+            assertThat(configuration.logLevelOverrides(), equalTo(Collections.emptyMap()));
+            assertThat(
+                LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(
+                    LogEntry.LogMessageType.EXPECTATION_NOT_MATCHED,
+                    configuration.logLevelOverrides(),
+                    Level.INFO
+                ),
+                equalTo(Level.INFO)
+            );
+        } finally {
+            ConfigurationProperties.logLevelOverrides(original);
+        }
+    }
+
+    /**
+     * A per-instance override ({@code configuration.logLevelOverrides(map)}, the path taken by
+     * {@code PUT /mockserver/configuration}) must win over the JVM-wide default AND must not be
+     * defeated by the fall-through memo — including when the override is later cleared back to the
+     * global default.
+     */
+    @Test
+    public void shouldPreferInstanceLogLevelOverridesAndReResolveWhenCleared() {
+        Map<String, String> original = ConfigurationProperties.logLevelOverrides();
+        try {
+            ConfigurationProperties.logLevelOverrides(ImmutableMap.of("MATCHING", "WARN"));
+
+            // prime the fall-through memo with the global value
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "WARN")));
+
+            // an instance override takes precedence over the global default
+            configuration.logLevelOverrides(ImmutableMap.of("SERVER", "ERROR"));
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("SERVER", "ERROR")));
+
+            // clearing the instance override falls back to the (current) global default, not a stale memo
+            configuration.logLevelOverrides(null);
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "WARN")));
+        } finally {
+            ConfigurationProperties.logLevelOverrides(original);
+        }
+    }
+
+    /**
+     * A global-default change made WHILE a per-instance override is active must be reflected once the
+     * instance override is cleared — the fall-through resolution re-runs against the CURRENT global,
+     * never a value memoised before the instance override was set. This exercises the clear path across
+     * a generation change (the memo primed at one generation, the global moved at another).
+     */
+    @Test
+    public void shouldReflectGlobalChangeMadeWhileInstanceOverrideActiveAfterClear() {
+        Map<String, String> original = ConfigurationProperties.logLevelOverrides();
+        try {
+            // prime the fall-through memo with the first global value
+            ConfigurationProperties.logLevelOverrides(ImmutableMap.of("MATCHING", "WARN"));
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "WARN")));
+
+            // set an instance override — the getter now short-circuits and never consults the memo
+            configuration.logLevelOverrides(ImmutableMap.of("SERVER", "ERROR"));
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("SERVER", "ERROR")));
+
+            // change the GLOBAL default while the instance override masks it (no fall-through read occurs)
+            ConfigurationProperties.logLevelOverrides(ImmutableMap.of("MATCHING", "ERROR"));
+
+            // clearing the instance override must reveal the NEW global value, not the primed WARN memo
+            configuration.logLevelOverrides(null);
+            assertThat(configuration.logLevelOverrides(), equalTo(ImmutableMap.of("MATCHING", "ERROR")));
+        } finally {
+            ConfigurationProperties.logLevelOverrides(original);
+        }
+    }
+
     @Test
     public void shouldResolveEffectiveLevelWithEmptyOverrides() {
         assertThat(

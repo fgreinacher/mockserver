@@ -89,6 +89,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client-registration ids, client-facing callback and breakpoint correlation ids, TLS keystore file
   names and cluster node ids — are unchanged and still use the secure generator. The ids are standard
   random (version 4) UUIDs as before, so nothing user-visible changes about their format or uniqueness.
+- The single event-log writer thread no longer re-reads the `logLevelOverrides` configuration from
+  scratch for **every** log entry. Deciding whether to print an entry needs the per-category log-level
+  overrides, and resolving them went through the general property machinery on each entry — a hashed
+  map lookup, and a fresh JSON parse when overrides are actually configured. Because one thread does
+  this work serially for the whole server, at high request rates it was measured in profiles taking a
+  growing share of a CPU core (over 20% of that thread's time past the saturation knee), stealing
+  capacity from serving requests. The resolved overrides are now cached and reused, and re-resolved
+  only when the configuration actually changes — so a change made at runtime (programmatically or via
+  `PUT /mockserver/configuration`) still takes effect right away (from the next log entry). Nothing
+  user-visible changes about which entries are logged.
+
+### Fixed
 - A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that
   body in memory for as long as the log entry lives. The body was retained twice: once as the raw
   bytes, and again as a parsed JSON tree roughly five times larger, built eagerly when the entry was
