@@ -291,7 +291,35 @@
                             <excludes>
                                 <exclude>**/*IntegrationTest.java</exclude>
                                 <exclude>**/DashboardContentLengthCharsetForkTest.java</exclude>
+                                <!-- ConfigurationCallSiteGuardTest scans compiled .class output across
+                                     EVERY reactor module. It must run over a fully-built reactor, but at
+                                     netty's own test phase every module downstream of netty (junit-rule,
+                                     junit-jupiter, spring, async, blob-*, state-infinispan, testcontainers,
+                                     k8s-webhook) is not yet compiled — so running it here would silently
+                                     scan only a subset. It is instead run as a standalone, fail-closed step
+                                     over the built tree via the configuration-callsite-guard execution below
+                                     (invoked from scripts/buildkite_quick_build.sh after `clean install`). -->
+                                <exclude>**/ConfigurationCallSiteGuardTest.java</exclude>
                             </excludes>
+                        </configuration>
+                    </execution>
+                    <!-- Whole-reactor configuration-reachability guard. Bound to phase `none` so it never
+                         runs during a normal build/test; invoked explicitly AFTER `clean install` populates
+                         every module's target/classes:
+                             ./mvnw -pl mockserver-netty surefire:test@configuration-callsite-guard
+                         See ConfigurationCallSiteGuardTest's "Where this guard runs, and why" javadoc. -->
+                    <execution>
+                        <id>configuration-callsite-guard</id>
+                        <phase>none</phase>
+                        <goals>
+                            <goal>test</goal>
+                        </goals>
+                        <configuration>
+                            <includes>
+                                <include>**/ConfigurationCallSiteGuardTest.java</include>
+                            </includes>
+                            <excludes combine.self="override"/>
+                            <failIfNoTests>true</failIfNoTests>
                         </configuration>
                     </execution>
                     <!-- run ONLY the forked-charset guard, in a fresh fork forced to a non-UTF-8

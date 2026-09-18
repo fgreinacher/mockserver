@@ -38,6 +38,38 @@ MVN_EXIT=$?
 log_debug "Maven exited with code=$MVN_EXIT"
 
 # ──────────────────────────────────────────────────────────────────────
+# Whole-reactor configuration-reachability guard (ConfigurationCallSiteGuardTest).
+#
+# The guard scans compiled .class output across EVERY reactor module to prove no
+# enforcement site reads a configuration value only from the static
+# ConfigurationProperties store (such a read is unreachable from
+# PUT /mockserver/configuration even though the value round-trips through the DTO).
+# Because it scans built classes, its coverage is only complete once the WHOLE
+# reactor has been compiled — and under `-T 1C` netty's own test phase runs long
+# before the modules downstream of it (junit-rule, junit-jupiter, spring, async,
+# blob-*, state-infinispan, testcontainers, k8s-webhook) are built. Running it in
+# netty's test phase therefore silently scanned only a subset; it is excluded from
+# that phase (mockserver-netty/pom.xml) and run HERE instead, after the reactor
+# `clean install` above has populated every module's target/classes in this same
+# container. The test itself asserts every module it SHOULD cover was actually
+# scanned, so an incomplete tree fails loudly rather than narrowing scope silently.
+#
+# Only run it when the reactor build passed (a failed build is already red), and
+# fold its exit into MVN_EXIT so a guard violation turns the whole build red.
+# (still inside the `set +e` region opened before the reactor build above, so a
+# guard failure is captured in GUARD_EXIT rather than aborting the script.)
+if [ "$MVN_EXIT" -eq 0 ]; then
+    log_debug "Running whole-reactor configuration-callsite guard..."
+    ./mvnw -B --no-transfer-progress -pl mockserver-netty surefire:test@configuration-callsite-guard \
+        -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO
+    GUARD_EXIT=$?
+    log_debug "configuration-callsite guard exited with code=$GUARD_EXIT"
+    if [ "$GUARD_EXIT" -ne 0 ]; then
+        MVN_EXIT=$GUARD_EXIT
+    fi
+fi
+
+# ──────────────────────────────────────────────────────────────────────
 # Build the relocated examples/ suite standalone.
 #
 # examples/java was removed as a `<module>` of the mockserver reactor

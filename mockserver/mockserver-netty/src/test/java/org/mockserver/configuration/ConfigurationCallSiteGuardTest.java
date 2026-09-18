@@ -77,16 +77,52 @@ import static org.hamcrest.Matchers.is;
  * Detection is therefore descriptor-qualified; the allowlist is keyed by {@code Class#method}
  * (covering all overloads) so it stays readable and does not churn on signature changes.
  *
+ * <h2>Where this guard runs, and why</h2>
+ * <p>The guard scans compiled {@code .class} output across every reactor module's {@code target/classes}.
+ * That makes its coverage a function of what has been BUILT: a module that has not yet been compiled is
+ * silently invisible and the scan passes having proven nothing about it. Because
+ * {@code mockserver-junit-rule}, {@code mockserver-junit-jupiter} and every other module downstream of
+ * {@code mockserver-netty} in the reactor are not yet compiled during netty's OWN test phase (and under
+ * {@code -T} the schedule is by dependency graph, not list order), running this in netty's test phase
+ * would quietly scan only netty + its upstreams — exactly the reactor-order-dependent scope this guard
+ * now refuses to accept.
+ *
+ * <p>So this test does NOT run in netty's default test phase (it is excluded there in
+ * {@code mockserver-netty/pom.xml}). It runs as a standalone, fail-closed verification over the
+ * FULLY-built reactor, via the dedicated surefire execution {@code configuration-callsite-guard},
+ * invoked after {@code clean install} in {@code scripts/buildkite_quick_build.sh}:
+ *
+ * <pre>./mvnw -pl mockserver-netty surefire:test@configuration-callsite-guard</pre>
+ *
+ * At that point every module's {@code target/classes} exists on disk regardless of build parallelism.
+ * {@link #expectedScannedModules()} asserts every module that SHOULD be covered actually was, so an
+ * incomplete tree fails loudly instead of narrowing the guard's scope in silence.
+ *
  * <h2>Maintenance</h2>
- * <p>This guard needs zero per-property maintenance: it discovers both the property set and the call
- * sites automatically. If it fails on a new call site, the correct first response is to make the
- * site consult the {@link Configuration} instance — NOT to add an allowlist entry. Allowlist only
- * genuinely instance-unreachable bootstrap code, and say why.
+ * <p>This guard needs zero per-property and zero per-module maintenance: it discovers the property set,
+ * the call sites AND the set of modules to cover automatically. If it fails on a new call site, the
+ * correct first response is to make the site consult the {@link Configuration} instance — NOT to add an
+ * allowlist entry. Allowlist only genuinely instance-unreachable bootstrap code, and say why.
  */
 public class ConfigurationCallSiteGuardTest {
 
     private static final String CONFIGURATION_PROPERTIES = "org/mockserver/configuration/ConfigurationProperties";
     private static final String CONFIGURATION = "org/mockserver/configuration/Configuration";
+
+    /**
+     * Reactor modules that appear in {@code mockserver/pom.xml}'s {@code <modules>} list but which the
+     * coverage check must NOT require to have been scanned, each with a mandatory reason. This is the
+     * ONLY sanctioned way for an expected module to be absent from the scanned set — it exists so that
+     * "a module was not scanned" is always either a deliberate, reasoned exemption here or a loud
+     * failure, never silence.
+     *
+     * <p>It is deliberately empty: every module carrying {@code src/main/java} is derived automatically
+     * (see {@link #expectedScannedModules()}), and modules with no main sources — the {@code
+     * *-no-dependencies} shade artifacts and {@code mockserver-bom} — are already excluded there because
+     * they produce no scannable {@code target/classes}. Add an entry only for a module that genuinely
+     * produces main classes yet cannot be present when the guard runs, and say why.
+     */
+    private static final Map<String, String> MODULES_WITHOUT_SCANNABLE_MAIN_CLASSES = new TreeMap<>();
 
     /**
      * Classes that DEFINE the static-store fallback rather than enforcing a value. Their getters are
@@ -156,6 +192,20 @@ public class ConfigurationCallSiteGuardTest {
                 + "only a ClientConfiguration, never a server Configuration, so no Configuration instance can exist "
                 + "here. stopDrainMillis is a server property read best-effort from the client's OWN JVM to size the "
                 + "stop-wait deadline, and is inherently unreachable from a server-side PUT /mockserver/configuration");
+        ALLOWED_STATIC_ONLY_CALL_SITES.put("org.mockserver.junit.MockServerRule#applyDevModeDefault",
+            "JUnit-4 rule test-harness bootstrap that runs BEFORE ClientAndServer.startClientAndServer(...) builds "
+                + "any server, so no Configuration instance exists yet. It deliberately SEEDS the JVM-global static "
+                + "store (ConfigurationProperties.devMode(true)) so a later-constructed ClientAndServer inherits the "
+                + "dev-mode store sizes, then reads devMode/maxLogEntries/maxExpectations back from that same static "
+                + "store ONLY to log the effective sizes it just seeded. These are process-global defaults read at "
+                + "server-construction/store-sizing time, not per-instance server settings, so they are inherently "
+                + "unreachable from a running server's PUT /mockserver/configuration and consulting a Configuration "
+                + "instance here would be wrong (there is none, and the value being set is global by design)");
+        ALLOWED_STATIC_ONLY_CALL_SITES.put("org.mockserver.junit.jupiter.MockServerExtension#applyDevModeDefault",
+            "JUnit-5 extension analogue of MockServerRule#applyDevModeDefault: identical bootstrap that runs before "
+                + "any server/Configuration exists, deliberately seeds the JVM-global dev-mode store sizes into the "
+                + "static store, then reads devMode/maxLogEntries/maxExpectations back solely to log them. Global "
+                + "pre-construction defaults, inherently unreachable from a server-side PUT /mockserver/configuration");
     }
 
     /**
@@ -192,13 +242,43 @@ public class ConfigurationCallSiteGuardTest {
         Set<String> restReachableProperties = restReachableProperties();
 
         // sanity: the guard must be scanning real, representative bytecode so it cannot pass vacuously
-        assertThat("guard must scan compiled module output — run this under `mvn verify`, not against an unbuilt tree",
+        assertThat("guard must scan compiled module output — run this over a fully-built reactor",
             moduleClassRoots.size(), greaterThan(1));
         assertThat("guard must cover a large property set", restReachableProperties.size(), greaterThan(100));
-        List<String> scannedModules = moduleClassRoots.stream()
+        Set<String> scannedModules = moduleClassRoots.stream()
             .map(p -> p.getParent().getParent().getFileName().toString())
-            .sorted()
-            .collect(Collectors.toList());
+            .collect(Collectors.toCollection(TreeSet::new));
+
+        // COVERAGE SELF-VERIFICATION (see the "Where this guard runs, and why" javadoc).
+        //
+        // The guard scans compiled .class output, so a module it should cover but that has not been
+        // built yet is silently invisible: the scan simply finds nothing there and passes having
+        // proven nothing about that module. That is exactly how this guard was scoped by Maven reactor
+        // ORDER rather than by intent — every module downstream of mockserver-netty in the reactor is
+        // uncompiled at netty's own test phase, so running here would quietly skip all of them.
+        //
+        // Defeat that by deriving the set of modules the guard is SUPPOSED to cover from an
+        // authoritative source — the reactor's own <modules> list, restricted to modules that produce
+        // main classes — and asserting every one of them was actually scanned. A module that is
+        // expected but absent from the build output is a LOUD failure here, never silence. If a module
+        // legitimately must be skipped it has to earn an explicit, reasoned exemption in
+        // MODULES_WITHOUT_SCANNABLE_MAIN_CLASSES, not disappear quietly.
+        Set<String> expectedModules = expectedScannedModules();
+        assertThat("could not derive the expected module set from the reactor pom — a parse failure here would "
+                + "let the coverage check pass vacuously", expectedModules.size(), greaterThan(10));
+        Set<String> missingModules = new TreeSet<>(expectedModules);
+        missingModules.removeAll(scannedModules);
+        assertThat("these reactor modules declare main sources but no <module>/target/classes was found for them, "
+                + "so the guard could not scan them and its coverage is INCOMPLETE. This is the defect the guard "
+                + "guards against in itself: a scan whose scope is set by what happens to be built, not by intent. "
+                + "It almost always means the guard ran before these modules were compiled — e.g. in "
+                + "mockserver-netty's own test phase, where every module downstream of netty in the reactor is not "
+                + "yet built. Run it over a FULLY-built reactor (the post-install `surefire:test@configuration-"
+                + "callsite-guard` step), or add a justified exemption to MODULES_WITHOUT_SCANNABLE_MAIN_CLASSES: "
+                + missingModules,
+            missingModules, is(empty()));
+        // core and netty are the load-bearing minimum; keep an explicit tripwire in case the derivation
+        // above ever regresses to an over-permissive empty/near-empty expected set.
         assertThat("mockserver-core must be scanned", scannedModules, hasItem("mockserver-core"));
         assertThat("mockserver-netty must be scanned", scannedModules, hasItem("mockserver-netty"));
 
@@ -391,6 +471,44 @@ public class ConfigurationCallSiteGuardTest {
                 .sorted()
                 .collect(Collectors.toList());
         }
+    }
+
+    /**
+     * The set of reactor modules the guard is SUPPOSED to scan, derived authoritatively from
+     * {@code mockserver/pom.xml}'s {@code <modules>} list rather than from whatever is on disk (which is
+     * precisely how the guard's scope silently tracked Maven reactor order before).
+     *
+     * <p>A module qualifies when it is listed in the reactor AND carries {@code src/main/java} (so it
+     * produces scannable {@code target/classes}) AND is not exempted in
+     * {@link #MODULES_WITHOUT_SCANNABLE_MAIN_CLASSES}. This automatically excludes {@code mockserver-bom}
+     * and the {@code *-no-dependencies} shade modules (no main sources) while automatically INCLUDING any
+     * newly-added module that defines configuration call sites — no per-module maintenance.
+     */
+    private static Set<String> expectedScannedModules() throws IOException {
+        Path root = mockserverRoot();
+        String pom = Files.readString(root.resolve("pom.xml"), StandardCharsets.UTF_8);
+        int start = pom.indexOf("<modules>");
+        int end = pom.indexOf("</modules>");
+        if (start < 0 || end < 0 || end < start) {
+            throw new IllegalStateException("could not locate the <modules> block in " + root.resolve("pom.xml"));
+        }
+        // strip XML comments first: the <modules> block carries a commented-out
+        // <module>../examples/java</module> (examples/java is built standalone, not as a reactor
+        // module), and matching inside it would invent a bogus expected module that can never be scanned.
+        String modulesBlock = pom.substring(start, end).replaceAll("(?s)<!--.*?-->", "");
+        java.util.regex.Matcher matcher =
+            java.util.regex.Pattern.compile("<module>\\s*([^<]+?)\\s*</module>").matcher(modulesBlock);
+        Set<String> expected = new TreeSet<>();
+        while (matcher.find()) {
+            String module = matcher.group(1).trim();
+            if (MODULES_WITHOUT_SCANNABLE_MAIN_CLASSES.containsKey(module)) {
+                continue;
+            }
+            if (Files.isDirectory(root.resolve(module).resolve("src/main/java"))) {
+                expected.add(module);
+            }
+        }
+        return expected;
     }
 
     /**
