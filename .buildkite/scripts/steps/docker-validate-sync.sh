@@ -11,6 +11,7 @@ DOCKERFILES=(
   "docker/local/Dockerfile"
   "docker/graaljs/Dockerfile"
   "docker/clustered/Dockerfile"
+  "docker/aot/Dockerfile"
 )
 
 errors=0
@@ -48,11 +49,12 @@ for df in "${DOCKERFILES[@]}"; do
 
   # Every image that runs org.mockserver.cli.Main must cap the JVM heap so the in-memory
   # request/expectation rings size off a bounded heap, otherwise the container is liable to be
-  # OOM-SIGKILLed under load. Assert the cap is present so it cannot silently drift back out of
-  # one variant (the consumer docs promise "the Docker image caps the JVM heap at 75%").
+  # OOM-SIGKILLed under load. The cap is 60% (not 75%): a committed heap costs ~1.48x its size in
+  # real RSS, so 75% OOM-killed a 2 GiB container. Assert the cap is present so it cannot silently
+  # drift back out of one variant (the consumer docs promise "the image caps the JVM heap at 60%").
   if grep -q 'org.mockserver.cli.Main' "$filepath" \
-     && ! grep -qE '"-XX:MaxRAMPercentage=75\.0"' "$filepath"; then
-    echo "FAIL: $df runs org.mockserver.cli.Main but is missing '-XX:MaxRAMPercentage=75.0' heap cap in ENTRYPOINT"
+     && ! grep -qE '"-XX:MaxRAMPercentage=60\.0"' "$filepath"; then
+    echo "FAIL: $df runs org.mockserver.cli.Main but is missing '-XX:MaxRAMPercentage=60.0' heap cap in ENTRYPOINT"
     errors=$((errors + 1))
   fi
 done

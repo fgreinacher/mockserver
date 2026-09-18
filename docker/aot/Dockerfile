@@ -92,10 +92,11 @@ COPY --from=aot-build /mockserver.aot /
 
 USER nonroot
 
-# -XX:MaxRAMPercentage=75.0 caps the JVM heap at 75% of the container memory limit (same
-# rationale as the standard image). -XX:AOTCache loads the baked cache; if the cache is
-# incompatible (e.g. different CPU arch) the JVM logs a warning and starts normally.
-ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+# -XX:MaxRAMPercentage=60.0 caps the JVM heap at 60% of the container memory limit (60 not 75
+# because a committed heap costs ~1.48x its size in real RSS, so a 75% cap OOM-killed a 2 GiB
+# container under load). -XX:AOTCache loads the baked cache; if the cache is incompatible (e.g.
+# different CPU arch) the JVM logs a warning and starts normally.
+ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 

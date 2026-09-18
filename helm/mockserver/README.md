@@ -74,7 +74,7 @@ The following values are supported:
 - `app.logLevel` (default: INFO)
 - `app.proxyRemoteHost` (no default)
 - `app.proxyRemotePort` (no default)
-- `app.jvmOptions` (default: `""`) - extra JVM options passed via `JAVA_TOOL_OPTIONS`. The image already caps the heap at 75% of the container memory limit (`-XX:MaxRAMPercentage=75.0`); set an explicit `-Xmx` here to change it. Always set `resources.limits.memory` so the heap is sized off a bounded container limit rather than total node memory.
+- `app.jvmOptions` (default: `""`) - extra JVM options passed via `JAVA_TOOL_OPTIONS`. The image already caps the heap at 60% of the container memory limit (`-XX:MaxRAMPercentage=60.0`); set an explicit `-Xmx` here to change it (an explicit `-Xmx` disables `MaxRAMPercentage`). The cap is 60% because the process needs roughly 1.5x its heap in real memory (heap plus metaspace, thread stacks and Netty's off-heap buffers), so budget `resources.limits.memory` at about 1.5x the heap you want. Always set `resources.limits.memory` so the heap is sized off a bounded container limit rather than total node memory.
 - `image.snapshot` (default: false) - set `true` to use latest snapshot version
 
 For example configure a proxyRemoteHost and proxyRemotePort, as follows:

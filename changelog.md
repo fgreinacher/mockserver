@@ -60,6 +60,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simply not emitted rather than reported as zero), so on such a JVM the series will not appear.
 
 ### Changed
+- **The Docker images now cap the JVM heap at 60% of the container memory limit, down from 75%**
+  (`-XX:MaxRAMPercentage=60.0` in every `docker/**/Dockerfile` ENTRYPOINT). In a memory-limited
+  container with no explicit heap set, the default heap is now smaller — for a 2 GiB container it
+  drops from ~1536 MiB to ~1229 MiB. The reason is that the heap is not the whole footprint: under
+  sustained load a committed 1,536 MiB heap was measured occupying ~2,271 MiB of real memory (~1.5×),
+  the extra being Netty's off-heap network buffers, metaspace, thread stacks and GC bookkeeping — none
+  counted by `-Xmx`. At 75% of a 2 GiB limit that footprint exceeds the limit and the kernel OOM-kills
+  the container (exit 137, `OOMKilled: true`, with no `OutOfMemoryError` in the logs); 60% leaves real
+  headroom. Practical rule: budget a container of roughly **1.5× the heap you want**. This changes only
+  the heap-derived defaults that are not already saturated at their caps: `maxLogEntries` (100,000) and
+  `maxExpectations` (15,000) are unaffected, while `maxEventLogSizeInBytes` (which sizes off available
+  heap with no cap) drops about 20%. **To keep the previous heap**, set it explicitly — e.g.
+  `JAVA_TOOL_OPTIONS=-Xmx1536m` for a 2 GiB container, or raise the container `--memory` limit — noting
+  that an explicit `-Xmx` disables `MaxRAMPercentage` entirely.
 - Upgraded the dashboard's diagram dependency `mermaid` from 11 to 12 (`mockserver-ui`). The diagram output
   the dashboard renders (agent call graphs and scenario state diagrams) is unchanged. An npm `overrides` entry
   pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —

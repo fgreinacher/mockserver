@@ -20,13 +20,15 @@ app:
   propertiesFileName: "mockserver.properties"
   readOnlyRootFilesystem: false
   # -- Extra JVM options, passed verbatim via the JAVA_TOOL_OPTIONS environment variable.
-  # Empty by default. The Docker image already caps the heap at 75% of the container memory
-  # limit (-XX:MaxRAMPercentage=75.0), so the in-memory request/expectation rings size off a
-  # bounded heap. To change the cap, set an explicit -Xmx here — that disables the image's
-  # MaxRAMPercentage. (A different MaxRAMPercentage set via jvmOptions has NO effect: the
-  # image's entrypoint flag is applied last and wins.) MockServer's in-memory log ring sizes
+  # Empty by default. The Docker image already caps the heap at 60% of the container memory
+  # limit (-XX:MaxRAMPercentage=60.0), so the in-memory request/expectation rings size off a
+  # bounded heap. The cap is 60% because the process needs ~1.5x its heap in real memory (heap
+  # plus metaspace, thread stacks and Netty off-heap buffers), so budget resources.limits.memory
+  # below at ~1.5x the heap you want. To change the cap, set an explicit -Xmx here — that disables
+  # the image's MaxRAMPercentage. (A different MaxRAMPercentage set via jvmOptions has NO effect:
+  # the image's entrypoint flag is applied last and wins.) MockServer's in-memory log ring sizes
   # off the heap, so always pair a heap setting with a matching resources.limits.memory below.
-  # Example - set an explicit heap (overrides the image's 75% MaxRAMPercentage; must fit inside
+  # Example - set an explicit heap (overrides the image's 60% MaxRAMPercentage; must fit inside
   # resources.limits.memory):
   #   jvmOptions: "-Xmx512m"
   jvmOptions: ""
@@ -283,10 +285,11 @@ podLabels: {}
 
 # -- Pod resource requests and limits, rendered verbatim into the container spec.
 # Empty by default (no requests/limits — the pod can consume unbounded node memory).
-# Setting a memory limit is strongly recommended: the JVM caps its heap at 75% of the
-# memory limit (-XX:MaxRAMPercentage=75.0 in the image), and MockServer's in-memory
-# request/expectation rings size off that heap. Without a limit the JVM sizes off total
-# node memory and can be OOM-killed under load. Set app.jvmOptions to tune the heap.
+# Setting a memory limit is strongly recommended: the JVM caps its heap at 60% of the
+# memory limit (-XX:MaxRAMPercentage=60.0 in the image), and MockServer's in-memory
+# request/expectation rings size off that heap. The process needs ~1.5x its heap in real
+# memory, so budget the limit at ~1.5x the heap you want. Without a limit the JVM sizes off
+# total node memory and can be OOM-killed under load. Set app.jvmOptions to tune the heap.
 # Example:
 #   resources:
 #     requests:

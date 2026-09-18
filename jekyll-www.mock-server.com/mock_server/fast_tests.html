@@ -15,7 +15,7 @@ schema_faq:
   - question: "What is the fastest way to run MockServer in tests?"
     answer: "Start one MockServer container per test suite and call client.reset() between tests — reset() clears all expectations and recorded requests in milliseconds, giving the same isolation as a fresh container without the startup cost per test. For JVM test suites that need no network isolation, running MockServer in-process (mockserver-netty or the JUnit 5 extension) is faster still: it starts in tens of milliseconds with no Docker overhead."
   - question: "How do I limit MockServer's memory in tests?"
-    answer: "Set a container memory limit — the image caps the JVM heap at 75% of the container limit (-XX:MaxRAMPercentage=75.0), so limiting the container to 256 MiB caps the heap at ~192 MiB. To set an explicit heap size instead, pass -Xmx via the JAVA_TOOL_OPTIONS environment variable; note that overriding -XX:MaxRAMPercentage via JAVA_TOOL_OPTIONS has no effect because the image applies its own value afterwards."
+    answer: "Set a container memory limit — the image caps the JVM heap at 60% of the container limit (-XX:MaxRAMPercentage=60.0), so limiting the container to 256 MiB caps the heap at ~154 MiB. The cap is 60% because the process needs roughly 1.5x its heap in total memory (heap plus metaspace, thread stacks and Netty's off-heap buffers, none counted by -Xmx), so budget a container of about 1.5x the heap you want. To set an explicit heap size instead, pass -Xmx via the JAVA_TOOL_OPTIONS environment variable; note that overriding -XX:MaxRAMPercentage via JAVA_TOOL_OPTIONS has no effect because the image applies its own value afterwards, and that setting -Xmx disables MaxRAMPercentage entirely."
   - question: "Does MockServer support GraalVM native-image?"
     answer: "No, and there are no plans to. MockServer loads user-supplied classes at runtime (class callbacks, expectation initializers, custom matchers), which is incompatible with native-image's closed-world model — in testing, features not explicitly exercised during build-time metadata collection failed silently at runtime. For faster container startup use the -aot image tags (JDK 25 Leyden AOT cache, ~0.35 s to ready); for JVM-less environments use the jlink binary bundle."
 ---
@@ -88,9 +88,9 @@ class SuiteReuseExampleTest {
 
 <h2>Bounding memory</h2>
 
-<p>The image caps the JVM heap at 75% of the container memory limit (<span class="inline_code">-XX:MaxRAMPercentage=75.0</span>). Setting a container memory limit is the supported way to control MockServer's footprint in your test environment. Without a limit, idle footprint is roughly 200 MiB (measured at idle with no active requests and no explicit memory limit).</p>
+<p>The image caps the JVM heap at 60% of the container memory limit (<span class="inline_code">-XX:MaxRAMPercentage=60.0</span>), leaving room for the ~1.5&times;-the-heap of total memory the process needs (heap plus metaspace, thread stacks and Netty's off-heap network buffers &mdash; none of it counted by <span class="inline_code">-Xmx</span>). Setting a container memory limit is the supported way to control MockServer's footprint in your test environment; budget a limit of about 1.5&times; the heap you want (that overhead is largely fixed and load-driven, so 1.5&times; is a floor that grows for very small containers and under heavy load &mdash; fine for the small, low-concurrency workloads typical of tests). Without a limit, idle footprint is roughly 200 MiB (measured at idle with no active requests and no explicit memory limit).</p>
 
-<pre class="prettyprint lang-java code"><code class="code">// Limit MockServer to 256 MiB of container memory (heap capped at ~192 MiB)
+<pre class="prettyprint lang-java code"><code class="code">// Limit MockServer to 256 MiB of container memory (heap capped at ~154 MiB)
 MockServerContainer mockServer = new MockServerContainer()
     .withCreateContainerCmdModifier(cmd ->
         cmd.getHostConfig().withMemory(256 * 1024 * 1024L));</code></pre>

@@ -174,7 +174,44 @@
 
 <h3>Configuring JVM Heap Size</h3>
 
-<p>The MockServer Docker image caps the JVM heap at 75% of the container's memory limit (<span class="inline_code">-XX:MaxRAMPercentage=75.0</span>), so the in-memory ring buffers size off a bounded heap. <strong>Always run the container with an explicit memory limit</strong> (for example <span class="inline_code">--memory=1g</span>, or <span class="inline_code">resources.limits.memory</span> in Kubernetes) &mdash; without one the JVM sizes its heap off the host's total memory, and the default ring sizes (<span class="inline_code">maxLogEntries</span> and <span class="inline_code">maxExpectations</span>, which derive from available heap) scale up with it, so MockServer can be OOM-killed under load. This cap only applies when you have not set an explicit heap; to change it, set an explicit <span class="inline_code">-Xmx</span> via the <span class="inline_code">JAVA_TOOL_OPTIONS</span> environment variable (a different <span class="inline_code">-XX:MaxRAMPercentage</span> passed via <span class="inline_code">JAVA_TOOL_OPTIONS</span> will <strong>not</strong> take effect, because the image's entrypoint applies its own value last):</p>
+<p>The MockServer Docker image caps the JVM heap at 60% of the container's memory limit (<span class="inline_code">-XX:MaxRAMPercentage=60.0</span>), so the in-memory ring buffers size off a bounded heap. <strong>Always run the container with an explicit memory limit</strong> (for example <span class="inline_code">--memory=2g</span>, or <span class="inline_code">resources.limits.memory</span> in Kubernetes) &mdash; without one the JVM sizes its heap off the host's total memory, and the default ring sizes (<span class="inline_code">maxLogEntries</span> and <span class="inline_code">maxExpectations</span>, which derive from available heap) scale up with it, so MockServer can be OOM-killed under load.</p>
+
+<p><strong>Sizing the container for your workload.</strong> The heap is only part of what the Java process occupies, and &mdash; this is the part that trips people up &mdash; the rest is <strong>not a fixed fraction of the heap</strong>. It is largely additive and driven by load, not by heap size. Under sustained load a 1,536&nbsp;MiB heap was measured occupying 2,271&nbsp;MiB of real memory; the 735&nbsp;MiB difference breaks down as:</p>
+<ul>
+<li>class metadata (metaspace) and the JIT code cache &mdash; about 133&nbsp;MiB, and roughly constant regardless of heap;</li>
+<li>one stack per thread &mdash; tens of MiB, set by the thread count (which tracks CPU cores), not the heap;</li>
+<li>the garbage collector's own bookkeeping &mdash; this part <em>does</em> scale with the heap;</li>
+<li>and the largest, most variable piece: the pool of direct (off-heap) network buffers Netty uses for request and response bodies, whose size is driven by concurrency and body size and <strong>not by the heap at all</strong>.</li>
+</ul>
+<p>None of that is counted by <span class="inline_code">-Xmx</span>, and most of it does not shrink when you shrink the heap. So the practical model is <strong>footprint &asymp; heap + overhead</strong>, where the overhead is dominated by heap-independent, load-driven terms. A 75% cap could not fit &mdash; at 75% of a 2&nbsp;GiB limit the heap alone (1,536&nbsp;MiB) plus this overhead exceeded the limit and the kernel killed the process &mdash; which is why the default is 60%.</p>
+
+<p>The convenient &ldquo;budget about <strong>1.5&times; the heap</strong>&rdquo; shorthand is just what <span class="inline_code">heap + overhead</span> happened to work out to <em>at around a 1.5&nbsp;GiB heap under sustained load</em> (1,536 + 735 &asymp; 1.48&times;). It is a reasonable floor for heaps of roughly a gigabyte or more, but it <strong>gets progressively worse as the container gets smaller</strong>: the fixed overhead stays roughly the same while the heap shrinks, so the effective multiple climbs and a larger fraction of the container goes to memory the percentage cap cannot bound. Do not extrapolate 1.5&times; down to a small container &mdash; and note the 735&nbsp;MiB itself is a conservative upper bound (the measurement run carried profiling instrumentation, which uses native memory) that <em>rises</em> further with more concurrent connections and larger bodies. The heap the 60% cap gives you, and what that leaves for the overhead, at common container sizes:</p>
+
+<table>
+    <tr>
+        <th>Container memory limit</th>
+        <th>Heap at the 60% default</th>
+        <th>Left for non-heap + native</th>
+        <th>Realistic use</th>
+    </tr>
+    <tr><td>512&nbsp;MiB</td><td>~307&nbsp;MiB</td><td>~205&nbsp;MiB</td><td>Light use only &mdash; low concurrency, bodies up to a few KB. Under load like the measurement (~700+&nbsp;MiB of overhead) this is the size <em>most</em> likely to be OOM-killed, not the safest.</td></tr>
+    <tr><td>1&nbsp;GiB</td><td>~614&nbsp;MiB</td><td>~410&nbsp;MiB</td><td>Moderate load and body sizes.</td></tr>
+    <tr><td>2&nbsp;GiB</td><td>~1229&nbsp;MiB</td><td>~819&nbsp;MiB</td><td>Comfortably above the ~735&nbsp;MiB of overhead measured under sustained load &mdash; the smallest size proven safe at high request rates.</td></tr>
+    <tr><td>4&nbsp;GiB</td><td>~2458&nbsp;MiB</td><td>~1638&nbsp;MiB</td><td>High concurrency and/or large bodies.</td></tr>
+</table>
+
+<p>The &ldquo;left for non-heap + native&rdquo; column is simply <span class="inline_code">limit &minus; heap</span> &mdash; the budget the percentage cap leaves for everything <span class="inline_code">-Xmx</span> does not count. Compare it against the overhead <em>your</em> traffic actually produces: the ~735&nbsp;MiB measured is for one sustained-load profile and grows with concurrency and body size (the same effect that makes 1.5&times; a floor, not a constant). A container is safe when this column comfortably exceeds your measured overhead &mdash; which is why 2&nbsp;GiB works at high request rates and 512&nbsp;MiB does not. To size for your own workload, watch container RSS or enable CSV memory tracking (see <em>Monitoring Memory Usage</em> below) under representative load rather than trusting a multiple of the heap; and when in doubt, give the non-heap side room, because it is the part the heap-percentage cap cannot bound.</p>
+
+<p><strong>If your container is killed with exit code 137.</strong> When the total footprint exceeds the container limit, the Linux kernel kills the process &mdash; the container exits with code <span class="inline_code">137</span> and <span class="inline_code">OOMKilled: true</span>, and there is <strong>no</strong> Java stack trace and no <span class="inline_code">OutOfMemoryError</span> in the logs, because the JVM did not fail &mdash; it was killed from outside. Confirm it with:</p>
+<pre class="code" style="padding: 2px;"><code class="code">docker inspect --format '{{json .State}}' &lt;container&gt;
+# "OOMKilled": true, "ExitCode": 137</code></pre>
+<p>The fix is a <strong>larger memory limit or a smaller heap percentage &mdash; not a bigger heap</strong>. Seeing 137 with plenty of <span class="inline_code">-Xmx</span> headroom is the classic trap: raising <span class="inline_code">-Xmx</span> makes it worse, because the heap was never the whole footprint. Either raise <span class="inline_code">--memory</span> to cover the heap <em>plus</em> the load-driven overhead above, or lower the cap.</p>
+
+<p><strong>Overriding the default, and what you trade.</strong> The 60% cap only applies when you have <em>not</em> set an explicit heap. To change it you have two levers, and it is important not to confuse them:</p>
+<ul>
+<li>To use a <strong>different percentage</strong> of the container limit, rebuild or re-run so the JVM sees a different <span class="inline_code">-XX:MaxRAMPercentage</span>. Note the footgun: passing a different <span class="inline_code">-XX:MaxRAMPercentage</span> via <span class="inline_code">JAVA_TOOL_OPTIONS</span> does <strong>not</strong> work &mdash; the image's entrypoint applies its own value last, so it always wins.</li>
+<li>To pin an <strong>absolute heap size</strong>, set an explicit <span class="inline_code">-Xmx</span> via <span class="inline_code">JAVA_TOOL_OPTIONS</span>. Be aware that setting <span class="inline_code">-Xmx</span> (or any heap sizing via <span class="inline_code">JAVA_TOOL_OPTIONS</span>) <strong>disables</strong> <span class="inline_code">MaxRAMPercentage</span> entirely &mdash; the percentage cap no longer applies at all. A user who sets one thinking it tunes the other gets neither, so choose one mechanism, and still size the container against the heap <em>plus</em> the load-driven overhead above &mdash; not a fixed multiple of the heap:</li>
+</ul>
 
 <pre class="code" style="padding: 2px;"><code class="code">docker run -d --rm -p 1080:1080 \
   -e JAVA_TOOL_OPTIONS="-Xmx512m" \

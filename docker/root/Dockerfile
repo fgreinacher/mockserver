@@ -103,13 +103,14 @@ COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 # run MockServer as root
 USER root
 
-# -XX:MaxRAMPercentage=75.0 caps the JVM heap at 75% of the container memory limit so the
-# in-memory request/expectation rings size off a bounded heap. It only applies when the user has
-# NOT set an explicit heap, so it is a safe default. To change the cap, set an explicit -Xmx (via
-# JAVA_TOOL_OPTIONS or -Xmx) — that disables MaxRAMPercentage. Setting a different MaxRAMPercentage
-# via JAVA_TOOL_OPTIONS does NOT take effect: JAVA_TOOL_OPTIONS is prepended before these args, so
-# this entrypoint flag is applied last and wins.
-ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=75.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+# -XX:MaxRAMPercentage=60.0 caps the JVM heap at 60% of the container memory limit so the
+# in-memory request/expectation rings size off a bounded heap. A committed heap costs ~1.48x its
+# size in real RSS (Netty direct arenas, G1 metadata, thread stacks), so a 75% cap OOM-SIGKILLed a
+# 2 GiB container under load; 60% keeps peak RSS near ~88% of the limit. Only applies when the user
+# has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
+# that disables MaxRAMPercentage. A different MaxRAMPercentage via JAVA_TOOL_OPTIONS does NOT take
+# effect: it is prepended before these args, so this entrypoint flag is applied last and wins.
+ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 
