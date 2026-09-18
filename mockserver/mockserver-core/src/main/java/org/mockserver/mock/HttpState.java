@@ -316,7 +316,11 @@ public class HttpState {
             mockServerLog.getRingBufferOccupancy(),
             mockServerLog.getRingBufferSizeInForce(),
             mockServerLog.getInFlightBytes(),
-            mockServerLog.getMaxInFlightBytes()));
+            mockServerLog.getMaxInFlightBytes(),
+            mockServerLog.getRetainedEntryCount(),
+            mockServerLog.getRetainedBytes(),
+            mockServerLog.getMaxRetainedBytes(),
+            mockServerLog.getMaxRetainedEntries()));
         if (configuration.persistExpectations()) {
             this.expectationFileSystemPersistence = new ExpectationFileSystemPersistence(configuration, mockServerLogger, requestMatchers, stateBackend.blobs());
         }

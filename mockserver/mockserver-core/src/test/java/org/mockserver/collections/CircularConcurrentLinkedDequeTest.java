@@ -188,6 +188,83 @@ public class CircularConcurrentLinkedDequeTest {
     }
 
     @Test
+    public void shouldExposeRetainedTotalBytesThatRisesOnAddAndFallsOnEvictionAndClear() {
+        // getTotalBytes() surfaces the running RETAINED weight so a caller (MockServerEventLog's
+        // retained_bytes gauge) can attribute heap to the post-processing deque. Prove it moves: rises
+        // with weighed adds, falls when an over-budget add evicts the oldest, and zeroes on clear.
+        CircularConcurrentLinkedDeque<String> queue =
+            new CircularConcurrentLinkedDeque<>(100, 6, String::length, null);
+        assertThat(queue.getTotalBytes(), is(0L));
+
+        queue.add("aaa"); // 3
+        assertThat(queue.getTotalBytes(), is(3L));
+        queue.add("bbb"); // 3 (total 6, exactly the budget)
+        assertThat(queue.getTotalBytes(), is(6L));
+
+        // over-budget add evicts the oldest, so the total stays within the budget (fell, not grew)
+        queue.add("ccc"); // would be 9 -> evict "aaa" -> back to 6
+        assertThat(queue.getTotalBytes(), is(6L));
+        assertThat(queue.getByteEvictedCount(), is(1L));
+
+        queue.clear();
+        assertThat(queue.getTotalBytes(), is(0L));
+    }
+
+    @Test
+    public void shouldReportZeroRetainedTotalBytesWhenThereIsNoWeigher() {
+        // NO WEIGHER (the 2-arg constructor) is the only thing that opts out of weight tracking, so the
+        // retained-bytes accessor stays at zero however many elements are held.
+        CircularConcurrentLinkedDeque<String> queue = new CircularConcurrentLinkedDeque<>(3, null);
+        queue.add("aaaaaaaaaa");
+        queue.add("bbbbbbbbbb");
+        assertThat(queue.getTotalBytes(), is(0L));
+    }
+
+    @Test
+    public void shouldStillMeasureRetainedBytesWhenTheByteBudgetIsDisabled() {
+        // A DISABLED BYTE BUDGET IS NOT A DISABLED MEASUREMENT. maxBytes <= 0 skips the byte-eviction
+        // loop, not the accounting: with a weigher present the running total still climbs. This is the
+        // configuration MockServerEventLog takes when maxEventLogSizeInBytes is 0 (it always supplies
+        // LogEntry::estimatedHeapSize as the weigher), and it is exactly when retained_bytes matters
+        // most — nothing is capping the deque, so the gauge is the only thing that can say what it
+        // holds. A gauge that read 0 here would report "empty" while the deque grew without bound,
+        // which is the blind spot these accessors exist to close.
+        CircularConcurrentLinkedDeque<String> unbounded =
+            new CircularConcurrentLinkedDeque<>(1000, 0, String::length, null);
+        assertThat(unbounded.getMaxBytes(), is(0L));
+        assertThat(unbounded.getTotalBytes(), is(0L));
+
+        unbounded.add("aaaaaaaaaa");
+        assertThat(unbounded.getTotalBytes(), is(10L));
+        unbounded.add("bbbbb");
+        assertThat(unbounded.getTotalBytes(), is(15L));
+
+        // and it still falls on removal — the accounting is symmetric with the budget off
+        unbounded.clear();
+        assertThat(unbounded.getTotalBytes(), is(0L));
+    }
+
+    @Test
+    public void shouldExposeConfiguredMaxBytesAndMaxSizeCeilings() {
+        // the ceilings behind max_retained_bytes / max_retained_entries
+        CircularConcurrentLinkedDeque<String> byteBounded =
+            new CircularConcurrentLinkedDeque<>(42, 1024, String::length, null);
+        assertThat(byteBounded.getMaxSize(), is(42));
+        assertThat(byteBounded.getMaxBytes(), is(1024L));
+
+        // 2-arg ctor disables the byte budget -> maxBytes 0
+        CircularConcurrentLinkedDeque<String> countOnly = new CircularConcurrentLinkedDeque<>(7, null);
+        assertThat(countOnly.getMaxSize(), is(7));
+        assertThat(countOnly.getMaxBytes(), is(0L));
+
+        // a live resize is reflected by the ceilings (mirrors PUT /mockserver/configuration)
+        byteBounded.setMaxSize(9);
+        byteBounded.setMaxBytes(2048);
+        assertThat(byteBounded.getMaxSize(), is(9));
+        assertThat(byteBounded.getMaxBytes(), is(2048L));
+    }
+
+    @Test
     public void shouldIgnoreByteBudgetWhenDisabledViaFourArgConstructor() {
         // given — maxBytes 0 disables the budget; only the count bound applies, exactly as the 2-arg ctor
         CircularConcurrentLinkedDeque<String> queue =

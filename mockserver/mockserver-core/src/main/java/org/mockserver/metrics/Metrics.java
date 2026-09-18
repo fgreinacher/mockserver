@@ -359,6 +359,33 @@ public class Metrics {
                         .help("In-flight body-byte budget in force (maxEventLogSizeInBytes); 0 means the in-flight bound is disabled")
                         .callback(callback -> callback.call(getEventLogRingStats().maxInFlightBytes))
                         .register();
+                    // Callback gauges: the RETAINED (post-processing) event-log site — the deque that
+                    // holds entries after the disruptor consumer has processed them. This is the SECOND
+                    // event-log retention site, separate from the ring_*/in_flight_bytes gauges above
+                    // (which cover only the in-flight ring). A scrape that reads both sites side by side
+                    // can attribute heap growth to the right one: an empty ring with a full deque means
+                    // the retained log is holding the heap, not the backlog. Read live at scrape time
+                    // via the same supplier; all read 0 before a log is registered.
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_retained_entries")
+                        .help("Event-log entries retained after processing (backing deque element count)")
+                        .callback(callback -> callback.call(getEventLogRingStats().retainedEntries))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_retained_bytes")
+                        .help("Request/response body bytes held by log entries retained after processing (backing deque summed weight)")
+                        .callback(callback -> callback.call(getEventLogRingStats().retainedBytes))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_max_retained_bytes")
+                        .help("Retained body-byte budget in force (maxEventLogSizeInBytes); 0 means the retained byte bound is disabled")
+                        .callback(callback -> callback.call(getEventLogRingStats().maxRetainedBytes))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_max_retained_entries")
+                        .help("Retained entry-count cap in force (maxLogEntries)")
+                        .callback(callback -> callback.call(getEventLogRingStats().maxRetainedEntries))
+                        .register();
                     // Callback gauges: the latest LLM optimisation verdict/totals. Single global
                     // gauges (no per-model labels) reading the most-recently-built report's headline
                     // figures from the snapshot at scrape time. They report 0 until a report has been
@@ -1173,31 +1200,68 @@ public class Metrics {
     }
 
     /**
-     * Immutable snapshot of the event-log ring-buffer internals read at scrape time. Carried through
-     * the supplier so the four ring gauges see a single consistent read rather than four separate
-     * calls into the log. All values default to 0 (no event log registered / before startup).
+     * Immutable snapshot of the event-log internals read at scrape time, spanning BOTH retention sites
+     * (the in-flight ring and the retained deque). Groups the eight figures behind one supplier call so
+     * a caller that wants a coherent picture can take them together. All values default to 0 (no event
+     * log registered / before startup).
+     * <p>
+     * NOT atomic across a scrape. Each of the eight gauge callbacks invokes the supplier separately, so
+     * one Prometheus response can mix values read microseconds apart; every individual field is a
+     * volatile/atomic read, but occupancy and retainedEntries in the same scrape are not guaranteed to
+     * describe the same instant. That is fine for trend attribution (which site is growing) and wrong
+     * for arithmetic that assumes the eight are a consistent snapshot.
+     * <p>
+     * There is deliberately ONE constructor, taking every field. A convenience overload covering only
+     * the ring would let a caller construct a snapshot whose retained figures read 0 — indistinguishable
+     * from a genuinely empty deque, which is precisely the blind spot these fields were added to close.
+     * A new retention site must therefore break compilation here rather than report itself as absent.
      */
     public static final class RingStats {
+        // In-flight site: entries published to the disruptor ring but not yet processed.
         public final long occupancy;
         public final long capacity;
         public final long inFlightBytes;
         public final long maxInFlightBytes;
+        // Retained site: entries kept in the deque after processing — the second, separately-bounded
+        // event-log retention site. Distinct from the in-flight figures above.
+        public final long retainedEntries;
+        public final long retainedBytes;
+        public final long maxRetainedBytes;
+        public final long maxRetainedEntries;
 
-        public RingStats(long occupancy, long capacity, long inFlightBytes, long maxInFlightBytes) {
+        public RingStats(long occupancy, long capacity, long inFlightBytes, long maxInFlightBytes,
+                         long retainedEntries, long retainedBytes, long maxRetainedBytes, long maxRetainedEntries) {
             this.occupancy = occupancy;
             this.capacity = capacity;
             this.inFlightBytes = inFlightBytes;
             this.maxInFlightBytes = maxInFlightBytes;
+            this.retainedEntries = retainedEntries;
+            this.retainedBytes = retainedBytes;
+            this.maxRetainedBytes = maxRetainedBytes;
+            this.maxRetainedEntries = maxRetainedEntries;
         }
     }
 
-    private static final RingStats EMPTY_RING_STATS = new RingStats(0, 0, 0, 0);
+    private static final RingStats EMPTY_RING_STATS = new RingStats(0, 0, 0, 0, 0, 0, 0, 0);
 
     /**
-     * Set the supplier of event-log ring-buffer live internals. Called by HttpState at startup so the
-     * {@code mock_server_event_log_ring_*} / {@code mock_server_event_log_*in_flight_bytes} gauges can
-     * read live state at scrape time from {@link org.mockserver.log.MockServerEventLog} without Metrics
-     * depending on the log instance lifecycle.
+     * Set the supplier of event-log live internals. Called by HttpState at startup so the
+     * {@code mock_server_event_log_*} gauge family can read live state at scrape time from
+     * {@link org.mockserver.log.MockServerEventLog} without Metrics depending on the log instance
+     * lifecycle.
+     * <p>
+     * The family spans the event log's TWO distinct retention sites, so a scrape can tell which one is
+     * holding the heap:
+     * <ul>
+     *   <li><strong>In-flight site (ring)</strong> — entries published to the disruptor ring but not
+     *   yet processed: {@code mock_server_event_log_ring_occupancy},
+     *   {@code mock_server_event_log_ring_capacity}, {@code mock_server_event_log_in_flight_bytes},
+     *   {@code mock_server_event_log_max_in_flight_bytes}.</li>
+     *   <li><strong>Retained site (deque)</strong> — entries kept after processing:
+     *   {@code mock_server_event_log_retained_entries}, {@code mock_server_event_log_retained_bytes},
+     *   {@code mock_server_event_log_max_retained_bytes},
+     *   {@code mock_server_event_log_max_retained_entries}.</li>
+     * </ul>
      */
     public static void setEventLogRingStatsSupplier(Supplier<RingStats> supplier) {
         eventLogRingStatsSupplier.set(supplier);

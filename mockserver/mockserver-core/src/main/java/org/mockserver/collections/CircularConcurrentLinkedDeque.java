@@ -51,8 +51,12 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
 
     private static final long serialVersionUID = 1L;
 
-    private int maxSize;
-    private long maxBytes;
+    // volatile: mutated cross-thread by setMaxSize/setMaxBytes (a control-plane configuration update)
+    // and read both on the single mutating thread (the eviction checks) and, for the ceiling gauges,
+    // on the Prometheus scrape thread. volatile makes the 64-bit maxBytes read atomic (a plain long
+    // read is not JMM-guaranteed atomic) and publishes a live resize to the reader without a lock.
+    private volatile int maxSize;
+    private volatile long maxBytes;
     private final ToLongFunction<E> weigher;
     private final Consumer<E> onEvictCallback;
     // O(1) element count — see class javadoc. Updated by every mutating method below.
@@ -242,6 +246,41 @@ public class CircularConcurrentLinkedDeque<E> extends ConcurrentLinkedDeque<E> {
      */
     public long getByteEvictedCount() {
         return byteEvictedCount.get();
+    }
+
+    /**
+     * The current summed weight (per the weigher) of the elements this deque still holds — the
+     * RETAINED, post-processing heap it is accounting for, as distinct from any in-flight figure a
+     * caller tracks separately (e.g. MockServerEventLog's ring in-flight bytes). This is the running
+     * total the byte budget is enforced against; it rises as weighed elements are added and falls as
+     * they are evicted, removed, or the deque is cleared.
+     * <p>
+     * MEASUREMENT IS INDEPENDENT OF THE BUDGET. Weights are accumulated whenever a weigher is
+     * configured, whether or not {@code maxBytes > 0}: a disabled byte budget skips the byte EVICTION
+     * loop in {@link #evictExcessElements(long)}, not the accounting. So this reads a real, growing
+     * figure with the budget disabled — which is exactly when it matters most, because nothing is then
+     * bounding what the deque retains. It is zero only when the deque was built with no weigher (the
+     * 2-arg constructor), which opts out of weight tracking altogether.
+     */
+    public long getTotalBytes() {
+        return totalBytes.get();
+    }
+
+    /**
+     * The byte budget currently in force ({@code maxBytes}); {@code <= 0} means the byte bound is
+     * disabled and only the element-count bound applies. This is the ceiling {@link #getTotalBytes()}
+     * (the RETAINED weight) is held under, not any in-flight ceiling a caller tracks separately.
+     */
+    public long getMaxBytes() {
+        return maxBytes;
+    }
+
+    /**
+     * The element-count bound currently in force ({@code maxSize}) — the maximum number of elements
+     * this deque retains before evicting the oldest.
+     */
+    public int getMaxSize() {
+        return maxSize;
     }
 
     /**

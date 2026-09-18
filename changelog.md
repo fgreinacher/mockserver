@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than inferring it afterwards from the damage: a rising occupancy with in-flight bytes
   approaching the budget is the shape that precedes dropped entries. Read at scrape time from live
   state, so the request path is unaffected.
+- Four further event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) for the **retained**
+  log — the entries kept after processing, the second place the event log holds memory:
+  `mock_server_event_log_retained_entries` and `_retained_bytes` for what is currently held, and
+  `_max_retained_entries` and `_max_retained_bytes` for the `maxLogEntries` / `maxEventLogSizeInBytes`
+  bounds in force. The existing `ring_*` / `in_flight_bytes` gauges cover only the in-flight queue, so a
+  scrape could not tell a run where the retained log is filling the heap from one where the log is empty.
+  Reading both sites side by side answers **which** part of the event log is holding the memory. Read at
+  scrape time from live state, so the request path is unaffected.
 - The in-memory event log is now bounded by **size** as well as by entry count, and that bound now also
   covers the entries waiting to be written. `maxEventLogSizeInBytes` was previously off by default, so the
   only active bound was a count that cannot see how large an entry is -- a thousand small requests and a

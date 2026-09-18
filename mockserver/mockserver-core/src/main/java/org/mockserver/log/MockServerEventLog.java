@@ -401,6 +401,55 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         return maxInFlightBytes;
     }
 
+    /**
+     * Number of log entries currently RETAINED in the event log after processing — the live element
+     * count of the backing deque. This is the SECOND event-log retention site, distinct from the ring
+     * in-flight figures ({@link #getRingBufferOccupancy()} / {@link #getInFlightBytes()}) which count
+     * entries published to the disruptor but not yet processed. Backs the
+     * {@code mock_server_event_log_retained_entries} gauge so a scrape can tell whether the heap is
+     * held by the ring backlog or by the retained log. Cheap (one atomic read — see
+     * {@link CircularConcurrentLinkedDeque#size()}).
+     */
+    public long getRetainedEntryCount() {
+        // same value as size() — a domain name for the retained_entries gauge; keep both in step.
+        return eventLog.size();
+    }
+
+    /**
+     * Summed request/response body weight of the log entries currently RETAINED after processing — the
+     * running byte total of the backing deque. This is the post-processing companion to
+     * {@link #getInFlightBytes()} (the ring's in-flight bytes): the same body bytes move from in-flight
+     * to retained as the consumer drains the ring. Backs {@code mock_server_event_log_retained_bytes}
+     * so a scrape can attribute heap growth to the retained log rather than the ring.
+     * <p>
+     * Reported whether or not the byte budget is enabled: the event log always supplies a weigher, and
+     * {@code maxEventLogSizeInBytes <= 0} disables byte EVICTION, not byte accounting. The figure is
+     * therefore still live — and most worth watching — when the budget is off, since nothing is then
+     * capping what the log retains. Cheap (one atomic read).
+     */
+    public long getRetainedBytes() {
+        return eventLog.getTotalBytes();
+    }
+
+    /**
+     * The retained byte budget in force for the event log ({@code maxEventLogSizeInBytes}); {@code <= 0}
+     * means the retained byte bound is disabled and only {@code maxLogEntries} applies. Backs
+     * {@code mock_server_event_log_max_retained_bytes} so {@link #getRetainedBytes()} can be read
+     * against its ceiling on the same scrape.
+     */
+    public long getMaxRetainedBytes() {
+        return eventLog.getMaxBytes();
+    }
+
+    /**
+     * The retained entry-count cap in force for the event log ({@code maxLogEntries}). Backs
+     * {@code mock_server_event_log_max_retained_entries} so {@link #getRetainedEntryCount()} can be
+     * read against its ceiling on the same scrape.
+     */
+    public long getMaxRetainedEntries() {
+        return eventLog.getMaxSize();
+    }
+
     private void startRingBuffer() {
         ringBufferSizeInForce = configuration.ringBufferSize();
         disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"));

@@ -497,6 +497,11 @@ public class MetricsTest {
         assertThat(scrapeContains("mock_server_event_log_ring_capacity"), is(true));
         assertThat(scrapeContains("mock_server_event_log_in_flight_bytes"), is(true));
         assertThat(scrapeContains("mock_server_event_log_max_in_flight_bytes"), is(true));
+        // the retained (post-processing) site of the same family
+        assertThat(scrapeContains("mock_server_event_log_retained_entries"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_retained_bytes"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_max_retained_bytes"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_max_retained_entries"), is(true));
     }
 
     @Test
@@ -508,21 +513,57 @@ public class MetricsTest {
         assertThat(scrapeGaugeValue("mock_server_event_log_ring_capacity"), is(0.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(0.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_max_in_flight_bytes"), is(0.0));
+        // retained site also reads a truthful 0 with no supplier
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_entries"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_bytes"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_retained_bytes"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_retained_entries"), is(0.0));
     }
 
     @Test
     public void eventLogRingGaugesReflectSupplierValue() {
         new Metrics(configuration().metricsEnabled(true));
 
-        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(1200, 16384, 268435456L, 268435456L));
+        // every field is stated: there is no ring-only overload, so a retained figure can never be
+        // omitted into a plausible-looking 0 (see RingStats' javadoc)
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(
+            1200, 16384, 268435456L, 268435456L,
+            0, 0, 268435456L, 60000));
         assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(1200.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_ring_capacity"), is(16384.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(268435456.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_max_in_flight_bytes"), is(268435456.0));
 
         // the backlog builds — a later scrape sees the higher occupancy, so a run can watch the cliff approach
-        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(16000, 16384, 268000000L, 268435456L));
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(
+            16000, 16384, 268000000L, 268435456L,
+            0, 0, 268435456L, 60000));
         assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(16000.0));
+    }
+
+    @Test
+    public void eventLogRetainedGaugesReflectSupplierValue() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        // the 8-arg RingStats carries the retained (deque) figures alongside the in-flight (ring) ones,
+        // so a single scrape can attribute the heap to the right site
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(
+            0, 16384, 0, 268435456L,
+            5000, 134217728L, 268435456L, 60000));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_entries"), is(5000.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_bytes"), is(134217728.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_retained_bytes"), is(268435456.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_retained_entries"), is(60000.0));
+        // ring stays empty while the retained deque holds the heap — the exact case the old gauges
+        // could not tell apart from "the event log is empty"
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(0.0));
+
+        // the retained deque grows on a later scrape — attribution tracks it climbing
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(
+            0, 16384, 0, 268435456L,
+            9000, 260000000L, 268435456L, 60000));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_bytes"), is(260000000.0));
     }
 
     @Test
@@ -535,6 +576,8 @@ public class MetricsTest {
         });
         assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(0.0));
         assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_entries"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_retained_bytes"), is(0.0));
     }
 
     // --- LLM optimisation gauge tests ---

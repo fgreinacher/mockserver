@@ -850,9 +850,16 @@ run_regression() {
 #                                 near-zero native-growth signal (no NMT needed)
 #   heap_used / nonheap / gc / threads   the JVM levels already scraped elsewhere
 #   dropped_log_events            > 0 at death implicates the event-log ring directly
-#   ring_occupancy / in_flight_bytes (+ their ceilings)  the ring BACKING UP — the product-side gauges
-#                                 added in this same change; blank on an older SUT image that predates
-#                                 them (graceful), populated once a snapshot with them is built.
+#   ring_occupancy / in_flight_bytes (+ their ceilings)  the IN-FLIGHT event-log site: entries on the
+#                                 disruptor ring not yet processed. The ring BACKING UP — the
+#                                 product-side gauges added in this same change; blank on an older SUT
+#                                 image that predates them (graceful), populated once a snapshot with
+#                                 them is built.
+#   retained_entries / retained_bytes (+ their ceilings)  the RETAINED event-log site: entries kept in
+#                                 the deque AFTER processing. Read alongside the ring columns to
+#                                 attribute the heap to the right site — an empty ring with a full
+#                                 retained deque means the retained log is holding the heap, not the
+#                                 backlog. Same graceful-blank behaviour on an older image.
 # A BLANK JVM-metric column has THREE distinct meanings, all preserved and NOT conflated: (1) the
 # metric is absent on an older image; (2) the scrape TIMED OUT (--max-time 4) because the SUT was
 # thrashing in GC near death — common in the final rows, and itself a death signal; (3) a genuine
@@ -867,9 +874,9 @@ to_bytes() { awk -v s="$1" 'BEGIN{
   printf "%d", n*m }'; }
 diag_sampler() {
   local t0; t0="$(date -u +%s)"
-  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes" > "$DIAG_SAMPLE_LOG"
+  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries" > "$DIAG_SAMPLE_LOG"
   while true; do
-    local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt
+    local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt retent retbytes maxretbytes maxretent
     ts="$(date -u +%s)"
     stats="$(docker stats --no-stream --format '{{.CPUPerc}};{{.MemUsage}}' "$SERVER" 2>/dev/null || echo '')"
     cpu="$(printf '%s' "$stats" | sed -n 's/^\([0-9.]*\)%.*/\1/p')"
@@ -887,12 +894,17 @@ diag_sampler() {
     cap="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_ring_capacity/{print $2}')"
     inflt="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_in_flight_bytes/{print $2}')"
     maxinflt="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_in_flight_bytes/{print $2}')"
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    retent="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_retained_entries/{print $2}')"
+    retbytes="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_retained_bytes/{print $2}')"
+    maxretbytes="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_bytes/{print $2}')"
+    maxretent="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_entries/{print $2}')"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$ts" "$((ts - t0))" \
       "$([ -n "$memu" ] && to_bytes "$memu" || echo '')" \
       "$([ -n "$meml" ] && to_bytes "$meml" || echo '')" \
       "${cpu:-}" "${heap:-}" "${heapmax:-}" "${nonheap:-}" "${gc:-}" "${gcc:-}" "${threads:-}" \
-      "${dropped:-}" "${occ:-}" "${cap:-}" "${inflt:-}" "${maxinflt:-}" >> "$DIAG_SAMPLE_LOG"
+      "${dropped:-}" "${occ:-}" "${cap:-}" "${inflt:-}" "${maxinflt:-}" \
+      "${retent:-}" "${retbytes:-}" "${maxretbytes:-}" "${maxretent:-}" >> "$DIAG_SAMPLE_LOG"
     sleep "$PERF_DIAG_SAMPLE_INTERVAL"
   done
 }

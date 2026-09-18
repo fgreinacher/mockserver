@@ -18,6 +18,8 @@ import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
@@ -172,6 +174,105 @@ public class MockServerEventLogInFlightBytesTest {
             // after a reset the drop taint clears, so a later upper-bound verify can pass again
             log.reset();
             assertThat(verify(log, verification().withRequest(request("/dropped")).withTimes(never())), is(""));
+        } finally {
+            log.stop();
+        }
+    }
+
+    // ---- RETAINED (post-processing) site: the deque count/bytes behind the retained_* gauges ----
+
+    @Test
+    public void shouldTrackRetainedEntriesAndBytesAfterTheRingDrains() {
+        // The SECOND retention site: once the consumer processes a body-bearing entry it moves from
+        // the in-flight ring into the retained deque. The retained gauges (retained_entries /
+        // retained_bytes) read those deque figures. Prove they are non-zero and track the added weight
+        // after a drain — a gauge that stayed 0 here would be the false-green this change exists to stop.
+        int entries = 50;
+        int bodyBytes = 10_000;
+        Configuration configuration = configuration()
+            .maxLogEntries(1000)
+            .maxEventLogSizeInBytes(64L * 1024 * 1024)
+            .maxLoggedBodyBytes(0);
+        MockServerEventLog log = asynchronousEventLog(configuration);
+        try {
+            // the ceilings behind max_retained_bytes / max_retained_entries mirror the configured bounds
+            assertThat(log.getMaxRetainedEntries(), is(1000L));
+            assertThat(log.getMaxRetainedBytes(), is(64L * 1024 * 1024));
+            // empty log: both retained figures start at zero
+            assertThat(log.getRetainedEntryCount(), is(0L));
+            assertThat(log.getRetainedBytes(), is(0L));
+
+            for (int i = 0; i < entries; i++) {
+                log.add(receivedRequestWithBody("/retained", bodyBytes));
+            }
+            drain(log);
+
+            // every entry was retained (none evicted — well under maxLogEntries) and the bodies now
+            // live in the deque, not the ring
+            assertThat(log.getRetainedEntryCount(), is((long) entries));
+            assertThat(log.getInFlightBytes(), is(0L));
+            // retained bytes tracks the added weight: at least the raw body bytes summed across entries
+            assertThat(log.getRetainedBytes(), is(greaterThanOrEqualTo((long) entries * bodyBytes)));
+        } finally {
+            log.stop();
+        }
+    }
+
+    @Test
+    public void shouldFallToZeroRetainedBytesAndEntriesAfterReset() {
+        // The retained figures must FALL when the log is cleared — a gauge that only ever climbs is as
+        // useless for attribution as one stuck at 0. reset() clears the deque, zeroing both.
+        Configuration configuration = configuration()
+            .maxLogEntries(1000)
+            .maxEventLogSizeInBytes(64L * 1024 * 1024)
+            .maxLoggedBodyBytes(0);
+        MockServerEventLog log = asynchronousEventLog(configuration);
+        try {
+            for (int i = 0; i < 20; i++) {
+                log.add(receivedRequestWithBody("/retained", 10_000));
+            }
+            drain(log);
+            assertThat(log.getRetainedEntryCount(), is(20L));
+            assertThat(log.getRetainedBytes(), is(greaterThan(0L)));
+
+            log.reset();
+
+            assertThat(log.getRetainedEntryCount(), is(0L));
+            assertThat(log.getRetainedBytes(), is(0L));
+        } finally {
+            log.stop();
+        }
+    }
+
+    @Test
+    public void shouldCapRetainedEntriesAndBytesWhenTheDequeEvicts() {
+        // When more entries are added than maxLogEntries the oldest are evicted, so the retained
+        // figures are BOUNDED by the cap rather than the total added — a fall relative to everything
+        // that arrived. This is the deque's element bound doing the retaining, visible through the gauge.
+        int cap = 10;
+        int added = 25;
+        int bodyBytes = 10_000;
+        Configuration configuration = configuration()
+            .maxLogEntries(cap)
+            .maxEventLogSizeInBytes(64L * 1024 * 1024)
+            .maxLoggedBodyBytes(0);
+        MockServerEventLog log = asynchronousEventLog(configuration);
+        try {
+            for (int i = 0; i < added; i++) {
+                log.add(receivedRequestWithBody("/retained", bodyBytes));
+            }
+            drain(log);
+
+            // retained count is pinned at the cap (fell from the 25 added), not the total added
+            assertThat(log.getRetainedEntryCount(), is((long) cap));
+            assertThat(log.getEvictedLogEntryCount(), is((long) (added - cap)));
+            // retained bytes reflects ONLY the surviving entries. The upper bound is the assertion that
+            // earns its keep: a lower bound alone passes just as happily if eviction never debited the
+            // byte total and all 25 bodies were still counted, which is the accounting bug most likely
+            // to make this gauge confidently wrong. cap + 2 bodies leaves room for per-entry overhead
+            // while staying far below the 25 bodies a broken debit would report.
+            assertThat(log.getRetainedBytes(), is(greaterThanOrEqualTo((long) cap * bodyBytes)));
+            assertThat(log.getRetainedBytes(), is(lessThan((long) (cap + 2) * bodyBytes)));
         } finally {
             log.stop();
         }

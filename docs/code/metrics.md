@@ -347,7 +347,9 @@ Under sustained load the event-log ring buffer can saturate and drop events. Pre
 
 ### Event-Log Ring-Buffer Internals Gauges
 
-Four Prometheus `GaugeWithCallback` gauges expose the **live** state of the event-log ring so a scrape *during* a run shows the backlog **building** rather than only its aftermath (a non-zero `mock_server_dropped_log_events`). They exist because the question "is the event log the bottleneck?" could not be answered from outside the JVM when two perf runs (builds 261/264) died mid-load. Registered once when `metricsEnabled` is `true`; each reads live at scrape time from `MockServerEventLog` via a supplier `HttpState` installs at startup, and all read **0** before a log is registered (never a fabricated value).
+Eight Prometheus `GaugeWithCallback` gauges expose the **live** state of the event log's **two** retention sites so a scrape *during* a run shows memory **building** rather than only its aftermath (a non-zero `mock_server_dropped_log_events`), and shows **which** site is holding it. They exist because the question "is the event log the bottleneck?" — and then "is it the in-flight backlog or the retained log?" — could not be answered from outside the JVM when two perf runs (builds 261/264) died mid-load; the retained columns close the specific false-negative where a run whose *retained* deque is filling the heap looked identical to one where the event log was empty. Registered once when `metricsEnabled` is `true`; each reads live at scrape time from `MockServerEventLog` via a supplier `HttpState` installs at startup, and all read **0** before a log is registered (never a fabricated value).
+
+The **in-flight site** is the disruptor ring — entries published but not yet processed:
 
 | Metric Name | Type | Description |
 |-------------|------|-------------|
@@ -356,12 +358,21 @@ Four Prometheus `GaugeWithCallback` gauges expose the **live** state of the even
 | `mock_server_event_log_in_flight_bytes` | GaugeWithCallback | Request/response body bytes held by entries published to the ring but not yet processed (the in-flight backlog tracked by commit `49005f5c3`). |
 | `mock_server_event_log_max_in_flight_bytes` | GaugeWithCallback | In-flight body-byte budget in force (`maxEventLogSizeInBytes`); `0` means the in-flight bound is disabled. |
 
-The reads are cheap (volatile/atomic reads plus two ring reads), off the request hot path, so the scrape pays for them only when metrics are enabled. Backing accessors are `MockServerEventLog.getRingBufferOccupancy()` / `getInFlightBytes()` / `getMaxInFlightBytes()` / `getRingBufferSizeInForce()`, surfaced through `Metrics.RingStats` and `Metrics.setEventLogRingStatsSupplier(...)`. Example PromQL (ring filling toward its ceiling):
+The **retained site** is the backing deque — entries kept after processing:
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `mock_server_event_log_retained_entries` | GaugeWithCallback | Log entries currently retained after processing (backing `CircularConcurrentLinkedDeque` element count). |
+| `mock_server_event_log_retained_bytes` | GaugeWithCallback | Request/response body bytes held by retained entries (the deque's summed weight). Reported whether or not the byte budget is enabled — `maxEventLogSizeInBytes <= 0` disables byte *eviction*, not byte *accounting*, so this stays live (and matters most) when nothing is capping the retained log. The post-processing companion to `..._in_flight_bytes`. |
+| `mock_server_event_log_max_retained_bytes` | GaugeWithCallback | Retained body-byte budget in force (`maxEventLogSizeInBytes`); `0` means the retained byte bound is disabled. |
+| `mock_server_event_log_max_retained_entries` | GaugeWithCallback | Retained entry-count cap in force (`maxLogEntries`). |
+
+The reads are cheap (volatile/atomic reads plus two ring reads), off the request hot path, so the scrape pays for them only when metrics are enabled. Backing accessors are `MockServerEventLog.getRingBufferOccupancy()` / `getInFlightBytes()` / `getMaxInFlightBytes()` / `getRingBufferSizeInForce()` for the ring and `getRetainedEntryCount()` / `getRetainedBytes()` / `getMaxRetainedBytes()` / `getMaxRetainedEntries()` for the deque (which read `CircularConcurrentLinkedDeque.size()` / `getTotalBytes()` / `getMaxBytes()` / `getMaxSize()`), all surfaced through `Metrics.RingStats` and `Metrics.setEventLogRingStatsSupplier(...)`. Example PromQL (ring filling toward its ceiling):
 ```promql
 mock_server_event_log_ring_occupancy / mock_server_event_log_ring_capacity > 0.8
 ```
 
-> **Perf-regression JVM-diagnostics dependency:** `perf-test-run.sh`'s dense resource-trajectory sampler reads `mock_server_dropped_log_events_total`, `mock_server_event_log_ring_occupancy`, `mock_server_event_log_in_flight_bytes` and `mock_server_event_log_max_in_flight_bytes` (alongside the JVM heap/GC/thread series) into `diag-samples.csv`. The event-log ring gauges are tolerated as **absent** on an older SUT image that predates them (the CSV column is simply blank) so the sampler degrades gracefully until a snapshot carrying them is built. If these metric names change, update `perf-test-run.sh`'s `diag_sampler()` in the same commit. A blank cell in that CSV has **three** distinct meanings and they are not conflated: the metric is absent on an old image; the scrape **timed out** under load (`--max-time 4`, common in the rows just before a death and itself a death signal — the host-side `container_mem` columns keep populating through it); or a genuine measured `0`, which is written as `0`, never blank.
+> **Perf-regression JVM-diagnostics dependency:** `perf-test-run.sh`'s dense resource-trajectory sampler reads `mock_server_dropped_log_events_total`, the in-flight ring gauges (`mock_server_event_log_ring_occupancy`, `..._ring_capacity`, `..._in_flight_bytes`, `..._max_in_flight_bytes`) and the retained deque gauges (`mock_server_event_log_retained_entries`, `..._retained_bytes`, `..._max_retained_bytes`, `..._max_retained_entries`) — ordered so the two sites read side by side — (alongside the JVM heap/GC/thread series) into `diag-samples.csv`. The event-log ring gauges are tolerated as **absent** on an older SUT image that predates them (the CSV column is simply blank) so the sampler degrades gracefully until a snapshot carrying them is built. If these metric names change, update `perf-test-run.sh`'s `diag_sampler()` in the same commit. A blank cell in that CSV has **three** distinct meanings and they are not conflated: the metric is absent on an old image; the scrape **timed out** under load (`--max-time 4`, common in the rows just before a death and itself a death signal — the host-side `container_mem` columns keep populating through it); or a genuine measured `0`, which is written as `0`, never blank.
 
 ### Load Injection Metrics (`mock_server_load_*`)
 
