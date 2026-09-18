@@ -1724,6 +1724,28 @@ answer is "nothing happened", the controls are theatre.
 
 ## Open questions and risks
 
+**Why no baseline has been written since 2026-09-11 — two sequential causes, not one (established
+2026-09-18 from the Buildkite API).** It is tempting to attribute the whole gap to the SUT dying under
+load, and that is wrong for most of it:
+
+- **2026-09-12 to 2026-09-16** — the `run + sample` load step PASSED every time (builds 208, 209, 211,
+  224, all exit 0). What failed was the **micro-benchmark** step, on dependency resolution:
+  `Could not find artifact org.mock-server:mockserver-netty:jar:8.0.1-SNAPSHOT`. The benchmark module
+  sits outside the Maven reactor, so its in-reactor dependencies must be installed via a named module
+  plus `-am`. Fixed by `b98d18f0c` (2026-09-16), and because no full chain ran between that commit and
+  2026-09-18, the fix went unexercised for two days. It passes on all five runs of 2026-09-18.
+- **2026-09-18 onward** — the micro-benchmark passes and the **load step** fails instead, the SUT dying
+  of JVM heap exhaustion at ~37k iterations. This is a NEW failure, not a continuation: the MB-scale
+  body arms that trigger it landed the same day (`764731d10`). Root-caused to parsed JSON bodies
+  retained on every log entry and invisible to the byte budget, fixed in `3d7a2f9c8`, and awaiting a
+  run to confirm.
+
+The lesson worth keeping: a pipeline that has been red for a week is not necessarily red for one
+reason, and the duration signature said so before the logs did — the 2026-09-12 failures ran ~31
+minutes, the 2026-09-18 ones ~69-110, against ~44 for a healthy chain. Three different shapes, and
+only the middle one was the same bug.
+
+
 1. ~~**Why is `regression.js`'s p95 a thousand times the sweep's, in the same run?**~~
    **ANSWERED and FIXED (2026-09-16).** A client-side VU-allocation connection storm: four
    `constant-arrival-rate` scenarios starting simultaneously with a `preAllocatedVUs`→`maxVUs`
@@ -1755,8 +1777,14 @@ answer is "nothing happened", the controls are theatre.
    `provisional` `info_*` budgets. **Still pending:** `perf-test-compare.sh` does not yet
    surface these keys and item 19 does not yet publish the `INFO` figure — sequence that after
    a run emits both series (a number is not published until it is measured).
-6. **Cost is not the constraint; the serialised box is.** One estimate unverified: nobody has
-   measured how long the daily chain occupies it. Every row of the cost table depends on it.
+6. ~~**Cost is not the constraint; the serialised box is.** One estimate unverified: nobody has
+   measured how long the daily chain occupies it.~~ **MEASURED (2026-09-18): ~44 minutes.** From the
+   Buildkite API, the last seven chains that ran to completion — builds 197, 198, 199, 200, 201, 204,
+   205, 206, 207, spanning 2026-09-01 to 2026-09-11 — took 44.0, 44.3, 44.3, 44.0, 44.3, 44.2, 44.2,
+   43.3 and 44.3 minutes. A spread of one minute across nine runs, so the figure is stable enough to
+   plan against. A guard-skipped build (the per-commit case, where the run does not dispatch) costs
+   ~0.5 min and two jobs, which is what most builds on the pipeline are. The cost table can now be
+   read against a measured occupancy rather than an estimate.
 7. **Is `alloc_bytes_per_op` really agent-independent?** One cheap experiment: same commit,
    five runs on each queue. Item 16 depends on the answer.
 8. **Are the heap-derived store defaults order-dependent in a shared JVM?** Item 17 answers it.
