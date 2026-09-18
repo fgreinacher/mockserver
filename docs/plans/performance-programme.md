@@ -926,13 +926,27 @@ a false green by construction. Promote the decode benchmark and add a response-w
 give the metric an **absolute committed budget**, not a rolling median — a rolling median over
 per-merge history absorbs exactly the slow drift the gate exists to catch.
 
-**"Per merge" is a property of wiring, not of the check.** An unconditional step in
-`pipeline-java.yml` runs pre-merge and blocks the PR; a step carrying
-`if: build.branch == 'master'` does not. Add it unconditionally, before the `wait` preceding
-the master-gated block. Do not put it in the container-integration suite and do not add a
-branch condition "for safety" — either choice silently converts a pre-merge gate into a
-post-merge one and nobody is told. Note the java pipeline is itself orchestrator-path-filtered,
-so a JDK or base-image change that moves allocation reaches it only via the daily run.
+**"Per merge" is a property of wiring, not of the check — and "blocks" needs qualifying
+for this project.** The gate is the step labelled `:scales: per-merge allocation gate
+(item 16)` in `.buildkite/pipeline-java.yml`, with **no `if:` branch condition**, placed
+before the `wait` preceding the master-gated block. That unconditional wiring is correct and
+worth keeping: it runs on **both** PR builds and the master build. But this project commits
+directly to `master` for its own work (PRs are for dependabot and community contributions),
+so "blocks" is only literally true for the **PR-shaped** minority:
+
+- **On a PR build** (dependabot, community) the gate runs pre-merge and genuinely **blocks
+  the PR** — the regression is stopped before it reaches `master`.
+- **On a direct-to-`master` commit — this project's normal path — the commit has already
+  landed**, so the gate cannot block it. It is a **post-merge detector** that reds the
+  **master build** after the fact, exactly as it did on build 2262 (see the item 16 negative
+  control). An allocation regression *can* reach `master` this way; the gate then reports it,
+  it does not prevent it.
+
+Keep the step unconditional. Do not put it in the container-integration suite and do not add
+a branch condition "for safety" — either choice silently converts it into a master-only
+(post-merge, source-agnostic) gate that never runs on a PR at all, and nobody is told. Note
+the java pipeline is itself orchestrator-path-filtered, so a JDK or base-image change that
+moves allocation reaches it only via the daily run.
 
 ### Tier 3 — research-shaped, schedule deliberately
 
@@ -1437,7 +1451,7 @@ inference, and this programme has been burned by exactly that inference once.
 
 | Item | Negative control that must be executed and recorded |
 |---|---|
-| 0. self-describing results | Mangle the IMDS response; the step fails rather than writing `""` |
+| 0. self-describing results | **Done** — control found the check FALSE-GREEN, then found the defect was LIVE, then fixed both. (a) The verbatim resolution snippet was driven with a fake `curl`: unreachable IMDS stored `instance_type="unknown"` at exit 0; a mangled 200 (`<html>…502 Proxy Error…</html>`) was stored verbatim at exit 0. Added shape validation + fail-closed. (b) Turning the reviewer's IMDSv2 concern into a measurement found the real finding: the perf ASG launch template `lt-01f1ac1070d561f50` sets `HttpTokens=required` (IMDSv2 mandatory), so the unauthenticated GET always 401'd and **every stored baseline point carries `instance_type:''`** (confirmed on `runs/master/2026-09-10T04-15-15Z__42193bc4f6.json`) — the `instance_type:""` worked example, live since inception, invisible because it wrote a falsy value at exit 0. Fix: IMDSv2 two-step (`PUT /latest/api/token` → metadata GET with `X-aws-ec2-metadata-token`), reviewer's tightened regex `^[a-z][a-z0-9-]*\.(nano\|micro\|small\|medium\|large\|metal\|[0-9]+xlarge)$`, fail-closed with distinct token-PUT-failure vs metadata-garbage diagnoses, `PERF_INSTANCE_TYPE` override, `instance_type_source` recorded. Proven by execution against a dispatching curl stub: token-PUT-fails→`exit 1` ("token PUT returned nothing / not on EC2"); token-OK+metadata-mangled→`exit 1` ("token acquired but metadata GET returned '<html>…'"); token-OK+non-2xx→`exit 1`; override→`m5.large` `declared` exit 0 in both failing cases; happy path (token→`c5.4xlarge` `observed` exit 0) is **stubbed, not observed** — the next real perf run confirms the live handshake. History-comparability judgement (hardware was constant `c5.4xlarge`, on-demand, min=max=1): the series stays comparable, field populated from here on, no re-baseline — see note below the table |
 | 1. fail-on-regression | **Done** — a flagged gating metric exits non-zero (red build); a flagged notify-only metric exits 0 with the informational annotation; the invalid-run and warming-up paths still exit 0. All four cases proven against fixtures |
 | 2. sweep | **Done** — a synthetic degraded value flags; 36,324 reported where saturation would report 16,000 |
 | 3. `forward.js` | **Done** — pooling disabled gave error rate 0.997, k6 exit 99 |
@@ -1446,20 +1460,36 @@ inference, and this programme has been burned by exactly that inference once.
 | 6. live set | **Done** — flags at 950 MB against a ~705 MB baseline |
 | 7. validity | **Done** — `valid:false` and an absent block both refuse; zero-heap now refused rather than baselined |
 | 7b. leak detection | **Done** — 50 deliberately leaked buffers fail the build; the same leak is invisible on unmodified master |
-| 8. startup | Disable the AppCDS archive; the median-of-9 crosses its threshold |
+| 8. startup | **Done** (2026-09-18, arm64 laptop) — an AppCDS-disabled image (baked `/mockserver.jsa` overwritten with 4 KB of garbage; runtime `-Xlog:cds` confirms `bad magic number` → `Unable to use shared archive`, and `-Xshare:auto` still serves 200) raised the `laptop.docker_ready.ready_ms` median-of-9 (1 warm-up discarded, `bench_laptop.py ready`, readiness = `PUT /mockserver/status` 200) from **394.9 ms** AppCDS-on (min 380/max 404, tight) to **680–726 ms** AppCDS-off (+64–83%; every off launch ≥ 641 ms exceeded every on launch ≤ 433 ms). Feeding perf-test-compare.sh's verbatim compare jq the 9 real on-launches as baseline (median 395 → notify-only threshold **493.75 ms** = median×1.25, since `laptop.*.ready_ms` is floor:null / min_pct:0.25) flags the 680 and 726 ms off heads `regression:true` and the 394.9 ms on control `regression:false`; a synthetic 707/708 ms boundary confirms the threshold governs exactly. NOTIFY-ONLY: it flags loudly (`nongating_count` 1) but does NOT fail the build until the metric earns ≥10 runs of history and a MAD floor — so "red" here is the flagged-regression annotation, not a non-zero exit. What is proven is ENVIRONMENT-INDEPENDENT — the check logic firing when a >25% relative degrade crosses a floor:null threshold that rides only the relative move, not any box-calibrated absolute; NOT proven from here is that the perf box's own numbers cross (its threshold is likewise relative, so the ~34% distroless-JDK25 loss the startup doc records also clears the 25% band). Local absolutes (395/680 ms) differ from the shipped image's ~566/855 ms because these are full `eclipse-temurin:21-jdk` images built from the `8.0.1-SNAPSHOT` fat jar, not the jlink-trimmed distroless JDK25 artifact. One OFF median of 1705 ms during a load-6.1 spike was discarded as noise; clean passes ran at load ~4.2–5.0 |
 | 9a. proxy | Disable forward pooling; the CONNECT behaviour moves |
 | 10. soak | Reduce `maxLogEntries` so the ring never fills; the verification-query metric flattens, proving it is sensitive to occupancy |
 | 11. h2 memory | Compare against a pre-8.0.0 build; the per-connection figure differs or provably does not |
 | 12. streaming | Concurrent streams against a **deliberately constrained** SUT (few CPUs / a small action-handler pool) drive the scheduler near its knee; the recorded negative control is that the match-A/B p95 ratio and the inter-token error tail move under load and return to ~1.0 / the idle floor without it. (NOT a `CallerRunsPolicy` counter — it cannot move under load; see item 12.) |
 | 13. clustered state | Kill a cluster member mid-run; the behaviour is recorded |
 | 14. TLS | Force the JDK provider instead of the native one; the handshake rate moves |
-| 16. allocation gate | Add `new byte[64]` to the decode path; the gate trips **on a pull request**, not on master |
-| Baseline freshness | Make a producer emit structurally-valid but empty output; the check fails on **content**, not merely on object age |
+| 16. allocation gate (master path) | **Done** — executed by accident on 2026-09-17, not staged, which makes it a stronger control than a rehearsed one. Build **2262** of `mockserver-java` (branch `master`, `pull_request: None`, commit `0d1d4f4db`): the `:scales: per-merge allocation gate (item 16)` job **failed exit 1** with `ERROR: allocation gate measured 4 benchmark row(s), expected 3`. Real cause, not contrived: `0d1d4f4db` added a `declareBodyCharset` `@Param` to `ResponseWriteBenchmark` **without pinning it in the gate's `-p` list**, so JMH expanded the axis and the class emitted **2 rows instead of 1** (`declareBodyCharset=false` → 36409 B/op, `=true` → 20121 B/op), giving 4 rows against the pinned expectation of 3. Build **2263** (repair, commit `4cab2a47d`) shows the same job passing **exit 0**. What it demonstrates: the **exact-row-count** assertion fired on a **real surface change, on master** — and **both** offending rows were individually *within* their floor (36409 and 20121 both < `floor=46000`, logged `:white_check_mark:`), so a gate checking only "is each row within its floor" would have passed **green while measuring a different workload than its floor describes**. It also demonstrates the master-path framing above: the gate reddened the master build **after** the offending commit had already merged — a post-merge detector, not a blocker, on the direct-to-main path |
+| 16. allocation gate (PR path) | **Owed.** Add `new byte[64]` to the decode path on a PR branch; the gate trips on the **PR build** and **blocks the PR** before merge (not merely reds a later master build). Still worth proving even though PRs are the secondary path here: **dependabot dependency bumps are exactly the class of change that shifts allocation without touching MockServer's own source**, and the PR build is the only path where this gate actually **prevents** a regression reaching `master` rather than **reporting** one that already has |
+| Baseline freshness | **Done** — control found the content check MISSING, then added it. First established by execution that the dedicated watchdog (`perf-baseline-freshness.sh`) keys off producer LIVENESS only and cannot read the object (no perf-bucket S3 on the trigger queue): fed a live+passed producer via fake `aws`/`curl`, it exits 0 regardless of what the producer wrote. Then ran the real `perf-test-compare.sh` against a structurally-valid-but-empty head (`validity.valid:true`, `behaviours:{}`, `peak_achieved_rps:null`) over a 6-run baseline: it exited **0 GREEN** ("No performance regressions", empty table) and would have persisted the empty object — the false green. Fix adds a content-plausibility gate in compare (the reader that HAS the object), independent of `validity.valid`: ≥1 behaviour arm with `0 < p95_ms < 600000`, plus range sanity on `peak_achieved_rps` (`0 < rps ≤ 1e8`) and `forward_guard.error_rate` (`[0,1]`) when present. After: empty head→`exit 1` IMPLAUSIBLE; `peak=-5`→`exit 1`; `forward.error_rate=1.7`→`exit 1`; normal head→`exit 0` GREEN; legitimately-partial (`forward_guard.status:infra_error`, error_rate null)→`exit 0` GREEN (no false red) |
 
 That last row is the one to read twice. A freshness assertion that checks an object's
 timestamp passes forever against a producer writing valid empty JSON every day. **It must
 assert the newest object contains the expected keys with non-null values in plausible
 ranges** — the same plausibility rule demanded of producers, applied to the watchdog itself.
+
+**Note (item 0) — is the pre-fix baseline history still comparable, given every stored
+point has `instance_type:''`?** Yes: no re-baseline is needed, only the field populated from
+here on. The empty field records nothing, but the hardware was in fact *constant* — the perf
+queue is pinned to a single instance type (`perf_instance_types = "c5.4xlarge"`,
+`terraform/buildkite-agents/variables.tf`, no `terraform.tfvars` override), on-demand (not a
+Spot type-list, so no reclamation-driven type substitution), with `min = max = 1` (at most one
+concurrent run). So the rolling median+MAD series was always same-on-same hardware; the missing
+attribution was a *recording* gap, not a *comparability* gap. Two caveats that do not change the
+conclusion: (1) the guarantee holds only while that terraform variable is unchanged — once
+`instance_type_source:"observed"` values start landing, a future silent hardware change becomes
+*visible* rather than assumed, which is the point of the fix; (2) points predating
+`schema_version 2` are already flagged by compare's `PRE_CONFIG_COUNT` config-boundary warning
+for the separate reason that they carry no `config` block (JDK/GC/heap/log-level), so they are
+weighed with that caveat regardless of the instance-type field.
 
 ## Who does what
 

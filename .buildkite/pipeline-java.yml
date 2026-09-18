@@ -236,10 +236,19 @@ steps:
   # more bytes/op than its ABSOLUTE committed floor in perf-budgets.json. This is
   # DELIBERATELY:
   #   * UNCONDITIONAL (no `if: build.branch == 'master'`) and placed BEFORE the
-  #     `- wait` that precedes the master-only block below, so it runs PRE-merge on
-  #     PR builds and BLOCKS the PR. A branch condition, or moving it into the
-  #     master-only container-integration suite, would silently make it a
-  #     POST-merge gate (nothing would tell us) — see item 16.
+  #     `- wait` that precedes the master-only block below, so it runs on BOTH PR
+  #     builds and the master build. What "BLOCKS" means depends on the path, and
+  #     this project commits directly to master for its own work (PRs are dependabot
+  #     + community):
+  #       - On a PR build it runs PRE-merge and genuinely BLOCKS the PR — the
+  #         regression is stopped before it reaches master.
+  #       - On a direct-to-master commit (the normal path here) the commit has
+  #         ALREADY landed, so this gate cannot block it: it is a POST-merge DETECTOR
+  #         that reds the master build after the fact (as it did on build 2262). A
+  #         regression CAN reach master this way; the gate reports it, not prevents.
+  #     Keep it UNCONDITIONAL. A branch condition, or moving it into the master-only
+  #     container-integration suite, would silently make it master-only — it would
+  #     stop running on PRs entirely (nothing would tell us) — see item 16.
   #   * NOT soft_fail — the whole point is that a real allocation regression a
   #     matcher-only or rolling-median gate would miss goes RED here.
   # Note: pipeline-java.yml is itself orchestrator-path-filtered (generate-pipeline.sh)
