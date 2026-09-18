@@ -117,6 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message (pure diagnostics still weigh nothing).
 
 ### Fixed
+- A long-lived keep-alive connection no longer leaks a small amount of memory on every request it
+  carries. Each request left behind an internal graceful-shutdown tracking object that was only
+  released when the **connection** closed, not when the request finished -- so a client that reuses one
+  connection for many requests (a connection-pooling HTTP client, a load balancer, a browser) made
+  MockServer's heap grow steadily in proportion to the number of requests on that connection, ending in
+  an `OutOfMemoryError` on a busy, long-running server. The tracking object is now released as soon as
+  each request completes. If you have seen MockServer's memory climb without bound under sustained load
+  over reused connections, this was the cause. HTTP/2 was not affected, and graceful shutdown still
+  waits correctly for genuinely in-flight requests to drain.
 - A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that
   body in memory for as long as the log entry lives. The body was retained twice: once as the raw
   bytes, and again as a parsed JSON tree roughly five times larger, built eagerly when the entry was

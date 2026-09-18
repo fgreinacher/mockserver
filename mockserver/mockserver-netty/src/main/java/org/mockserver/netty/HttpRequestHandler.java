@@ -153,9 +153,18 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
         // channel-close listener completes it for requests that never produce a response
         // (connection drop or pipeline-killing exception). The token's guard makes the
         // decrement fire exactly once across all of those, so the counter can never leak.
+        //
+        // trackConnectionClose(...) registers that close-future safety-net listener AND remembers
+        // it so complete() removes it on the normal response path. On an HTTP/1.1 keep-alive
+        // connection the handler sits on the connection channel, whose closeFuture completes only
+        // when the connection closes; a listener added per request that is never removed would pin
+        // the token (and its capturing lambda) for the whole connection - an unbounded per-request
+        // heap leak. Removing it on completion frees it immediately, leaving only genuine
+        // no-response closes relying on it firing. See InFlightRequest for the HTTP/1.1-vs-HTTP/2
+        // reasoning.
         final InFlightRequest inFlightRequest = InFlightRequest.started(server);
         if (inFlightRequest != null) {
-            ctx.channel().closeFuture().addListener(future -> inFlightRequest.complete());
+            inFlightRequest.trackConnectionClose(ctx.channel());
         }
 
         // L6: connection-lifecycle preemption cordon. When a preemption/SIGTERM simulation is active
