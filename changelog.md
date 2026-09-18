@@ -99,6 +99,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only when the configuration actually changes — so a change made at runtime (programmatically or via
   `PUT /mockserver/configuration`) still takes effect right away (from the next log entry). Nothing
   user-visible changes about which entries are logged.
+- The `maxEventLogSizeInBytes` byte budget now measures each retained entry **much more honestly**, so
+  the same budget bounds real memory far more closely than before. The weigher that assigns each entry
+  its byte weight previously counted only the raw request/response **body** bytes and essentially no
+  overhead — a heap dump showed ten retained entries with 10 KB bodies weighing exactly 100 KB, i.e.
+  `bodies × 1` with zero of the structure that actually surrounds them. It now also counts the header
+  bytes and a fixed structural overhead (~2 KB) for the log entry and each request/response model object
+  it retains. Measured on a live heap dump of 20,000 retained ~1 KB-body entries, this brings the real
+  retained heap from about **2.6×** the budget to about **1.0×** at `WARN`/`ERROR`/`OFF`, and from about
+  **4.8×** to about **1.6–2.2×** at `INFO`/`DEBUG`/`TRACE` (the remaining `INFO` gap is the formatted log
+  message, which embeds the body as text and is retained only at a rendering level — the log-level-aware
+  default budget already compensates for it). **This is a behaviour change:** because the previous
+  accounting under-counted, the **same `maxEventLogSizeInBytes` value now retains fewer entries** — the
+  byte budget evicts sooner, which is the bound doing what it claims. Workloads that relied on the old
+  (larger) retention volume for a given budget should raise `maxEventLogSizeInBytes` to compensate; the
+  count bound (`maxLogEntries`) is unaffected, as are entries with no request/response body-bearing
+  message (pure diagnostics still weigh nothing).
 
 ### Fixed
 - A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that

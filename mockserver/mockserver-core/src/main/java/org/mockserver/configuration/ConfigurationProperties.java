@@ -1977,23 +1977,30 @@ public class ConfigurationProperties {
     // treats a 10 MB body the same as a 10-byte one).
     static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 4;
     // Tighter divisor used at a RENDERING log level (INFO/DEBUG/TRACE). At those levels the log
-    // consumer renders every received-request / response entry to the log, which memoizes the
-    // formatted message string AND materializes the httpUpdated* copies ON the retained entry — so a
-    // retained entry costs roughly TWICE the raw body bytes the weigher (LogEntry.estimatedHeapSize)
-    // counts. Measured on -Xmx512m: real retained heap per counted byte is ~3.7x at INFO versus ~1.9x
-    // at WARN (stable across 64 KB and 256 KB bodies). Halving the counted budget at rendering levels
-    // keeps the REAL retained heap a similar fraction of the ceiling regardless of verbosity, which is
-    // what stops the default (INFO) configuration exhausting a small heap: at heap/4 the INFO deque
-    // alone retained ~0.9x the whole -Xmx512m ceiling; at heap/8 it retains ~0.46x and the server
-    // survives sustained large-body load (measured). WARN/ERROR keep the larger budget — they do not
-    // render these entries, so their retention is not inflated and their coverage is not regressed.
+    // consumer renders every received-request / response entry to the log, which memoizes the formatted
+    // message string ON the retained entry for its whole life in the deque; for a JSON-body workload
+    // that message embeds the body as text, so it is roughly as large as the raw body bytes. The weigher
+    // (LogEntry.estimatedHeapSize) now counts each entry's body bytes, header bytes and a fixed
+    // structural overhead HONESTLY — but it deliberately does NOT count that message (it is
+    // level-dependent and is materialized only AFTER the weight is memoized, so counting it would break
+    // the add==evict weight invariant; see the estimatedHeapSize javadoc). So per COUNTED byte, a
+    // rendering-level entry still retains materially more real heap than a non-rendering one: measured on
+    // a live heap dump of 20,000 ~1 KB-body entries, real retained heap per counted byte is ~1.0x at WARN
+    // versus ~1.6-2.2x at INFO (the difference being the uncounted message, ~1.5x the body). That ~2x
+    // real-heap asymmetry between the levels is exactly what this 2x-tighter divisor equalizes: halving
+    // the counted budget at rendering levels keeps the REAL retained heap a similar fraction of the
+    // ceiling regardless of verbosity, which is what stops the default (INFO) configuration exhausting a
+    // small heap under sustained large-body load. WARN/ERROR keep the larger budget — they do not render
+    // these entries, so their retention is not inflated (the honest weigher lands them near 1.0x) and
+    // their coverage is not regressed.
     static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING = 8;
 
     /**
      * True when {@code logLevel} renders every received-request / response log entry to the log
-     * (INFO/DEBUG/TRACE), which inflates each RETAINED entry's heap by the memoized message string and
-     * httpUpdated* copies (see {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}). False for
-     * WARN/ERROR/OFF (and a {@code null} level, i.e. OFF), which do not render those entries.
+     * (INFO/DEBUG/TRACE), which inflates each RETAINED entry's heap by the memoized formatted message
+     * string — a cost the byte-budget weigher deliberately does not count, so the default budget is made
+     * tighter at these levels to compensate (see {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}).
+     * False for WARN/ERROR/OFF (and a {@code null} level, i.e. OFF), which do not render those entries.
      */
     static boolean rendersEveryLogEntry(Level logLevel) {
         return logLevel != null && logLevel.toInt() <= Level.INFO.toInt();

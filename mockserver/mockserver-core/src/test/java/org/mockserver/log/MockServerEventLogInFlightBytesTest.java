@@ -278,13 +278,22 @@ public class MockServerEventLogInFlightBytesTest {
             assertThat(log.getDroppedLogEventCount()
                 + log.getRetainedEntryCount()
                 + log.getEvictedLogEntryCount(), is((long) added));
-            // retained bytes reflects ONLY the surviving entries. The upper bound is the assertion that
-            // earns its keep: a lower bound alone passes just as happily if eviction never debited the
-            // byte total and all 25 bodies were still counted, which is the accounting bug most likely
-            // to make this gauge confidently wrong. cap + 2 bodies leaves room for per-entry overhead
-            // while staying far below the 25 bodies a broken debit would report.
-            assertThat(log.getRetainedBytes(), is(greaterThanOrEqualTo((long) cap * bodyBytes)));
-            assertThat(log.getRetainedBytes(), is(lessThan((long) (cap + 2) * bodyBytes)));
+            // retained bytes reflects ONLY the surviving entries. Two bounds earn their keep here.
+            //
+            // Lower bound (STRICTLY greater than cap*body): the weigher (LogEntry.estimatedHeapSize) is
+            // a materially honest estimate, not raw body bytes alone — it adds a per-entry structural
+            // overhead (~2 KB: the LogEntry graph plus each HttpRequest/HttpResponse model object and its
+            // headers) on top of the body. Retaining `cap` identical 10 KB-body entries therefore weighs
+            // cap*(body + ~2 KB), which is strictly MORE than cap*body. A regression that reverted the
+            // weigher to counting bodies alone would land exactly at cap*body and fail this bound.
+            //
+            // Upper bound: proves eviction actually debited the byte total. The ~2 KB/entry structural
+            // overhead across cap=10 entries is ~20 KB, i.e. about two 10 KB bodies, so cap + 3 bodies of
+            // slack comfortably covers it (retained is ~cap*(body + 2 KB) = ~120 KB, well under 130 KB)
+            // while staying far below the 25 bodies (250 KB) a broken debit that never subtracted evicted
+            // weight would report.
+            assertThat(log.getRetainedBytes(), is(greaterThan((long) cap * bodyBytes)));
+            assertThat(log.getRetainedBytes(), is(lessThan((long) (cap + 3) * bodyBytes)));
         } finally {
             log.stop();
         }

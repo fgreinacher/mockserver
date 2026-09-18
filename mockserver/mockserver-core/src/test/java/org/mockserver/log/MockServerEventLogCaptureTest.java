@@ -84,15 +84,26 @@ public class MockServerEventLogCaptureTest {
 
     @Test
     public void shouldCapRetainedEntriesByByteBudget() {
-        // given — count bound generous, byte budget small; full bodies retained (no truncation)
+        // given — count bound generous, byte budget sized to hold exactly two entries; full bodies
+        // retained (no truncation). The weigher (LogEntry.estimatedHeapSize) is a materially honest
+        // estimate — body bytes PLUS a fixed per-entry / per-message structural overhead — not raw body
+        // bytes alone, so the budget is derived from a sample entry's real weight rather than hard-coded
+        // to the body size. Sizing it at 2.5x the per-entry weight leaves room for two entries and evicts
+        // the third, which is the behaviour under test regardless of the exact overhead constants.
+        byte[] body = new byte[40];
+        long perEntryWeight = new LogEntry()
+            .setType(FORWARDED_REQUEST)
+            .setHttpRequest(request("/sample"))
+            .setHttpResponse(response().withStatusCode(200).withBody(body))
+            .estimatedHeapSize();
+        long budget = perEntryWeight * 2 + perEntryWeight / 2;
         Configuration configuration = configuration()
             .maxLogEntries(1000)
-            .maxEventLogSizeInBytes(100L)
+            .maxEventLogSizeInBytes(budget)
             .maxLoggedBodyBytes(0);
         MockServerEventLog log = synchronousEventLog(configuration);
 
-        // when — 10 forwarded exchanges, each carrying a 40-byte response body (well over the 100-byte budget)
-        byte[] body = new byte[40];
+        // when — 10 forwarded exchanges, each weighing perEntryWeight (well over half the budget)
         for (int i = 0; i < 10; i++) {
             log.add(new LogEntry()
                 .setType(FORWARDED_REQUEST)
@@ -100,7 +111,7 @@ public class MockServerEventLogCaptureTest {
                 .setHttpResponse(response().withStatusCode(200).withBody(body)));
         }
 
-        // then — only the most recent entries that fit the budget are retained (100 / 40 => 2)
+        // then — only the most recent two entries fit the budget; the rest are evicted oldest-first
         assertThat(log.size(), is(2));
         List<LogEntry> entries = retrieveMessageLogEntries(log, null);
         assertThat(entries, notNullValue());

@@ -2,6 +2,7 @@ package org.mockserver.log.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.collect.Multimap;
 import com.lmax.disruptor.EventTranslator;
 import org.mockserver.matchers.HttpRequestMatcher;
 import org.mockserver.matchers.MatchDifference;
@@ -101,49 +102,135 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private Object[] arguments;
     private String because;
     /**
-     * Memoized estimate of the heap retained by the stable primary request/response bodies of this
-     * entry, used as the weight by the byte-budget eviction in {@link org.mockserver.collections.CircularConcurrentLinkedDeque}.
-     * Lazily computed once and cached so the weight is identical at add-time and at evict-time (the
-     * deque recomputes the weight when it evicts). {@code -1} means "not yet computed".
+     * Memoized estimate of the heap retained by this entry, used as the weight by the byte-budget
+     * eviction in {@link org.mockserver.collections.CircularConcurrentLinkedDeque} and by the ring
+     * in-flight bound in {@link org.mockserver.log.MockServerEventLog}. Lazily computed once and cached
+     * so the weight is identical at add-time and at evict-time (the deque recomputes the weight when it
+     * evicts). {@code -1} means "not yet computed". See {@link #estimatedHeapSize()} for what is counted.
      */
     private transient long estimatedHeapSize = -1;
+
+    // Per-entry structural overhead of the retained LogEntry graph beyond the request/response bodies:
+    // the LogEntry object itself, its id (UUID)/timestamp/messageFormat/correlationId strings, the
+    // arguments and httpRequests arrays, and the ConcurrentLinkedDeque node that holds it. Charged once
+    // per entry that carries at least one HTTP message (a pure diagnostic entry with no request/response
+    // retains none of this graph and stays weightless, so the ring in-flight bound continues to ignore
+    // it). Empirically ~0.9 KB on a HotSpot heap dump (compressed oops); see estimatedHeapSize().
+    private static final long BASE_ENTRY_OVERHEAD_BYTES = 896;
+    // Structural overhead of ONE retained HttpRequest or HttpResponse model object beyond its body and
+    // header bytes: the model object, its method/path/statusCode/reasonPhrase NottableStrings, the Body
+    // wrapper (e.g. JsonBody), and the Headers container. Charged per request definition and once for
+    // the response. Empirically ~1.15 KB per message on a HotSpot heap dump; see estimatedHeapSize().
+    private static final long PER_HTTP_MESSAGE_OVERHEAD_BYTES = 1152;
+    // Per-header-value overhead beyond the name and value characters themselves: the Header/NottableString
+    // objects and the multimap entry that holds them. Added to the summed name+value character counts.
+    private static final long HEADER_ENTRY_OVERHEAD_BYTES = 64;
 
     public LogEntry() {
 
     }
 
     /**
-     * Stable lower-bound estimate of the bytes this entry retains on the heap, counting only the
-     * primary request/response body bytes (the dominant cost for large LLM-capture exchanges). It
-     * deliberately ignores the lazily-derived {@code httpUpdated*} copies and the {@code arguments}
-     * array so the value never changes after the entry is built — the byte-budget eviction relies on
-     * the add-time weight matching the evict-time weight exactly. Reads the {@code httpRequests} field
-     * directly (not {@link #getHttpRequests()}, which substitutes a default request when unset).
+     * Stable estimate of the bytes this entry retains on the heap, used as the weight for the event
+     * log's byte budget ({@code maxEventLogSizeInBytes}). It is a materially honest estimate, not a
+     * precise object-graph walk: it counts the terms that actually dominate a retained entry, so the
+     * budget approximates real retained memory rather than raw body bytes alone.
+     * <p>
+     * Counted, per HTTP message (each request definition and the response):
+     * <ul>
+     *   <li>the raw body bytes ({@code getBodyAsRawBytes()}) — the dominant cost for large captures;</li>
+     *   <li>the header name + value characters, plus a small fixed overhead per header value;</li>
+     *   <li>a fixed structural overhead ({@link #PER_HTTP_MESSAGE_OVERHEAD_BYTES}) for the model object,
+     *   its method/path/status NottableStrings and its Body/Headers wrappers.</li>
+     * </ul>
+     * plus a fixed per-entry structural overhead ({@link #BASE_ENTRY_OVERHEAD_BYTES}) for the LogEntry
+     * graph itself, charged only when the entry carries at least one HTTP message (a pure diagnostic
+     * entry with no request/response retains almost none of this and stays weightless, so the ring
+     * in-flight bound keeps ignoring the overwhelming majority of small control entries).
+     * <p>
+     * The constants were calibrated against a HotSpot live heap dump (compressed oops) of a filled event
+     * log: at {@code WARN} this brings the estimate to within a few percent of the real retained heap.
+     * <p>
+     * <strong>What is deliberately NOT counted, and why.</strong> The lazily-derived {@code httpUpdated*}
+     * copies and the rendered {@code arguments} are transient (rebuilt at render time, not retained), so
+     * they are excluded — as is the memoized {@code message} string. The {@code message} is the one large
+     * term that is level-dependent: it is materialized on the retained entry only at a rendering log
+     * level ({@code INFO}/{@code DEBUG}/{@code TRACE}, where {@code writeToSystemOut} renders each entry),
+     * and it is populated <em>after</em> this weight is first computed and memoized, so it cannot be
+     * counted here without either double-counting it at non-rendering levels or making the weight depend
+     * on when it happens to be rendered — both of which would break the invariant that the add-time
+     * weight equals the evict-time weight exactly. The residual message cost is instead handled at the
+     * budget-sizing layer, whose default divisor is already log-level-aware (tighter at rendering levels)
+     * precisely to cover it — see {@code ConfigurationProperties.defaultMaxEventLogSizeInBytes}. So the
+     * estimate lands near 1x real retention at {@code WARN} and remains a fraction under at {@code INFO}.
+     * <p>
+     * Reads the {@code httpRequests} field directly (not {@link #getHttpRequests()}, which substitutes a
+     * default request when unset), and all counted terms are stable once the entry is built, so the value
+     * never changes after first computation — the byte-budget eviction relies on the add-time weight
+     * matching the evict-time weight exactly.
      */
     @JsonIgnore
     public long estimatedHeapSize() {
         if (estimatedHeapSize < 0) {
             long size = 0;
+            boolean hasHttpMessage = false;
             RequestDefinition[] reqs = this.httpRequests;
             if (reqs != null) {
                 for (RequestDefinition rd : reqs) {
                     if (rd instanceof HttpRequest) {
-                        byte[] b = ((HttpRequest) rd).getBodyAsRawBytes();
+                        HttpRequest request = (HttpRequest) rd;
+                        hasHttpMessage = true;
+                        size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
+                        byte[] b = request.getBodyAsRawBytes();
                         if (b != null) {
                             size += b.length;
                         }
+                        size += headerBytes(request.getHeaders());
                     }
                 }
             }
             if (httpResponse != null) {
+                hasHttpMessage = true;
+                size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
                 byte[] b = httpResponse.getBodyAsRawBytes();
                 if (b != null) {
                     size += b.length;
                 }
+                size += headerBytes(httpResponse.getHeaders());
+            }
+            if (hasHttpMessage) {
+                size += BASE_ENTRY_OVERHEAD_BYTES;
             }
             estimatedHeapSize = size;
         }
         return estimatedHeapSize;
+    }
+
+    /**
+     * Sum the retained bytes of a {@link Headers} block: the name and value characters of every header
+     * value, plus {@link #HEADER_ENTRY_OVERHEAD_BYTES} per value for the Header/NottableString objects.
+     * Iterates the backing multimap directly (no {@code getHeaderList()} allocation) and is skipped
+     * entirely when the block is null or empty, so a header-less entry pays nothing here. Deterministic:
+     * the header content of a retained entry does not change after it is built.
+     */
+    private static long headerBytes(Headers headers) {
+        if (headers == null || headers.isEmpty()) {
+            return 0;
+        }
+        long size = 0;
+        Multimap<NottableString, NottableString> multimap = headers.getMultimap();
+        for (Map.Entry<NottableString, NottableString> entry : multimap.entries()) {
+            size += HEADER_ENTRY_OVERHEAD_BYTES;
+            NottableString key = entry.getKey();
+            if (key != null && key.getValue() != null) {
+                size += key.getValue().length();
+            }
+            NottableString value = entry.getValue();
+            if (value != null && value.getValue() != null) {
+                size += value.getValue().length();
+            }
+        }
+        return size;
     }
 
     private LogEntry setId(String id) {
@@ -403,6 +490,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         this.httpRequests = httpRequests;
         this.httpUpdatedRequests = null;
         this.hashCode = 0;
+        this.estimatedHeapSize = -1;
         return this;
     }
 
@@ -426,6 +514,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         }
         this.httpUpdatedRequests = null;
         this.hashCode = 0;
+        this.estimatedHeapSize = -1;
         return this;
     }
 
@@ -461,6 +550,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         this.httpResponse = httpResponse;
         this.httpUpdatedResponse = null;
         this.hashCode = 0;
+        this.estimatedHeapSize = -1;
         return this;
     }
 
