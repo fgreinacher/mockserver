@@ -42,9 +42,11 @@ import static org.mockserver.model.HttpResponse.response;
  *
  * <pre>./run.sh -prof gc MatchingBenchmark</pre>
  *
- * <p>Uses the default {@link Configuration} (metrics off, {@code
- * detailedMatchFailures} off, INFO logging off) — the common case Part A
- * optimizes. Capture {@code -prof gc} numbers here before and after each A1/A2
+ * <p>Metrics are off; {@code detailedMatchFailures} and the log level are
+ * parameterised. The {@code detailedMatchFailures=false} arm is the common case
+ * Part A optimizes; the {@code true} arm exercises the {@code MatchDifference}
+ * formatting path (the #1/#2 production allocation sites, made lazy by
+ * a8898b263). Capture {@code -prof gc} numbers here before and after each A1/A2
  * change; a reduction in {@code gc.alloc.rate.norm} is the proof an allocation
  * win is real (k6's end-to-end signal cannot isolate it).
  */
@@ -91,15 +93,41 @@ public class MatchingBenchmark {
     @Param({"INFO", "WARN"})
     public String logLevel;
 
+    /**
+     * Whether detailed match-failure reports are recorded. {@code false} is the
+     * shipped default and the common case Part A optimizes. {@code true} turns on
+     * the {@code MatchDifference.addDifference} -> {@code StringFormatter} path a
+     * sustained-load JFR profile identified as the #1 and #2 allocation sites in
+     * production (together ~28-33% of sampled allocation) — the path commit
+     * a8898b263 made lazy. This param exists so both arms are measurable and the
+     * detailed arm can be gated with its own absolute allocation floor, so a
+     * regression that re-introduces eager formatting fails the per-merge gate
+     * ({@code .buildkite/scripts/steps/perf-alloc-gate.sh}) rather than sailing
+     * through a gate that never ran the largest production allocation source.
+     *
+     * <p>Consumers that measure a single workload MUST pin this param: the daily
+     * micro-bench primary run and the doc-site scaling sweep pin it {@code false}
+     * (their baselines describe the non-detailed shape, and an unpinned expansion
+     * would collide their result keys); the allocation gate pins BOTH values so it
+     * measures and floors each arm separately.
+     */
+    @Param({"false", "true"})
+    public boolean detailedMatchFailures;
+
     private RequestMatchers requestMatchers;
     private HttpRequest noMatchRequest;
 
     @Setup(Level.Trial)
     public void setup() {
-        // model a performance-tuned deployment: detailed match reports off (the
-        // default) and a configurable log level
+        // model a deployment at the given log level with detailed match reports
+        // either off (the shipped default, the common case Part A optimizes) or on
+        // (the MatchDifference formatting path a8898b263 made lazy) per the param.
+        // Configuration.configuration() MUST be constructed AFTER these statics are
+        // set: it snapshots ConfigurationProperties (detailedMatchFailures() falls
+        // back to the static when its own field is null), so the trial's param
+        // values must already be in place — same ordering the logLevel line relies on.
         ConfigurationProperties.logLevel(logLevel);
-        ConfigurationProperties.detailedMatchFailures(false);
+        ConfigurationProperties.detailedMatchFailures(detailedMatchFailures);
         Configuration configuration = Configuration.configuration();
         requestMatchers = new RequestMatchers(
             configuration,

@@ -65,6 +65,7 @@ java -cp "${CP}" org.openjdk.jmh.Main \
   -p expectationCount=1,10,100,1000 \
   -p matcherType=EXACT,REGEX \
   -p logLevel=WARN \
+  -p detailedMatchFailures=false \
   -prof gc \
   ${JMH_ARGS_SCALING} \
   -rf json -rff "${RAW_MATCHING}"

@@ -52,11 +52,15 @@ Parameters:
 |-------|--------|---------|
 | `expectationCount` | 1, 10, 100, 1000 | number of registered expectations (scan length) |
 | `matcherType` | EXACT, REGEX, JSON_BODY | shape of the registered matchers |
+| `detailedMatchFailures` | false, true | `false` = shipped-default matcher hot path; `true` = the `MatchDifference` → `StringFormatter` formatting path (the #1/#2 production allocation sites, made lazy by `a8898b263`) |
 
-It uses the default `Configuration` (metrics off, `detailedMatchFailures` off,
-INFO logging off) — the common case Part A optimizes. The headline number for
-the allocation work is **`gc.alloc.rate.norm`** (B/op); `ns/op` (shown as µs/op)
-is the secondary signal.
+Metrics are off and INFO logging is off. The `detailedMatchFailures=false` arm is
+the common case Part A optimizes; the `true` arm is measured and given its own
+absolute allocation floor by the per-merge `perf-alloc-gate.sh` so a regression
+re-introducing eager formatting fails the gate. Single-workload consumers pin the
+param `false` (the daily micro-bench primary run and the scaling sweep below); the
+allocation gate pins both. The headline number for the allocation work is
+**`gc.alloc.rate.norm`** (B/op); `ns/op` (shown as µs/op) is the secondary signal.
 
 ## Scaling sweep (`run-scaling.sh`)
 
@@ -80,7 +84,7 @@ What it measures and the output shape:
 
 | Set | Benchmark | Sweep | Shows |
 |-----|-----------|-------|-------|
-| `matching` | `MatchingBenchmark` | `expectationCount={1,10,100,1000}` × `matcherType={EXACT,REGEX}`, `logLevel=WARN`, `-prof gc` | matching time + allocation **grow** with scan length |
+| `matching` | `MatchingBenchmark` | `expectationCount={1,10,100,1000}` × `matcherType={EXACT,REGEX}`, `logLevel=WARN`, `detailedMatchFailures=false`, `-prof gc` | matching time + allocation **grow** with scan length |
 | `candidate_index` | `CandidateIndexBenchmark` | `n={1,10,100,1000,5000}` × `indexMode={SCAN,INDEX}`, `outcome=MISS`, `shape=LITERAL` | SCAN grows; **INDEX stays ~flat** |
 
 ```json

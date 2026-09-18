@@ -52,25 +52,42 @@ source "$SCRIPT_DIR/../lib/perf-budgets-validate.sh"
 MAVEN_IMAGE="${MAVEN_IMAGE:-mockserver/mockserver:maven}"
 BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-budgets.json}"
 
-# The three allocation benchmarks and the params that pin each to EXACTLY ONE row.
-# MatchingBenchmark reads matcherType/expectationCount/logLevel; InboundDecode reads
-# bodySize; ResponseWrite reads responseSize AND declareBodyCharset. JMH applies each
-# -p only to the benchmarks that declare it, so passing all six yields one row per
-# class = 3 rows. EVERY param a benchmark declares must be pinned here: an unpinned
-# param is expanded over all its values, which multiplies that class's row count and
-# breaks the EXPECTED_ROWS assertion below (fail-closed, but a red build rather than
-# a measurement). declareBodyCharset is pinned to `false` deliberately: the committed
-# ResponseWriteBenchmark floor was derived from the implicit-charset shape, so gating
-# the explicit-charset arm instead would compare a different workload against a floor
-# that never described it. The explicit arm is measured by perf-test-microbench.sh,
-# where both arms are reported.
+# The three allocation benchmarks and the params that pin each to a DETERMINISTIC
+# row count. MatchingBenchmark reads matcherType/expectationCount/logLevel AND
+# detailedMatchFailures; InboundDecode reads bodySize; ResponseWrite reads
+# responseSize AND declareBodyCharset. JMH applies each -p only to the benchmarks
+# that declare it. EVERY param a benchmark declares must be pinned here: an
+# UNPINNED param is expanded over ALL its declared values, which multiplies that
+# class's row count non-deterministically and breaks the EXPECTED_ROWS assertion
+# below (fail-closed, but a red build rather than a measurement).
+#
+# MatchingBenchmark's detailedMatchFailures is pinned to BOTH values
+# (`false,true`) DELIBERATELY — the gate measures and floors each arm separately:
+#   * The `false` arm is the shipped-default matcher hot path; its committed floor
+#     (premerge_alloc.MatchingBenchmark.alloc_bytes_per_op) was derived from that
+#     non-detailed shape and MUST keep describing it.
+#   * The `true` arm exercises the MatchDifference -> StringFormatter formatting
+#     path a sustained-load JFR profile found to be the #1/#2 production allocation
+#     sites (~28-33% of sampled allocation), made lazy by a8898b263. Left
+#     un-measured, a regression re-introducing eager formatting would sail straight
+#     through this gate. It is routed to its OWN key
+#     (premerge_alloc.MatchingBenchmark_detailed.alloc_bytes_per_op) by evaluate()
+#     below, so the two arms never share a floor.
+# `false,true` is an EXPLICIT two-value pin (a comma list), NOT an open expansion:
+# the row count it produces is exactly known (2), so the EXPECTED_ROWS guard stays
+# deterministic. declareBodyCharset is pinned to `false` for the same
+# floor-describes-its-own-workload reason (ResponseWrite's floor came from the
+# implicit-charset shape; the explicit arm is measured by perf-test-microbench.sh).
+#
+# Row count: MatchingBenchmark 1x1x1x{false,true}=2 + InboundDecode 1 + ResponseWrite
+# 1x1 = 4 rows.
 JMH_INCLUDE="${PERF_ALLOC_INCLUDE:-org\.mockserver\.benchmark\.(MatchingBenchmark|InboundDecodeBenchmark|ResponseWriteBenchmark)\.}"
-JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p bodySize=16384 -p responseSize=16384 -p declareBodyCharset=false}"
+JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p detailedMatchFailures=false,true -p bodySize=16384 -p responseSize=16384 -p declareBodyCharset=false}"
 
 # EXACT expected row count — a fail-closed guard against include/param drift (a
-# renamed class, or a param that stops pinning, silently drops a row). Three
-# benchmarks, one row each.
-EXPECTED_ROWS="${PERF_ALLOC_EXPECTED_ROWS:-3}"
+# renamed class, or a param that stops pinning, silently drops a row). Four rows:
+# MatchingBenchmark's two detailedMatchFailures arms, InboundDecode, ResponseWrite.
+EXPECTED_ROWS="${PERF_ALLOC_EXPECTED_ROWS:-4}"
 
 RESULT_RAW="mockserver/mockserver-benchmark/target/jmh-alloc-gate.json"
 
@@ -126,12 +143,20 @@ evaluate() {
       ($budgets[0].budgets) as $b
       | [ $jmh[0][]
           | (.benchmark | sub("^org\\.mockserver\\.benchmark\\.";"") | sub("\\..*$";"")) as $cls
-          | ("premerge_alloc." + $cls + ".alloc_bytes_per_op") as $bkey
+          # The detailed-match-failure arm of a benchmark is a SEPARATE workload with
+          # its own committed floor: params.detailedMatchFailures=="true" routes to a
+          # distinct "<Class>_detailed" budget key so the base <Class> floor keeps
+          # describing the NON-detailed shape it was derived from. Benchmarks that do
+          # not declare the param (InboundDecode, ResponseWrite) have
+          # params.detailedMatchFailures==null, so they take the base key unchanged.
+          | (if (.params.detailedMatchFailures == "true") then ($cls + "_detailed") else $cls end) as $label
+          | ("premerge_alloc." + $label + ".alloc_bytes_per_op") as $bkey
           | (.secondaryMetrics["gc.alloc.rate.norm"].score) as $alloc
           | ($b[$bkey]) as $budget
           | ($budget.floor) as $floor
           | {
               cls: $cls,
+              label: $label,
               alloc: $alloc,
               bkey: $bkey,
               floor: $floor,
@@ -161,7 +186,7 @@ evaluate() {
   echo "$report" | jq -r '
     .rows[]
     | "  " + (if .ok then ":white_check_mark:" else ":x:" end)
-      + " " + .cls
+      + " " + .label
       + "  alloc=" + ((.alloc // 0) | floor | tostring) + " B/op"
       + "  floor=" + ((.floor // "MISSING") | tostring)
       + (if .provisional then "  (provisional)" else "" end)
@@ -181,7 +206,7 @@ evaluate() {
     echo "--- :white_check_mark: allocation gate PASSED — every benchmark within its floor"
     if command -v buildkite-agent >/dev/null 2>&1; then
       local tbl
-      tbl="$(echo "$report" | jq -r '.rows[] | "| " + .cls + " | " + ((.alloc // 0) | floor | tostring) + " | " + ((.floor // "MISSING") | tostring) + (if .provisional then " (prov.)" else "" end) + " |"')"
+      tbl="$(echo "$report" | jq -r '.rows[] | "| " + .label + " | " + ((.alloc // 0) | floor | tostring) + " | " + ((.floor // "MISSING") | tostring) + (if .provisional then " (prov.)" else "" end) + " |"')"
       printf '%s\n' ":white_check_mark: **Per-merge allocation gate PASSED** — every allocation benchmark within its committed floor.
 
 | benchmark | bytes/op | floor |
@@ -193,7 +218,7 @@ ${tbl}" | buildkite-agent annotate --style success --context perf-alloc-gate || 
 
   echo "ERROR: allocation gate FAILED — one or more benchmarks over floor (or unmeasurable/floor-less):" >&2
   echo "$report" | jq -r '.rows[] | select(.ok | not)
-    | "  - " + .cls + ": alloc=" + ((.alloc // 0) | floor | tostring)
+    | "  - " + .label + ": alloc=" + ((.alloc // 0) | floor | tostring)
       + " B/op floor=" + ((.floor // "MISSING") | tostring)' >&2
   return 1
 }

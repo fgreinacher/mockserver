@@ -112,7 +112,9 @@ steps:
   - label: ":microscope: perf regression — micro-benchmark + scaling sweep"
     command: ".buildkite/scripts/steps/perf-test-microbench.sh"
     # Bumped 30 -> 50: the step now also runs run-scaling.sh, which forks a JVM per
-    # param combo across MatchingBenchmark (8 combos) + CandidateIndexBenchmark (10
+    # param combo across MatchingBenchmark (8 combos: 4 expectationCount x 2 matcherType,
+    # with detailedMatchFailures pinned =false in run-scaling.sh so its {false,true}
+    # @Param does not double the sweep) + CandidateIndexBenchmark (10
     # combos) after a SECOND core build. With the bounded JMH_ARGS_SCALING this adds
     # ~12-18 min, which can exceed the old 30m budget under cloud-CI noise.
     # Bumped 50 -> 70 (items 15b/15c): the step now ALSO runs the promoted dark

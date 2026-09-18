@@ -32,7 +32,15 @@ MAVEN_IMAGE="${MAVEN_IMAGE:-mockserver/mockserver:maven}"
 # instead of +100%. `firstMatchingExpectation_noMatch` is MatchingBenchmark's only
 # @Benchmark, and the explicit class include below pins this run to it so the newly
 # promoted dark benchmarks (run separately, below) cannot leak junk rows in here.
-JMH_ARGS="${JMH_ARGS:--f 2 -wi 2 -i 3 -r 2 -w 2 -p matcherType=EXACT,REGEX,JSON_BODY -p expectationCount=100 -p logLevel=INFO -prof gc}"
+#
+# detailedMatchFailures is pinned to `false` (the shipped default): this primary
+# run's gating .microbench.*.time_per_op baseline describes the NON-detailed matcher
+# hot path, and the reshape below keys rows by matcherType_expectationCount — leaving
+# the param unpinned would expand each matcherType into two rows that collide on that
+# key (from_entries silently keeps the last), half-dropping the run AND mixing the
+# detailed path into a gating metric. The detailed arm is floored by the per-merge
+# perf-alloc-gate.sh, not here.
+JMH_ARGS="${JMH_ARGS:--f 2 -wi 2 -i 3 -r 2 -w 2 -p matcherType=EXACT,REGEX,JSON_BODY -p expectationCount=100 -p logLevel=INFO -p detailedMatchFailures=false -prof gc}"
 JMH_INCLUDE="${JMH_INCLUDE:-org\.mockserver\.benchmark\.MatchingBenchmark\.}"
 
 # --- item 15b: promote the dark benchmarks -----------------------------------
