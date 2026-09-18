@@ -546,17 +546,26 @@ def metrics:
   ((.tls_handshake // {}) | to_entries[] | .key as $k | .value as $v |
     # item 14 — TLS/mTLS/native-absent inbound-handshake cost (proxy.js handshake
     # mode). Keyed by arm: tls13, mtls, jdk. handshake_p50/p95_ms is the TLS
-    # handshake time (dir up = worse); handshakes_per_s is the fresh-handshake
-    # throughput (dir DOWN = worse, so it uses its own budget dir); cpu_ms_per_handshake
-    # + alloc_kb_per_handshake are the per-handshake server cost the run step samples
-    # (null on an image predating jvm_memory_allocated_bytes, so they drop out via the
-    # select(.value != null) in $headmetrics). All NON-GATING (their perf-budgets.json
-    # entries omit gating). Rides the full-baseline else-branch (not fingerprint
-    # filtered) like growth/peak: the arm set is stable and the numbers are not keyed
-    # on the mutable snapshot image digest.
+    # handshake time (dir up = worse) — the provider-sensitive COST signal (forcing
+    # the JDK provider moved p50 +51% in build 290; the handshake RATE did not move).
+    # cpu_ms_per_handshake + alloc_kb_per_handshake are the per-handshake server cost
+    # the run step samples (null on an image predating jvm_memory_allocated_bytes, so
+    # they drop out via the select(.value != null) in $headmetrics).
+    # KEEP-UP is on delivery_ratio (dir DOWN = worse): throughput/offered, computed by
+    # proxy.js — SCALE-FREE (a change to the offered rate K6_HS_RATE cannot invalidate
+    # it), so it is the AUTHORITATIVE guard that the server sustained the offered
+    # handshake load. handshakes_per_s (dir DOWN) is the RAW achieved rate: it measures
+    # the fixed ~50/s offered rate, not capacity, so it is NOT a keep-up %-signal — its
+    # budget is a coarse offered-rate-INDEPENDENT liveness floor (a dead arm produces
+    # ~0/s) and a defence-in-depth backstop for when delivery_ratio drops out (offered
+    # <= 0 => proxy.js emits null => dropped here). error_rate is delivery soundness.
+    # All NON-GATING (their perf-budgets.json entries omit gating). Ride the
+    # full-baseline else-branch (not fingerprint filtered) like growth/peak: the arm
+    # set is stable and the numbers are not keyed on the mutable snapshot image digest.
     ( {name:($k+".handshake_p50_ms"),      value:$v.handshake_p50_ms,      bkey:"tls_handshake.*.handshake_p50_ms"},
       {name:($k+".handshake_p95_ms"),      value:$v.handshake_p95_ms,      bkey:"tls_handshake.*.handshake_p95_ms"},
       {name:($k+".handshakes_per_s"),      value:$v.handshakes_per_s,      bkey:"tls_handshake.*.handshakes_per_s"},
+      {name:($k+".delivery_ratio"),        value:$v.delivery_ratio,        bkey:"tls_handshake.*.delivery_ratio"},
       {name:($k+".cpu_ms_per_handshake"),  value:$v.cpu_ms_per_handshake,  bkey:"tls_handshake.*.cpu_ms_per_handshake"},
       {name:($k+".alloc_kb_per_handshake"),value:$v.alloc_kb_per_handshake,bkey:"tls_handshake.*.alloc_kb_per_handshake"},
       {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
