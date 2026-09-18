@@ -285,11 +285,32 @@ upload_diag_bundle() {
   # retaining class — the point of this whole exercise), THEN size-cap the dump itself. Order matters:
   # the parser reads the raw file, so it must run before the gzip below. The dump is kept on the
   # volume and refused for upload when over the cap; the histogram is what travels.
-  local hprof gz szmb rawmb sub
+  # MAKE THE DUMPS HOST-READABLE FIRST. The JVM writes them from INSIDE the SUT container as the
+  # image's non-root user, so the file lands owned by that uid with no read bit for the agent user —
+  # $DIAG_DIR being 0777 governs the DIRECTORY, not the files created in it. Every host-side read
+  # below then fails with "Permission denied", and both failures are SILENT-but-wrong rather than
+  # loud: `wc -c` falls through to `|| echo 0` so the log reports a 2 GB dump as "0 MiB", and the
+  # gzip fails into `|| continue` so the dump is never uploaded at all. Observed on build 302, where
+  # the bundle carried a 0 MiB dump for a real 2.02 GiB file and the liveness question it existed to
+  # answer could not be answered. chmod from a throwaway container (running as root, same trick the
+  # histogram sidecar already uses) before anything on the host touches them.
+  if [ -n "$(ls -d "$DIAG_DIR"/*/heapdump.hprof 2>/dev/null)" ]; then
+    docker run --rm -v "$DIAG_DIR:/diag" --entrypoint sh "$PERF_HISTO_JDK_IMAGE" \
+      -c 'chmod -R a+r /diag 2>/dev/null; find /diag -type d -exec chmod a+rx {} + 2>/dev/null' \
+      >/dev/null 2>&1 \
+      || echo "WARNING: could not chmod the heap dump(s) readable — host-side sizing/upload may report 0 MiB and skip the upload" >&2
+  fi
+  local hprof gz szmb rawmb rawbytes sub
   for hprof in "$DIAG_DIR"/*/heapdump.hprof; do
     [ -f "$hprof" ] || continue
     sub="$(basename "$(dirname "$hprof")")"
-    rawmb=$(( ( $(wc -c < "$hprof" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
+    # Fail LOUD rather than reporting a wrong size: an unreadable dump is a diagnostics defect, not a
+    # zero-byte dump, and the two must never look alike in the log.
+    if ! rawbytes="$(wc -c < "$hprof" 2>/dev/null)"; then
+      echo "WARNING: heap dump $hprof exists but is NOT READABLE by this user — cannot size, gzip or upload it (check container-vs-agent uid). The class histogram below is still derived inside a container and is unaffected." >&2
+      rawbytes=0
+    fi
+    rawmb=$(( ( ${rawbytes:-0} + 1048575 ) / 1048576 ))
     extract_heap_histogram "$hprof" "$sub"
     echo "--- heap dump kept on the /diag volume: $hprof (${rawmb} MiB uncompressed) — retrievable while the agent lives" >&2
     gz="$hprof.gz"; gzip -f "$hprof" >/dev/null 2>&1 || continue
