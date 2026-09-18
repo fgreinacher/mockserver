@@ -625,6 +625,14 @@ IMAGE_DIGEST="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoD
 # the IMAGE (labels are an image property, absent on a container) via the resolved
 # image id, exactly as the digest above. Empty == absent for the provenance check.
 IMAGE_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${SERVER_IMAGE_ID:-$MOCKSERVER_IMAGE}" 2>/dev/null || true)"
+# The image's own BUILD TIMESTAMP (.Created, RFC3339Nano). Read from the same IMAGE
+# inspect as the digest/revision. Used by the image-freshness check below to detect a
+# FROZEN snapshot tag — a snapshot pipeline that has stopped rebuilding the mutable tag,
+# which would otherwise be measured as an identical binary every day with provenance_ok
+# reading true forever (a silent green measuring nothing new). `.Created` is a struct
+# field always present on a real image; empty only if the image cannot be inspected at
+# all (which the digest fail-closed guard above already catches).
+IMAGE_CREATED="$(docker image inspect --format '{{.Created}}' "${SERVER_IMAGE_ID:-$MOCKSERVER_IMAGE}" 2>/dev/null || true)"
 # Log level + system-out suppression are BOTH non-defaults every CI perf run sets,
 # and neither was ever recorded. Read them off the container that ran (observed);
 # only if absent there fall back to the shell env we exported (declared).
@@ -666,28 +674,55 @@ if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
   exit 1
 fi
 
-# --- source-provenance verdict (parts A/B): is the measured binary the commit
-# --- this result will be filed under? -----------------------------------------
-# The result is filed under COMMIT_UNDER_TEST (BUILDKITE_COMMIT / HEAD — the same
-# value the final result's .commit gets). IMAGE_REVISION is the commit the SUT
-# image was BUILT from (its OCI revision label). Three outcomes:
-#   match    -> provenance_ok=true : attributable; the validity check passes.
-#   mismatch -> provenance_ok=false: the measured binary is from a DIFFERENT commit,
-#               so the run cannot be attributed to COMMIT_UNDER_TEST. Recorded as a
-#               FAILED validity check, so perf-test-compare.sh refuses to persist or
-#               compare it AND reds the build — REUSING the existing validity gate
-#               rather than inventing a parallel mechanism (the user's stated
-#               preference). Not aborted here: the full result is still emitted so a
-#               reader can see WHICH commit was actually measured (turning "nobody can
-#               say whether the two were related" into a recorded fact). Mismatch
-#               fails regardless of date.
-#   absent   -> provenance_ok=null : the image predates the label — TRUE of every
-#               cached image until the next labelled snapshot ships. This must NOT
-#               hard-fail every run in the meantime, so an absent label PASSES the
-#               check UNTIL a time-bounded grace cutoff (PERF_PROVENANCE_GRACE_UNTIL),
-#               after which an absent label is itself a failure (the stamping
-#               regressed). Explicit + bounded, never silent-forever.
-COMMIT_UNDER_TEST="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+# --- source-provenance verdict (parts A/B): can this run be attributed, and to
+# --- WHICH commit? -------------------------------------------------------------
+# A performance result describes the BINARY THAT WAS MEASURED, not this checkout of
+# the harness scripts. So the result is FILED UNDER (and keyed in stored history by)
+# the SUT image's OWN commit — its org.opencontainers.image.revision label — whenever
+# that label is a trustworthy, well-formed git SHA (ATTRIBUTED_COMMIT below). The
+# Buildkite build's commit (this checkout of the perf scripts) is recorded SEPARATELY
+# as HARNESS_COMMIT: if the harness changed, the measurement METHOD changed and a
+# reader must see both. This deliberately STOPS treating image-lag — a snapshot tag
+# that trails master by one java-pipeline duration — as a failure: a lagging image was
+# measured correctly and is attributable to the commit it was built from, which is
+# exactly what this result now records (build #284's three-docs-commit lag was a false
+# alarm under the old equality check). Three outcomes, and provenance STILL fails
+# closed in the ones that matter:
+#   well-formed label -> provenance_ok=true : ATTRIBUTED_COMMIT = the image revision;
+#               attributable; the validity check passes.
+#   malformed  label -> provenance_ok=false: the label is present but is NOT a 40-hex
+#               git SHA (empty-vs-garbage: an EMPTY label is absence, not garbage, and
+#               takes the grace path; a non-empty non-SHA is HOSTILE). The attribution
+#               key cannot be trusted, so the run is NOT attributable — recorded as a
+#               FAILED validity check so perf-test-compare.sh refuses to persist or
+#               compare it AND reds the build, REUSING the existing validity gate. This
+#               is the reachable fail state after this change: it fires when the image
+#               labeller regresses (a broken SOURCE_COMMIT stamp), regardless of date.
+#   absent     -> provenance_ok=null : the image predates the label — TRUE of every
+#               cached image until the next labelled snapshot ships. UNCHANGED from
+#               before: an absent label PASSES until the time-bounded grace cutoff
+#               (PERF_PROVENANCE_GRACE_UNTIL), after which it fails closed (the stamping
+#               regressed); a malformed cutoff fails closed. During the grace window the
+#               result is filed under HARNESS_COMMIT, exactly as pre-label behaviour.
+HARNESS_COMMIT="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+# A genuine revision label is stamped from `git rev-parse HEAD` at image-build time
+# (java-docker-push-snapshot.sh -> SOURCE_COMMIT -> the Dockerfile LABEL), so it is a
+# 40-char lowercase-hex SHA. Validate that SHAPE and treat any NON-EMPTY value that is
+# not a 40-hex SHA as HOSTILE — filing a result under an unverifiable key is worse than
+# not filing it. An EMPTY label is absence (Docker's `index` yields "" for a missing
+# key), NOT garbage, and takes the grace path below unchanged.
+IMAGE_REVISION_WELLFORMED=false
+# Use bash `[[ =~ ]]`, NOT `grep -qE`: grep anchors ^/$ per LINE, so a label carrying
+# an embedded newline (<40-hex>\nextra) would match on its first line and slip through
+# as "well-formed", after which the multi-line value would be filed as .commit. bash's
+# `=~` anchors the WHOLE string, so a mangled multi-line label is rejected — the same
+# whole-string guard the instance_type check below relies on for the same reason.
+if [[ "$IMAGE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then IMAGE_REVISION_WELLFORMED=true; fi
+# Default attribution = the harness commit, used ONLY when the binary's own revision is
+# unavailable (absent label, grace-tolerated) or untrustworthy (malformed label — not
+# baselined anyway). This preserves pre-label behaviour EXACTLY: during the grace window
+# a result is still filed under the harness commit, as it was before this change.
+ATTRIBUTED_COMMIT="$HARNESS_COMMIT"; ATTRIBUTED_SRC="declared"
 # ISO YYYY-MM-DD compares correctly with lexical `>` (zero-padded => lexical order
 # IS chronological order); this is a genuine date comparison, not the `<= "0.1"`
 # numeric-vs-string trap — both operands are date strings and the operator is the
@@ -709,14 +744,19 @@ if ! printf '%s' "$PROVENANCE_GRACE_UNTIL" | grep -qE '^[0-9]{4}-(0[1-9]|1[0-2])
 fi
 TODAY_UTC="$(date -u +%Y-%m-%d)"
 if [ -n "$IMAGE_REVISION" ]; then
-  if [ "$IMAGE_REVISION" = "$COMMIT_UNDER_TEST" ]; then
+  if [ "$IMAGE_REVISION_WELLFORMED" = true ]; then
+    # ATTRIBUTABLE: file the result under the measured binary's own commit.
     PROVENANCE_OK="true"
-    echo "--- provenance: OK — SUT image revision matches the commit under test (${COMMIT_UNDER_TEST:0:10})"
-    add_check "source_provenance" true "SUT image revision (${IMAGE_REVISION:0:10}) matches the commit under test (${COMMIT_UNDER_TEST:0:10}) — result is attributable to the measured binary"
+    ATTRIBUTED_COMMIT="$IMAGE_REVISION"; ATTRIBUTED_SRC="observed"
+    echo "--- provenance: OK — SUT image carries a well-formed revision label; result is filed under the measured binary's commit (${IMAGE_REVISION:0:10}); harness commit ${HARNESS_COMMIT:0:10}"
+    add_check "source_provenance" true "SUT image revision (${IMAGE_REVISION:0:10}) is a well-formed git SHA — result is attributed to, and keyed in history by, the measured binary's own commit; the harness (build) commit ${HARNESS_COMMIT:0:10} is recorded separately as harness_commit"
   else
+    # HOSTILE label: present but not a 40-hex SHA — the attribution key cannot be
+    # trusted, so the run is NOT attributable. Reddens via the validity gate exactly
+    # as an equality mismatch did before; this is the reachable fail state now.
     PROVENANCE_OK="false"
-    echo "--- provenance: MISMATCH — SUT image was built from ${IMAGE_REVISION:0:10} but this result is filed under ${COMMIT_UNDER_TEST:0:10}; run is NOT attributable and will not be baselined" >&2
-    add_check "source_provenance" false "SUT image was built from ${IMAGE_REVISION:0:10} but this result is filed under ${COMMIT_UNDER_TEST:0:10} — the measured binary is NOT the commit under test; the run cannot be attributed and must not poison the baseline"
+    echo "--- provenance: MALFORMED — SUT image revision label '${IMAGE_REVISION}' is not a 40-hex git SHA; the attribution key is untrustworthy so this run is NOT attributable and will not be baselined" >&2
+    add_check "source_provenance" false "SUT image org.opencontainers.image.revision label ('${IMAGE_REVISION}') is present but is NOT a well-formed 40-hex git SHA — the commit the result would be filed under cannot be trusted, so the run is not attributable and must not poison the baseline (the image labeller regressed: check SOURCE_COMMIT stamping in java-docker-push-snapshot.sh)"
   fi
 else
   PROVENANCE_OK="null"
@@ -751,10 +791,73 @@ if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] \
   echo "--- baseline eligibility: NOT eligible (PERF_JVM_DIAGNOSTICS=$PERF_JVM_DIAGNOSTICS) — this run will be recorded but NOT persisted to the baseline"
 fi
 
+# --- image freshness: detect a FROZEN snapshot tag (closes the frozen-image false green) ---
+# The provenance fix above deliberately STOPS treating image-lag as a failure — a lagging
+# image is truthfully filed under its own commit. But that removes the only alarm for a
+# distinct failure mode it must not mask: a snapshot pipeline that has STOPPED. If
+# java-docker-push-snapshot.sh (master-gated) goes red for a week, or the push breaks, the
+# mutable tag freezes; the daily run then pulls the SAME binary every day, files every point
+# under the same (truthfully-labelled) old commit, and provenance_ok reads true forever — a
+# green chain measuring nothing new. The freshness watchdog (perf-baseline-freshness.sh) does
+# NOT catch this: it asserts producer LIVENESS via the Buildkite API and, by its own comment,
+# cannot detect "a scheduled build that goes GREEN while writing no fresh baseline" (the
+# trigger queue has no perf-bucket S3 read to see the series freeze). So making it fatal is
+# the PRODUCER's job, exactly as that watchdog states.
+# The signal that needs no git history and no cross-run state: the image's OWN build age
+# (.Created). When the snapshot factory is alive, every perf run (which only fires when master
+# moved) measures a freshly-built image; a measured image older than the bound means the
+# factory stopped. Emitted into the config block; perf-test-compare.sh reds the build on it
+# (a stale image is a valid measurement of that binary, but NOT a valid daily-cadence data
+# point, and green here would be undetectable per the watchdog gap above). FAIL CLOSED: a
+# non-integer threshold, or an unparseable/absent .Created, is treated as STALE — a freshness
+# check that cannot date the image must not pass by default (the jq-ordering-trap lesson: guard
+# the load-bearing property, not the easy one).
+PERF_MAX_IMAGE_AGE_DAYS="${PERF_MAX_IMAGE_AGE_DAYS:-7}"
+IMAGE_STALE="true"; IMAGE_AGE_DAYS="unknown"
+# JSON-safe copy of the threshold for --argjson below: the real integer when valid, else
+# `null` — a malformed override must fail the freshness check closed (IMAGE_STALE stays
+# "true"), NOT crash the jq assembly with an unparseable --argjson and abort the whole run.
+IMAGE_MAX_AGE_JSON="null"
+if ! printf '%s' "$PERF_MAX_IMAGE_AGE_DAYS" | grep -qE '^[0-9]+$' || [ "$PERF_MAX_IMAGE_AGE_DAYS" -le 0 ] 2>/dev/null; then
+  echo "WARNING: PERF_MAX_IMAGE_AGE_DAYS='${PERF_MAX_IMAGE_AGE_DAYS}' is not a positive integer — treating the SUT image as STALE (fail closed) so a malformed override cannot silently disable the freshness check" >&2
+else
+  IMAGE_MAX_AGE_JSON="$PERF_MAX_IMAGE_AGE_DAYS"
+  # Portable RFC3339(Nano) -> epoch: GNU date (CI/Linux) first, then BSD date (local) after
+  # trimming any timezone suffix and fractional seconds. Mirrors to_epoch() in
+  # perf-baseline-freshness.sh. An unparseable/empty .Created leaves IMAGE_STALE=true.
+  _img_epoch=""
+  if [ -n "$IMAGE_CREATED" ]; then
+    _img_epoch="$(date -u -d "$IMAGE_CREATED" +%s 2>/dev/null || true)"
+    if [ -z "$_img_epoch" ]; then
+      _trim="${IMAGE_CREATED%Z}"; _trim="${_trim%.*}"
+      _img_epoch="$(date -u -j -f "%Y-%m-%dT%H:%M:%S" "$_trim" +%s 2>/dev/null || true)"
+    fi
+  fi
+  if [ -n "$_img_epoch" ]; then
+    IMAGE_AGE_DAYS=$(( ( $(date -u +%s) - _img_epoch ) / 86400 ))
+    # STRICTLY older than the bound is stale: an image built exactly PERF_MAX_IMAGE_AGE_DAYS
+    # whole days ago is still within tolerance (a factory that is merely slow, not frozen).
+    if [ "$IMAGE_AGE_DAYS" -gt "$PERF_MAX_IMAGE_AGE_DAYS" ]; then
+      IMAGE_STALE="true"
+      echo "--- image freshness: STALE — SUT image built ${IMAGE_AGE_DAYS}d ago (${IMAGE_CREATED}), older than PERF_MAX_IMAGE_AGE_DAYS=${PERF_MAX_IMAGE_AGE_DAYS}; the snapshot pipeline may be frozen — compare will RED this run and not baseline it" >&2
+    else
+      IMAGE_STALE="false"
+      echo "--- image freshness: OK — SUT image built ${IMAGE_AGE_DAYS}d ago (<= ${PERF_MAX_IMAGE_AGE_DAYS}d bound)"
+    fi
+  elif [ -z "$IMAGE_CREATED" ]; then
+    echo "WARNING: SUT image .Created was empty ('docker image inspect' returned no build timestamp) — treating the image as STALE (fail closed); compare will RED this run" >&2
+  else
+    echo "WARNING: could not parse SUT image .Created ('${IMAGE_CREATED}') — treating the image as STALE (fail closed); compare will RED this run" >&2
+  fi
+fi
+
 CONFIG_JSON="$(jq -n \
   --arg version "$MS_VERSION" --arg git_hash "$MS_GIT_HASH" \
   --arg image "$MOCKSERVER_IMAGE" --arg image_digest "$IMAGE_DIGEST" \
-  --arg image_revision "$IMAGE_REVISION" --arg commit_under_test "$COMMIT_UNDER_TEST" \
+  --arg image_revision "$IMAGE_REVISION" --arg commit_under_test "$ATTRIBUTED_COMMIT" --arg cut_src "$ATTRIBUTED_SRC" \
+  --arg harness_commit "$HARNESS_COMMIT" \
+  --arg image_created "$IMAGE_CREATED" --arg image_age_days "$IMAGE_AGE_DAYS" \
+  --argjson image_max_age_days "$IMAGE_MAX_AGE_JSON" --arg image_stale "$IMAGE_STALE" \
   --arg provenance_ok "$PROVENANCE_OK" --arg provenance_grace_until "$PROVENANCE_GRACE_UNTIL" \
   --arg jvm_diagnostics "$PERF_JVM_DIAGNOSTICS" \
   --arg jdk "$JDK_BUILD" --arg java_vendor "$JAVA_VENDOR" --arg vm_name "$VM_NAME" \
@@ -768,19 +871,42 @@ CONFIG_JSON="$(jq -n \
   --argjson k6_pin_pct "$K6_CFG_PIN_PCT" \
   '{
     mockserver_version: $version,
+    # mockserver_git_hash is the git commit of the RUNNING binary as the JVM reports it via
+    # mock_server_build_info{git_hash}. It is DELIBERATELY not cross-checked against
+    # image_revision: git_hash is git.commit.id.abbrev (abbrevLength=8 in mockserver-core
+    # pom.xml — observed 8-hex, e.g. "412287f2"), whereas image_revision is a full 40-hex
+    # OCI label. They are not the same format, so per the "only compare when both are
+    # well-formed 40-hex; otherwise record both and check nothing" rule, both are recorded
+    # and neither is normalised into the other — a prefix compare would manufacture false
+    # reds (and the abbrev can resolve to shared-repo HEAD in a linked worktree build).
     mockserver_git_hash: (if $git_hash=="" then null else $git_hash end),
     image: $image,
     image_digest: $image_digest,
     # Source provenance: which commit built the measured image (image_revision, from
-    # the OCI label), the commit this result is filed under (commit_under_test), and
-    # whether they matched (provenance_ok: "true"/"false"/"null"; null = image predates
-    # the label, tolerated until provenance_grace_until). A "false" here also fails the
-    # validity block, so compare refuses to baseline the run — this is the recorded
-    # answer to "did we measure the change this result is filed under?".
+    # the OCI label — null if absent), the commit this result is ATTRIBUTED to and keyed
+    # in history by (commit_under_test == top-level .commit: the image revision when the
+    # label is a well-formed SHA, else the harness commit during the grace window), the
+    # separate Buildkite build / harness-scripts commit (harness_commit — the commit of
+    # the measurement METHOD; if it changed, the method changed), and the verdict
+    # (provenance_ok: "true"/"false"/"null"; null = image predates the label, tolerated
+    # until provenance_grace_until; false = malformed label OR closed/malformed grace,
+    # which also fails the validity block so compare refuses to baseline the run).
     image_revision: (if $image_revision=="" then null else $image_revision end),
     commit_under_test: $commit_under_test,
+    harness_commit: $harness_commit,
     provenance_ok: (if $provenance_ok=="null" then null else ($provenance_ok=="true") end),
     provenance_grace_until: $provenance_grace_until,
+    # Image freshness: the build timestamp of the measured image (image_created, .Created),
+    # its age in whole days (image_age_days; null when .Created was unparseable), the bound
+    # (image_max_age_days; null when the PERF_MAX_IMAGE_AGE_DAYS override was malformed), and
+    # the verdict (image_stale). image_stale:true means the snapshot tag looks FROZEN — a
+    # stale image is a valid measurement of that binary but NOT a fresh daily-cadence data
+    # point, so perf-test-compare.sh reds the build on it and does not baseline it. Fails
+    # closed: an unparseable .Created or a malformed threshold yields image_stale:true.
+    image_created: (if $image_created=="" then null else $image_created end),
+    image_age_days: (if $image_age_days=="unknown" then null else ($image_age_days|tonumber) end),
+    image_max_age_days: $image_max_age_days,
+    image_stale: ($image_stale=="true"),
     # Diagnostics tier this run was measured under. tier 1 ("standard") is inert on a
     # healthy path; "deep" adds throughput-costing tier-2 instrumentation, which is why
     # a deep run is baseline_eligible:false (recorded, never persisted) at the top level.
@@ -800,7 +926,8 @@ CONFIG_JSON="$(jq -n \
     sources: {
       mockserver_version:"observed", mockserver_git_hash:"observed",
       image_digest:"observed",
-      image_revision:"observed", commit_under_test:"declared", provenance_ok:"observed",
+      image_revision:"observed", commit_under_test:$cut_src, harness_commit:"declared", provenance_ok:"observed",
+      image_created:"observed", image_age_days:"observed", image_max_age_days:"declared", image_stale:"observed",
       jvm_diagnostics:"declared",
       jdk:"observed", java_vendor:"observed", vm_name:"observed",
       gc:"observed", heap_max_bytes:"observed",
@@ -810,7 +937,7 @@ CONFIG_JSON="$(jq -n \
       k6_image_digest:"observed", cpusets:"declared", k6_cpu_pin_pct:"declared"
     }
   }')"
-echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} provenance_ok=${PROVENANCE_OK} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=2)"
+echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} provenance_ok=${PROVENANCE_OK} attributed=${ATTRIBUTED_COMMIT:0:10}(${ATTRIBUTED_SRC}) harness=${HARNESS_COMMIT:0:10} image_age_days=${IMAGE_AGE_DAYS} image_stale=${IMAGE_STALE} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=3)"
 
 echo "--- seeding upstream /simple (forward target)"
 docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
@@ -2091,7 +2218,12 @@ if [ "${PERF_SERVING_PERCORE:-false}" = "true" ]; then
 fi
 
 # --- assemble result JSON -----------------------------------------------------
-COMMIT="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+# .commit is the ATTRIBUTED commit resolved in the provenance block above — the SUT
+# image's own revision when its label is a well-formed SHA, else the harness commit
+# (grace window). This is what the result is filed under and what perf-test-compare.sh
+# keys the stored-history object by. The Buildkite build / harness-scripts commit is
+# carried separately as harness_commit so a reader can see both when they differ.
+COMMIT="$ATTRIBUTED_COMMIT"
 BRANCH="${BUILDKITE_BRANCH:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # instance_type attributes every stored point to the HARDWARE it was measured on;
@@ -2230,7 +2362,7 @@ else
 fi
 
 jq -n \
-  --arg commit "$COMMIT" --arg branch "$BRANCH" --arg ts "$TS" \
+  --arg commit "$COMMIT" --arg harness_commit "$HARNESS_COMMIT" --arg branch "$BRANCH" --arg ts "$TS" \
   --arg build_number "${BUILDKITE_BUILD_NUMBER:-}" --arg build_url "${BUILDKITE_BUILD_URL:-}" \
   --arg instance_type "$INSTANCE_TYPE" --arg instance_type_src "$INSTANCE_TYPE_SRC" --arg image "$MOCKSERVER_IMAGE" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
@@ -2264,12 +2396,20 @@ jq -n \
   --arg heap_min_first "$HEAP_MIN_FIRST" --arg heap_min_last "$HEAP_MIN_LAST" \
   --arg gc_delta "$GC_DELTA" --arg threads_peak "$THREADS_PEAK" \
   '{
-    # schema_version 2: a `config` block now records what the run WAS (JVM/JDK/GC,
+    # schema_version 2: a `config` block records what the run WAS (JVM/JDK/GC,
     # resolved heap, log level, image digest, k6 pin) so runs are only ever compared
     # when configured alike. A stored run with schema_version 1 has no config block
     # and predates this guarantee — perf-test-compare.sh annotates that boundary.
-    schema_version: 2,
-    commit: $commit, branch: $branch, timestamp_utc: $ts,
+    # schema_version 3: `.commit` now means the ATTRIBUTED commit (the revision of the
+    # measured binary itself when its label is a well-formed SHA — see the provenance
+    # block), NOT the Buildkite build commit as in v2; the build/harness commit moves
+    # to the new `harness_commit` field. The bump is the NON-SILENT signal of that
+    # meaning change — do not read a v2 `.commit` as the revision of the measured
+    # binary. The measured NUMBERS are produced identically, so v2 and v3 points stay directly
+    # comparable in a baseline window (compare keys metrics on the k6/JMH fingerprints,
+    # never on `.commit`); only the attribution label and the stored filename shift.
+    schema_version: 3,
+    commit: $commit, harness_commit: $harness_commit, branch: $branch, timestamp_utc: $ts,
     build_number: $build_number, build_url: $build_url,
     agent: { instance_type: $instance_type, instance_type_source: $instance_type_src, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
     config: $config,
@@ -2407,10 +2547,15 @@ if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact upload "perf-sweep.json" || true
   upload_diag_bundle
   [ -f "$REPO_ROOT/serving-percore.json" ] && buildkite-agent artifact upload "serving-percore.json" || true
-  # Record the commit this run actually executed against. perf-test-guard.sh
-  # reads this (via last_perf_run_commit) to decide "new commit since last run"
-  # — keyed off real runs, NOT the lint build that passes on every push.
-  buildkite-agent meta-data set "perf_regression_ran_commit" "$COMMIT" || true
+  # Record the HARNESS commit this run executed against — deliberately NOT the
+  # attributed (image-revision) `$COMMIT`. perf-test-guard.sh reads this (via
+  # last_perf_run_commit) and compares it to the current git HEAD to decide "has
+  # master moved since the last real run". HEAD is a harness-checkout SHA, so the
+  # stored value must be one too: keying this off the image revision (which lags
+  # master by a java-pipeline duration) would make LAST != HEAD on every quiet day
+  # and dispatch the heavy run daily forever, defeating the commit-gate economy.
+  # Keyed off real runs, NOT the lint build that passes on every push.
+  buildkite-agent meta-data set "perf_regression_ran_commit" "$HARNESS_COMMIT" || true
 else
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
   echo "(local run) result + sweep copied to $REPO_ROOT/perf-result.json, $REPO_ROOT/perf-sweep.json"

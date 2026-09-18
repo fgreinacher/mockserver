@@ -66,9 +66,13 @@ last_successful_commit() {
   echo "$commit"
 }
 
-# Echo the commit SHA the perf REGRESSION RUN last executed against, read from
+# Echo the HARNESS commit the perf REGRESSION RUN last executed against, read from
 # the perf-test builds' meta-data (`perf_regression_ran_commit`, set by
-# perf-test-run.sh). This is deliberately NOT the last *successful build*: the
+# perf-test-run.sh). This is deliberately the harness/build-checkout SHA, NOT the
+# result's attributed image-revision commit: the guard compares it to the current git
+# HEAD (also a harness-checkout SHA) to decide "has master moved since the last run".
+# The image revision lags master, so keying on it would make the guard fire every day.
+# This is deliberately NOT the last *successful build*: the
 # perf-test pipeline passes on the lint step alone on every push, so the last
 # successful build is almost always HEAD and would make the daily guard skip
 # forever. The meta-data is written only when the heavy run actually executes,

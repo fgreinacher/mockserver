@@ -175,6 +175,17 @@ if [ -f "$WORK/perf-h2-multiplex.json" ]; then
   jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-h2-multiplex.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
 fi
 
+# `.commit` is the ATTRIBUTED commit (schema_version >= 3: the measured binary's own
+# org.opencontainers.image.revision when it is a well-formed SHA, else the harness
+# commit during the provenance grace window — see perf-test-run.sh). This is the right
+# thing to key stored history by: a result describes the binary it measured. The
+# Buildkite build / harness-scripts commit is carried separately as `.harness_commit`.
+# The KEY's leading timestamp makes it unique per run, so two runs of the SAME image
+# revision (a quiet master re-measured) never collide. Baseline windowing sorts on that
+# timestamp too, so the change from a harness-commit to an image-revision suffix does
+# not affect which runs are selected. NOTE the meaning boundary: pre-v3 objects carry
+# the harness commit here; the metrics stay comparable across it (compare keys metrics
+# on the k6/JMH fingerprints, never on `.commit`).
 BRANCH="$(jq -r '.branch // "unknown"' "$RESULT")"
 COMMIT="$(jq -r '.commit // "unknown"' "$RESULT")"
 TS="$(jq -r '.timestamp_utc // "unknown"' "$RESULT")"
@@ -265,6 +276,35 @@ This run's \`validity.valid\` was \`true\`, but the newest result object does **
 
 Implausible/absent:
 ${PLAUSIBILITY_LIST}"
+  exit 1
+fi
+
+# --- 1b-iii. image-freshness gate (close the frozen-snapshot false green) -----
+# The provenance model files a result under the measured binary's own commit, which
+# (correctly) means an image that LAGS master is no longer a failure. But that removes
+# the only alarm for a distinct failure mode: a FROZEN snapshot tag. If the master-gated
+# java-docker-push-snapshot.sh stops rebuilding the mutable tag (pipeline red for days, or
+# the push breaks), the daily run measures the SAME binary every day, files every point
+# under the same truthfully-labelled old commit, and provenance_ok reads true forever — a
+# green chain measuring nothing new. The producer stamps `config.image_stale` from the
+# image's own .Created age (PERF_MAX_IMAGE_AGE_DAYS); a stale image is a valid measurement
+# of that binary but NOT a fresh daily-cadence data point, so this reds the build and does
+# NOT persist it. RED (not baseline_eligible:false which exits green) because the freshness
+# watchdog (perf-baseline-freshness.sh) explicitly cannot see a green-but-frozen run — it
+# has no perf-bucket S3 read — so a green here would leave this failure mode with no
+# reachable alarm. Placed BEFORE the baseline-eligibility green-exit so a stale run reds
+# even when it is also a deep-diagnostics run. A run with no `image_stale` field (older
+# producer / schema < 3) defaults to not-stale and is exempt — existing behaviour byte-for-
+# byte. This is distinct from the validity block (rig soundness) on purpose: the rig was
+# sound, the INPUT binary was stale.
+IMAGE_STALE="$(jq -r '.config.image_stale // false' "$RESULT")"
+if [ "$IMAGE_STALE" = "true" ]; then
+  IMG_AGE="$(jq -r '.config.image_age_days // "unknown"' "$RESULT")"
+  IMG_MAX="$(jq -r '.config.image_max_age_days // "?"' "$RESULT")"
+  IMG_CREATED="$(jq -r '.config.image_created // "?"' "$RESULT")"
+  annotate "error" ":no_entry: **Perf run measured a STALE image — build FAILED, not baselined** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The SUT image's own build age (\`.Created\` = \`${IMG_CREATED}\`, **${IMG_AGE}d** old) exceeds the freshness bound (\`PERF_MAX_IMAGE_AGE_DAYS\` = \`${IMG_MAX}\`), OR its age/threshold could not be determined (fail-closed). This is the **frozen-snapshot** signal: the mutable \`mockserver-snapshot-graaljs\` tag is rebuilt on every master merge, so a measured image older than the bound means the snapshot pipeline has **stopped** — the daily run would otherwise measure the same binary every day under a truthfully-labelled old commit and report green while learning nothing new. The run was **not persisted to the baseline history and not compared**. This is checked in the producer because the freshness watchdog cannot see a green-but-frozen run (no perf-bucket S3 read on its queue). **Investigate the \`java\` snapshot pipeline / the image push**, then re-run; set \`PERF_MAX_IMAGE_AGE_DAYS\` higher only for a deliberate slow-factory window."
   exit 1
 fi
 
