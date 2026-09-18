@@ -156,6 +156,17 @@ PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to se
 # cap so a diagnostics run never tries to push a multi-GB artifact. The raw dump always stays on the
 # volume/artifact-of-last-resort logic below decides upload.
 PERF_HEAPDUMP_MAX_UPLOAD_MB="${PERF_HEAPDUMP_MAX_UPLOAD_MB:-512}"
+# The dump is too big to upload but a CLASS HISTOGRAM of it is kilobytes and NAMES the retaining class
+# — the "what was retained?" answer, not just "heap ran out". The shipped SUT image is distroless with
+# no jcmd, and jmap/jhsdb cannot read an .hprof FILE anyway (live pid / core only; jhat was removed in
+# JDK 9), so a throwaway JDK sidecar runs a single-pass streaming parser (.buildkite/scripts/lib/
+# HprofHisto.java) with /diag mounted. It is memory-bounded (proven: -Xmx256m parses a 2.84 GB dump)
+# and self-bounds on a wall-clock deadline so a huge dump can never hang the step. Runs ONLY when a
+# heap dump exists (i.e. an OOM already happened), so it costs a healthy run nothing — tier 1.
+PERF_HISTO_ENABLED="${PERF_HISTO_ENABLED:-true}"
+PERF_HISTO_JDK_IMAGE="${PERF_HISTO_JDK_IMAGE:-eclipse-temurin:21-jdk}"
+PERF_HISTO_TOPN="${PERF_HISTO_TOPN:-40}"
+PERF_HISTO_DEADLINE_S="${PERF_HISTO_DEADLINE_S:-90}" # linear read of a 2.4 GB dump is ~1-2s locally; 90s is huge headroom, and a timeout yields a TRUNCATED top-N rather than nothing
 DIAG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-diag.XXXXXX")"
 # The SUT container's JVM (non-root user in the shipped image) writes gc.log / heap dump / JFR here,
 # same reason $OUT_DIR is world-writable for k6. Only diagnostics land here (no secrets).
@@ -240,29 +251,62 @@ PERF_INFO_ARM="${PERF_INFO_ARM:-true}"
 # otherwise it is left named in the log with its size rather than pushing a multi-GB artifact. Safe to
 # call more than once (guarded by a marker file). No-op when buildkite-agent is absent (local runs keep
 # the evidence in $DIAG_DIR on disk).
+# Derive a class histogram from a heap dump on the /diag volume and write it beside the dump (rides
+# in the always-uploaded bundle). Distroless SUT => no in-image jcmd, and jmap/jhsdb cannot read an
+# .hprof file, so run the streaming parser in a throwaway JDK sidecar with /diag mounted, -Xmx256m
+# (memory-bounded), self-bounded on a deadline. $1 = raw hprof path, $2 = /diag subdir (sut|info).
+extract_heap_histogram() {
+  local hprof="$1" sub="$2"
+  local out="$DIAG_DIR/$sub/heap-histogram.txt"
+  local parser="$REPO_ROOT/.buildkite/scripts/lib/HprofHisto.java"
+  [ "$PERF_HISTO_ENABLED" = "true" ] || { echo "--- heap-histogram extraction disabled (PERF_HISTO_ENABLED=$PERF_HISTO_ENABLED)" >&2; return 0; }
+  command -v docker >/dev/null 2>&1 || { echo "WARNING: docker unavailable — cannot extract heap histogram for $sub" >&2; return 0; }
+  [ -f "$parser" ] || { echo "WARNING: histogram parser missing ($parser) — skipping $sub histogram" >&2; return 0; }
+  echo "--- extracting class histogram from the $sub heap dump ($PERF_HISTO_JDK_IMAGE sidecar, -Xmx256m, deadline ${PERF_HISTO_DEADLINE_S}s)" >&2
+  if docker run --rm \
+       -v "$DIAG_DIR:/diag" \
+       -v "$parser:/HprofHisto.java:ro" \
+       "$PERF_HISTO_JDK_IMAGE" \
+       java -Xmx256m /HprofHisto.java "/diag/$sub/heapdump.hprof" "$PERF_HISTO_TOPN" "$PERF_HISTO_DEADLINE_S" \
+       > "$out" 2>"$out.err"; then
+    echo "--- heap histogram ($sub) — top retaining classes (full list in the uploaded bundle):" >&2
+    head -14 "$out" >&2
+  else
+    echo "WARNING: heap-histogram extraction failed for $sub (see $sub/heap-histogram.txt.err in the bundle); the raw dump remains on the volume" >&2
+    head -5 "$out.err" >&2 2>/dev/null || true
+  fi
+}
+
 upload_diag_bundle() {
   [ -f "$DIAG_DIR/.uploaded" ] && return 0
   command -v buildkite-agent >/dev/null 2>&1 || { echo "--- (local run) JVM diagnostics left in $DIAG_DIR" >&2; return 0; }
   : > "$DIAG_DIR/.uploaded"
-  # Heap dumps: gzip + size-cap, decided per file, and excluded from the main tarball.
-  local hprof gz szmb
+  # For each heap dump: FIRST derive a class histogram from the RAW .hprof (kilobytes, names the
+  # retaining class — the point of this whole exercise), THEN size-cap the dump itself. Order matters:
+  # the parser reads the raw file, so it must run before the gzip below. The dump is kept on the
+  # volume and refused for upload when over the cap; the histogram is what travels.
+  local hprof gz szmb rawmb sub
   for hprof in "$DIAG_DIR"/*/heapdump.hprof; do
     [ -f "$hprof" ] || continue
+    sub="$(basename "$(dirname "$hprof")")"
+    rawmb=$(( ( $(wc -c < "$hprof" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
+    extract_heap_histogram "$hprof" "$sub"
+    echo "--- heap dump kept on the /diag volume: $hprof (${rawmb} MiB uncompressed) — retrievable while the agent lives" >&2
     gz="$hprof.gz"; gzip -f "$hprof" >/dev/null 2>&1 || continue
     szmb=$(( ( $(wc -c < "$gz" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
     if [ "$szmb" -le "$PERF_HEAPDUMP_MAX_UPLOAD_MB" ]; then
-      cp "$gz" "$REPO_ROOT/$(basename "$(dirname "$hprof")")-heapdump.hprof.gz" 2>/dev/null \
-        && buildkite-agent artifact upload "$(basename "$(dirname "$hprof")")-heapdump.hprof.gz" 2>/dev/null \
-        && echo "--- uploaded heap dump ($(basename "$(dirname "$hprof")"), ${szmb} MiB gzipped)" >&2
+      cp "$gz" "$REPO_ROOT/${sub}-heapdump.hprof.gz" 2>/dev/null \
+        && buildkite-agent artifact upload "${sub}-heapdump.hprof.gz" 2>/dev/null \
+        && echo "--- uploaded heap dump ($sub, ${szmb} MiB gzipped)" >&2
     else
-      echo "--- heap dump $(basename "$(dirname "$hprof")") is ${szmb} MiB gzipped (> ${PERF_HEAPDUMP_MAX_UPLOAD_MB} MiB cap) — NOT uploaded; diagnose from GC log + NMT + class histogram instead" >&2
+      echo "--- heap dump $sub is ${szmb} MiB gzipped (> ${PERF_HEAPDUMP_MAX_UPLOAD_MB} MiB cap) — NOT uploaded; the class histogram (in the bundle) names the retaining class, and the raw dump is on the volume" >&2
     fi
   done
   # Everything else (small) as one tarball. Heap dumps are EXCLUDED — they are uploaded (or not)
   # separately above under the size cap, so they must never bloat this always-uploaded bundle.
   ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
     && buildkite-agent artifact upload "perf-jvm-diagnostics.tgz" 2>/dev/null \
-    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR'))" >&2 || true
+    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR'))" >&2 || true
 }
 
 # Capture the SUT (and INFO SUT) post-mortem BEFORE the container is removed — the single piece --rm
@@ -440,6 +484,34 @@ wait_ready() {
 # local/private target — so the HTTPS pass auto-trusts the self-signed cert with
 # no per-VU TLS warning, and no reliance on an explicit insecure flag.
 SERVER_ALIAS="mockserver"
+
+# --- SUT image freshness: pull the mutable tag before measuring (part D) --------
+# MOCKSERVER_IMAGE is a MUTABLE tag (mockserver-snapshot-graaljs) rebuilt on every
+# master merge. With no pull, `docker run` silently uses whatever layer set the
+# agent happens to have cached — build #264 measured an entirely cached image with
+# nothing tying it to the commit under test. Pull ONCE up front rather than
+# `--pull always` on each of the ~6 `docker run` calls below: --pull always would
+# re-query the registry per container (upstream, SUT, stream SUT, clustered nodes,
+# INFO SUT) for the same tag; a single pull freshens the shared local image once.
+# DECISION (part D asked to argue it): pull, don't skip. Cost is one pull (seconds)
+# against a 45-60 min run — negligible — and it does add a registry-availability
+# dependency, but the FIRST-ever run already needs the registry, and a registry
+# outage is better surfaced loudly here than by silently measuring a stale image.
+# Best-effort by design: if the pull fails but a cached image exists the run still
+# proceeds, because the provenance check below is the real backstop — it refuses to
+# attribute the run if the (cached) image was built from another commit, so a stale
+# pull can never masquerade as a fresh measurement. The recorded image_digest
+# (RepoDigest) then reflects whatever was actually pulled/used.
+# Set PERF_PULL_IMAGE=false for a LOCAL run that is deliberately measuring a
+# locally-built image (a pull would otherwise clobber it with the registry copy).
+if [ "${PERF_PULL_IMAGE:-true}" = "true" ]; then
+  echo "--- pulling SUT image $MOCKSERVER_IMAGE (freshen mutable tag before measuring)"
+  docker pull "$MOCKSERVER_IMAGE" \
+    || echo "WARNING: 'docker pull $MOCKSERVER_IMAGE' failed — proceeding with the cached image if present; the provenance check is the backstop" >&2
+else
+  echo "--- PERF_PULL_IMAGE=false — using the cached/local $MOCKSERVER_IMAGE (provenance check still applies)"
+fi
+
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
 start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream"
 start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "ERROR" "sut"
@@ -544,6 +616,15 @@ HEAP_MAX_BYTES="$(metric_heap_max)"
 # (which requires an identical config across runs), never falsely tighten a budget.
 SERVER_IMAGE_ID="$(docker inspect --format '{{.Image}}' "$SERVER" 2>/dev/null || true)"
 IMAGE_DIGEST="$(docker image inspect --format '{{if .RepoDigests}}{{index .RepoDigests 0}}{{else}}{{.Id}}{{end}}' "${SERVER_IMAGE_ID:-$MOCKSERVER_IMAGE}" 2>/dev/null || true)"
+# Source-provenance label off the SUT IMAGE (org.opencontainers.image.revision =
+# the commit the image was BUILT from — stamped by java-docker-push-snapshot.sh).
+# `index` on the Labels MAP returns the zero value ("") for a missing key, so this
+# is safe under Docker 29.x missingkey=error: that strictness applies to struct
+# FIELD access (.Foo on a missing key), not to `index` on a map — an image built
+# before the label shipped yields empty here, not a hard template error. Read from
+# the IMAGE (labels are an image property, absent on a container) via the resolved
+# image id, exactly as the digest above. Empty == absent for the provenance check.
+IMAGE_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${SERVER_IMAGE_ID:-$MOCKSERVER_IMAGE}" 2>/dev/null || true)"
 # Log level + system-out suppression are BOTH non-defaults every CI perf run sets,
 # and neither was ever recorded. Read them off the container that ran (observed);
 # only if absent there fall back to the shell env we exported (declared).
@@ -585,9 +666,97 @@ if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
   exit 1
 fi
 
+# --- source-provenance verdict (parts A/B): is the measured binary the commit
+# --- this result will be filed under? -----------------------------------------
+# The result is filed under COMMIT_UNDER_TEST (BUILDKITE_COMMIT / HEAD — the same
+# value the final result's .commit gets). IMAGE_REVISION is the commit the SUT
+# image was BUILT from (its OCI revision label). Three outcomes:
+#   match    -> provenance_ok=true : attributable; the validity check passes.
+#   mismatch -> provenance_ok=false: the measured binary is from a DIFFERENT commit,
+#               so the run cannot be attributed to COMMIT_UNDER_TEST. Recorded as a
+#               FAILED validity check, so perf-test-compare.sh refuses to persist or
+#               compare it AND reds the build — REUSING the existing validity gate
+#               rather than inventing a parallel mechanism (the user's stated
+#               preference). Not aborted here: the full result is still emitted so a
+#               reader can see WHICH commit was actually measured (turning "nobody can
+#               say whether the two were related" into a recorded fact). Mismatch
+#               fails regardless of date.
+#   absent   -> provenance_ok=null : the image predates the label — TRUE of every
+#               cached image until the next labelled snapshot ships. This must NOT
+#               hard-fail every run in the meantime, so an absent label PASSES the
+#               check UNTIL a time-bounded grace cutoff (PERF_PROVENANCE_GRACE_UNTIL),
+#               after which an absent label is itself a failure (the stamping
+#               regressed). Explicit + bounded, never silent-forever.
+COMMIT_UNDER_TEST="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
+# ISO YYYY-MM-DD compares correctly with lexical `>` (zero-padded => lexical order
+# IS chronological order); this is a genuine date comparison, not the `<= "0.1"`
+# numeric-vs-string trap — both operands are date strings and the operator is the
+# string operator inside [[ ]]. BUT the lexical comparison is only trustworthy if
+# the cutoff is a REAL date: an unvalidated override is a fail-OPEN deadline. A
+# malformed value (foo/never/tomorrow) sorts below every real date, and — the trap
+# a bare `^[0-9]{4}-[0-9]{2}-[0-9]{2}$` check would MISS — so does 9999-99-99
+# (format-valid, semantically impossible), so `today > grace` is false forever and
+# the tolerated window silently never closes. Same shape as the quoted perf-budget
+# floor (`number <= "0.1"` unconditionally true) fixed earlier today. So validate
+# real ISO components (month 01-12, day 01-31, which rejects 99-99 and 00-00) and
+# fail CLOSED on any non-match — a typo can never disable the deadline; a deliberate
+# extension must be a well-formed future date.
+PROVENANCE_GRACE_UNTIL="${PERF_PROVENANCE_GRACE_UNTIL:-2026-11-01}"
+GRACE_VALID=true
+if ! printf '%s' "$PROVENANCE_GRACE_UNTIL" | grep -qE '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'; then
+  GRACE_VALID=false
+  echo "WARNING: PERF_PROVENANCE_GRACE_UNTIL='${PROVENANCE_GRACE_UNTIL}' is not a valid ISO YYYY-MM-DD date — treating the provenance grace window as EXPIRED (fail closed) so a malformed override cannot silently disable the deadline" >&2
+fi
+TODAY_UTC="$(date -u +%Y-%m-%d)"
+if [ -n "$IMAGE_REVISION" ]; then
+  if [ "$IMAGE_REVISION" = "$COMMIT_UNDER_TEST" ]; then
+    PROVENANCE_OK="true"
+    echo "--- provenance: OK — SUT image revision matches the commit under test (${COMMIT_UNDER_TEST:0:10})"
+    add_check "source_provenance" true "SUT image revision (${IMAGE_REVISION:0:10}) matches the commit under test (${COMMIT_UNDER_TEST:0:10}) — result is attributable to the measured binary"
+  else
+    PROVENANCE_OK="false"
+    echo "--- provenance: MISMATCH — SUT image was built from ${IMAGE_REVISION:0:10} but this result is filed under ${COMMIT_UNDER_TEST:0:10}; run is NOT attributable and will not be baselined" >&2
+    add_check "source_provenance" false "SUT image was built from ${IMAGE_REVISION:0:10} but this result is filed under ${COMMIT_UNDER_TEST:0:10} — the measured binary is NOT the commit under test; the run cannot be attributed and must not poison the baseline"
+  fi
+else
+  PROVENANCE_OK="null"
+  if [ "$GRACE_VALID" != true ]; then
+    echo "--- provenance: UNVERIFIED and grace cutoff MALFORMED ('${PROVENANCE_GRACE_UNTIL}') — SUT image carries no revision label; failing closed" >&2
+    add_check "source_provenance" false "SUT image carries no org.opencontainers.image.revision label AND the provenance grace cutoff PERF_PROVENANCE_GRACE_UNTIL='${PROVENANCE_GRACE_UNTIL}' is not a valid ISO YYYY-MM-DD date — failing closed so a malformed override cannot silently keep the grace window open forever (set a well-formed future date to extend deliberately)"
+  elif [[ "$TODAY_UTC" > "$PROVENANCE_GRACE_UNTIL" ]]; then
+    echo "--- provenance: UNVERIFIED and grace window CLOSED (${PROVENANCE_GRACE_UNTIL}) — SUT image carries no revision label; failing closed" >&2
+    add_check "source_provenance" false "SUT image carries no org.opencontainers.image.revision label AND the provenance grace window closed on ${PROVENANCE_GRACE_UNTIL} — every snapshot built after the labelling change should carry it, so an absent label now means the stamping regressed (set PERF_PROVENANCE_GRACE_UNTIL to extend deliberately)"
+  else
+    echo "--- provenance: UNVERIFIED (tolerated until ${PROVENANCE_GRACE_UNTIL}) — SUT image carries no revision label yet (pre-label/cached image)"
+    add_check "source_provenance" true "SUT image carries no org.opencontainers.image.revision label yet (pre-label/cached image) — provenance UNVERIFIED but tolerated until the grace cutoff ${PROVENANCE_GRACE_UNTIL}, by when a labelled snapshot will have shipped on a master merge"
+  fi
+fi
+
+# --- baseline eligibility (part C): keep an INSTRUMENTED run out of the baseline
+# PERF_JVM_DIAGNOSTICS=deep enables tier-2 diagnostics (GC file logging + NMT + JFR)
+# that cost throughput BY DESIGN, so a deep run that completes must be RECORDED but
+# NOT persisted into the baseline history — otherwise it silently shifts the series,
+# the exact contamination the tier split was created to prevent (as gc/jdk/heap were
+# already recorded but the tier never was). This is DISTINCT from validity: a deep
+# run is a VALID measurement of an instrumented server, not a broken rig, so it must
+# stay GREEN (the investigation run was triggered on purpose) — hence a separate
+# baseline_eligible flag consumed by compare, NOT a validity check (which would red
+# the build). Defensive: ineligible if the DECLARED tier is deep OR the SUT's
+# OBSERVED JAVA_TOOL_OPTIONS actually carries tier-2 instrumentation — the safe
+# direction is to over-exclude, never to contaminate the baseline.
+BASELINE_ELIGIBLE="true"
+if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] \
+   || printf '%s' "$JAVA_TOOL_OPTS_VAL" | grep -q 'StartFlightRecording\|NativeMemoryTracking'; then
+  BASELINE_ELIGIBLE="false"
+  echo "--- baseline eligibility: NOT eligible (PERF_JVM_DIAGNOSTICS=$PERF_JVM_DIAGNOSTICS) — this run will be recorded but NOT persisted to the baseline"
+fi
+
 CONFIG_JSON="$(jq -n \
   --arg version "$MS_VERSION" --arg git_hash "$MS_GIT_HASH" \
   --arg image "$MOCKSERVER_IMAGE" --arg image_digest "$IMAGE_DIGEST" \
+  --arg image_revision "$IMAGE_REVISION" --arg commit_under_test "$COMMIT_UNDER_TEST" \
+  --arg provenance_ok "$PROVENANCE_OK" --arg provenance_grace_until "$PROVENANCE_GRACE_UNTIL" \
+  --arg jvm_diagnostics "$PERF_JVM_DIAGNOSTICS" \
   --arg jdk "$JDK_BUILD" --arg java_vendor "$JAVA_VENDOR" --arg vm_name "$VM_NAME" \
   --arg gc "$GC_IN_USE" --arg heap_max "$HEAP_MAX_BYTES" \
   --arg log_level "$LOG_LEVEL_VAL" --arg log_level_src "$LOG_LEVEL_SRC" \
@@ -602,6 +771,20 @@ CONFIG_JSON="$(jq -n \
     mockserver_git_hash: (if $git_hash=="" then null else $git_hash end),
     image: $image,
     image_digest: $image_digest,
+    # Source provenance: which commit built the measured image (image_revision, from
+    # the OCI label), the commit this result is filed under (commit_under_test), and
+    # whether they matched (provenance_ok: "true"/"false"/"null"; null = image predates
+    # the label, tolerated until provenance_grace_until). A "false" here also fails the
+    # validity block, so compare refuses to baseline the run — this is the recorded
+    # answer to "did we measure the change this result is filed under?".
+    image_revision: (if $image_revision=="" then null else $image_revision end),
+    commit_under_test: $commit_under_test,
+    provenance_ok: (if $provenance_ok=="null" then null else ($provenance_ok=="true") end),
+    provenance_grace_until: $provenance_grace_until,
+    # Diagnostics tier this run was measured under. tier 1 ("standard") is inert on a
+    # healthy path; "deep" adds throughput-costing tier-2 instrumentation, which is why
+    # a deep run is baseline_eligible:false (recorded, never persisted) at the top level.
+    jvm_diagnostics: $jvm_diagnostics,
     jdk: $jdk, java_vendor: $java_vendor, vm_name: $vm_name,
     gc: $gc,
     heap_max_bytes: ($heap_max|tonumber),
@@ -616,7 +799,10 @@ CONFIG_JSON="$(jq -n \
     k6_cpu_pin_pct: $k6_pin_pct,
     sources: {
       mockserver_version:"observed", mockserver_git_hash:"observed",
-      image_digest:"observed", jdk:"observed", java_vendor:"observed", vm_name:"observed",
+      image_digest:"observed",
+      image_revision:"observed", commit_under_test:"declared", provenance_ok:"observed",
+      jvm_diagnostics:"declared",
+      jdk:"observed", java_vendor:"observed", vm_name:"observed",
       gc:"observed", heap_max_bytes:"observed",
       log_level:$log_level_src, disable_system_out:$disable_sysout_src,
       max_event_log_size_bytes:"container-env",
@@ -624,7 +810,7 @@ CONFIG_JSON="$(jq -n \
       k6_image_digest:"observed", cpusets:"declared", k6_cpu_pin_pct:"declared"
     }
   }')"
-echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} (schema_version=2)"
+echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} provenance_ok=${PROVENANCE_OK} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=2)"
 
 echo "--- seeding upstream /simple (forward target)"
 docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
@@ -1998,6 +2184,7 @@ jq -n \
   --argjson clu_ctrl "$CLU_CTRL_BEHAVIOURS" \
   --argjson clu_cand "$CLU_CAND_BEHAVIOURS" \
   --argjson validity "$VALIDITY_JSON" \
+  --argjson baseline_eligible "$BASELINE_ELIGIBLE" \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
   --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
@@ -2090,6 +2277,12 @@ jq -n \
         elif ($forward.forward_guard.error_rate) == null then "infra_error"
         else "breached" end) }),
     validity: $validity,
+    # Part C — baseline eligibility. false ONLY for an instrumented (PERF_JVM_DIAGNOSTICS
+    # =deep) run: perf-test-compare.sh records it but refuses to persist/compare it (and
+    # stays GREEN — a deep run is a deliberate investigation, not a failure), so tier-2
+    # instrumentation overhead can never silently shift the baseline series. A run with
+    # no baseline_eligible field (older producer) is treated as eligible, unchanged.
+    baseline_eligible: $baseline_eligible,
     # Item 8 laptop startup/footprint profile (notify-only). `{}` when the profile
     # was disabled or its measurement failed; compare iterates head metrics, so an
     # empty object simply emits zero laptop.* metrics (no missing-budget trip). The

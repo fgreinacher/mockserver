@@ -126,6 +126,19 @@ FROM gcr.io/distroless/java17:nonroot@sha256:6457ce026c1733d9693b65a4dbb45459d71
 # maintainer details
 LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
+# Source provenance (OCI convention). revision = the git commit this image was
+# BUILT from; created = the RFC-3339 build time. Both are stamped by the build via
+# --build-arg (java-docker-push-snapshot.sh for the snapshot tags), and are EMPTY
+# on a plain `docker build` (forks/self-hosters) so the label is simply absent
+# rather than wrong. The perf harness reads image.revision back off the running
+# SUT (perf-test-run.sh) and refuses to attribute a run to a commit the measured
+# binary did not come from — a floating tag on a cached agent otherwise leaves a
+# perf result with no evidence it measured the change it was filed under.
+ARG SOURCE_COMMIT=
+ARG BUILD_DATE=
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
 # expose ports.
 EXPOSE 1080
 

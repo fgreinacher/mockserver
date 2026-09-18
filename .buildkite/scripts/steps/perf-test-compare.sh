@@ -216,6 +216,23 @@ ${FAILED_CHECKS}"
   exit 1
 fi
 
+# --- 1c. baseline eligibility (part C: keep an instrumented run out of the series) ---
+# A PERF_JVM_DIAGNOSTICS=deep run is a VALID measurement (it passed the validity gate
+# above) but tier-2 instrumentation (GC file logging / NMT / JFR) depresses throughput
+# BY DESIGN, so persisting it would silently shift the baseline series the tier split
+# exists to protect. Unlike an invalid run this is NOT a failure — the investigation
+# run was triggered on purpose — so annotate and exit 0 (GREEN) WITHOUT persisting or
+# comparing. Placed AFTER the validity gate so an invalid deep run still reds; a run
+# with no baseline_eligible field (older producer) defaults to eligible, unchanged.
+ELIGIBLE="$(jq -r 'if has("baseline_eligible") then .baseline_eligible else true end' "$RESULT")"
+if [ "$ELIGIBLE" != "true" ]; then
+  DIAG_TIER="$(jq -r '.config.jvm_diagnostics // "?"' "$RESULT")"
+  annotate "info" ":microscope: **Perf run recorded, not baselined — instrumented run** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+This run set \`baseline_eligible: false\` (\`PERF_JVM_DIAGNOSTICS=${DIAG_TIER}\`): tier-2 diagnostics (GC file logging, NMT, JFR) depress throughput by design, so it was **not persisted to the baseline history and not compared** — baselining it would silently shift the series the diagnostics-tier split exists to protect. This is expected for a deliberate investigation run, so the build stays **green**."
+  exit 0
+fi
+
 # --- 2. persist this run to S3 (history) --------------------------------------
 # FATAL on failure. A failed S3 write used to only WARN and continue, leaving the
 # build GREEN having stored nothing: the baseline then silently stops refreshing

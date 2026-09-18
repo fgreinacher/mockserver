@@ -79,6 +79,17 @@ LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 # The namespace is DNS-verified against mock-server.com. See docs/operations/mcp-registry-publishing.md.
 LABEL io.modelcontextprotocol.server.name="com.mock-server/mockserver"
 
+# Source provenance (OCI convention). revision = the git commit this image was
+# BUILT from; created = the RFC-3339 build time. Stamped by the build via
+# --build-arg (java-docker-push-snapshot.sh for the snapshot tags), EMPTY on a
+# plain `docker build` so the label is absent rather than wrong. Lets any consumer
+# (and the perf harness) answer "which commit produced this binary?" from the
+# image alone. This is the standard image the release + snapshot push both build.
+ARG SOURCE_COMMIT=
+ARG BUILD_DATE=
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
 # expose ports.
 EXPOSE 1080
 

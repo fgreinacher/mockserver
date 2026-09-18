@@ -142,9 +142,18 @@ trap - EXIT
 
 ECR_REPO="public.ecr.aws/t2x9c0i6/mockserver"
 
+# Source provenance stamped into the pushed images as OCI labels
+# (org.opencontainers.image.revision / .created). SOURCE_COMMIT is the commit this
+# snapshot was built from — the perf harness reads it back off the running SUT and
+# refuses to attribute a perf result to a commit the measured binary did not come
+# from (mutable snapshot tag + cached agent = otherwise-unprovable provenance).
+SOURCE_COMMIT="${BUILDKITE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo '')}"
+BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "--- :label: stamping image provenance: revision=${SOURCE_COMMIT:0:12} created=${BUILD_DATE}"
+
 echo "--- :docker: Building and pushing mockserver/mockserver:snapshot (multi-arch)"
 
-DOCKER_CMD="docker buildx build --platform linux/amd64,linux/arm64 --push --tag mockserver/mockserver:snapshot --tag mockserver/mockserver:mockserver-snapshot --tag ${ECR_REPO}:snapshot --tag ${ECR_REPO}:mockserver-snapshot docker/local"
+DOCKER_CMD="docker buildx build --platform linux/amd64,linux/arm64 --push --build-arg SOURCE_COMMIT=$SOURCE_COMMIT --build-arg BUILD_DATE=$BUILD_DATE --tag mockserver/mockserver:snapshot --tag mockserver/mockserver:mockserver-snapshot --tag ${ECR_REPO}:snapshot --tag ${ECR_REPO}:mockserver-snapshot docker/local"
 
 echo "┌──────────────────────────────────────────────────────────────────"
 echo "│ Docker Command (copy to reproduce locally):"
@@ -158,6 +167,8 @@ docker buildx create --use --name builder 2>/dev/null || docker buildx use build
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --push \
+  --build-arg SOURCE_COMMIT="$SOURCE_COMMIT" \
+  --build-arg BUILD_DATE="$BUILD_DATE" \
   --tag mockserver/mockserver:snapshot \
   --tag mockserver/mockserver:mockserver-snapshot \
   --tag "${ECR_REPO}:snapshot" \
@@ -177,6 +188,8 @@ docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --push \
   --build-arg source=copy \
+  --build-arg SOURCE_COMMIT="$SOURCE_COMMIT" \
+  --build-arg BUILD_DATE="$BUILD_DATE" \
   --tag mockserver/mockserver:snapshot-graaljs \
   --tag mockserver/mockserver:mockserver-snapshot-graaljs \
   --tag "${ECR_REPO}:snapshot-graaljs" \
