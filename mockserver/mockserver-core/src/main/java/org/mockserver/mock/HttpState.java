@@ -490,7 +490,7 @@ public class HttpState {
     }
 
     public void clear(HttpRequest request) {
-        final String logCorrelationId = UUIDService.getUUID();
+        final String logCorrelationId = UUIDService.getNonSecureUUID();
         // Namespace-scoped clear: ?namespace=T (or the configured namespace header)
         // removes only that tenant's expectations, leaving other namespaces and
         // global expectations intact. Takes precedence over request-matcher / id
@@ -696,7 +696,7 @@ public class HttpState {
                 .map(Expectation::getId)
                 .collect(Collectors.toList());
             Set<String> toPrune = OpenApiSyncPlanner.idsToPrune(existingIds, newIds, namespacePrefixes);
-            String logCorrelationId = UUIDService.getUUID();
+            String logCorrelationId = UUIDService.getNonSecureUUID();
             for (String pruneId : toPrune) {
                 requestMatchers.clear(ExpectationId.expectationId(pruneId), logCorrelationId);
             }
@@ -798,7 +798,7 @@ public class HttpState {
     private static final int DEBUG_MISMATCH_MAX_EXPECTATIONS = 100;
 
     public HttpResponse debugMismatch(HttpRequest request) {
-        final String correlationId = UUIDService.getUUID();
+        final String correlationId = UUIDService.getNonSecureUUID();
         final String timestamp = java.time.Instant.now().toString();
         try {
             final RequestDefinition requestDefinition = isNotBlank(request.getBodyAsString())
@@ -948,7 +948,7 @@ public class HttpState {
      * @return a JSON response containing an array of unmatched requests with diagnostics
      */
     public HttpResponse explainUnmatched(HttpRequest request) {
-        final String correlationId = UUIDService.getUUID();
+        final String correlationId = UUIDService.getNonSecureUUID();
         final String timestamp = java.time.Instant.now().toString();
         try {
             com.fasterxml.jackson.databind.ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
@@ -1127,7 +1127,7 @@ public class HttpState {
     }
 
     public HttpResponse retrieve(HttpRequest request) {
-        final String logCorrelationId = UUIDService.getUUID();
+        final String logCorrelationId = UUIDService.getNonSecureUUID();
         CompletableFuture<HttpResponse> httpResponseFuture = new CompletableFuture<>();
         HttpResponse response = response().withStatusCode(OK.code());
         if (request != null) {
@@ -1964,7 +1964,7 @@ public class HttpState {
 
     public boolean handle(HttpRequest request, ResponseWriter responseWriter, boolean warDeployment) {
 
-        request.withLogCorrelationId(UUIDService.getUUID());
+        request.withLogCorrelationId(UUIDService.getNonSecureUUID());
         if (request.getReceivedTimestamp() == null) {
             request.withReceivedTimestamp(org.mockserver.time.EpochService.currentTimeMillis());
         }
@@ -6667,7 +6667,7 @@ public class HttpState {
      */
     public List<Expectation> promoteRecordings(RequestDefinition filter, boolean consolidate, boolean parameterize, org.mockserver.imports.ImportRedaction.Options redactionOptions) {
         final RequestDefinition promoteFilter = filter != null ? filter : request();
-        final String promoteCorrelationId = UUIDService.getUUID();
+        final String promoteCorrelationId = UUIDService.getNonSecureUUID();
         List<Expectation> recorded = awaitRetrieve(
             (Consumer<Consumer<List<Expectation>>>) consumer -> mockServerLog.retrieveRecordedExpectations(promoteFilter, consumer),
             promoteCorrelationId, promoteFilter instanceof HttpRequest ? (HttpRequest) promoteFilter : null

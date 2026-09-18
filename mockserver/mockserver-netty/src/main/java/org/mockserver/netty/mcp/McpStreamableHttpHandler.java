@@ -193,7 +193,7 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             HttpRequest mockRequest = HttpRequest.request()
                 .withMethod(request.method().name())
                 .withPath(request.uri());
-            mockRequest.withLogCorrelationId(org.mockserver.uuid.UUIDService.getUUID());
+            mockRequest.withLogCorrelationId(org.mockserver.uuid.UUIDService.getNonSecureUUID());
             for (Map.Entry<String, String> header : request.headers()) {
                 mockRequest.withHeader(header.getKey(), header.getValue());
             }

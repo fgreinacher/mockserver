@@ -345,7 +345,7 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
         GrpcDerivedHeaders.strip(request);
         request.withHeader(GrpcDerivedHeaders.SERVICE, parts[0]).withHeader(GrpcDerivedHeaders.METHOD, parts[1]);
         if (request.getLogCorrelationId() == null) {
-            request.withLogCorrelationId(UUIDService.getUUID());
+            request.withLogCorrelationId(UUIDService.getNonSecureUUID());
         }
         captureClientCertificates(ctx, request);
 
@@ -389,7 +389,7 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
             org.mockserver.mock.breakpoint.BreakpointMatcherRegistry.getInstance()
                 .findMatch(request, org.mockserver.mock.breakpoint.BreakpointPhase.INBOUND_STREAM);
         if (inboundMatcher != null) {
-            inboundStreamId = "grpc-bidi-inbound-" + path + "-h3-" + UUIDService.getUUID();
+            inboundStreamId = "grpc-bidi-inbound-" + path + "-h3-" + UUIDService.getNonSecureUUID();
             inboundBreakpointClientId = inboundMatcher.getClientId();
             inboundBreakpointId = inboundMatcher.getId();
         } else {

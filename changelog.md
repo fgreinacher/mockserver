@@ -79,8 +79,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —
   which keeps the production dependency audit (`npm audit --omit=dev`) clean; the affected lodash functions are
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
-
-### Fixed
+- Internal identifiers that need only to be **unique** — every event-log entry id, the per-request
+  log-correlation ids, and the internal gRPC/HTTP-3 stream ids — are now generated from a fast,
+  contention-free random source instead of the cryptographically-secure PRNG. Under sustained load the
+  secure PRNG's single process-wide lock had become the only material lock contention on the server:
+  every log entry (2-3 per request) minted a secure UUID, serialising all worker event loops on that
+  one monitor exactly as request rate peaked, which is visible in profiles as a throughput collapse
+  past the saturation knee. Values whose unguessability is a **security** property — session ids,
+  client-registration ids, client-facing callback and breakpoint correlation ids, TLS keystore file
+  names and cluster node ids — are unchanged and still use the secure generator. The ids are standard
+  random (version 4) UUIDs as before, so nothing user-visible changes about their format or uniqueness.
 - A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that
   body in memory for as long as the log entry lives. The body was retained twice: once as the raw
   bytes, and again as a parsed JSON tree roughly five times larger, built eagerly when the entry was

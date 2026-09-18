@@ -550,7 +550,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 // mutation and issues a backend remove, which must not run under a lock).
                 toRemove.forEach(httpRequestMatcher -> {
                     numberOfChanges.getAndIncrement();
-                    removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID());
+                    removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getNonSecureUUID());
                     if (httpRequestMatcher.getExpectation() != null && httpRequestMatcher.getExpectation().getAction() != null) {
                         metrics.decrement(httpRequestMatcher.getExpectation().getAction().getType());
                     }
@@ -658,7 +658,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void reset(Cause cause) {
         // Each removeHttpRequestMatcher self-serialises its own CPQ removal (and issues its
         // backend remove OUTSIDE the monitor).
-        httpRequestMatchers.stream().forEach(httpRequestMatcher -> removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getUUID()));
+        httpRequestMatchers.stream().forEach(httpRequestMatcher -> removeHttpRequestMatcher(httpRequestMatcher, cause, false, UUIDService.getNonSecureUUID()));
         // Structural clears of the non-thread-safe local maps — serialise on the monitor
         // (no backend call inside); the backend clear runs afterwards, outside the monitor.
         synchronized (this) {
@@ -800,7 +800,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                         if (casResult.exhausted) {
                             // Expectation is exhausted fleet-wide — schedule
                             // removal so it goes inactive on this node too
-                            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getUUID()));
+                            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getNonSecureUUID()));
                         }
                         continue;
                     }
@@ -1092,7 +1092,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                     if (!casResult.success) {
                         httpRequestMatcher.setResponseInProgress(false);
                         if (casResult.exhausted) {
-                            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getUUID()));
+                            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getNonSecureUUID()));
                         }
                         continue;
                     }
@@ -1517,7 +1517,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
             HttpRequestMatcher cachedMatcher = matcherCacheById.get(expectation.getId());
             if (cachedMatcher != null && cachedMatcher.getExpectation() == expectation) {
                 if (!expectation.isActive()) {
-                    removeHttpRequestMatcher(cachedMatcher, UUIDService.getUUID());
+                    removeHttpRequestMatcher(cachedMatcher, UUIDService.getNonSecureUUID());
                 }
                 cachedMatcher.setResponseInProgress(false);
             } else {
@@ -1526,7 +1526,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                     .findFirst()
                     .ifPresent(httpRequestMatcher -> {
                         if (!expectation.isActive()) {
-                            removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getUUID());
+                            removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getNonSecureUUID());
                         }
                         httpRequestMatcher.setResponseInProgress(false);
                     });
@@ -1554,7 +1554,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         boolean shouldSchedule = !(httpRequestMatcher instanceof org.mockserver.matchers.AbstractHttpRequestMatcher)
             || ((org.mockserver.matchers.AbstractHttpRequestMatcher) httpRequestMatcher).tryScheduleRemoval();
         if (shouldSchedule) {
-            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getUUID()));
+            scheduler.submit(() -> removeHttpRequestMatcher(httpRequestMatcher, UUIDService.getNonSecureUUID()));
         }
     }
 

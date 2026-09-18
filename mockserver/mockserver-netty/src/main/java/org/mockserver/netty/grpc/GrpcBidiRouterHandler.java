@@ -190,7 +190,7 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
                     org.mockserver.mock.breakpoint.BreakpointMatcherRegistry.getInstance()
                         .findMatch(syntheticRequest, org.mockserver.mock.breakpoint.BreakpointPhase.INBOUND_STREAM);
                 if (inboundMatcher != null) {
-                    inboundStreamId = "grpc-bidi-inbound-" + path + "-" + UUIDService.getUUID();
+                    inboundStreamId = "grpc-bidi-inbound-" + path + "-" + UUIDService.getNonSecureUUID();
                     inboundBreakpointClientId = inboundMatcher.getClientId();
                     inboundBreakpointId = inboundMatcher.getId();
                 } else {
@@ -349,7 +349,7 @@ public class GrpcBidiRouterHandler extends ChannelInboundHandlerAdapter {
         HttpRequest request = HttpRequest.request()
             .withMethod("POST")
             .withPath(path);
-        request.withLogCorrelationId(UUIDService.getUUID());
+        request.withLogCorrelationId(UUIDService.getNonSecureUUID());
 
         boolean hasContentType = false;
         if (headers != null) {

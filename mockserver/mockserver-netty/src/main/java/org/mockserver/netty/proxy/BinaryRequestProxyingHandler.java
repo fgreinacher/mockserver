@@ -62,7 +62,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf byteBuf) {
         BinaryMessage binaryRequest = bytes(ByteBufUtil.getBytes(byteBuf));
-        String logCorrelationId = UUIDService.getUUID();
+        String logCorrelationId = UUIDService.getNonSecureUUID();
         mockServerLogger.logEvent(
             new LogEntry()
                 .setType(RECEIVED_REQUEST)

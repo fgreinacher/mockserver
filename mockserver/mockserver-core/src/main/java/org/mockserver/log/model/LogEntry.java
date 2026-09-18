@@ -154,7 +154,11 @@ public class LogEntry implements EventTranslator<LogEntry> {
     @JsonIgnore
     public String id() {
         if (id == null) {
-            id = UUIDService.getUUID();
+            // A log-entry id needs only UNIQUENESS (it correlates and de-duplicates event-log entries);
+            // it is never a security token. Minting a cryptographically-secure UUID here - for EVERY
+            // log entry, on the disruptor ring-buffer publish path - serialised all worker event loops
+            // on the shared SecureRandom monitor under load, so use the fast contention-free generator.
+            id = UUIDService.getNonSecureUUID();
         }
         return id;
     }

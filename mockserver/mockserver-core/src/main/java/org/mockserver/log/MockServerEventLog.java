@@ -752,7 +752,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         disruptor.publishEvent(new LogEntry()
             .setType(RUNNABLE)
             .setConsumer(() -> {
-                String logCorrelationId = UUIDService.getUUID();
+                String logCorrelationId = UUIDService.getNonSecureUUID();
                 // A null filter means "clear everything". The previous code built a fresh empty
                 // request().withLogCorrelationId(uuid) matcher for this case, but the unique
                 // correlation id made it miss the matcher LRU cache on every clear, forcing an
@@ -1059,7 +1059,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 // stream rather than being swallowed and hanging a waiting verify future — see above
                 Stream<T> resultStream;
                 try {
-                    RequestDefinition requestDefinitionMatcher = requestDefinition != null ? requestDefinition : request().withLogCorrelationId(UUIDService.getUUID());
+                    RequestDefinition requestDefinitionMatcher = requestDefinition != null ? requestDefinition : request().withLogCorrelationId(UUIDService.getNonSecureUUID());
                     HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinitionMatcher);
                     resultStream = this.eventLog
                         .stream()
@@ -1181,7 +1181,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
      */
     public void verify(Verification verification, int additionalRemoteMatchCount, Consumer<String> resultConsumer) {
         drainDisruptor();
-        final String logCorrelationId = UUIDService.getUUID();
+        final String logCorrelationId = UUIDService.getNonSecureUUID();
         if (verification != null) {
             if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
                 mockServerLogger.logEvent(
@@ -1605,7 +1605,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     public void verify(VerificationSequence verificationSequence, Consumer<String> resultConsumer) {
         drainDisruptor();
         if (verificationSequence != null) {
-            final String logCorrelationId = UUIDService.getUUID();
+            final String logCorrelationId = UUIDService.getNonSecureUUID();
             if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
                 mockServerLogger.logEvent(
                     new LogEntry()

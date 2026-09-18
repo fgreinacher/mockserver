@@ -66,7 +66,7 @@ public class DnsRequestHandler extends SimpleChannelInboundHandler<DatagramDnsQu
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, DatagramDnsQuery query) {
-        String logCorrelationId = UUIDService.getUUID();
+        String logCorrelationId = UUIDService.getNonSecureUUID();
         DnsQuestion question = query.recordAt(DnsSection.QUESTION);
         if (question == null) {
             sendErrorResponse(ctx, query, DnsResponseCode.FORMERR);
