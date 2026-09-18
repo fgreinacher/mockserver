@@ -115,6 +115,84 @@ chmod 0777 "$OUT_DIR"
 RESULT_JSON="$OUT_DIR/result.json"
 SAMPLE_LOG="$OUT_DIR/samples.csv"
 
+# --- JVM-internals diagnostics (builds 261/264 died with the SUT vanishing under --rm) ----------
+# Two tiers, chosen so the tracked baseline is never silently shifted (the log-level lesson):
+#
+#   TIER 1 — ALWAYS ON, and genuinely near-zero so the tracked baseline stays comparable with
+#   months of stored S3 history measured WITHOUT it. Only flags that are INERT until an
+#   OutOfMemoryError fires — nothing runs on a healthy request path, so the baseline cannot be
+#   silently offset. Everything lands on a HOST-mounted volume ($DIAG_DIR -> /diag) so it survives
+#   the container's death, plus host-side capture of the container's post-mortem (docker inspect
+#   .State / docker logs) which is the piece --rm destroyed.
+#     -XX:+ExitOnOutOfMemoryError  a JVM OOM is then unambiguous + immediate (no half-dead server)
+#     -XX:+HeapDumpOnOutOfMemoryError + -XX:HeapDumpPath=/diag  a heap dump that OUTLIVES the container
+#     (host-side, no JVM flag) dense sampler + docker inspect .State + streamed docker logs
+#   GC FILE LOGGING is NOT tier 1. -Xlog:gc* is always-on and writes a line per GC event to a bind
+#   mount; its cost scales with GC frequency (highest on the large-body arms this proof did not
+#   exercise) and a single within-noise measurement cannot show it sub-1% — the honest upper bound
+#   is ~2%, enough to permanently offset a baseline series compared against months of history. That
+#   is the ONE outcome this design must protect against, so GC logging is TIER 2. The coarse heap/RSS
+#   trajectory is still captured tier-1 by the host-side sampler at zero SUT cost.
+#   NATIVE-vs-HEAP discrimination in tier 1 is done with FREE signals, NOT NMT: the sampler records
+#   the CONTAINER RSS (docker stats, host-side) beside the JVM heap, and the failure path records
+#   docker inspect .State.OOMKilled. OOMKilled=true with heap headroom => native/cgroup kill (Netty
+#   direct buffers a heap dump cannot see); a JVM OutOfMemoryError in the log => heap. NMT itself is
+#   documented at 5-10% overhead, so it too would shift the baseline and is TIER 2, not tier 1.
+#
+#   TIER 2 — OPT-IN via PERF_JVM_DIAGNOSTICS=deep, for an INVESTIGATION run only. Costs throughput,
+#   so it MUST be off for the run that writes the baseline (the default 'standard' leaves it off).
+#     -Xlog:gc*                    the FINE per-GC-event trajectory to /diag/<sut>/gc.log (see the
+#                                   heap approach the cliff) — moved here from tier 1, see above
+#     JFR profile recording        allocation + CPU-hotspot profiling, chunks written to /diag/jfr-repo
+#                                   (survive even a hard OOM exit), ~2-8% depending on event settings
+#     -XX:NativeMemoryTracking=summary + -XX:+PrintNMTStatistics  precise native breakdown printed to
+#                                   stdout at JVM exit (captured by the docker-logs follower), ~5-10%
+#     periodic jcmd sampling        GC.heap_info / GC.class_histogram / Thread.print / VM.native_memory
+#                                   from a JDK sidecar sharing the SUT PID namespace (best-effort; the
+#                                   shipped image is distroless with no jcmd of its own)
+PERF_JVM_DIAGNOSTICS="${PERF_JVM_DIAGNOSTICS:-standard}"   # standard = tier 1 only; deep = tier 1 + tier 2
+PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to see the cliff APPROACH, not just its aftermath
+# Heap dumps are large (a 1.5 GiB heap dumps > 1 GiB); upload only when gzipped size is within this
+# cap so a diagnostics run never tries to push a multi-GB artifact. The raw dump always stays on the
+# volume/artifact-of-last-resort logic below decides upload.
+PERF_HEAPDUMP_MAX_UPLOAD_MB="${PERF_HEAPDUMP_MAX_UPLOAD_MB:-512}"
+DIAG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-diag.XXXXXX")"
+# The SUT container's JVM (non-root user in the shipped image) writes gc.log / heap dump / JFR here,
+# same reason $OUT_DIR is world-writable for k6. Only diagnostics land here (no secrets).
+chmod 0777 "$DIAG_DIR"
+mkdir -p "$DIAG_DIR/sut" "$DIAG_DIR/info" && chmod 0777 "$DIAG_DIR/sut" "$DIAG_DIR/info"
+DIAG_SAMPLE_LOG="$DIAG_DIR/diag-samples.csv"
+
+# Tier-1 JVM opts, written to a per-SUT /diag subdir. $1 = subdir name under /diag (sut|info).
+# ONLY flags that are genuinely INERT until an OutOfMemoryError fires — no continuous cost on a
+# healthy run, so the tracked baseline is not shifted. GC FILE LOGGING is deliberately NOT here: it
+# is always-on and writes a line per GC event to a host bind mount, whose cost scales with GC
+# frequency (highest on the large-body arms) and cannot be shown sub-threshold by a single
+# within-noise measurement — the honest upper bound is ~2%, enough to silently offset a baseline
+# series compared against months of history. GC logging therefore lives in tier 2 (below). The
+# tier-1 host-side sampler still records the coarse heap/RSS trajectory at zero SUT cost.
+tier1_jvm_opts() {
+  local sub="$1"
+  printf -- '-XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diag/%s/heapdump.hprof' "$sub"
+}
+# Tier-2 JVM opts (only when PERF_JVM_DIAGNOSTICS=deep). Adds the throughput-costing diagnostics an
+# INVESTIGATION run wants: the per-GC-event trajectory to a file (the fine-grained approach-to-the-cliff
+# evidence), NMT, and JFR. JFR repository on the mounted volume so the chunk files survive a hard
+# ExitOnOutOfMemoryError exit even if the named .jfr is never finalised.
+tier2_jvm_opts() {
+  local sub="$1"
+  # -XX:+UnlockDiagnosticVMOptions MUST precede PrintNMTStatistics (it is a diagnostic flag; the JVM
+  # refuses to start otherwise — caught by the local OOM proof).
+  printf -- '-Xlog:gc*,gc+heap=info:file=/diag/%s/gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics -XX:StartFlightRecording=name=perfdiag,settings=profile,filename=/diag/%s/recording.jfr,dumponexit=true,maxsize=256m -XX:FlightRecorderOptions=repository=/diag/%s/jfr-repo,stackdepth=128' "$sub" "$sub" "$sub"
+}
+# Combined diagnostics JVM opts for a diag SUT ($1 = /diag subdir), honouring the tier flag.
+diag_jvm_opts() {
+  local sub="$1" opts
+  opts="$(tier1_jvm_opts "$sub")"
+  [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] && opts="$opts $(tier2_jvm_opts "$sub")"
+  printf '%s' "$opts"
+}
+
 # item 15d — file-backed response body arm. Generate a ~1 MB JSON file on the host
 # and mount it read-only into the SUT so a FILE-body expectation can serve it (the
 # FileBodyMaterialiser path). World-readable so the container's non-root user can
@@ -134,6 +212,10 @@ echo "--- file-backed body: $(wc -c < "$FILE_BODY_HOST_PATH") bytes -> ${FILE_BO
 
 SAMPLER_PID=""
 SWEEP_SAMPLER_PID=""
+DIAG_SAMPLER_PID=""   # dense resource-trajectory sampler (JVM-internals diagnostics)
+SUT_LOG_PID=""        # docker-logs follower for the main SUT
+INFO_LOG_PID=""       # docker-logs follower for the INFO SUT
+SUT_DIAG_CAPTURED=""  # one-shot guard so the post-mortem capture runs at most once
 SWEEP_K6="k6-sweep-${RUN_ID}"
 # Plan open question 5 — the INFO-log-level PUBLICATION arm. The tracked, gated
 # baseline is measured at MOCKSERVER_LOG_LEVEL=ERROR (start_mockserver's default)
@@ -151,9 +233,77 @@ INFO_SERVER="mockserver-perf-info-${RUN_ID}"
 INFO_SERVER_ALIAS="mockserver-info"
 INFO_SWEEP_K6="k6-info-sweep-${RUN_ID}"
 PERF_INFO_ARM="${PERF_INFO_ARM:-true}"
+# Upload the surviving JVM-internals diagnostics as Buildkite artifacts. Small evidence (GC log,
+# the dense resource-trajectory CSV, the followed server logs, docker-inspect .State, any tier-2 NMT
+# print + JFR chunks) always goes up as one tarball. Heap dumps are handled separately and SIZE-CAPPED
+# (a 1.5 GiB heap dumps > 1 GiB): each is gzipped and uploaded only if within PERF_HEAPDUMP_MAX_UPLOAD_MB,
+# otherwise it is left named in the log with its size rather than pushing a multi-GB artifact. Safe to
+# call more than once (guarded by a marker file). No-op when buildkite-agent is absent (local runs keep
+# the evidence in $DIAG_DIR on disk).
+upload_diag_bundle() {
+  [ -f "$DIAG_DIR/.uploaded" ] && return 0
+  command -v buildkite-agent >/dev/null 2>&1 || { echo "--- (local run) JVM diagnostics left in $DIAG_DIR" >&2; return 0; }
+  : > "$DIAG_DIR/.uploaded"
+  # Heap dumps: gzip + size-cap, decided per file, and excluded from the main tarball.
+  local hprof gz szmb
+  for hprof in "$DIAG_DIR"/*/heapdump.hprof; do
+    [ -f "$hprof" ] || continue
+    gz="$hprof.gz"; gzip -f "$hprof" >/dev/null 2>&1 || continue
+    szmb=$(( ( $(wc -c < "$gz" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
+    if [ "$szmb" -le "$PERF_HEAPDUMP_MAX_UPLOAD_MB" ]; then
+      cp "$gz" "$REPO_ROOT/$(basename "$(dirname "$hprof")")-heapdump.hprof.gz" 2>/dev/null \
+        && buildkite-agent artifact upload "$(basename "$(dirname "$hprof")")-heapdump.hprof.gz" 2>/dev/null \
+        && echo "--- uploaded heap dump ($(basename "$(dirname "$hprof")"), ${szmb} MiB gzipped)" >&2
+    else
+      echo "--- heap dump $(basename "$(dirname "$hprof")") is ${szmb} MiB gzipped (> ${PERF_HEAPDUMP_MAX_UPLOAD_MB} MiB cap) — NOT uploaded; diagnose from GC log + NMT + class histogram instead" >&2
+    fi
+  done
+  # Everything else (small) as one tarball. Heap dumps are EXCLUDED — they are uploaded (or not)
+  # separately above under the size cap, so they must never bloat this always-uploaded bundle.
+  ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
+    && buildkite-agent artifact upload "perf-jvm-diagnostics.tgz" 2>/dev/null \
+    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR'))" >&2 || true
+}
+
+# Capture the SUT (and INFO SUT) post-mortem BEFORE the container is removed — the single piece --rm
+# destroyed. docker inspect .State is the most valuable artifact: OOMKilled / ExitCode / Status / Error
+# / FinishedAt distinguish a JVM OutOfMemoryError from a cgroup OOM-kill from a plain crash — which the
+# k6 client side cannot tell apart. OOMKilled=true with heap headroom in the GC log => native/direct
+# memory (Netty) crossed the cgroup limit BEFORE the JVM reported heap exhaustion; a JVM OutOfMemoryError
+# in the followed log => heap. Best-effort throughout; runs at most once.
+capture_sut_diagnostics() {
+  [ -n "$SUT_DIAG_CAPTURED" ] && return 0
+  SUT_DIAG_CAPTURED=1
+  echo "--- capturing SUT post-mortem before container removal (JVM-internals diagnostics)" >&2
+  # Stop the log followers so the *-server.log files are complete before we read/upload them.
+  [ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true; SUT_LOG_PID=""
+  [ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true; INFO_LOG_PID=""
+  local pair c sub
+  for pair in "${SERVER:-}:sut" "${INFO_SERVER:-}:info"; do
+    c="${pair%%:*}"; sub="${pair##*:}"
+    [ -n "$c" ] || continue
+    mkdir -p "$DIAG_DIR/$sub" 2>/dev/null || true
+    docker inspect --format '{{json .State}}' "$c" > "$DIAG_DIR/$sub/state.json" 2>/dev/null || true
+    docker logs --tail 300 "$c" > "$DIAG_DIR/$sub/logs-tail.txt" 2>&1 || true
+    # One-line verdict straight into the build log so a reader sees the diagnosis without downloading.
+    if [ -s "$DIAG_DIR/$sub/state.json" ]; then
+      echo "--- $c .State: $(jq -rc '{OOMKilled,ExitCode,Status,Error,FinishedAt}' "$DIAG_DIR/$sub/state.json" 2>/dev/null || cat "$DIAG_DIR/$sub/state.json")" >&2
+    fi
+  done
+  upload_diag_bundle
+}
+
 cleanup() {
+  local rc=$?
+  # On ANY non-zero exit (the mid-load death, an early wait_ready failure, a sampler/sweep abort),
+  # grab the SUT post-mortem BEFORE docker rm -f below erases it. This is the whole point: builds
+  # 261/264 died here and left nothing because --rm + this rm -f raced the investigator to the body.
+  if [ "$rc" -ne 0 ]; then capture_sut_diagnostics; fi
   [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" >/dev/null 2>&1 || true
   [ -n "$SWEEP_SAMPLER_PID" ] && kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true
+  [ -n "$DIAG_SAMPLER_PID" ] && kill "$DIAG_SAMPLER_PID" >/dev/null 2>&1 || true
+  [ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true
+  [ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true
   [ -n "${HS_CPU_PID:-}" ] && kill "$HS_CPU_PID" >/dev/null 2>&1 || true
   # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
   # so an early exit before the proxy block's own cleanup never leaks them.
@@ -165,7 +315,16 @@ cleanup() {
   [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
   [ -n "${HS_CERT_DIR:-}" ] && rm -rf "$HS_CERT_DIR" >/dev/null 2>&1 || true
 }
-trap cleanup EXIT
+# EXIT alone does NOT fire on SIGTERM/SIGINT — and Spot reclamation + Buildkite job cancellation send
+# SIGTERM before SIGKILL. On exactly those abnormal paths (the ones that motivated dropping --rm) the
+# EXIT trap would never run, so cleanup()'s docker rm -f would not run and the non-rm SUT would linger.
+# Trap the signals too so the post-mortem capture + removal still happen. (A SIGKILL still bypasses
+# everything — hence the startup sweep below reaps any container a prior killed run left behind.)
+trap cleanup EXIT INT TERM
+# Reap any leftover perf SUTs from a previously-cancelled/killed run before we start — otherwise a
+# lingering non-rm container from a SIGKILLed run (or a name collision) would wedge this one.
+# shellcheck disable=SC2046  # intentional word-splitting of the id list
+docker rm -f $(docker ps -aq --filter name=mockserver-perf- 2>/dev/null) >/dev/null 2>&1 || true
 
 # --- validity accumulation (item: validity blocks on every result) ------------
 # Each measurement phase appends a check {name, ok, detail}; the assembled result
@@ -220,7 +379,7 @@ cpuset_arg() { [ -n "$1" ] && printf -- '--cpuset-cpus=%s' "$1"; }
 docker network create "$NETWORK" >/dev/null
 
 start_mockserver() {
-  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}"
+  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}"
   # log_level defaults to ERROR — the tracked baseline's level, which every existing
   # caller relies on. The INFO publication arm (plan open question 5) passes INFO
   # explicitly; nothing else does, so the ERROR baseline is unaffected.
@@ -232,13 +391,27 @@ start_mockserver() {
   # the growth phase stays meaningful. Built as an array element so the value
   # survives intact as a SINGLE -e pair even though it contains spaces; unset =>
   # the array is empty and no -e flag is added, identical behaviour.
+  # When diag_subdir is set (the SUT and INFO SUT only) attach the JVM-internals diagnostics: mount
+  # the host $DIAG_DIR so gc.log / heap dump / JFR survive the container's death, append the tier-1
+  # (and, when PERF_JVM_DIAGNOSTICS=deep, tier-2) JVM opts to JAVA_TOOL_OPTIONS, and — critically —
+  # DROP --rm so the dead container lingers long enough for capture_sut_diagnostics() to read its
+  # post-mortem (docker inspect .State / docker logs). cleanup() force-removes it by name, so nothing
+  # leaks. Every OTHER container (upstream, stream/clustered/handshake SUTs) keeps --rm unchanged.
+  local rm_flag="--rm" diag_mount_arg=() combined_java_opts="${PERF_SERVER_JAVA_OPTS:-}"
+  if [ -n "$diag_subdir" ]; then
+    rm_flag=""
+    diag_mount_arg=(-v "$DIAG_DIR:/diag")
+    local diag_opts; diag_opts="$(diag_jvm_opts "$diag_subdir")"
+    combined_java_opts="${combined_java_opts:+$combined_java_opts }$diag_opts"
+  fi
   local java_opts_arg=()
-  [ -n "${PERF_SERVER_JAVA_OPTS:-}" ] && java_opts_arg=(-e "JAVA_TOOL_OPTIONS=$PERF_SERVER_JAVA_OPTS")
+  [ -n "$combined_java_opts" ] && java_opts_arg=(-e "JAVA_TOOL_OPTIONS=$combined_java_opts")
   # shellcheck disable=SC2046
-  docker run -d --rm --name "$name" --network "$NETWORK" --network-alias "$alias" \
+  docker run -d $rm_flag --name "$name" --network "$NETWORK" --network-alias "$alias" \
     $(cpuset_arg "$cpus") \
     ${mem:+--memory="$mem"} \
     ${mount:+-v "$mount"} \
+    ${diag_mount_arg[@]+"${diag_mount_arg[@]}"} \
     ${publish:+-p 127.0.0.1::1080} \
     ${java_opts_arg[@]+"${java_opts_arg[@]}"} \
     -e MOCKSERVER_LOG_LEVEL="$log_level" \
@@ -269,7 +442,15 @@ wait_ready() {
 SERVER_ALIAS="mockserver"
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
 start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream"
-start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT"
+start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "ERROR" "sut"
+# Follow the SUT's stdout/stderr into a host file from the moment it starts. The follow stream ENDS
+# when the container dies, so the file survives the container's reaping and captures the JVM's dying
+# words — an OutOfMemoryError stack, a "Terminating due to java.lang.OutOfMemoryError" from
+# ExitOnOutOfMemoryError, or (tier 2) the PrintNMTStatistics native-memory summary. This matters
+# because the SUT runs at log_level=ERROR with DISABLE_SYSTEM_OUT=true, so normal output is sparse
+# and the death message would otherwise be the only signal — and it is exactly what --rm destroyed.
+docker logs -f "$SERVER" > "$DIAG_DIR/sut/sut-server.log" 2>&1 &
+SUT_LOG_PID=$!
 echo "--- SUT started with --memory=$SERVER_MEMORY (bounded heap so GC cycles) + maxEventLogSizeInBytes=$PERF_MAX_EVENT_LOG_BYTES (body-byte OOM guard)"
 wait_ready "$UPSTREAM"
 wait_ready "$SERVER"
@@ -473,6 +654,65 @@ run_regression() {
     "$K6_IMAGE" run /k6/regression.js
 }
 
+# --- dense JVM-internals resource-trajectory sampler ---------------------------------------------
+# Runs across the WHOLE load window (regression -> sweep -> growth), the phase where builds 261/264
+# died at a reproducible 2m20s / ~37k iterations. Denser than the growth sampler (default 2s) because
+# a reproducible cliff at a fixed iteration count is a cumulative-memory signature: to attribute it we
+# must see the trajectory APPROACHING the cliff, not just its aftermath. Every column is host-side
+# (curl + docker stats), so the SUT pays nothing — this is tier 1.
+#   container_mem_bytes / limit   the CONTAINER RSS incl. off-heap — climbing while heap is flat is the
+#                                 near-zero native-growth signal (no NMT needed)
+#   heap_used / nonheap / gc / threads   the JVM levels already scraped elsewhere
+#   dropped_log_events            > 0 at death implicates the event-log ring directly
+#   ring_occupancy / in_flight_bytes (+ their ceilings)  the ring BACKING UP — the product-side gauges
+#                                 added in this same change; blank on an older SUT image that predates
+#                                 them (graceful), populated once a snapshot with them is built.
+# A BLANK JVM-metric column has THREE distinct meanings, all preserved and NOT conflated: (1) the
+# metric is absent on an older image; (2) the scrape TIMED OUT (--max-time 4) because the SUT was
+# thrashing in GC near death — common in the final rows, and itself a death signal; (3) a genuine
+# measured value that happens to be 0 is written as "0", never blank. The host-side container_mem
+# columns keep populating through (2), which is exactly when the in-JVM scrape goes dark.
+# to_bytes(): docker stats MemUsage units ("1.523GiB" / "512MiB" / "0B") -> integer bytes.
+to_bytes() { awk -v s="$1" 'BEGIN{
+  n=s; sub(/[A-Za-z]+$/,"",n); u=s; sub(/^[0-9.]+/,"",u);
+  m=1; if(u=="B"||u=="")m=1; else if(u=="kB")m=1000; else if(u=="KiB")m=1024;
+  else if(u=="MB")m=1000000; else if(u=="MiB")m=1048576;
+  else if(u=="GB")m=1000000000; else if(u=="GiB")m=1073741824;
+  printf "%d", n*m }'; }
+diag_sampler() {
+  local t0; t0="$(date -u +%s)"
+  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes" > "$DIAG_SAMPLE_LOG"
+  while true; do
+    local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt
+    ts="$(date -u +%s)"
+    stats="$(docker stats --no-stream --format '{{.CPUPerc}};{{.MemUsage}}' "$SERVER" 2>/dev/null || echo '')"
+    cpu="$(printf '%s' "$stats" | sed -n 's/^\([0-9.]*\)%.*/\1/p')"
+    memu="$(printf '%s' "$stats" | sed -E 's/^[^;]*;([^ ]+) \/ .*/\1/')"
+    meml="$(printf '%s' "$stats" | sed -E 's/^[^;]*;[^ ]+ \/ (.+)$/\1/')"
+    metrics="$(curl -s --max-time 4 "$SERVER_METRICS_URL" 2>/dev/null || echo '')"
+    heap="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_used_bytes\{area="heap"\}/{print $2}')"
+    heapmax="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_max_bytes\{area="heap"\}/{print $2}')"
+    nonheap="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_used_bytes\{area="nonheap"\}/{print $2}')"
+    gc="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_gc_collection_seconds_sum/{s+=$2} END{print s}')"
+    gcc="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_gc_collection_count/{print $2}')"
+    threads="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_threads_current/{print $2}')"
+    dropped="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_dropped_log_events_total/{print $2}')"
+    occ="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_ring_occupancy/{print $2}')"
+    cap="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_ring_capacity/{print $2}')"
+    inflt="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_in_flight_bytes/{print $2}')"
+    maxinflt="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_in_flight_bytes/{print $2}')"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+      "$ts" "$((ts - t0))" \
+      "$([ -n "$memu" ] && to_bytes "$memu" || echo '')" \
+      "$([ -n "$meml" ] && to_bytes "$meml" || echo '')" \
+      "${cpu:-}" "${heap:-}" "${heapmax:-}" "${nonheap:-}" "${gc:-}" "${gcc:-}" "${threads:-}" \
+      "${dropped:-}" "${occ:-}" "${cap:-}" "${inflt:-}" "${maxinflt:-}" >> "$DIAG_SAMPLE_LOG"
+    sleep "$PERF_DIAG_SAMPLE_INTERVAL"
+  done
+}
+echo "--- starting dense resource-trajectory sampler (every ${PERF_DIAG_SAMPLE_INTERVAL}s -> diag-samples.csv)"
+diag_sampler & DIAG_SAMPLER_PID=$!
+
 run_regression "http" "http://${SERVER_ALIAS}:1080" "false" "regression-http.json"
 run_regression "https_h2" "https://${SERVER_ALIAS}:1080" "true" "regression-https.json"
 
@@ -673,7 +913,8 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
   # so a docker-run failure here degrades the (notify-only) INFO arm rather than
   # aborting the ERROR-baseline run under `set -e`; a failed start leaves no
   # container, so wait_ready then reports not-ready and the arm records measured:false.
-  start_mockserver "$INFO_SERVER" "$SERVER_CPUS" "$INFO_SERVER_ALIAS" "" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "INFO" \
+  start_mockserver "$INFO_SERVER" "$SERVER_CPUS" "$INFO_SERVER_ALIAS" "" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "INFO" "info" \
+    && { docker logs -f "$INFO_SERVER" > "$DIAG_DIR/info/info-server.log" 2>&1 & INFO_LOG_PID=$!; } \
     || echo "WARNING: INFO SUT failed to start — INFO arm will record measured:false" >&2
   if wait_ready "$INFO_SERVER"; then
     INFO_MEASURED=true
@@ -1892,10 +2133,19 @@ if [ -f "$OUT_DIR/serving-percore.json" ]; then
   cp "$OUT_DIR/serving-percore.json" "$REPO_ROOT/serving-percore.json" 2>/dev/null || true
 fi
 
+# Stop the diagnostics streams so their files are complete, then upload the JVM-internals bundle on
+# the SUCCESS path too (the failure path already uploaded it from capture_sut_diagnostics). A healthy
+# run's dense resource trajectory (and, on a deep run, its GC log) is itself the reference the NEXT
+# death is read against.
+[ -n "$DIAG_SAMPLER_PID" ] && kill "$DIAG_SAMPLER_PID" >/dev/null 2>&1 || true; DIAG_SAMPLER_PID=""
+[ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true; SUT_LOG_PID=""
+[ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true; INFO_LOG_PID=""
+
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
   buildkite-agent artifact upload "perf-result.json" || true
   buildkite-agent artifact upload "perf-sweep.json" || true
+  upload_diag_bundle
   [ -f "$REPO_ROOT/serving-percore.json" ] && buildkite-agent artifact upload "serving-percore.json" || true
   # Record the commit this run actually executed against. perf-test-guard.sh
   # reads this (via last_perf_run_commit) to decide "new commit since last run"

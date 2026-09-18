@@ -345,6 +345,24 @@ A single Prometheus `Counter` makes the event-log ring-buffer saturation cliff o
 
 Under sustained load the event-log ring buffer can saturate and drop events. Previously only WARN/ERROR drops were logged, so INFO/DEBUG drops were silent and the cliff was undetectable. `MockServerEventLog.add(...)` now counts every drop on an always-available `AtomicLong` (readable via `getDroppedLogEventCount()` regardless of whether metrics are enabled), mirrors it to this Prometheus counter via the null-safe static `Metrics.incrementDroppedLogEvents()` (a no-op when metrics are off), and logs a single WARN on the first drop pointing at `ringBufferSize` / log verbosity as the remedy. A non-zero, growing value means the event log cannot keep up — raise `ringBufferSize` (derived from `maxLogEntries`) or reduce log verbosity.
 
+### Event-Log Ring-Buffer Internals Gauges
+
+Four Prometheus `GaugeWithCallback` gauges expose the **live** state of the event-log ring so a scrape *during* a run shows the backlog **building** rather than only its aftermath (a non-zero `mock_server_dropped_log_events`). They exist because the question "is the event log the bottleneck?" could not be answered from outside the JVM when two perf runs (builds 261/264) died mid-load. Registered once when `metricsEnabled` is `true`; each reads live at scrape time from `MockServerEventLog` via a supplier `HttpState` installs at startup, and all read **0** before a log is registered (never a fabricated value).
+
+| Metric Name | Type | Description |
+|-------------|------|-------------|
+| `mock_server_event_log_ring_occupancy` | GaugeWithCallback | Disruptor ring slots currently occupied (published, not yet consumed). `getBufferSize() − remainingCapacity()`. Approaching `..._ring_capacity` means the single consumer cannot keep up — drops are imminent. |
+| `mock_server_event_log_ring_capacity` | GaugeWithCallback | Ring total slot count (`ringBufferSize` in force). |
+| `mock_server_event_log_in_flight_bytes` | GaugeWithCallback | Request/response body bytes held by entries published to the ring but not yet processed (the in-flight backlog tracked by commit `49005f5c3`). |
+| `mock_server_event_log_max_in_flight_bytes` | GaugeWithCallback | In-flight body-byte budget in force (`maxEventLogSizeInBytes`); `0` means the in-flight bound is disabled. |
+
+The reads are cheap (volatile/atomic reads plus two ring reads), off the request hot path, so the scrape pays for them only when metrics are enabled. Backing accessors are `MockServerEventLog.getRingBufferOccupancy()` / `getInFlightBytes()` / `getMaxInFlightBytes()` / `getRingBufferSizeInForce()`, surfaced through `Metrics.RingStats` and `Metrics.setEventLogRingStatsSupplier(...)`. Example PromQL (ring filling toward its ceiling):
+```promql
+mock_server_event_log_ring_occupancy / mock_server_event_log_ring_capacity > 0.8
+```
+
+> **Perf-regression JVM-diagnostics dependency:** `perf-test-run.sh`'s dense resource-trajectory sampler reads `mock_server_dropped_log_events_total`, `mock_server_event_log_ring_occupancy`, `mock_server_event_log_in_flight_bytes` and `mock_server_event_log_max_in_flight_bytes` (alongside the JVM heap/GC/thread series) into `diag-samples.csv`. The event-log ring gauges are tolerated as **absent** on an older SUT image that predates them (the CSV column is simply blank) so the sampler degrades gracefully until a snapshot carrying them is built. If these metric names change, update `perf-test-run.sh`'s `diag_sampler()` in the same commit. A blank cell in that CSV has **three** distinct meanings and they are not conflated: the metric is absent on an old image; the scrape **timed out** under load (`--max-time 4`, common in the rows just before a death and itself a death signal — the host-side `container_mem` columns keep populating through it); or a genuine measured `0`, which is written as `0`, never blank.
+
 ### Load Injection Metrics (`mock_server_load_*`)
 
 The `mock_server_load_*` family is registered by `Metrics.registerLoadMetrics()` when `metricsEnabled` is `true` (there is no `loadGenerationEnabled` check in `Metrics` registration — that flag only gates the PUT endpoint). All metrics in this family are also mirrored to OTLP by `OtelMetricsExporter` — see [telemetry.md](telemetry.md).

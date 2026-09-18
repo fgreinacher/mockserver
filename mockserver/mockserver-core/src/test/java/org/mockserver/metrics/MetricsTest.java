@@ -49,6 +49,7 @@ public class MetricsTest {
         ServiceChaosRegistry.getInstance().reset();
         Metrics.setActiveExpectationsSupplier(null);
         Metrics.setClusterMemberCountSupplier(null);
+        Metrics.setEventLogRingStatsSupplier(null);
         // Drop any optimisation snapshot pushed by a test so the next test starts clean.
         Metrics.clear();
     }
@@ -484,6 +485,56 @@ public class MetricsTest {
 
         Metrics.setClusterMemberCountSupplier(() -> 0);
         assertThat(scrapeGaugeValue("mock_server_cluster_members"), is(1.0));
+    }
+
+    // --- event-log ring-buffer internals gauge tests ---
+
+    @Test
+    public void registersEventLogRingGauges() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        assertThat(scrapeContains("mock_server_event_log_ring_occupancy"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_ring_capacity"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_in_flight_bytes"), is(true));
+        assertThat(scrapeContains("mock_server_event_log_max_in_flight_bytes"), is(true));
+    }
+
+    @Test
+    public void eventLogRingGaugesDefaultToZeroWhenNoSupplier() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        // no event log registered — every ring gauge reads a truthful 0, never a fabricated value
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_capacity"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_in_flight_bytes"), is(0.0));
+    }
+
+    @Test
+    public void eventLogRingGaugesReflectSupplierValue() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(1200, 16384, 268435456L, 268435456L));
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(1200.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_capacity"), is(16384.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(268435456.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_max_in_flight_bytes"), is(268435456.0));
+
+        // the backlog builds — a later scrape sees the higher occupancy, so a run can watch the cliff approach
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(16000, 16384, 268000000L, 268435456L));
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(16000.0));
+    }
+
+    @Test
+    public void eventLogRingGaugesFailSoftToZero() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        // a throwing supplier must never break a scrape — it degrades to the all-zero snapshot
+        Metrics.setEventLogRingStatsSupplier(() -> {
+            throw new RuntimeException("event log unavailable");
+        });
+        assertThat(scrapeGaugeValue("mock_server_event_log_ring_occupancy"), is(0.0));
+        assertThat(scrapeGaugeValue("mock_server_event_log_in_flight_bytes"), is(0.0));
     }
 
     // --- LLM optimisation gauge tests ---

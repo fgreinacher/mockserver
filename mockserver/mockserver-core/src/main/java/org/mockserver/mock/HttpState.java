@@ -312,6 +312,11 @@ public class HttpState {
         }
         Metrics.setActiveExpectationsSupplier(() -> requestMatchers.retrieveActiveExpectations(null));
         Metrics.setClusterMemberCountSupplier(() -> stateBackend.clusterInfo().members().size());
+        Metrics.setEventLogRingStatsSupplier(() -> new Metrics.RingStats(
+            mockServerLog.getRingBufferOccupancy(),
+            mockServerLog.getRingBufferSizeInForce(),
+            mockServerLog.getInFlightBytes(),
+            mockServerLog.getMaxInFlightBytes()));
         if (configuration.persistExpectations()) {
             this.expectationFileSystemPersistence = new ExpectationFileSystemPersistence(configuration, mockServerLogger, requestMatchers, stateBackend.blobs());
         }

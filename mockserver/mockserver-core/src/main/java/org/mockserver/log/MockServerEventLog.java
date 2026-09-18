@@ -367,6 +367,40 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         return ringBufferSizeInForce;
     }
 
+    /**
+     * Number of ring-buffer slots currently occupied by published-but-not-yet-consumed log entries
+     * (the disruptor consumer backlog). {@code getBufferSize() - remainingCapacity()}, clamped to
+     * {@code >= 0}. A value approaching {@link #getRingBufferSizeInForce()} means the single consumer
+     * cannot drain as fast as producers publish — the ring is backing up and drops are imminent. Read
+     * live from the ring at scrape time; cheap — two reads of the ring's own internal sequences (the
+     * {@code disruptor} field itself is a plain reference, not volatile). Backs the
+     * {@code mock_server_event_log_ring_occupancy} gauge so a scrape during a run shows the backlog
+     * BUILDING rather than only its aftermath (a non-zero {@code mock_server_dropped_log_events}).
+     */
+    public long getRingBufferOccupancy() {
+        final Disruptor<LogEntry> currentDisruptor = disruptor;
+        if (currentDisruptor == null) {
+            return 0;
+        }
+        try {
+            final long occupancy = currentDisruptor.getRingBuffer().getBufferSize()
+                - currentDisruptor.getRingBuffer().remainingCapacity();
+            return Math.max(0, occupancy);
+        } catch (Exception ignored) {
+            // fail-soft: a transient state during startRingBuffer()/shutdown must never break a scrape
+            return 0;
+        }
+    }
+
+    /**
+     * The in-flight body-byte budget currently in force ({@code maxEventLogSizeInBytes}); {@code <= 0}
+     * means the in-flight bound is disabled. Backs {@code mock_server_event_log_max_in_flight_bytes} so
+     * {@link #getInFlightBytes()} can be read against its ceiling on the same scrape.
+     */
+    public long getMaxInFlightBytes() {
+        return maxInFlightBytes;
+    }
+
     private void startRingBuffer() {
         ringBufferSizeInForce = configuration.ringBufferSize();
         disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"));
@@ -506,11 +540,13 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     /**
-     * Body bytes currently in flight (published to the ring, not yet processed). Package-private for
-     * tests: after the disruptor has drained this returns to zero, proving the add()/processLogEntry
-     * accounting balances.
+     * Body bytes currently in flight (published to the ring, not yet processed). After the disruptor
+     * has drained this returns to zero, proving the add()/processLogEntry accounting balances (relied
+     * on by tests). Also read live at scrape time to back the {@code mock_server_event_log_in_flight_bytes}
+     * gauge — the off-outside-view answer to "is the event log ring backing up?" that builds 261/264
+     * could not get from k6's side. Cheap (one atomic read).
      */
-    long getInFlightBytes() {
+    public long getInFlightBytes() {
         return inFlightBytes.get();
     }
 

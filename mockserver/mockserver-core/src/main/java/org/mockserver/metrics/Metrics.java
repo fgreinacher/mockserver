@@ -134,6 +134,12 @@ public class Metrics {
     // time from the StateBackend without Metrics depending on the state package.
     // Defaults to 1 (single local node) until a supplier is registered.
     private static final AtomicReference<Supplier<Integer>> clusterMemberCountSupplier = new AtomicReference<>();
+    // Supplier of the event-log ring-buffer live occupancy stats (occupied slots, ring capacity,
+    // in-flight body bytes, in-flight byte budget), set by HttpState at startup so the event-log
+    // ring GaugeWithCallbacks can read live state at scrape time from MockServerEventLog without
+    // Metrics (core) depending on the log package's instance lifecycle. Null until registered; the
+    // gauges then read 0 (a run with no event log, or before startup). See RingStats.
+    private static final AtomicReference<Supplier<RingStats>> eventLogRingStatsSupplier = new AtomicReference<>();
     // OTel histogram for OTLP export. Set by OtelMetricsExporter when enabled; null otherwise.
     private static volatile io.opentelemetry.api.metrics.DoubleHistogram otelRequestDurationHistogram;
 
@@ -325,6 +331,33 @@ public class Metrics {
                         .name("mock_server_upstream_circuit_open")
                         .help("Number of upstreams whose forward/proxy circuit breaker is currently open")
                         .callback(callback -> callback.call(getOpenUpstreamCircuitCount()))
+                        .register();
+                    // Callback gauges: event-log ring-buffer live internals. Read at scrape time from
+                    // MockServerEventLog via the registered supplier so a scrape DURING a run shows the
+                    // disruptor backlog building — occupancy climbing toward capacity, or in-flight body
+                    // bytes climbing toward their budget — rather than only its aftermath (a non-zero
+                    // mock_server_dropped_log_events). This is the "is the event log the bottleneck?"
+                    // question that builds 261/264 could not answer from k6's side. All read 0 before a
+                    // log is registered. The reads are cheap (volatile/atomic reads), off the hot path.
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_ring_occupancy")
+                        .help("Event-log disruptor ring-buffer slots currently occupied (published, not yet consumed)")
+                        .callback(callback -> callback.call(getEventLogRingStats().occupancy))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_ring_capacity")
+                        .help("Event-log disruptor ring-buffer total slot count (ringBufferSize in force)")
+                        .callback(callback -> callback.call(getEventLogRingStats().capacity))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_in_flight_bytes")
+                        .help("Request/response body bytes held by log entries published to the ring but not yet processed")
+                        .callback(callback -> callback.call(getEventLogRingStats().inFlightBytes))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_event_log_max_in_flight_bytes")
+                        .help("In-flight body-byte budget in force (maxEventLogSizeInBytes); 0 means the in-flight bound is disabled")
+                        .callback(callback -> callback.call(getEventLogRingStats().maxInFlightBytes))
                         .register();
                     // Callback gauges: the latest LLM optimisation verdict/totals. Single global
                     // gauges (no per-model labels) reading the most-recently-built report's headline
@@ -1137,6 +1170,57 @@ public class Metrics {
             }
         }
         return 1;
+    }
+
+    /**
+     * Immutable snapshot of the event-log ring-buffer internals read at scrape time. Carried through
+     * the supplier so the four ring gauges see a single consistent read rather than four separate
+     * calls into the log. All values default to 0 (no event log registered / before startup).
+     */
+    public static final class RingStats {
+        public final long occupancy;
+        public final long capacity;
+        public final long inFlightBytes;
+        public final long maxInFlightBytes;
+
+        public RingStats(long occupancy, long capacity, long inFlightBytes, long maxInFlightBytes) {
+            this.occupancy = occupancy;
+            this.capacity = capacity;
+            this.inFlightBytes = inFlightBytes;
+            this.maxInFlightBytes = maxInFlightBytes;
+        }
+    }
+
+    private static final RingStats EMPTY_RING_STATS = new RingStats(0, 0, 0, 0);
+
+    /**
+     * Set the supplier of event-log ring-buffer live internals. Called by HttpState at startup so the
+     * {@code mock_server_event_log_ring_*} / {@code mock_server_event_log_*in_flight_bytes} gauges can
+     * read live state at scrape time from {@link org.mockserver.log.MockServerEventLog} without Metrics
+     * depending on the log instance lifecycle.
+     */
+    public static void setEventLogRingStatsSupplier(Supplier<RingStats> supplier) {
+        eventLogRingStatsSupplier.set(supplier);
+    }
+
+    /**
+     * Live event-log ring-buffer internals, backing the {@code mock_server_event_log_*} gauges. Returns
+     * an all-zero snapshot when no supplier is registered or the supplier fails (fail-soft — a scrape
+     * must never break).
+     */
+    public static RingStats getEventLogRingStats() {
+        Supplier<RingStats> supplier = eventLogRingStatsSupplier.get();
+        if (supplier != null) {
+            try {
+                RingStats stats = supplier.get();
+                if (stats != null) {
+                    return stats;
+                }
+            } catch (Exception ignored) {
+                // fail-soft: fall through to the empty snapshot
+            }
+        }
+        return EMPTY_RING_STATS;
     }
 
     /**

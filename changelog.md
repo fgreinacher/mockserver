@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Four new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`):
+  `mock_server_event_log_ring_occupancy` and `_ring_capacity` for the in-flight queue, and
+  `_in_flight_bytes` and `_max_in_flight_bytes` for the byte budget that bounds it. Together with the
+  existing `mock_server_dropped_log_events` these make it possible to watch a log backlog **building**
+  rather than inferring it afterwards from the damage: a rising occupancy with in-flight bytes
+  approaching the budget is the shape that precedes dropped entries. Read at scrape time from live
+  state, so the request path is unaffected.
 - The in-memory event log is now bounded by **size** as well as by entry count, and that bound now also
   covers the entries waiting to be written. `maxEventLogSizeInBytes` was previously off by default, so the
   only active bound was a count that cannot see how large an entry is -- a thousand small requests and a
