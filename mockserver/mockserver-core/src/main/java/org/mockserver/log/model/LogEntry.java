@@ -571,7 +571,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     public String getMessage() {
         if (message == null) {
             if (arguments != null) {
-                message = formatLogMessage(messageFormat, arguments);
+                message = formatLogMessage(messageFormat, getArguments());
             } else {
                 message = messageFormat;
             }
@@ -588,7 +588,46 @@ public class LogEntry implements EventTranslator<LogEntry> {
         }
     }
 
+    /**
+     * The log-message arguments in their <em>rendered</em> form: any {@link HttpRequest}/{@link HttpResponse}
+     * argument has its body converted to a {@link LogEntryBody} (a parsed {@link com.fasterxml.jackson.databind.JsonNode}
+     * for a {@link JsonBody}, else the stringified body) so both the JSON log surface ({@link org.mockserver.serialization.serializers.log.LogEntrySerializer})
+     * and the rendered message text ({@link #getMessage()}) reproduce exactly the same output.
+     * <p>
+     * The conversion is performed <strong>transiently here at read/render time</strong> and is NOT retained: the entry
+     * stores the arguments in their raw form ({@link #arguments}, sharing the already-retained primary request/response
+     * bodies), so a logged entry sitting in the event-log deque no longer pins a second, ~5x larger parsed
+     * {@code JsonNode}/{@code LinkedHashMap} tree per JSON body for its whole lifetime. Each call rebuilds the converted
+     * array and the caller is expected to discard it once it has produced its output (the serializer writes it and drops
+     * it; {@link #getMessage()} memoises the resulting string and drops the tree).
+     */
     public Object[] getArguments() {
+        if (arguments == null) {
+            return null;
+        }
+        return Arrays
+            .stream(arguments)
+            .map(argument -> {
+                if (argument instanceof HttpRequest) {
+                    return updateBody((HttpRequest) argument);
+                } else if (argument instanceof HttpResponse) {
+                    return updateBody((HttpResponse) argument);
+                } else {
+                    return argument;
+                }
+            })
+            .toArray(Object[]::new);
+    }
+
+    /**
+     * The arguments exactly as stored — the raw {@link HttpRequest}/{@link HttpResponse} references (bodies unparsed)
+     * with only {@code null} normalised to {@code ""}. Used by {@link #clone()} and {@link #translateTo} so copying an
+     * entry (including the Disruptor ring-buffer copy that populates the retained event-log entry) carries the raw form
+     * and never materialises a parsed body tree onto the retained copy. Also the basis of {@link #equals(Object)} /
+     * {@link #hashCode()}.
+     */
+    @JsonIgnore
+    Object[] getRawArguments() {
         return arguments;
     }
 
@@ -596,17 +635,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         if (arguments != null) {
             this.arguments = Arrays
                 .stream(arguments)
-                .map(argument -> {
-                    if (argument instanceof HttpRequest) {
-                        return updateBody((HttpRequest) argument);
-                    } else if (argument instanceof HttpResponse) {
-                        return updateBody((HttpResponse) argument);
-                    } else if (argument == null) {
-                        return "";
-                    } else {
-                        return argument;
-                    }
-                })
+                .map(argument -> argument == null ? "" : argument)
                 .toArray(Object[]::new);
         } else {
             this.arguments = null;
@@ -759,7 +788,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setExpectation(getExpectation())
             .setExpectationId(getExpectationId())
             .setMessageFormat(getMessageFormat())
-            .setArguments(getArguments())
+            .setArguments(getRawArguments())
             .setBecause(getBecause())
             .setThrowable(getThrowable())
             .setConsumer(getConsumer())
@@ -783,7 +812,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setExpectation(getExpectation())
             .setExpectationId(getExpectationId())
             .setMessageFormat(getMessageFormat())
-            .setArguments(getArguments())
+            .setArguments(getRawArguments())
             .setBecause(getBecause())
             .setThrowable(getThrowable())
             .setConsumer(getConsumer())

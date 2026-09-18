@@ -83,8 +83,12 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         if (logEntry.getMessage() != null) {
             jgen.writeObjectField("message", logEntry.getMessage().replaceAll(" {2}", "   ").split(NEW_LINE));
         }
-        if (logEntry.getArguments() != null) {
-            jgen.writeObjectField("arguments", logEntry.getArguments());
+        // Hoisted deliberately: getArguments() converts a JSON body to a node tree on every
+        // call now that the conversion is deferred out of the retained entry, so calling it
+        // twice re-parsed every body twice per serialize. It was a free getter before.
+        Object[] arguments = logEntry.getArguments();
+        if (arguments != null) {
+            jgen.writeObjectField("arguments", arguments);
         }
         if (logEntry.getBecause() != null) {
             jgen.writeStringField("because", logEntry.getBecause());

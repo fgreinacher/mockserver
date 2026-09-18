@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that
+  body in memory for as long as the log entry lives. The body was retained twice: once as the raw
+  bytes, and again as a parsed JSON tree roughly five times larger, built eagerly when the entry was
+  created. Only the raw copy counted towards `maxEventLogSizeInBytes`, so a server configured with a
+  256 MB event-log budget could hold well over a gigabyte and run out of heap while the budget
+  believed it had room. The parsed form is now produced on demand when an entry is rendered,
+  retrieved or shown in the dashboard, and discarded afterwards -- output is unchanged. In a
+  reproduction holding 20,000 logged entries, retained heap fell from 429 MB to 61 MB, with the raw
+  bodies and the entries themselves untouched. The effect scales with JSON body size and
+  `maxLogEntries`, so the larger your bodies the more this returns.
 - Enabling dev mode programmatically now takes effect on `maxLogEntries` and `maxExpectations` even if
   something has already read them. Their defaults were resolved through a cache that stores the
   computed default under the property's own key and never invalidates it, so the first read froze the
