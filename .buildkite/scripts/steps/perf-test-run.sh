@@ -2082,12 +2082,67 @@ fi
 COMMIT="${BUILDKITE_COMMIT:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo unknown)}"
 BRANCH="${BUILDKITE_BRANCH:-$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)}"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-# curl -s exits 0 on an EMPTY body, so the old `curl -s ... || echo fallback`
-# never fell back off-EC2 (or on IMDSv2) and every stored run carried
-# instance_type:"" — which silently defeats the cross-hardware baseline guard.
-# Use -f (fail on non-2xx) AND validate the body is non-empty before trusting it.
-INSTANCE_TYPE="$(curl -sf --max-time 2 http://169.254.169.254/latest/meta-data/instance-type 2>/dev/null || true)"
-[ -n "$INSTANCE_TYPE" ] || INSTANCE_TYPE="${PERF_INSTANCE_TYPE:-unknown}"
+# instance_type attributes every stored point to the HARDWARE it was measured on;
+# an empty / placeholder / garbage value silently defeats the cross-hardware baseline
+# guard — the instance_type:"" bug the config block cites as its worked example.
+#
+# THIS WAS LIVE, NOT HYPOTHETICAL. The perf ASG launch template
+# (lt-01f1ac1070d561f50) sets HttpTokens=required, HttpPutResponseHopLimit=2 — the
+# agents REQUIRE IMDSv2. The original UNAUTHENTICATED GET therefore got a 401 on
+# every perf run: `curl -s` returned "" (empty body, exit 0) and the old
+# `|| echo fallback` never fired, so EVERY stored baseline point carries
+# instance_type:"" (confirmed on runs/master/2026-09-10T04-15-15Z__42193bc4f6.json).
+# The whole series has been unqualified by hardware since inception, invisibly,
+# because the failure wrote a falsy value at exit 0 — exactly the defect item 0's
+# control exists to catch.
+#
+# The fix is the IMDSv2 two-step: PUT /latest/api/token for a short-lived session
+# token, then the metadata GET carrying it in X-aws-ec2-metadata-token. Then VALIDATE
+# the body against the EC2 instance-type SHAPE and FAIL CLOSED when it is neither a
+# plausible IMDS value NOR an explicitly-declared PERF_INSTANCE_TYPE override (the
+# off-EC2 escape hatch — a deliberate human declaration, recorded as source
+# "declared"). An unattributable hardware label must be a loud red, never a green run
+# carrying a placeholder into the baseline history. `[[ =~ ]]` anchors the WHOLE
+# string, so a multi-line mangled body (an HTML/JSON error page) cannot slip a
+# matching line past it. A short --max-time on BOTH calls keeps a non-EC2 environment
+# failing fast rather than hanging the step on a black-holed link-local address.
+IMDS_BASE="http://169.254.169.254/latest"
+INSTANCE_TYPE_SRC="observed"
+# Step 1: acquire an IMDSv2 session token (60s TTL is ample for one GET). An empty
+# result means the token endpoint was unreachable/refused — NOT on EC2, or IMDS
+# disabled, or the hop limit blocks this container — distinct from a token that works
+# but yields a bad metadata body (diagnosed separately in the failure branch below).
+IMDS_TOKEN="$(curl -sf --max-time 2 -X PUT "$IMDS_BASE/api/token" \
+  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null || true)"
+# Step 2: the authenticated metadata GET, attempted ONLY when a token was obtained.
+IMDS_INSTANCE_TYPE=""
+if [ -n "$IMDS_TOKEN" ]; then
+  IMDS_INSTANCE_TYPE="$(curl -sf --max-time 2 \
+    -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" \
+    "$IMDS_BASE/meta-data/instance-type" 2>/dev/null || true)"
+fi
+# The SIZE suffix is constrained to the EC2 vocabulary, not just "some token". A bare
+# token.token shape would admit a mangled body that happens to look like one -- `proxy.error`
+# passes the loose form and would be stored as the instance type. Naming the real sizes costs
+# nothing and removes that class; a genuinely new EC2 size suffix fails LOUD (red, with the
+# body echoed) rather than silently recording garbage, and PERF_INSTANCE_TYPE is the escape.
+if [[ "$IMDS_INSTANCE_TYPE" =~ ^[a-z][a-z0-9-]*\.(nano|micro|small|medium|large|xlarge|metal|metal-[0-9]+xl|[0-9]+xlarge)$ ]]; then
+  INSTANCE_TYPE="$IMDS_INSTANCE_TYPE"
+elif [ -n "${PERF_INSTANCE_TYPE:-}" ]; then
+  INSTANCE_TYPE="$PERF_INSTANCE_TYPE"; INSTANCE_TYPE_SRC="declared"
+else
+  # Two distinct diagnoses — say which, because they point at different problems.
+  if [ -z "$IMDS_TOKEN" ]; then
+    IMDS_DIAG="IMDSv2 token PUT (${IMDS_BASE}/api/token) returned nothing — not an EC2 instance, or IMDS is disabled / the hop limit blocks this container. The metadata GET was not attempted."
+  else
+    IMDS_DIAG="IMDSv2 token acquired, but the metadata GET (${IMDS_BASE}/meta-data/instance-type) returned '${IMDS_INSTANCE_TYPE}' — reached IMDS, but the body is non-2xx or a mangled/garbage value, not a plausible EC2 instance type (family.size, e.g. c7g.2xlarge)."
+  fi
+  echo "ERROR: instance_type unrecordable — refusing to emit a result that misattributes the hardware it was measured on:" >&2
+  echo "  - ${IMDS_DIAG}" >&2
+  echo "  - PERF_INSTANCE_TYPE override is '${PERF_INSTANCE_TYPE:-<unset>}' — not set, so there is no declared fallback" >&2
+  echo "  (An empty/placeholder/garbage instance_type silently defeats the cross-hardware baseline guard — the instance_type:\"\" bug, which was LIVE in the stored baseline history. For a deliberate off-EC2 run, export PERF_INSTANCE_TYPE with the real instance-type label.)" >&2
+  exit 1
+fi
 GROWTH_JSON="$(cat "$OUT_DIR/growth.json" 2>/dev/null || echo '{}')"
 SWEEP_JSON="$(cat "$OUT_DIR/sweep.json" 2>/dev/null || echo '{}')"
 
@@ -2165,7 +2220,7 @@ fi
 jq -n \
   --arg commit "$COMMIT" --arg branch "$BRANCH" --arg ts "$TS" \
   --arg build_number "${BUILDKITE_BUILD_NUMBER:-}" --arg build_url "${BUILDKITE_BUILD_URL:-}" \
-  --arg instance_type "$INSTANCE_TYPE" --arg image "$MOCKSERVER_IMAGE" \
+  --arg instance_type "$INSTANCE_TYPE" --arg instance_type_src "$INSTANCE_TYPE_SRC" --arg image "$MOCKSERVER_IMAGE" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
   --slurpfile http "$OUT_DIR/regression-http.json" \
   --slurpfile https "$OUT_DIR/regression-https.json" \
@@ -2204,7 +2259,7 @@ jq -n \
     schema_version: 2,
     commit: $commit, branch: $branch, timestamp_utc: $ts,
     build_number: $build_number, build_url: $build_url,
-    agent: { instance_type: $instance_type, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
+    agent: { instance_type: $instance_type, instance_type_source: $instance_type_src, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
     config: $config,
     mockserver_image: $image,
     # regression (http + https_h2) + proxy.js FORWARD arms all live in .behaviours

@@ -216,6 +216,58 @@ ${FAILED_CHECKS}"
   exit 1
 fi
 
+# --- 1b-ii. content-plausibility gate (the freshness rule, applied to the object) ---
+# The validity gate above TRUSTS the run's self-declared `.validity.valid` flag. That
+# is necessary but not sufficient: a producer bug, a truncated/partial upload, a hand-
+# seeded object, or a future producer that forgets a check can set `validity.valid:true`
+# on output that is structurally-valid JSON but carries NO measured content. Such an
+# object sails through the validity gate, then $headmetrics (all-null, dropped by
+# `select(.value != null)`) is empty, $missing is empty, no row is produced, and the
+# build goes GREEN — "No performance regressions" against a run that measured nothing —
+# AND the empty object is persisted, so it silently enters every later baseline window
+# (where bmapof drops its nulls, shrinking the comparison set invisibly). This is the
+# exact decay docs/plans/performance-programme.md ("Baseline freshness") calls out: a
+# freshness check that keys off object age/liveness "passes forever against a producer
+# writing valid empty JSON every day", so the newest object must be asserted to contain
+# the expected keys with NON-NULL values in PLAUSIBLE RANGES — the same plausibility
+# rule the producer applies to itself, applied here independently of what the run
+# CLAIMS. The dedicated freshness watchdog (perf-baseline-freshness.sh, pipeline-infra.yml)
+# CANNOT do this — the trigger queue has no perf-bucket S3 read — so this reader step,
+# which already has the object in hand, is the architecturally correct place for it.
+#
+# Scoped to the CORE metric family every valid run must carry (the k6 regression
+# behaviours' p95 latency — the producer's own `regression_metrics_present` validity
+# check guarantees it) plus RANGE sanity on the two headline scalars WHEN present.
+# Deliberately NOT asserting the optional profiles (clustered_state / laptop /
+# streaming / serving_percore / forward on infra_error) — those legitimately emit
+# zero metrics on a skip and must not red here.
+PLAUSIBILITY_PROBLEMS="$(jq -r '
+  [ # 1. at least one behaviour arm with a plausible p95_ms (0 < p95 < 600000 ms).
+    #    An empty/all-null .behaviours yields zero — the structurally-empty case.
+    ( ((.behaviours // {}) | to_entries
+       | map(select((.value.p95_ms | type) == "number" and .value.p95_ms > 0 and .value.p95_ms < 600000))
+       | length) as $ok
+      | if $ok == 0 then "no behaviour arm carries a plausible p95_ms (expected 0 < p95 < 600000 ms) — the newest object records no request latency, i.e. it measured nothing" else empty end ),
+    # 2. peak_achieved_rps, when present, must be a positive, non-absurd rate.
+    ( if (.peak_achieved_rps != null)
+         and (((.peak_achieved_rps | type) != "number") or .peak_achieved_rps <= 0 or .peak_achieved_rps > 100000000)
+      then "peak_achieved_rps present but implausible: \(.peak_achieved_rps) (expected a number in 0 < rps <= 1e8)" else empty end ),
+    # 3. forward_guard.error_rate, when present, must be a fraction in [0,1].
+    ( if ((.forward_guard // {}).error_rate != null)
+         and (((.forward_guard.error_rate | type) != "number") or .forward_guard.error_rate < 0 or .forward_guard.error_rate > 1)
+      then "forward_guard.error_rate present but implausible: \((.forward_guard // {}).error_rate) (expected a number in [0,1])" else empty end )
+  ] | .[]' "$RESULT" 2>/dev/null || echo "result.json could not be read for plausibility checking")"
+if [ -n "$PLAUSIBILITY_PROBLEMS" ]; then
+  PLAUSIBILITY_LIST="$(printf '%s\n' "$PLAUSIBILITY_PROBLEMS" | sed 's/^/- /')"
+  annotate "error" ":no_entry: **Perf run IMPLAUSIBLE — build FAILED, not baselined** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+This run's \`validity.valid\` was \`true\`, but the newest result object does **not** contain the expected metric keys with non-null values in plausible ranges, so it was **not persisted to the baseline history and not compared**. A structurally-valid-but-empty object that a producer nonetheless marks valid must never be baselined — it would read GREEN as \"no regressions\" while measuring nothing, then silently shrink every later baseline window (the \"valid empty JSON every day passes forever\" decay this gate exists to stop). This is checked HERE, independently of the run's own \`validity\` flag, because the dedicated freshness watchdog cannot read the object from the trigger queue.
+
+Implausible/absent:
+${PLAUSIBILITY_LIST}"
+  exit 1
+fi
+
 # --- 1c. baseline eligibility (part C: keep an instrumented run out of the series) ---
 # A PERF_JVM_DIAGNOSTICS=deep run is a VALID measurement (it passed the validity gate
 # above) but tier-2 instrumentation (GC file logging / NMT / JFR) depresses throughput
