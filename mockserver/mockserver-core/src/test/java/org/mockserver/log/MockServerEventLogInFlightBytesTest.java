@@ -265,7 +265,19 @@ public class MockServerEventLogInFlightBytesTest {
 
             // retained count is pinned at the cap (fell from the 25 added), not the total added
             assertThat(log.getRetainedEntryCount(), is((long) cap));
-            assertThat(log.getEvictedLogEntryCount(), is((long) (added - cap)));
+            // Eviction DID happen — but do not assert it evicted exactly `added - cap`. maxLogEntries
+            // also sizes the disruptor ring (ringBufferSize = min(maxLogEntries, 16384) = 10 here), so
+            // publishing 25 entries into 10 slots faster than the single consumer drains them drops
+            // some at the RING, and a dropped entry never reaches the deque to be evicted from it. How
+            // many are dropped is a function of how fast the consumer is scheduled, so an exact count
+            // is a host-speed assertion wearing an accounting assertion's clothes (it passed locally
+            // and failed on CI at 6 of an expected 15). What IS exact is the conservation law: every
+            // entry added either was dropped before the deque, or is retained in it, or was evicted
+            // from it.
+            assertThat(log.getEvictedLogEntryCount(), is(greaterThan(0L)));
+            assertThat(log.getDroppedLogEventCount()
+                + log.getRetainedEntryCount()
+                + log.getEvictedLogEntryCount(), is((long) added));
             // retained bytes reflects ONLY the surviving entries. The upper bound is the assertion that
             // earns its keep: a lower bound alone passes just as happily if eviction never debited the
             // byte total and all 25 bodies were still counted, which is the accounting bug most likely
