@@ -1,9 +1,11 @@
 package org.mockserver.matchers;
 
+import com.google.common.collect.Maps;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.RequestDefinition;
 
+import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -54,7 +56,16 @@ public class MatchDifference {
     // so a plain HashMap is sufficient — no ConcurrentHashMap is required. When no difference
     // is recorded (the common case, and always when detailedMatchFailures is off) this stays
     // null and no map is allocated. All read paths below tolerate a null map.
-    private Map<Field, List<String>> differences;
+    //
+    // Each recorded difference is held as a LazyMessage: the human-readable diff string is the
+    // #1/#2 allocation source under sustained load (StringFormatter.indentAndToString /
+    // formatLogMessage), yet it is only ever consumed if someone later reads the differences.
+    // So the expensive indentation/assembly is deferred to first read (and cached), while the
+    // arguments are snapshotted to their string form NOW, at comparison time, so a later read
+    // reports what the fields said when they were compared — not any post-comparison mutation
+    // of the request/response models. The map KEYS remain populated eagerly so the field-count
+    // reads (getAllDifferences().size(), containsKey) stay cheap and force no formatting.
+    private Map<Field, List<LazyMessage>> differences;
     private Field fieldName;
     // When true, a matcher computing differences against this context must NOT emit
     // EXPECTATION_MATCHED / EXPECTATION_NOT_MATCHED events to the event log. Read-only
@@ -143,7 +154,7 @@ public class MatchDifference {
                 }
                 this.differences
                     .computeIfAbsent(fieldName, key -> new ArrayList<>())
-                    .add(formatLogMessage(1, messageFormat, arguments));
+                    .add(new LazyMessage(messageFormat, arguments));
             }
         }
         return this;
@@ -170,13 +181,24 @@ public class MatchDifference {
 
     public List<String> getDifferences(Field fieldName) {
         // Preserve the prior contract: a missing field returns null (the lazy map being
-        // unallocated is equivalent to the field being absent).
-        return this.differences == null ? null : this.differences.get(fieldName);
+        // unallocated is equivalent to the field being absent). The returned list formats
+        // each entry on access (and caches it), so a caller that only checks isEmpty()/size()
+        // forces no formatting; iterating it (e.g. joining for the "because" log) does.
+        if (this.differences == null) {
+            return null;
+        }
+        List<LazyMessage> messages = this.differences.get(fieldName);
+        return messages == null ? null : new LazyStringList(messages);
     }
 
     public Map<Field, List<String>> getAllDifferences() {
-        // Must return empty (never null) when nothing was recorded.
-        return this.differences == null ? Collections.emptyMap() : this.differences;
+        // Must return empty (never null) when nothing was recorded. A live view over the
+        // lazy map: size()/keySet()/containsKey() delegate to the backing map (cheap — the
+        // per-candidate closest-match diagnostic only reads size()), while iterating an
+        // entry's values formats them lazily.
+        return this.differences == null
+            ? Collections.emptyMap()
+            : Maps.transformValues(this.differences, LazyStringList::new);
     }
 
     public void addDifferences(Map<Field, List<String>> differences) {
@@ -187,9 +209,80 @@ public class MatchDifference {
             this.differences = new HashMap<>();
         }
         for (Field field : differences.keySet()) {
-            this.differences
-                .computeIfAbsent(field, key -> new ArrayList<>())
-                .addAll(differences.get(field));
+            List<LazyMessage> target = this.differences.computeIfAbsent(field, key -> new ArrayList<>());
+            for (String difference : differences.get(field)) {
+                // The incoming strings are already materialised (they come from another
+                // MatchDifference's getAllDifferences() view), so wrap them as-is.
+                target.add(new LazyMessage(difference));
+            }
+        }
+    }
+
+    /**
+     * A recorded difference whose human-readable string is formatted lazily on first read and
+     * then cached. The arguments are captured as strings at construction time (comparison time)
+     * so the deferred format is byte-identical to the previous eager
+     * {@code formatLogMessage(1, messageFormat, arguments)} and cannot be corrupted by a later
+     * mutation of the argument objects.
+     */
+    private static final class LazyMessage {
+        // When messageFormat is null the difference was supplied already-formatted (see the
+        // String constructor) and 'formatted' holds it directly.
+        //
+        // Not thread-safe by design: a MatchDifference and its LazyMessages are single-threaded,
+        // request-scoped objects (see the class-level note), so 'formatted' is cached without a
+        // volatile/lock. Even a benign race would only recompute the same deterministic string.
+        private final String messageFormat;
+        private final String[] arguments;
+        private String formatted;
+
+        private LazyMessage(String messageFormat, Object... arguments) {
+            this.messageFormat = messageFormat;
+            this.arguments = new String[arguments.length];
+            for (int i = 0; i < arguments.length; i++) {
+                // Snapshot NOW: String.valueOf is exactly what indentAndToString applies to each
+                // argument FIRST (before any indentation), so a pre-stringified String passes
+                // through it unchanged and get() reproduces byte-identical output to the old eager
+                // formatLogMessage(1, messageFormat, arguments). This identity holds only while
+                // indentAndToString stringifies via String.valueOf before any other transform — if
+                // that ordering changes, revisit this snapshot.
+                this.arguments[i] = String.valueOf(arguments[i]);
+            }
+        }
+
+        private LazyMessage(String alreadyFormatted) {
+            this.messageFormat = null;
+            this.arguments = null;
+            this.formatted = alreadyFormatted;
+        }
+
+        private String get() {
+            if (formatted == null) {
+                formatted = formatLogMessage(1, messageFormat, (Object[]) arguments);
+            }
+            return formatted;
+        }
+    }
+
+    /**
+     * A {@code List<String>} view over the recorded {@link LazyMessage}s for one field. size()
+     * and isEmpty() are cheap (no formatting); element access formats (and caches) that entry.
+     */
+    private static final class LazyStringList extends AbstractList<String> {
+        private final List<LazyMessage> backing;
+
+        private LazyStringList(List<LazyMessage> backing) {
+            this.backing = backing;
+        }
+
+        @Override
+        public String get(int index) {
+            return backing.get(index).get();
+        }
+
+        @Override
+        public int size() {
+            return backing.size();
         }
     }
 }
