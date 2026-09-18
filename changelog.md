@@ -59,6 +59,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
 
 ### Fixed
+- Enabling dev mode programmatically now takes effect on `maxLogEntries` and `maxExpectations` even if
+  something has already read them. Their defaults were resolved through a cache that stores the
+  computed default under the property's own key and never invalidates it, so the first read froze the
+  heap-derived value for the life of the JVM and a later `ConfigurationProperties.devMode(true)` -- which
+  writes a different key -- could not dislodge it. The defaults are now recomputed on each read, so
+  every way of enabling dev mode works regardless of ordering. This also removes a source of
+  order-dependent behaviour in a shared JVM, where the value a test saw depended on which test read it
+  first. Explicitly configured values are unaffected.
 - Consuming a bounded `Times` (`Times.exactly(n)`, `once()`, `atMost(n)`) in a **cluster** no longer
   replicates the whole expectation on every match. The remaining count lived on the same replicated
   value as the expectation definition, and that value serialises the entire expectation to JSON on

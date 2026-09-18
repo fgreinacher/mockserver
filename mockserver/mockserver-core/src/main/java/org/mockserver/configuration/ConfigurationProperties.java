@@ -1852,38 +1852,27 @@ public class ConfigurationProperties {
     }
 
     /**
-     * Returns {@code true} when a property has been explicitly configured by the user
-     * (as a JVM system property, an environment variable, or in the properties file),
-     * as opposed to being at its built-in default.
+     * Selects the default for a runtime-mutable store size: the dev-mode default when {@code devMode()}
+     * is {@code true}, otherwise the heap-based default. This is ONLY the default — the callers
+     * ({@link #maxLogEntries()} / {@link #maxExpectations()}) resolve an explicit user override first via
+     * {@link #explicitIntegerProperty}, so an explicitly configured value always wins over both defaults.
+     * <p>
+     * The default depends on {@code devMode()}, which is runtime-mutable ({@link #devMode(boolean)} calls
+     * {@code setProperty}). It must therefore be recomputed from the CURRENT {@code devMode()} on every
+     * read, which is why the callers do NOT resolve it through the caching {@code readIntegerProperty}:
+     * that reader caches whatever default it injects under the property key and never invalidates it, so
+     * the first read (before dev mode was toggled) would freeze the heap-based default JVM-wide and a
+     * later {@link #devMode(boolean)} would be silently ignored on the static path — the {@code devMode}
+     * setter writes a different key ({@code mockserver.devMode}) and nothing invalidates the derived
+     * {@code maxLogEntries} / {@code maxExpectations} key. Same hazard, and same fix, as
+     * {@link #resolveRingBufferSize} and {@link #maxEventLogSizeInBytes()}.
+     * <p>
+     * Activation paths honoured: {@code -Dmockserver.devMode}, {@code MOCKSERVER_DEV_MODE}, the properties
+     * file, and the {@link #devMode(boolean)} programmatic setter (which is the path the caching reader
+     * broke) — every path {@code devMode()} itself observes, since the default is derived from it live.
      */
-    static boolean isPropertyExplicitlySet(String systemPropertyKey, String environmentVariableKey) {
-        // Check JVM system property (directly, bypassing cache)
-        if (isNotBlank(System.getProperty(systemPropertyKey))) {
-            return true;
-        }
-        // Check environment variable
-        if (isNotBlank(System.getenv(environmentVariableKey))) {
-            return true;
-        }
-        // Check properties file
-        if (PROPERTIES != null && isNotBlank(PROPERTIES.getProperty(systemPropertyKey))) {
-            return true;
-        }
-        return false;
-    }
-
-    /**
-     * Returns the dev-mode default when {@code devMode()} is {@code true} and the user has NOT
-     * explicitly set the given property via system property, environment variable, or properties
-     * file. Otherwise returns the normal heap-based default. This lazy approach ensures ALL
-     * activation paths (env var, system property, properties file, programmatic setter) work
-     * without mutating global state.
-     */
-    private static int devModeDefaultOrHeapBased(int devDefault, String systemPropertyKey, String envVarKey, int heapBasedDefault) {
-        if (devMode() && !isPropertyExplicitlySet(systemPropertyKey, envVarKey)) {
-            return devDefault;
-        }
-        return heapBasedDefault;
+    private static int devModeDefaultOrHeapBased(int devDefault, int heapBasedDefault) {
+        return devMode() ? devDefault : heapBasedDefault;
     }
 
     // memory usage
@@ -1950,10 +1939,16 @@ public class ConfigurationProperties {
     }
 
     public static int maxExpectations() {
-        return readIntegerProperty(MOCKSERVER_MAX_EXPECTATIONS, "MOCKSERVER_MAX_EXPECTATIONS", devModeDefaultOrHeapBased(
-            DEV_MODE_MAX_EXPECTATIONS, MOCKSERVER_MAX_EXPECTATIONS, "MOCKSERVER_MAX_EXPECTATIONS",
-            heapBasedDefaultOrFloor(heapAvailableInKB(), 10, 15000, DEV_MODE_MAX_EXPECTATIONS)
-        ));
+        // Honour only an EXPLICIT override; recompute the (uncached) default from the current devMode()
+        // on every read. NOT resolved through readIntegerProperty, which would cache the injected default
+        // under the property key and freeze it JVM-wide — a later devMode(true) would then be silently
+        // ignored on the static programmatic path. See devModeDefaultOrHeapBased for the full rationale.
+        Integer explicit = explicitIntegerProperty(MOCKSERVER_MAX_EXPECTATIONS, "MOCKSERVER_MAX_EXPECTATIONS");
+        if (explicit != null) {
+            return explicit;
+        }
+        return devModeDefaultOrHeapBased(DEV_MODE_MAX_EXPECTATIONS,
+            heapBasedDefaultOrFloor(heapAvailableInKB(), 10, 15000, DEV_MODE_MAX_EXPECTATIONS));
     }
 
     /**
@@ -2049,10 +2044,16 @@ public class ConfigurationProperties {
     }
 
     public static int maxLogEntries() {
-        return readIntegerProperty(MOCKSERVER_MAX_LOG_ENTRIES, "MOCKSERVER_MAX_LOG_ENTRIES", devModeDefaultOrHeapBased(
-            DEV_MODE_MAX_LOG_ENTRIES, MOCKSERVER_MAX_LOG_ENTRIES, "MOCKSERVER_MAX_LOG_ENTRIES",
-            heapBasedDefaultOrFloor(heapAvailableInKB(), 8, 100000, DEV_MODE_MAX_LOG_ENTRIES)
-        ));
+        // Honour only an EXPLICIT override; recompute the (uncached) default from the current devMode()
+        // on every read. NOT resolved through readIntegerProperty, which would cache the injected default
+        // under the property key and freeze it JVM-wide — a later devMode(true) would then be silently
+        // ignored on the static programmatic path. See devModeDefaultOrHeapBased for the full rationale.
+        Integer explicit = explicitIntegerProperty(MOCKSERVER_MAX_LOG_ENTRIES, "MOCKSERVER_MAX_LOG_ENTRIES");
+        if (explicit != null) {
+            return explicit;
+        }
+        return devModeDefaultOrHeapBased(DEV_MODE_MAX_LOG_ENTRIES,
+            heapBasedDefaultOrFloor(heapAvailableInKB(), 8, 100000, DEV_MODE_MAX_LOG_ENTRIES));
     }
 
     /**
@@ -2210,6 +2211,33 @@ public class ConfigurationProperties {
         }
         String env = System.getenv(environmentVariableKey);
         return isNotBlank(env) ? env : null;
+    }
+
+    /**
+     * Parses an EXPLICIT integer override for a property whose default is runtime-mutable
+     * ({@link #maxLogEntries()} / {@link #maxExpectations()}), returning {@code null} when no explicit
+     * value is set so the caller can recompute a dynamic default. Resolves via {@link #explicitProperty}
+     * (programmatic cache, system property, properties file, environment variable) so no way of setting
+     * the property is silently ignored, and NEVER caches a default. On a malformed value it logs and
+     * returns {@code null}, falling back to the computed default rather than propagating a parse error —
+     * matching {@link #explicitMaxEventLogSizeInBytes()}.
+     */
+    private static Integer explicitIntegerProperty(String systemPropertyKey, String environmentVariableKey) {
+        String explicit = explicitProperty(systemPropertyKey, environmentVariableKey);
+        if (explicit == null) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(explicit.trim());
+        } catch (NumberFormatException nfe) {
+            LoggerHolder.LOGGER.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("NumberFormatException converting " + systemPropertyKey + " with value [" + explicit + "]")
+                    .setThrowable(nfe)
+            );
+            return null;
+        }
     }
 
     /**

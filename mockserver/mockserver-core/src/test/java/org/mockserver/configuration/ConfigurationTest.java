@@ -2,6 +2,7 @@ package org.mockserver.configuration;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import org.junit.Assume;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockserver.server.initialize.ExpectationInitializerExample;
@@ -560,6 +561,54 @@ public class ConfigurationTest {
         } finally {
             clearPropertyAndCache("mockserver.maxEventLogSizeInBytes");
             ConfigurationProperties.logLevel(originalLogLevel);
+        }
+    }
+
+    @Test
+    public void shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead() {
+        // maxLogEntries / maxExpectations defaults are runtime-mutable: their default switches to the
+        // dev-mode value when devMode is enabled. devMode is itself runtime-mutable (devMode(true) calls
+        // setProperty on mockserver.devMode). So the default must be recomputed from the CURRENT devMode()
+        // on every read — NOT resolved through the caching property reader, which froze the heap-based
+        // default JVM-wide under the mockserver.maxLogEntries / mockserver.maxExpectations keys at the
+        // first read. Because the devMode(true) setter writes a DIFFERENT key (mockserver.devMode), nothing
+        // invalidated the frozen derived value, so a later devMode(true) was silently ignored on the static
+        // programmatic path. Mirror of the maxEventLogSizeInBytes log-level fix.
+        boolean originalDevMode = ConfigurationProperties.devMode();
+        try {
+            clearPropertyAndCache("mockserver.maxLogEntries");
+            clearPropertyAndCache("mockserver.maxExpectations");
+            clearPropertyAndCache("mockserver.devMode");
+
+            long heapAvailableInKB = ConfigurationProperties.heapAvailableInKB();
+            int heapBasedLogEntries = ConfigurationProperties.heapBasedDefaultOrFloor(
+                heapAvailableInKB, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+            int heapBasedExpectations = ConfigurationProperties.heapBasedDefaultOrFloor(
+                heapAvailableInKB, 10, 15000, ConfigurationProperties.DEV_MODE_MAX_EXPECTATIONS);
+
+            // premise: the bug is only observable when the heap-based default differs from the dev default,
+            // i.e. the test JVM has a non-trivial heap ceiling (true for any normal Maven Surefire fork).
+            // On a tiny heap the two coincide and there is nothing to distinguish, so skip honestly.
+            Assume.assumeTrue(
+                "heap ceiling too small to distinguish the heap-based default from the dev default",
+                heapBasedLogEntries != ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES
+                    && heapBasedExpectations != ConfigurationProperties.DEV_MODE_MAX_EXPECTATIONS);
+
+            // read at the heap-based default first — this is the read that used to freeze the value
+            assertThat(ConfigurationProperties.maxLogEntries(), equalTo(heapBasedLogEntries));
+            assertThat(ConfigurationProperties.maxExpectations(), equalTo(heapBasedExpectations));
+
+            // enable dev mode WITHOUT clearing the derived keys — a cached default would survive to the next read
+            ConfigurationProperties.devMode(true);
+
+            // now the getters must return the dev-mode default, not the frozen heap-based value
+            assertThat(ConfigurationProperties.maxLogEntries(), equalTo(ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES));
+            assertThat(ConfigurationProperties.maxExpectations(), equalTo(ConfigurationProperties.DEV_MODE_MAX_EXPECTATIONS));
+        } finally {
+            ConfigurationProperties.devMode(originalDevMode);
+            clearPropertyAndCache("mockserver.devMode");
+            clearPropertyAndCache("mockserver.maxLogEntries");
+            clearPropertyAndCache("mockserver.maxExpectations");
         }
     }
 
