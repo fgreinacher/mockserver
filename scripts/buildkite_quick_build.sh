@@ -60,7 +60,12 @@ log_debug "Maven exited with code=$MVN_EXIT"
 # guard failure is captured in GUARD_EXIT rather than aborting the script.)
 if [ "$MVN_EXIT" -eq 0 ]; then
     log_debug "Running whole-reactor configuration-callsite guard..."
-    ./mvnw -B --no-transfer-progress -pl mockserver-netty surefire:test@configuration-callsite-guard \
+    # jacoco:prepare-agent is REQUIRED, not decorative: surefire's <argLine> here is the
+    # late-evaluated `@{argLine}` form, and nothing else in this standalone invocation defines
+    # argLine. Without prepare-agent the literal string `@{argLine}` is handed to the JVM and the
+    # fork dies with `Error: could not open '{argLine}'` before a single test runs — which reads
+    # as a build failure, not as a guard verdict. (Seen for real on build 2297.)
+    ./mvnw -B --no-transfer-progress -pl mockserver-netty jacoco:prepare-agent surefire:test@configuration-callsite-guard \
         -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO
     GUARD_EXIT=$?
     log_debug "configuration-callsite guard exited with code=$GUARD_EXIT"
