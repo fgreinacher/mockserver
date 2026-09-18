@@ -513,7 +513,10 @@ export const STREAMING = {
   // pool of the streaming arm (each VU holds exactly one open GET /stream). This is
   // the knob that floods the scheduler pool. The bare-`k6 run` default is 100 (a
   // light, safe local default); the CI run step (perf-test-run.sh) OVERRIDES it to
-  // 300 and drives it against a DEDICATED SUT with BOTH pools constrained (action-
+  // 1200 -- raised from 300 after 3d7a2f9c8 cut per-log-entry allocation ~7x, which
+  // moved the knee past 300 and left the control reading 1.056 (see that step's own
+  // comment for the measured ratio-vs-concurrency curve) -- and drives it against a
+  // DEDICATED SUT with BOTH pools constrained (action-
   // handler + event-loop) on 1 CPU so the scheduler sits past its knee — otherwise
   // on a many-core SUT the pool
   // (actionHandlerThreadCount = max(5, cores)) never saturates and the match A/B +

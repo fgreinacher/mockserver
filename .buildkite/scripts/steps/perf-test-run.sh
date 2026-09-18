@@ -1685,14 +1685,37 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
   if command -v python3 >/dev/null 2>&1; then
     S_WARMUP="${K6_STREAM_WARMUP:-20s}"; S_BASE="${K6_STREAM_MATCH_BASELINE_DURATION:-45s}"
     S_LOAD="${K6_STREAM_LOAD_DURATION:-90s}"; S_SETTLE="${K6_STREAM_SETTLE:-10s}"
-    # Default concurrency 300 (not config.js's light-local 100): at delay 20 ms
+    # Default concurrency 1200 (not config.js's light-local 100), at delay 20 ms
     # against the dedicated 1-CPU / 2-scheduler-thread / 2-event-loop-thread SUT
-    # below, that is reliably past the knee — the match A/B ratio measured 8.0x and
-    # 3.9x across repeats (always well above ~1.0), where 200 still occasionally
-    # dipped to ~1.6x (near-knee variance). RETENTION at 300/20ms: stream ≈ 4 s,
-    # start rate ≈ 75/s, over a 90 s window ≈ 6750 streams × 200 events × ~30 B ≈
-    # 40 MB — bounded well under the 1 GB SUT heap.
-    S_CONC="${K6_STREAM_CONCURRENCY:-300}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
+    # below. WHY IT IS NOT 300 ANY MORE, which is the useful part of this comment:
+    # 300 WAS past the knee and measured 8.0x and 3.9x — until 3d7a2f9c8 ("stop
+    # keeping a parsed copy of every logged JSON body") cut retained heap per log
+    # entry by roughly 7x (429 MB -> 61 MB over 20,000 entries; 1,840,013 Jackson
+    # tree nodes -> 0). Far less allocation means far less GC competing with the two
+    # action-handler threads, which moved the knee well beyond 300: the first
+    # post-fix CI run (build 290) read a match A/B ratio of 1.056 at concurrency 300
+    # — a control proving nothing. The product got faster and the calibration went
+    # stale; that is the ONLY reason this number changed.
+    #
+    # 1200 was measured, not guessed. On a post-fix image against this exact SUT
+    # shape the ratio climbs monotonically — ~2.0 at 300, ~2.6 at 600, ~4.5 at 900,
+    # min 6.08 across repeats at 1200 — with zero stream errors, zero match errors
+    # and full delivery at every level.
+    #
+    # THE KNEE IS BOX-DEPENDENT, so treat 1200 as calibrated-with-margin rather than
+    # exact: those figures come from a developer laptop, where the same concurrency
+    # 300 read ~2.0 against CI's 1.056 on identical code. A 1-CPU quota buys
+    # different real throughput on a dedicated CI core than on a contended laptop
+    # vCPU, so CI needs MORE concurrency than the laptop for the same ratio. 1200
+    # was chosen because even at the worst observed box sensitivity (CI reading
+    # about half the laptop at matched concurrency) it still extrapolates to ~3x,
+    # clear of the ~1.6x near-knee band; 900 would not survive that.
+    #
+    # RETENTION at 1200/20ms: start rate ~300/s, ~500/s total, maxLogEntries ~96000
+    # => residence ~192 s exceeds the 90 s window, so ~300 x 90 x 200 events x ~30 B
+    # ~= 166 MB — still far under the ~768 MB heap of the 1 GB SUT (and no OOM was
+    # observed at 1200 in any run).
+    S_CONC="${K6_STREAM_CONCURRENCY:-1200}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
     sw="$(to_secs "$S_WARMUP")"; sb="$(to_secs "$S_BASE")"; sl="$(to_secs "$S_LOAD")"; sst="$(to_secs "$S_SETTLE")"
     STREAM_LOAD_START=$(( sw + sb ))
     READER="$REPO_ROOT/mockserver-performance-test/k6/tools/sse-fidelity-reader.py"
