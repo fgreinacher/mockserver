@@ -1,6 +1,7 @@
 package org.mockserver.saml;
 
 import org.mockserver.keys.AsymmetricKeyPairAlgorithm;
+import org.mockserver.uuid.UUIDService;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
@@ -28,7 +29,6 @@ import java.security.cert.X509Certificate;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
-import java.util.UUID;
 
 /**
  * Builds and enveloped-signs a SAML 2.0 {@code <LogoutResponse>} for the Single-Logout (SLO)
@@ -61,7 +61,7 @@ public class SamlLogoutResponseBuilder {
 
             String now = DateTimeFormatter.ISO_INSTANT.format(
                 Instant.now().with(java.time.temporal.ChronoField.NANO_OF_SECOND, 0));
-            String responseId = "_" + UUID.randomUUID();
+            String responseId = "_" + UUIDService.getNonSecureUUID();
 
             Element logoutResponse = doc.createElementNS(NS_PROTOCOL, "samlp:LogoutResponse");
             logoutResponse.setAttribute("ID", responseId);

@@ -13,6 +13,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 import static org.mockserver.model.HttpResponse.response;
 
@@ -56,7 +57,7 @@ public final class RerankScoring {
         for (int i = 0; i < docs.size(); i++) {
             double score = deterministic
                 ? deterministicScore(docs.get(i), seed)
-                : Math.random();
+                : ThreadLocalRandom.current().nextDouble();
             scored.add(new Scored(i, score));
         }
         // Sort by descending score; ties broken by original index for stability.

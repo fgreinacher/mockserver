@@ -105,8 +105,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rather than unguessable — a deliberate, approved trade-off for a data-plane test fixture, and the one
   user-visible semantic change here. Ids whose unguessability is a **security** property — callback and
   breakpoint correlation ids, client-registration ids, TLS keystore file names and certificate serials, the
-  QUIC token secret, SAML/OIDC mock-auth ids and the user-facing `uuid` / `rand_bytes` template functions —
-  are untouched and still use the secure generator.
+  QUIC token secret and the user-facing `uuid` / `rand_bytes` template functions —
+  are untouched and still use the secure generator. (A later change re-examined the SAML/OIDC
+  mock-auth content ids named here as unchanged and moved them too — see the next entry.)
+- Completing that programme, the **third contended random source** — the shapes neither earlier pass
+  searched for — is taken off the hot path. `Math.random()` was called **once per document** while
+  scoring a rerank response (`RerankScoring`, behind the Cohere and Voyage rerank codecs), and
+  `Math.random()` delegates to one shared static `java.util.Random` whose step is an `AtomicLong` CAS
+  loop — real contention when a rerank request carries tens to hundreds of documents; it now draws from
+  `ThreadLocalRandom`. The random embedding-vector fallback (`EmbeddingVectors.generateRandomVector`)
+  likewise drops its per-call unseeded `new Random()` — which both allocates a generator and contends on
+  the JDK's static `seedUniquifier` — for `ThreadLocalRandom`; the seeded, reproducible fallback vector is
+  deliberately left on its hash-seeded constructor, which does not contend. Separately, the **content ids
+  inside mocked auth responses** move to the fast source: the opaque access-token and refresh-token
+  references and the authorization-/device-code lookup keys (`OidcTokenMinter`,
+  `OidcAuthorizationCodeCallback`, `OidcDeviceAuthorizationCallback`), the SAML `<Response>`,
+  `<Assertion>`, `SessionIndex` and `<LogoutResponse>` ids (`SamlResponseBuilder`,
+  `SamlLogoutResponseBuilder`), and the `sub` claim minted by the standalone `JWTGenerator` — each produced
+  per mock auth response. These are the content MockServer fabricates **while impersonating** an OIDC
+  provider, SAML IdP or JWT signer. Some of them (the authorization and device codes, the opaque access
+  token) are single-use bearer values the mock's *own* token/introspection endpoints validate — but since
+  any caller can obtain a token from the same mock directly (e.g. a `client_credentials` grant) without
+  ever holding one, guessing one grants no privilege it could not get by simply asking, so their
+  unpredictability is simulated, not a security boundary. Their format is unchanged
+  (still version-4 UUIDs and the same `mock-…` prefixes), and no golden file pins a rerank score or an
+  embedding value. Ids and secrets whose unguessability **is** a security property are untouched and still
+  use the secure generator: the OIDC device-flow **user_code** a human reads and types to approve, OIDC
+  signing-key ids, TLS certificate serials and keystore file names, client-facing callback and breakpoint
+  correlation ids, client-registration ids and the QUIC source-address token secret. An always-on CI guard
+  (`.buildkite/scripts/steps/check-shared-rng-hotpath.sh`) now fails the build when a new `Math.random()`,
+  unseeded `new Random()`, `UUID.randomUUID()` or `new SecureRandom()` appears in the server-runtime source
+  (mockserver-core / -netty / -async) without an allow-listed reason — because the defect both earlier
+  passes shared was the enumeration missing a shape, not the judgement, so the shape is now caught mechanically.
 - The single event-log writer thread no longer re-reads the `logLevelOverrides` configuration from
   scratch for **every** log entry. Deciding whether to print an entry needs the per-category log-level
   overrides, and resolving them went through the general property machinery on each entry — a hashed

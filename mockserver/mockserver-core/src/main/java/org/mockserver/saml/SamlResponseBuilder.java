@@ -1,6 +1,7 @@
 package org.mockserver.saml;
 
 import org.mockserver.keys.AsymmetricKeyPairAlgorithm;
+import org.mockserver.uuid.UUIDService;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -32,7 +33,6 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.Collections;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Builds and enveloped-signs a SAML 2.0 {@code <Response>} document using only the JDK XML APIs
@@ -89,8 +89,8 @@ public class SamlResponseBuilder {
             String notOnOrAfter = DateTimeFormatter.ISO_INSTANT.format(
                 validityEnd.with(java.time.temporal.ChronoField.NANO_OF_SECOND, 0)
             );
-            String responseId = "_" + UUID.randomUUID();
-            String assertionId = "_" + UUID.randomUUID();
+            String responseId = "_" + UUIDService.getNonSecureUUID();
+            String assertionId = "_" + UUIDService.getNonSecureUUID();
 
             // <samlp:Response>
             Element response = doc.createElementNS(NS_PROTOCOL, "samlp:Response");
@@ -166,7 +166,7 @@ public class SamlResponseBuilder {
             Element authnStatement = doc.createElementNS(NS_ASSERTION, "saml:AuthnStatement");
             authnStatement.setAttribute("AuthnInstant", now);
             authnStatement.setAttribute("SessionNotOnOrAfter", notOnOrAfter);
-            authnStatement.setAttribute("SessionIndex", "_" + UUID.randomUUID());
+            authnStatement.setAttribute("SessionIndex", "_" + UUIDService.getNonSecureUUID());
             Element authnContext = doc.createElementNS(NS_ASSERTION, "saml:AuthnContext");
             Element authnContextClassRef = doc.createElementNS(NS_ASSERTION, "saml:AuthnContextClassRef");
             authnContextClassRef.setTextContent("urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport");

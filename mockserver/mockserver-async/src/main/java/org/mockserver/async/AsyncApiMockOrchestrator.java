@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonPointer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.mockserver.uuid.UUIDService;
 import org.mockserver.async.asyncapi.AsyncApiChannel;
 import org.mockserver.async.asyncapi.AsyncApiMessage;
 import org.mockserver.async.asyncapi.AsyncApiSpec;
@@ -60,7 +61,10 @@ public class AsyncApiMockOrchestrator {
      * and tests).
      */
     public AsyncApiMockOrchestrator(AsyncApiSpec spec, MessagePublisher publisher, MessageExampleGenerator generator) {
-        this(spec, publisher, generator, () -> UUID.randomUUID().toString());
+        // Per PUBLISHED MESSAGE, not per run: correlationIdSupplier.get() is called inside the
+        // per-message loop below, so this draws from the JDK's shared SecureRandom once per message.
+        // A correlation id needs uniqueness, not unguessability.
+        this(spec, publisher, generator, UUIDService::getNonSecureUUID);
     }
 
     /**

@@ -9,6 +9,7 @@ import org.mockserver.authentication.jwt.JWTGenerator;
 import org.mockserver.keys.AsymmetricKeyConverter;
 import org.mockserver.keys.AsymmetricKeyPair;
 import org.mockserver.serialization.ObjectMapperFactory;
+import org.mockserver.uuid.UUIDService;
 
 import java.io.Serializable;
 import java.nio.charset.StandardCharsets;
@@ -211,7 +212,7 @@ public class OidcTokenMinter {
             // Opaque access token: a random reference (not a JWT). Real IdPs frequently issue opaque
             // tokens whose only validation path is introspection — store the token + its claims so the
             // /introspect endpoint can resolve them (RFC 7662).
-            accessToken = "mock-opaque-" + java.util.UUID.randomUUID();
+            accessToken = "mock-opaque-" + UUIDService.getNonSecureUUID();
             Map<String, Object> introspectionClaims = new LinkedHashMap<String, Object>(accessTokenClaims);
             OidcAuthorizationStore.getInstance().putOpaqueToken(
                 accessToken, new OidcAuthorizationStore.OpaqueToken(introspectionClaims, exp));
@@ -244,7 +245,7 @@ public class OidcTokenMinter {
         response.put("expires_in", config.getTokenExpirySeconds());
         response.put("scope", scopeString);
         if (includeRefresh) {
-            response.put("refresh_token", "mock-refresh-" + java.util.UUID.randomUUID());
+            response.put("refresh_token", "mock-refresh-" + UUIDService.getNonSecureUUID());
         }
         return serializeToJson(response);
     }

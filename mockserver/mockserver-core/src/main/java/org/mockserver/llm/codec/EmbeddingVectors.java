@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * Shared, deterministic embedding-vector generation used by every provider
@@ -221,7 +222,12 @@ public final class EmbeddingVectors {
     }
 
     public static double[] generateRandomVector(int dimensions) {
-        Random random = new Random();
+        // ThreadLocalRandom rather than an unseeded java.util.Random: the no-arg constructor draws its
+        // seed from a shared static seedUniquifier CAS loop and allocates a generator per call, so it
+        // both contends and churns under concurrency. The seeded fallback in seededFallbackVector keeps
+        // its hash-seeded constructor deliberately — that path bypasses seedUniquifier and must stay
+        // reproducible, so it does not contend and is not changed here.
+        Random random = ThreadLocalRandom.current();
         double[] vector = new double[dimensions];
         for (int i = 0; i < dimensions; i++) {
             vector[i] = random.nextDouble() * 2 - 1;

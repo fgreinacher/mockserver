@@ -3,11 +3,11 @@ package org.mockserver.oidc;
 import org.mockserver.mock.action.ExpectationResponseCallback;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
+import org.mockserver.uuid.UUIDService;
 
 import java.io.UnsupportedEncodingException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.util.UUID;
 
 import static org.mockserver.model.HttpResponse.response;
 
@@ -55,7 +55,7 @@ public class OidcAuthorizationCodeCallback implements ExpectationResponseCallbac
                 .withBody("{\"error\":\"server_error\",\"error_description\":\"no OIDC provider registered for this authorize endpoint\"}");
         }
 
-        String code = "mock-auth-code-" + UUID.randomUUID();
+        String code = "mock-auth-code-" + UUIDService.getNonSecureUUID();
         store.putCode(code, new OidcAuthorizationStore.AuthorizationCode(
             redirectUri, codeChallenge, codeChallengeMethod, scope, nonce
         ));

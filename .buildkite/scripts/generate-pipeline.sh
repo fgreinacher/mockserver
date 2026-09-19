@@ -158,6 +158,12 @@ fi
 # client test step (that client's pipeline) or a container_integration_tests script — no single
 # path-filtered pipeline sees them all, so only an always-on step catches every case. Also greps-only,
 # ~1s.
+#
+# The shared-RNG hot-path guard is always-on for the same reason: a new Math.random(), unseeded
+# new Random(), UUID.randomUUID() or new SecureRandom() can be introduced from any server-runtime Java
+# source (mockserver-core / -netty / -async), and each draws from a shared, contended static generator
+# that serialises the worker event loops under load. Three earlier sweeps each fixed one such shape by
+# enumerating it once; only an always-on control stops the next one reappearing. Greps-only, ~1s.
 ALWAYS_STEPS='  - label: ":package: validate client version pins"
     command: ".buildkite/scripts/steps/clients-version-consistency.sh"
     timeout_in_minutes: 5
@@ -171,6 +177,17 @@ ALWAYS_STEPS='  - label: ":package: validate client version pins"
           limit: 2
   - label: ":detective: guard against false-green test shapes"
     command: ".buildkite/scripts/steps/check-false-green-guards.sh"
+    timeout_in_minutes: 5
+    agents:
+      queue: trigger
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+  - label: ":game_die: guard against new shared-RNG hot-path calls"
+    command: ".buildkite/scripts/steps/check-shared-rng-hotpath.sh"
     timeout_in_minutes: 5
     agents:
       queue: trigger

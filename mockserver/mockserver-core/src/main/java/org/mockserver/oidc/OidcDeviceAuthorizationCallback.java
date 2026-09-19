@@ -5,6 +5,7 @@ import org.mockserver.mock.action.ExpectationResponseCallback;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.serialization.ObjectMapperFactory;
+import org.mockserver.uuid.UUIDService;
 
 import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
@@ -13,7 +14,6 @@ import java.security.SecureRandom;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
 
 import static org.mockserver.model.HttpResponse.response;
 
@@ -59,7 +59,7 @@ public class OidcDeviceAuthorizationCallback implements ExpectationResponseCallb
         Map<String, String> form = parseFormBody(request.getBodyAsString());
         String scope = emptyToNull(form.get("scope"));
 
-        String deviceCode = "mock-device-code-" + UUID.randomUUID();
+        String deviceCode = "mock-device-code-" + UUIDService.getNonSecureUUID();
         String userCode = generateUserCode();
         store.putDeviceCode(deviceCode, new OidcAuthorizationStore.DeviceCode(
             userCode, scope, Math.max(0, provider.config.getDeviceCodePendingPolls())));
