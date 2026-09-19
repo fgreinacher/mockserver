@@ -2353,6 +2353,54 @@ nearly triples it, then it flattens — which hints the server ceiling is somewh
 9-10k rps and that two cores already reach it. But those rungs are excluded for latency
 (p95 ~1,000 ms), so nothing downstream sees them.
 
+**ANSWERED 2026-09-19 by build #347, the instrumented run — and it corrects me again.**
+
+The diagnostics settle it, and the answer is that **both** of my earlier explanations were
+partly right and both were stated too absolutely.
+
+| offered | drops | vus_avg | **vus_max** | stalls | stall_time_buckets |
+|---:|---:|---:|---:|---:|---|
+| 500 | 0 | 1.2 | 34 | 30 | [30, 0, 0, 0, 0, 0] |
+| 2,000 | 0 | 2.8 | 128 | 291 | [190, 34, 32, 35, 0, 0] |
+| **4,000** | **149** | **4.6** | **216** | 469 | **[0, 253, 0, 0, 216, 0]** |
+| 8,000 | 2,198 | 5.3 | 301 | 2,005 | [217, 411, 262, 277, 325, 513] |
+| 32,000 | 153,428 | 460.4 | 1,283 | 203,051 | [8776, 21779, 30938, 46375, 45789, 49394] |
+
+**At the 4,000 rung — the one where I argued a pool shortage was "arithmetically impossible" —
+average concurrency is 4.6 VUs but the PEAK is 216, which exceeds the 200-VU pool.** Little's
+law was right about the average and I wrongly treated the average as the whole story. A pool
+shortage is not impossible there; it is impossible *in steady state* and entirely possible in a
+transient.
+
+**The transient is a stall, and the two coincide exactly.** `stall_concurrency_max` equals
+`vus_active_max` at that rung (216 = 216): the concurrency spike happens *at* the stalls, not
+independently of them. And `stall_time_buckets` is `[0, 253, 0, 0, 216, 0]` — two sharp bursts
+in six windows, not a spread. That is the clustered signature the instrumentation was built to
+discriminate, and it is clustered at every low rung (500: all 30 in the first window; 2,000:
+front-loaded).
+
+So the mechanism is: **a transient stall blocks VUs, iterations pile up behind it, concurrency
+spikes past the pool, and the executor drops the overflow.** `vus_pool_grew` is **true** —
+global max 4,683 against a 1,800 baseline — so the ramp does fire, but it is *driven by the
+stall*, not by steady demand. My "the VU ramp is the cause" claim had the right mechanism and
+the wrong trigger; my "unexplained" correction was right to retract the trigger and wrong to
+call the mechanism impossible.
+
+The high rungs are a different regime and read as such: from 32,000 upward the stalls spread
+across all six windows and `vus_avg` is 460-727, which is genuine saturation rather than a
+transient.
+
+**What this licenses:** equalising `preAllocatedVUs` and `maxVUs` per Finding 3 is now justified
+by evidence rather than by invariant alone — a fixed pool cannot ramp, so the storm cannot
+compound. But it will NOT eliminate the drops: a fixed pool still overflows on a transient spike,
+and k6 counts that as a dropped iteration. Sizing the pool for the *peak* rather than the
+average is the change that matters, and the peaks are now measured.
+
+*Still owed:* the per-core ladder itself produced nothing on this run —
+`serving_percore_attempted: true` with an empty `serving_percore: {}`. The diagnostics above are
+from the main sweep, which is the same `sweep.js` the ladder drives, so the mechanism finding
+holds; but item 18's actual curve still needs a run where the ladder emits.
+
 **The cause is not client CPU.** My first write-up of this said the fix was "more k6 cores, a
 second generator host". That was wrong, and the run's own numbers refute it: at the 8,000 rung
 k6 used **190.5% of a 1,400% pin — 13.6% utilisation, 86% idle**. The client had CPU to spare at
