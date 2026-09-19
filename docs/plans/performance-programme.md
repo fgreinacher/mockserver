@@ -1750,6 +1750,118 @@ conclusion: (1) the guarantee holds only while that terraform variable is unchan
 for the separate reason that they carry no `config` block (JDK/GC/heap/log-level), so they are
 weighed with that caveat regardless of the instance-type field.
 
+## Gaps found by a 2026-09-19 sweep for what this plan does NOT cover
+
+The plan's items were chosen in 2026-09-16 from a read of the harness and the hot path. This
+section is the result of deliberately asking the opposite question — **what is absent?** — across
+CPU, memory and scalability, with each finding required to cite code and to name the measurement
+that would confirm it. Findings are recorded here rather than promoted to numbered items because
+none has been measured yet; the measurement is the work.
+
+### G1. The candidate index is silently given back under expectation churn — the largest gap
+
+`CircularPriorityQueue.toSortedList()` caches a sorted snapshot and nulls it on every structural
+mutation (`CircularPriorityQueue.java:243` rebuild; nulled at `:103,:140,:145,:159,:185,:197`).
+In parallel `matchersModificationCount` bumps on every mutation (`RequestMatchers.java:639`) and
+the `CandidateIndex` rebuilds whenever its generation differs (`:732-739`). So **one mutation
+forces the next request to rebuild both the full sorted list and the index.**
+
+The critical part: **churn is produced by the serving path itself, not only the control plane.**
+`firstMatchingExpectation` schedules lazy removal of inactive matchers *during its own scan*
+(`RequestMatchers.java:867`), and the clustered Times-exhaustion path schedules removal (`:803`).
+So any workload using `once()` or limited-`Times` expectations — overwhelmingly common in tests
+and stateful scenarios — mutates the store continuously. At 15,000 expectations that is an O(n)
+rebuild per request on the request thread, and because the cache is a benign race, several
+concurrent threads can each rebuild the 15k list at once, so it **worsens with more cores.**
+
+This directly contradicts the documented scaling story: the index is described and benchmarked as
+a large speedup at scale (`RequestMatchers.java:168-180`), and that is true only for a *static*
+store. `CandidateIndexBenchmark` uses a `@Setup(Level.Trial)` fixed set, no `@Threads`, and no
+mutation — so it measures warm single-threaded matching over an unchanging store, and the churn
+case is **entirely unmeasured**. A user hits this with no signal at all.
+
+*Measurement:* a `@Threads` JMH arm interleaving add/remove with `firstMatchingExpectation` at
+n = 100 / 1k / 15k, reporting match time and rebuild count against the static baseline; or a k6
+scenario seeding many `once()` expectations under sustained load.
+
+### G2. One event-log thread serializes every verify/retrieve/clear WITH log ingestion
+
+The disruptor has a single handler (`MockServerEventLog.java:475`) that both appends entries and
+runs every query, because `retrieveLogEntries`/`verify`/`clear` are dispatched as `RUNNABLE`
+events onto that same thread (`:1027,:1055,:1081,:749`). A query is an O(n) scan over up to
+`maxLogEntries` entries, each running a full cloned request-match (`:1044`).
+
+Good news first, and it is a real non-result worth recording: **a verify does NOT block the
+serving path.** Matching never reads the event log, and serving-path log writes are non-blocking
+(`tryPublishEvent`, `:269`). What a long query *does* block is every other query — so retrieval
+throughput does not scale with cores at all — and ring drainage.
+
+That second consequence is the dangerous one. While a scan runs, incoming log writes back up, and
+once the 16,384-slot ring fills they are **dropped with only a WARN-once** (`:277-278`). So a
+burst of retrievals against a large log can silently discard the `RECEIVED_REQUEST` entries that
+a later `verify` needs to prove a request happened. **A user can lose verification evidence with
+no error.** This is adjacent to the plan's existing "verification query cost at high occupancy"
+row, but that row frames it as single-query cost; the serialization-with-ingestion and the
+drop-under-verify consequence are not in the plan.
+
+*Measurement:* at ~100k occupancy sweep concurrent retrieve rate; record query p95 and dropped
+log events during the scan window, and confirm serving p95 is unaffected.
+
+### G3. Clustering puts a grid CAS on the matching thread per limited-Times match
+
+Inside `firstMatchingExpectation`, a clustered limited-`Times` match calls
+`consumeTimesViaBackendCas` synchronously (`RequestMatchers.java:796-797`), and a scenario
+transition calls `scenarioManager.matchesAndTransition(...)` (`:845`) — both on the request
+thread. Unlimited-Times and no-scenario requests take a node-local fast path (`:810-818`). So
+under clustering, any bounded-`Times` or scenario expectation turns each match into a network
+round-trip on the serving path, making latency a function of grid RTT rather than local matching.
+The plan lists clustered state generically; this specific hot-path placement is not named.
+
+*Measurement:* 2- and 3-node Infinispan cluster, limited-Times and scenario expectations at
+increasing rate, serving p95 and CAS retry rate versus the single-node path.
+
+### G4. `Expectation` holds a per-instance `ThreadLocal` that is set and never removed
+
+`Expectation.java:109` declares `private final ThreadLocal<Integer> lastRotationSnapshot` as an
+**instance field**, `set()` on every match from `recordMatch` (`:1444-1450`) on the long-lived
+request and action-handler threads, and **never `remove()`d** — only get and set exist anywhere.
+
+This is the same shape as the connection-listener leak fixed earlier in this programme — a
+per-request write into a longer-lived scope — but on the `ThreadLocalMap` of pooled server
+threads rather than a channel future. While an expectation is live the cost is bounded. **Under
+expectation churn nothing bounds it promptly:** each cleared `Expectation`'s `ThreadLocal`
+becomes a stale weak key, and the value slot is reclaimed only by an incremental expunge on a
+later set/get on that thread. The `Entry[]` never shrinks. Retained bytes are small; the real
+cost is map bloat and linear-probe CPU **on the hot matching path**.
+
+It is driven by control-plane churn, not request data, so it is a slow-leak and efficiency
+concern rather than a denial-of-service vector. **This plan examines no `ThreadLocal` retention
+on server threads at all.**
+
+*Measurement:* churn expectations in a soak and compare `jmap -histo` against `-histo:live` on
+`ThreadLocalMap$Entry` — the gap is the stale-slot accumulation. Cheaper and deterministic: a
+weak-reference unit test in the shape of the existing `InFlightRequest` retention test.
+
+### Confirmed non-gaps — checked and found already sound
+
+Recorded because a verified non-gap is worth as much as a finding, and stops the next sweep
+re-treading them:
+
+- **No lock caps the matching scan.** The read path is deliberately unsynchronised
+  (`RequestMatchers.java:283-286`); the `synchronized` blocks guard only short control-plane
+  structure mutations and never span a backend call. Throughput is not lock-capped — the real
+  cost is G1's rebuild.
+- **Pooled Netty allocators are configured** on every server and client path (`MockServer.java:182,261`,
+  `NettyHttpClient.java:314,497`).
+- **The listener-leak sibling hunt came up clean.** The two remaining per-request
+  `closeFuture().addListener(...)` registrations both sit on per-stream channels that complete
+  per request (`GrpcStreamResponseActionHandler.java:99`, `Http3GrpcResponseWriter.java:134`).
+- **Request-derived caches are all bounded** — LRU or capped: the structured-output validator
+  cache (256), recovery attempts, schema/OpenAPI/matcher caches (250 with TTL).
+- **OpenAPI expectations do not each retain a parsed spec** — the spec is expanded once and the
+  parsed document is not held per matcher.
+- **Forward connection pooling is on by default** and its saturation case is already a CI signal.
+
 ## What remains
 
 Everything in the acceptance table is executed. What is outstanding is either research-sized,
@@ -1760,10 +1872,10 @@ needs a resource, or is a decision rather than a task.
 | **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **RUN AT LAST — and it found a bug in itself, not in the server.** Build **#324** (2026-09-19) is the first soak ever executed: a full 2 h against `5a4b27df8` (real commit, 6 behind master, so current code), `--memory=2g`, matchRate 200, verify/retrieve 1/s. It **failed its thresholds** with a 54.2% match error rate and p99 drifting 102 ms -> 390 ms (3.8x) while p50 held flat at 0.346 ms. Neither figure is a product defect: **the harness evicts its own match seed.** Full mechanism in [What the first soak actually measured](#what-the-first-soak-actually-measured) below. **This run is NOT item 10's baseline and must be re-run once the harness is fixed** — the occupancy control it was meant to establish is still unproven, and the run does not even carry the data to establish it |
 | **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
 | **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape |
-| **19. S3 -> website** | A PR, or a reasoned decision not to open one | **UNBLOCKED, and the happy path FIRED for the first time (build #325, 2026-09-19) — it now fails on one thing only: push credentials.** Build 325's compare step **passed and persisted**, putting a self-describing `schema_version: 3` object in S3 (`runs/master/2026-09-19T11-27-52Z__4a59764fcb.json`). Publish then ran end to end: it read that object, judged the candidate (`healthy_ceiling_rps=16000`, `peak_achieved_rps=28377.4`, 18 behaviour arms), fired its movement trigger (a headline metric moved 50%, over the 10% threshold), regenerated the chart data, branched, and **committed 3 files / 2,235 insertions**. It then died on `fatal: could not read Username for 'https://github.com': terminal prompts disabled`. So the precondition this row has blamed for weeks — "no `schema_version=2` run has reached the S3 baseline" — **is met**, and every step of item 19's logic is now proven except the final push. **Owed: GitHub push credentials for the publish step** (it correctly left the committed figures untouched and shipped nothing). Note it also refused nothing wrongly — the refuse path stays proven from build #290 |
+| **19. S3 -> website** | A PR, or a reasoned decision not to open one | **UNBLOCKED, and the happy path FIRED for the first time (build #325, 2026-09-19) — it now fails on one thing only: push credentials.** Build 325's compare step **passed and persisted**, putting a self-describing `schema_version: 3` object in S3 (`runs/master/2026-09-19T11-27-52Z__4a59764fcb.json`). Publish then ran end to end: it read that object, judged the candidate (`healthy_ceiling_rps=16000`, `peak_achieved_rps=28377.4`, 18 behaviour arms), fired its movement trigger (a headline metric moved 50%, over the 10% threshold), regenerated the chart data, branched, and **committed 3 files / 2,235 insertions**. It then died on `fatal: could not read Username for 'https://github.com': terminal prompts disabled`. So the precondition this row has blamed for weeks — "no `schema_version=2` run has reached the S3 baseline" — **is met**, and every step of item 19's logic is now proven except the final push. **Investigated 2026-09-19, and the answer is probably NOT to give it credentials.** The perf queue's IAM role grants only S3 access to `mockserver-ci-perf-results` (`terraform/buildkite-agents/perf-results.tf`); the GitHub token is granted by `read_release_secrets`, attached to the **release** stack alone, so `load_secret` from the perf queue would return AccessDenied. (A comment at `perf-test-guard.sh:227` claims the perf queue "holds ... the git/gh credentials the PR needs" — **that comment is false**, and is why build 325 failed.) The step also calls `gh pr create` (`:325`), so a fix must satisfy **two** auth requirements, not one. **Granting the perf queue the release token is the wrong answer:** that token can push to any branch and cut GitHub Releases, and the perf queue builds MockServer from master and runs benchmark/k6 harnesses on a public-IP box — so a poisoned dependency or a compromised run would gain full repo write and release capability, for a cosmetic docs refresh. **Recommended: option (c) — do not push from CI.** Keep everything up to the local commit, then emit the regenerated figures plus a ready-to-apply patch as build artifacts and annotate with apply instructions. It needs no secret, no IAM change and no queue move, and removes the only `git push` in all of `.buildkite/`. This satisfies item 19 by its own wording — "a PR, **or a reasoned decision not to open one**" — and a human is required in the loop regardless, since the step's own PR body says "A human must reconcile the hand-authored numbers this refresh does NOT touch". If auto-PR is later judged worth it, the fallback is a **fine-grained token scoped to this repo** with `Contents: write` + `Pull requests: write` only, in a new secret with its own IAM policy attached solely to the perf stack — materially safer than the release PAT, though still repo-write on a code-executing queue. **This is a repo-owner security decision, not mine** |
 | **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | **CLOSED (2026-09-19, `72bc3dafd`).** Build **#322** ran the ladder and the knee is far sharper on CI than the laptop curve predicted. **Provenance, because this matters and a reader would otherwise be misled: build 322's overall state is FAILED and its run is flagged `validity.valid=false`.** That flag is not about this measurement. Of the six validity checks exactly one failed — `sweep_client_had_headroom` — and its own detail scopes itself: *"every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) ... no server **throughput** figure is trustworthy"*. It fired because the bisect deliberately ran a **short 3-rung ladder** (2,000 / 16,000 / 32,000 offered), none of whose rungs survived the headroom filter, so `peak_achieved_rps` was recorded as 0. **Mechanism corrected 2026-09-19:** this row first said those rungs sat "at or above the k6 client's own capability". Client CPU was never the constraint — build 325 measured it at 13.6% utilisation on the equivalent rung. The real binding constraint is that `sweep.js` never received this plan's own Finding-3 fix and still ramps `preAllocatedVUs` 200 -> `maxVUs` 4,000 mid-run; see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). **Corrected again, same day:** I then said the VU ramp was the cause. It is not — that rung needed under one VU from a pool of 200, so no ramp was possible. The exact chain is: the 2,000 rung dropped 133 iterations (~0.4%), `rig_valid` requires `dropped_iterations <= 0` with no tolerance, so every rung was rig-invalid, `peak_achieved_rps` became `max over []` = 0, and the check keys off `peak > 0`. See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server). The streaming arm is a different scenario and its own check **passed** (`streaming_metrics_present`, ratio 2.5357), with the direct client-starvation signals all clean: `stream_dropped_iterations: 0`, `stream_error_rate: 0`, `match_under_stream_error_rate: 0`, 13,200 streams completed, and delivery ratios **above** 1.0 on both arms (1.0606 under stream, 1.1386 baseline) — a starved client under-delivers, it does not over-deliver. The harness behaved correctly throughout: it refused to baseline a run it could not fully vouch for (`valid=false` -> not persisted) and failed the build loudly rather than showing a green square. The numbers below come from the passing `perf regression — run + sample` job (exit 0), not from the failed compare step. Three CI data points: concurrency **300 -> 1.056x**, **600 -> 2.536x**, **1200 -> 93.8x**. The knee therefore sits between 300 and 600, and 1200 was an order of magnitude past it — a control that fires so hard it proves nothing about the margin. Item 12 now runs at **600**, where the control fires by 2.5x with headroom either side. This also corrects an extrapolation error of mine: I predicted ~3x at 1200 from the laptop curve, whose own contention had flattened it |
-| **JUnit `devMode` default** | A decision, not a task | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping it buys the recorded research figure of **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite that logs more than 1000 entries gets a `verify` that quietly stops matching. Two tests (`MockServerExtensionDevModeDefaultTest`, `MockServerRuleDevModeDefaultTest`) were written to pin opt-in, so flipping is a behaviour change for every consumer suite in the wild and would need consumer-doc updates. Spring test support has no devMode hook at all and would need one to be consistent. **Owner: the user — this is a shipped-default choice, not a measurement** |
-| **Byte-budget divisor** | A decision, not a task | The divisor was tuned against the OLD under-counting weigher, so an honest weigher means the default config retains less real heap than before. Restoring prior capacity is a sizing choice about shipped defaults |
+| **JUnit `devMode` default** | **APPROVED 2026-09-19 — implement the flip** | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping buys the recorded **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite logging more than 1000 entries gets a `verify` that quietly stops matching. **The user approved the flip on 2026-09-19 knowing that trade-off.** Scope of the change: flip the constant in both modules; update `MockServerExtensionDevModeDefaultTest` and `MockServerRuleDevModeDefaultTest`, which were written to pin opt-in; decide whether Spring test support (which has no devMode hook at all) gets one for consistency; and update the consumer docs, since this changes behaviour for every JUnit-integration suite in the wild. **This is a user-visible default change and needs a changelog entry** |
+| **Byte-budget divisor** | **APPROVED 2026-09-19 — do the sizing work** | The divisor was tuned against the OLD under-counting weigher (which counted body bytes only), so an honest weigher means the default config retains **less real heap than before** — the bound did not change, the accounting did, and the effective capacity fell with it. Restoring prior capacity is a sizing choice about shipped defaults, which is why it waited on the user; **approved 2026-09-19**. Done-when: the new divisor is derived from a MEASURED ratio between weighed and actual retained bytes (the honest weigher makes that measurable for the first time), not guessed; the default retains approximately what it did before the weigher was corrected, or the change in capacity is stated deliberately; and the figure is justified at both log levels, since retention per entry differs sharply between them. **User-visible default change -> changelog entry** |
 | **JSON diff cost** | **CLOSED** — shipped and measured | **Landed 2026-09-19 (`79d91c09e`), and now measured on the shipped code rather than on a prototype.** The JFR profile put `Diff.compareObjectNodes` / `ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. The shipped filter is a pure-negative `canMatch(...)` in `JsonStringMatcher`, gated on `useJacksonNodes && !detailedMatchFailures()` so it never changes what a user is told about a failure. **The prototype's -99.9% headline is real but is a WARN-level number; at the shipped default of INFO the win is -37.9%.** Full measured table and what it revises in [What the JSON pre-filter actually buys](#what-the-json-pre-filter-actually-buys) below |
 
 ### `peak_achieved_rps` measures the client, not the server
