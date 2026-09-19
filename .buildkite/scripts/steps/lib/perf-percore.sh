@@ -482,10 +482,10 @@ for C in "${CORES_ARR[@]}"; do
           note:"count-bounded ring: retained bytes ~ maxLogEntries*body (≈constant vs rate); residence = maxLogEntries/achieved_rps lengthens as rps falls (see .ladder[].retention_residence_s)"
         },
         # VU-pool diagnostics for this C, straight from sweep.js (item 18). Records
-        # the pool CONFIG the sweep ran with (preallocated_vus/max_vus) and k6's own
+        # the pool CONFIG the sweep ran with (preallocated_vus/max_vus) plus the k6
         # whole-run VU gauges (vus_concurrent_overall_max, vus_initialized_global_max,
         # vus_initialized_baseline and the vus_pool_grew bottom line)
-        # so the pool's actual growth for this C is legible without drilling into the
+        # so actual pool growth for this C is legible without drilling into the
         # per-rung ladder. Null on an old sweep artifact that predates the fields.
         vus_diagnostics:($sweep[0].vus_diagnostics // null),
         client_pin_pct:$pin,

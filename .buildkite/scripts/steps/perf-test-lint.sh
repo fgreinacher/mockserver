@@ -19,6 +19,40 @@ for s in scripts/runMockServer.sh scripts/runK6.sh scripts/runAll.sh; do
   bash -n "$PERF_DIR/$s"
 done
 
+echo "--- shellcheck on the perf shell libs (catches mangled embedded jq)"
+# WHY THIS IS HERE AND WHY `bash -n` IS NOT ENOUGH.
+#
+# These scripts embed jq programs as single-quoted bash strings. A possessive in
+# a comment INSIDE such a program -- k6's, pool's, the sweep's -- closes the
+# string early. If a second one appears later it re-opens it, so the file's
+# quoting stays BALANCED and `bash -n` reports it valid. jq then receives
+# mangled text and the step dies at that line mid-run.
+#
+# Build 347 is the worked example: perf-percore.sh carried k6's and pool's on
+# adjacent comment lines inside the result-assembly jq program. bash -n passed,
+# an authoritative review passed, and the per-core ladder still died with
+#   syntax error near unexpected token `$sweep[0].vus_diagnostics'
+# AFTER the ladder had run -- so item 18's curve was lost while every check was
+# green.
+#
+# SC1073/SC1072 DO catch it -- verified against that exact broken file, and
+# clean on the fixed one -- so the guard is a mature parser rather than a bespoke
+# one. (A first attempt here was a hand-written quote-state tracker; it could not
+# model command substitution inside double quotes and produced both false
+# positives and a false negative, which is a worse guard than none.) -S error
+# keeps this to parse-level breakage and will not fail the build on style.
+if command -v shellcheck >/dev/null 2>&1; then
+  SC_FILES=""
+  for f in "$REPO_ROOT"/.buildkite/scripts/steps/lib/perf-*.sh "$REPO_ROOT"/.buildkite/scripts/steps/perf-*.sh; do
+    [ -f "$f" ] && SC_FILES="$SC_FILES $f"
+  done
+  # shellcheck disable=SC2086
+  shellcheck -S error $SC_FILES
+  echo "  shellcheck -S error: clean across the perf shell libs"
+else
+  echo "  shellcheck absent on this agent — skipping (bash -n above still runs)" >&2
+fi
+
 echo "--- byte-compiling the SSE fidelity reader (item 12)"
 # The reader is pure-stdlib python3 run on the perf agent by perf-test-run.sh; a
 # syntax error would only surface mid-run, so compile it here. Skip (do not fail)
