@@ -1,6 +1,12 @@
 # Performance Programme
 
-**Status: active plan, partially in flight.** Originally written 2026-09-16 against `master`
+**Status: acceptance table COMPLETE; a research tail remains.** All 18 acceptance rows are
+executed and recorded — items 0-8, 7b, 11, 13, 15a-d and both halves of 16 proven; 9a and 14
+recorded as REFUTED on measurement; 12 delivered with its calibration residual stated. What is
+left is the research-sized work (10, 17, 18, 19) plus one sizing decision, listed under
+"What remains" below.
+
+Originally written 2026-09-16 against `master`
 at `b98d18f0c`. **Revised 2026-09-16 against `master` at `a984a8c3a`** after a second
 read-only audit that checked the first audit's load-bearing claims against the code and
 against the repo's own stored results. Two of those claims were wrong; see
@@ -1526,14 +1532,30 @@ was done, and none should be until the allocation fixes have been re-measured.
    detailed arm carries its own floor — necessarily its own, because the healthy detailed value
    (2,096,344 B/op) sits *above* the base 1,850,000 floor and a shared floor would have failed
    every healthy build.
-2. **`ConfigurationCallSiteGuardTest`'s coverage is set by Maven reactor order — still open.**
+2. **`ConfigurationCallSiteGuardTest`'s coverage was set by Maven reactor order — FIXED (`44322eaf6`).**
    It scans compiled class output, and `mockserver-junit-rule` depends on `mockserver-netty`, so
    it builds afterwards: on a clean CI build the junit modules have no classes when the guard
    runs and are silently not scanned. A real violation (`applyDevModeDefault` reading
    `devMode`/`maxLogEntries`/`maxExpectations` static-only) has sat on master since
    `ada0619c2` through many green builds, invisible. Its own sanity assertions
-   (`moduleClassRoots > 1`, core and netty scanned) all pass while that is true. **Every module
-   downstream of netty is outside its reach.**
+   (`moduleClassRoots > 1`, core and netty scanned) all pass while that is true. **Nine modules
+   downstream of netty were outside its reach.** The guard now runs as a standalone execution
+   after `clean install` has populated every module, and asserts the set it ACTUALLY scanned
+   against the set derived from the **reactor pom** — a module declaring main sources with no
+   compiled output is a named, loud failure, and an unparseable pom fails closed. Deriving the
+   expected set from the reactor rather than a committed list matters: a list is how the blind
+   spot returns the first time somebody adds a module and forgets. Proven by execution in three
+   states — passes on a built tree, fails naming `mockserver-junit-rule` when its classes are
+   hidden, fails naming an injected violation. The two `applyDevModeDefault` sites are
+   allowlisted with the reason stated (they run in JUnit bootstrap before any `Configuration`
+   instance exists, so static-only is correct there).
+
+   A footnote worth keeping, because it cost a red master: the guard's shipped invocation
+   initially omitted `jacoco:prepare-agent`, so surefire's late-evaluated `@{argLine}` reached
+   the JVM literally and the fork died with `could not open '{argLine}'` before a single test
+   ran — a build failure wearing the costume of a guard verdict. Every local proof had used the
+   documented `jacoco:prepare-agent` prefix, so the guard's BEHAVIOUR was verified three ways
+   while the command that actually ships was never run once.
 
 That second one is the programme's own pattern turned on its own instrumentation: not a check
 that cannot fail, but a check whose **scope** silently excludes what it claims to cover. The
@@ -1560,6 +1582,78 @@ needed, and the 60% cap is validated in the configuration users actually run.
 Read `peak_achieved_rps` with care all the same: it still reports **2,000**, because it admits only rungs
 with ZERO dropped iterations. It has not moved and must not be read as "no improvement" — it measures a
 different property from the 26,937 knee, which is precisely the ambiguity item 19 must not publish past.
+
+### Note (2026-09-19) — a production leak, and three tiers of the same contention
+
+**A real memory leak, found because the heap cap made it visible sooner (`d6316f7a4`).**
+With the corrected 60% cap the SUT died of a JVM `OutOfMemoryError` rather than a kernel kill,
+and the tier-1 histogram named **1,562,741 live `InFlightRequest` instances**. The load
+generator reported **1,562,739 completed iterations** in that run. Off by two — the pair still
+in flight when the dump was taken. **Not one completed token had ever been freed.**
+
+`channelRead0` runs per request and registered a listener on the CHANNEL's `closeFuture`,
+which completes only when the connection closes; `grep removeListener` over the whole netty
+module returned nothing. An idempotent token does not free a retained listener. The token now
+removes its own listener when it wins its CAS, so on the normal response path nothing outlives
+the request, while a request that never responds still has the listener armed to decrement the
+drain counter exactly once.
+
+Only **HTTP/1.1 leaked**: there the handler sits on the connection channel. Under HTTP/2 the
+same handler sits on a per-stream child channel whose `closeFuture` fires per request, so it
+was already being freed — the inverse of this repo's usual multiplex trap, where
+connection-level machinery no-ops on child channels. Pre-existing since `3511ea92e`
+(2026-06-17), not a regression from the multiplex work. Proven by making it fail first: with the
+removal gated off, the retention test fails on exactly the leak assertion while the three
+counter tests stay green, isolating the fault to the listener rather than the drain.
+
+**Three tiers of shared-RNG contention, and why the third was needed.** The JFR profile found
+`UUIDService.getUUID` at ~5% of samples and the source of the run's ONLY material lock
+contention — 261 contended enters on the process-wide `SecureRandom` monitor, concentrated in
+the collapse minute, serialising all six worker event loops at peak rate.
+
+| tier | route | what it missed |
+|---|---|---|
+| `0b9cc71a7` | `UUIDService.getUUID()` — 26 sites | anything not going through `UUIDService` |
+| `721b90f36` | `java.util.UUID.randomUUID()` — 13 files | the JDK's own shared static `SecureRandom`, reached by a different route |
+| `133f6cab0` | `Math.random()`, unseeded `new Random()` | per-document scoring, per-call vector generation |
+
+Measured at 32 threads: **3.613 → 411.056 ops/us (~114x)**, allocation 176 → 80 B/op.
+**Each sweep found exactly what it searched for.** The enumeration method was the defect all
+three times, not the judgement — which is why the durable output is a fail-closed guard
+(`check-shared-rng-hotpath.sh`, always-on, outside the path filters) over `Math.random(`,
+unseeded `new Random()`, `UUID.randomUUID(` and `new SecureRandom(`, with a reasoned allowlist
+and a rot-check for stale entries. It earned itself immediately: switching one site left a
+stale entry and the rot-check failed the build until the entry went too.
+
+A security audit governed what did NOT move. Callback and breakpoint correlation ids are bearer
+capabilities — present one on a websocket and its payload becomes the response to someone
+else's in-flight request; client registration ids are routing keys, so guessing one permits
+squatting or impersonation; the certificate serial needs 64 bits because the CA/Browser Forum
+requires it against chosen-prefix collisions. **None of those had a performance case anyway** —
+they are once-per-JVM or fire only for opted-in features. The useful finding was that *no site
+was both a theoretical concern and a meaningful speedup*.
+
+One methodological failure is recorded because it repeated the thing it was fixing: the brief
+for the third tier listed `AsyncApiMockOrchestrator` as "leave alone — once per run". It is
+invoked inside the per-message publish loop. That is the same assumed-frequency error that had
+mislabelled the SAML and OIDC sites as low-frequency, made while correcting it. **Establish
+call frequency by reading the call site, never by assertion — including mine.**
+
+**Instrumentation that was answering about the wrong thing.** Three fixes, each closing a route
+by which a measurement looked fine and meant something else:
+`4d31febb7` added `retained_entries`/`retained_bytes`, because the sampler had gauges for the
+disruptor ring only and none for the deque — so "the event log is empty" was read off an
+instrument structurally incapable of seeing the site that held the heap. It repaid itself the
+same day, settling the 930 MB question in one read.
+`5740ff989` files a result under the commit of the binary it MEASURED rather than the checkout
+that ran the harness, recording the harness commit separately — and adds a staleness check,
+because the previous alarm fired on every run (the mutable tag always lags) and a permanently-on
+alarm carries no information about any particular run.
+`ac4fe8970` made heap dumps readable off the container: the JVM writes them as a non-root user,
+`$DIAG_DIR` being 0777 governs the directory and not the files, so every host-side read failed
+and a 2.02 GiB dump was announced as "0 MiB" and never uploaded. Unreadable and zero-byte must
+never look alike in a log — the first is a defect in the instrument, the second a fact about
+the run.
 
 **The ~930 MB Jackson mass was CHURN, not a leak — settled by experiment (2026-09-19).**
 Build 302's OOM dump ranked ~930 MB of `ObjectNode`/`LinkedHashMap`/`TextNode` as the dominant
@@ -1630,6 +1724,26 @@ conclusion: (1) the guarantee holds only while that terraform variable is unchan
 `schema_version 2` are already flagged by compare's `PRE_CONFIG_COUNT` config-boundary warning
 for the separate reason that they carry no `config` block (JDK/GC/heap/log-level), so they are
 weighed with that caveat regardless of the instance-type field.
+
+## What remains
+
+Everything in the acceptance table is executed. What is outstanding is either research-sized,
+needs a resource, or is a decision rather than a task.
+
+| | Owed | Why it is not done |
+|---|---|---|
+| **10. soak** | A weekly 2h run proving the verification-query metric is sensitive to log occupancy | Needs a 2h slot on the `perf` queue, which is `max_size=1` |
+| **17** | N instances on one host — aggregate RSS, thread and port consumption, per-instance degradation | Research, 1-2 weeks |
+| **18** | req/s per core across pinned core counts | Research, ~1 week; note the top rung needs more cores than the client has on a 16 vCPU box |
+| **19** | Close the S3 → website loop via a PR, not a direct commit | 2-3 days |
+| **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | The control FIRES (93.8x) so this is refinement, not a gap — a short-ladder run reaches the streaming phase cheaply |
+| **Byte-budget divisor** | A decision, not a task | The divisor was tuned against the OLD under-counting weigher, so an honest weigher means the default config retains less real heap than before. Restoring prior capacity is a sizing choice about shipped defaults |
+| **JSON diff cost** | Under investigation | The JFR profile puts `Diff.compareObjectNodes`/`ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread across expectations — so the lever is the O(n*m) unordered-array comparison, not a faster parser |
+
+Two open questions from the original list also remain genuinely open: whether the published
+36,000 req/s knee is real (build 306 gives a clean-tier shape but the figure is still
+unconfirmed), and whether the documented `-Xmx512m` sidecar configuration survives load — the
+general form of that one was answered by the heap-cap work, the specific claim was not.
 
 ## Who does what
 
