@@ -2176,6 +2176,49 @@ the XML DOM per candidate expectation **outside** the timeout wrapper, on the ev
 *Confirmed non-gap from this sweep:* **regex `Pattern` compilation is cached**, not per-request
 — lazily compiled into volatile fields and reused (`NottableString.java:34-35,261-289`).
 
+### G7. Trigger-queue capacity is oversubscribed by design under a commit burst
+
+Found 2026-09-19 while item 18's re-run (build #347) sat `scheduled` for **58 minutes**. The
+perf queue was not the problem — the perf guard step runs on the **`trigger`** queue, and all
+**16 of 16** trigger agents were busy, with none idle for the whole period.
+
+**The mechanism.** Each master commit creates one `mockserver` dispatcher build.
+`generate-pipeline.sh:58-70` emits one step per affected child pipeline, each running
+`trigger-pipeline.sh` on `queue: trigger` with `timeout_in_minutes: 120`. That script **blocks**
+— a `while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do sleep ...` poll loop
+(`trigger-pipeline.sh:153-154`) — so **a trigger step holds its agent for the entire duration of
+the child build it is waiting on.** Observed holds at the time: 87, 61, 41, 40, 12, 9, 7 and 3
+minutes.
+
+So demand is `concurrent dispatcher builds x affected child pipelines`. There are 19 child
+pipelines and six dispatcher builds were running concurrently (#7243-#7249), against a hard cap
+of **16 agents** (4 instances x 4). That is up to ~100 blocking waits competing for 16 slots —
+roughly 6x oversubscribed. The cap is fine at a normal commit cadence and cannot absorb a burst,
+which is what this session's ~15 master commits produced.
+
+**This is not a perf-programme bug, but it gates the perf programme**: every perf run's dispatch
+goes through that queue, so both of item 10's remaining arms and item 18's re-run are blocked
+behind unrelated pipelines waiting on each other.
+
+**It also changes the risk assessment of the G5 fix, and that is the part worth acting on.** The
+review of the `skip_intermediate_builds_branch_filter` change concluded the blast radius was safe
+because "on autoscaling queues this drains in parallel — a bounded cost increase". That reasoning
+considered the `default` queue (max 10, autoscaling) and `perf` (max 1). **It did not consider
+the `trigger` queue, which is hard-capped and is the binding constraint here.** The G5 fix keeps
+master builds alive that would previously have been skipped while queued — and each surviving
+dispatcher build spawns up to 19 more blocking trigger steps. Applied uniformly, it would make
+this saturation materially worse under exactly the commit bursts that cause it.
+
+**Recommendation: narrow the G5 fix to the perf pipeline alone** — the scoping the review
+considered and rejected for want of this evidence. The daily perf run still gets its protection;
+the other 19 pipelines keep skipping queued master builds, which is what currently relieves
+trigger-queue pressure during a burst.
+
+*Options if the capacity itself is worth addressing, none measured:* raise
+`trigger_max_size`; make the trigger steps asynchronous so they do not hold an agent while
+waiting; or have the dispatcher fan out without a blocking wait and report child outcomes
+separately. The first is cheapest and the queue runs deliberately small instances.
+
 ### Confirmed non-gaps — checked and found already sound
 
 Recorded because a verified non-gap is worth as much as a finding, and stops the next sweep

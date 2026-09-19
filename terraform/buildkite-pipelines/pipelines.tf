@@ -300,10 +300,28 @@ resource "buildkite_pipeline" "pipeline" {
   # being dropped before it runs, while keeping the cost saving where it is safe:
   # feature and PR branches still skip their queued builds, which is what stops a
   # rapid-iteration branch hogging the single perf agent.
+  #
+  # NARROWED TO THE PERF PIPELINE (2026-09-19, after G7). The first cut of this
+  # applied the !master skip filter to every pipeline. A review judged that safe
+  # because the other queues autoscale — but it did not consider the `trigger`
+  # queue, which is HARD-CAPPED at 16 agents (4 instances x 4) and is the real
+  # binding constraint. Each master commit spawns a dispatcher build that emits
+  # one BLOCKING trigger step per affected child pipeline (trigger-pipeline.sh
+  # polls in a sleep loop), and each of those holds a trigger agent for the whole
+  # child build. Six concurrent dispatcher builds x 19 child pipelines is ~100
+  # blocking waits against 16 slots; observed saturating for ~an hour and starving
+  # the perf guard step, which also runs on `trigger`.
+  #
+  # Keeping master builds alive on EVERY pipeline would multiply exactly those
+  # blocking waits during exactly the commit bursts that cause the saturation. So
+  # the exemption is scoped to the pipeline that actually needs it: the perf
+  # pipeline, whose scheduled daily IS the measurement and cannot be superseded.
+  # Everywhere else, skipping a queued master build stays on — and now also serves
+  # as the relief valve for trigger-queue pressure.
   cancel_intermediate_builds               = true
   cancel_intermediate_builds_branch_filter = "!master"
   skip_intermediate_builds                 = true
-  skip_intermediate_builds_branch_filter   = "!master"
+  skip_intermediate_builds_branch_filter   = each.key == "perf-test" ? "!master" : null
 
   steps = "steps:\n  - label: \":pipeline:\"\n    command: \"buildkite-agent pipeline upload ${each.value.file}\"\n"
 
