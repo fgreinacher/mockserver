@@ -1780,9 +1780,59 @@ store. `CandidateIndexBenchmark` uses a `@Setup(Level.Trial)` fixed set, no `@Th
 mutation — so it measures warm single-threaded matching over an unchanging store, and the churn
 case is **entirely unmeasured**. A user hits this with no signal at all.
 
-*Measurement:* a `@Threads` JMH arm interleaving add/remove with `firstMatchingExpectation` at
-n = 100 / 1k / 15k, reporting match time and rebuild count against the static baseline; or a k6
-scenario seeding many `once()` expectations under sustained load.
+**MEASURED 2026-09-19 — confirmed, and larger than this finding assumed.** `CandidateIndexChurnBenchmark`
+(JMH, `-f 1 -wi 3 -i 5 -prof gc`, thread counts 1/4/8, contended laptop so read the ratios).
+
+Held static, the index does exactly what it was built for: `firstMatchingExpectation` is flat at
+**~0.27 us/op and 248 B/op regardless of store size**. Under continuous churn that collapses.
+
+| n | threads | INDEX static | INDEX churn | **ratio** |
+|---:|---:|---:|---:|---:|
+| 100 | 1 | 0.277 us | 13.0 us | **47x** |
+| 1,000 | 1 | 0.268 us | 132 us | **493x** |
+| 15,000 | 1 | 0.281 us | 2,295 us | **8,168x** |
+| 15,000 | 8 | 1.14 us | 19,019 us | **16,742x** |
+
+Allocation tells the same story and is the steadier signal: 248 B/op static against **4 MB/op**
+churned at n=15,000 — a ~13,000x ratio, and essentially thread-count-invariant, which is itself
+the tell that the extra *time* at higher thread counts is contention rather than extra work.
+
+**The sharpest result: under churn the index is WORSE than the linear scan it replaces.** At
+n=15,000 single-threaded, index-churn (2,295 us) is **1.9x slower** than scan-churn (1,183 us) and
+allocates **8x more** (4 MB against 498 KB), because it rebuilds the sorted list *and* a
+15,000-bucket map. At 8 threads the allocation gap is 16x. The index engages at
+`DEFAULT_CANDIDATE_INDEX_THRESHOLD = 64` (`RequestMatchers.java:180`), so **any store past 64
+expectations is on this path by default** — it is not a corner case.
+
+**The "worsens with cores" claim holds** for the index path: per-op time rises 8-11x from 1 to 8
+threads while allocation/op stays flat. Two mechanisms, same disease: `CandidateIndex.rebuild()`
+is `synchronized` (`CandidateIndex.java:173`), so concurrent readers serialise behind an O(n)
+rebuild each doing the full work in turn; and `toSortedList()` is an unsynchronised benign race,
+so every thread allocates its own complete list even though only one wins the index lock.
+
+**How the churn arm was proved to actually rebuild** — the thing I asked for before trusting any
+number. Three independent ways: `toSortedList()` returns the *same instance* across calls with no
+mutation and a *different* instance after one clear+add (observed by identity, not assumed); the
+writer-mutation counter reads 0 for every static arm and 406K-25M for churn arms; and the
+allocation gap is orders of magnitude, which only a full-store rebuild explains.
+
+*Caveats, stated because they bound the claim:* absolute microseconds are soft on a contended
+laptop (some wide JMH error bars). The scan-only path's concurrency behaviour could **not** be
+cleanly isolated — its churn time stayed flat across threads and its allocation *fell* with more
+threads, a writer-starvation artefact — so "worsens with cores" is confirmed for the
+index-engaged path that matters at scale, not for the bare `toSortedList` race. The arm measures
+HIT only and worst-case continuous churn; a rate-limited writer interpolates between static and
+this. It drives mutation through `clear`+`add` rather than literal lazy-removal-during-scan
+(which depletes the store and cannot reach steady state under JMH), after verifying the
+invalidation it produces is identical to the serving path's.
+
+*Not wired to any gate* — this is research, and the multi-thread numbers are laptop-noisy. If it
+ever becomes gated, gate the static-vs-churn **allocation** ratio at n=15,000, t1: the most
+stable and least machine-sensitive signal.
+
+*The fix this points at:* make the sorted-list and index rebuilds incremental, or maintain the
+index per-mutation, rather than full-rebuild-on-read; and deduplicate `toSortedList`'s rebuild
+across concurrent readers.
 
 ### G2. One event-log thread serializes every verify/retrieve/clear WITH log ingestion
 
