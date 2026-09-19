@@ -31,6 +31,7 @@
 //
 import http from 'k6/http';
 import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 import exec from 'k6/execution';
 import { CONFIG, LOAD, LIMITS, num, env } from './lib/config.js';
 import {
@@ -76,6 +77,16 @@ function toSeconds(spec) {
   return { ms: v / 1000, s: v, m: v * 60, h: v * 3600, d: v * 86400 }[unit];
 }
 
+// TRANSPORT errors on the match arm — a request that never completed an HTTP
+// round trip (connection refused/dropped, dial/read timeout, TLS failure), i.e. a
+// non-zero k6 error_code. This is DISTINCT from http_req_failed{op:match}, which
+// counts a COMPLETED response with a non-2xx status (e.g. a 404) as a failure. The
+// pair lets the soak step tell "the SUT is DOWN" (high transport errors) apart
+// from "the SUT is UP but answering 404" (high http_req_failed, ~zero transport
+// errors) — the self-inflicted eviction shape of build 324. See the guard in
+// .buildkite/scripts/steps/perf-test-soak.sh.
+const matchTransportErrors = new Counter('soak_match_transport_errors');
+
 const DURATION_SEC = toSeconds(LOAD.soakDuration);
 const WINDOW_SEC = toSeconds(SOAK.window);
 const LEAD_SEC = toSeconds(SOAK.lead);
@@ -88,12 +99,13 @@ const EARLY_START_SEC = Math.min(LEAD_SEC, DURATION_SEC);
 const EARLY_END_SEC = Math.min(LEAD_SEC + WINDOW_SEC, DURATION_SEC);
 const LATE_START_SEC = Math.max(EARLY_END_SEC, DURATION_SEC - WINDOW_SEC);
 
-// Tag a match request with its drift window from the wall-clock elapsed time
-// (robust regardless of which VU runs the iteration — same approach as
-// regression.js phaseTag). win:early|late materialise sub-percentiles; the
-// warmup lead-in [0,LEAD) and the gap between the windows carry win:mid and are
-// counted ONLY in the aggregate gate, never in the drift sub-percentiles.
-function matchWindow() {
+// Tag a request with its drift window from the wall-clock elapsed time (robust
+// regardless of which VU runs the iteration — same approach as regression.js
+// phaseTag). Used by the match, verify AND retrieve arms so each gets early/late
+// sub-percentiles from the SAME two windows. win:early|late materialise the
+// sub-percentiles; the warmup lead-in [0,LEAD) and the gap between the windows
+// carry win:mid and are counted ONLY in the aggregate, never in the drift ratio.
+function driftWindow() {
   const elapsedSec = exec.instance.currentTestRunDuration / 1000;
   if (elapsedSec >= LATE_START_SEC) return 'late';
   if (elapsedSec >= EARLY_START_SEC && elapsedSec <= EARLY_END_SEC) return 'early';
@@ -108,10 +120,10 @@ const VERIFY_BODY = JSON.stringify({
   times: { atLeast: 1 },
 });
 
-function verifyLog() {
+function verifyLog(win) {
   const res = http.put(`${CONFIG.controlPlane}/verify`, VERIFY_BODY, {
     headers: { 'Content-Type': 'application/json', ...CONFIG.keepAliveHeaders },
-    tags: { op: 'verify', name: 'PUT /mockserver/verify' },
+    tags: { op: 'verify', name: 'PUT /mockserver/verify', win },
   });
   // 202 = verification satisfied. Anything else (406 not-matched, 400, 5xx) is a
   // real fault and must drag the checks rate below the gate.
@@ -119,13 +131,13 @@ function verifyLog() {
   return res;
 }
 
-function retrieveLog() {
+function retrieveLog(win) {
   // type=REQUESTS is the full recorded-request scan over the event log — the O(n)
   // read the central-deployment pattern performs and the one a ring regression
   // punishes as occupancy grows.
   const res = http.put(`${CONFIG.controlPlane}/retrieve?type=REQUESTS&format=JSON`, null, {
     headers: { 'Content-Type': 'application/json', ...CONFIG.keepAliveHeaders },
-    tags: { op: 'retrieve', name: 'PUT /mockserver/retrieve' },
+    tags: { op: 'retrieve', name: 'PUT /mockserver/retrieve', win },
   });
   check(res, { 'retrieve: 200': (r) => r.status === 200 });
   return res;
@@ -199,12 +211,23 @@ export const options = {
     'http_reqs{op:verify}': ['count>=0'],
     'http_req_duration{op:retrieve}': ['p(50)>=0', 'p(95)>=0', 'p(99)>=0'],
     'http_reqs{op:retrieve}': ['count>=0'],
-    // Early-vs-late drift sub-percentiles for the match path (notify-only).
+    // Early-vs-late drift sub-percentiles (notify-only). The whole point of the
+    // soak is whether latency tracks event-log occupancy, so the verify/retrieve
+    // event-log SCANS get the same early/late treatment as the match hot path —
+    // otherwise they exist only as 2h aggregates and their occupancy drift is
+    // invisible.
     'http_req_duration{op:match,win:early}': ['p(99)>=0'],
     'http_req_duration{op:match,win:late}': ['p(99)>=0'],
+    'http_req_duration{op:verify,win:early}': ['p(99)>=0'],
+    'http_req_duration{op:verify,win:late}': ['p(99)>=0'],
+    'http_req_duration{op:retrieve,win:early}': ['p(99)>=0'],
+    'http_req_duration{op:retrieve,win:late}': ['p(99)>=0'],
     'http_reqs{op:match}': ['count>=0'],
     'http_req_failed{op:verify}': ['rate>=0'],
     'http_req_failed{op:retrieve}': ['rate>=0'],
+    // Materialise the match transport-error counter so handleSummary always emits
+    // it (present as 0 when no transport errors occurred — the healthy case).
+    'soak_match_transport_errors': ['count>=0'],
   },
 };
 
@@ -213,7 +236,14 @@ export function setup() {
 }
 
 export function match() {
-  getSimple({ win: matchWindow() });
+  const res = getSimple({ win: driftWindow() });
+  // Record ONLY genuine transport failures (error_code != 0 / status 0). A 404 is
+  // a completed response (error_code 0) and is NOT counted here — it is already in
+  // http_req_failed{op:match}. Keeping the two separate is what lets the soak step
+  // distinguish a dead SUT from a SUT answering 404s.
+  if (res.error_code && res.error_code !== 0) {
+    matchTransportErrors.add(1);
+  }
 }
 
 export function create() {
@@ -221,11 +251,11 @@ export function create() {
 }
 
 export function verify() {
-  verifyLog();
+  verifyLog(driftWindow());
 }
 
 export function retrieve() {
-  retrieveLog();
+  retrieveLog(driftWindow());
 }
 
 export function teardown() {
@@ -262,12 +292,20 @@ export function handleSummary(data) {
     return m && m.values ? round(m.values.rate, 5) : null;
   };
 
-  const matchP99Early = stat('http_req_duration{op:match,win:early}', 'p(99)');
-  const matchP99Late = stat('http_req_duration{op:match,win:late}', 'p(99)');
-  const driftRatio =
-    matchP99Early && matchP99Early > 0 && matchP99Late !== null
-      ? round(matchP99Late / matchP99Early, 4)
-      : null;
+  // Early/late p99 + drift ratio for one arm. drift_ratio = late/early p99: ~1.0
+  // means no occupancy-driven drift (the ring bound holds); a growing ratio is the
+  // O(n) fingerprint. Null-safe so a short run with an empty early window (see the
+  // window clamps above) reports null rather than a spurious ratio.
+  const driftFor = (op) => {
+    const early = stat(`http_req_duration{op:${op},win:early}`, 'p(99)');
+    const late = stat(`http_req_duration{op:${op},win:late}`, 'p(99)');
+    const ratio = early && early > 0 && late !== null ? round(late / early, 4) : null;
+    return { early, late, ratio };
+  };
+
+  const matchDrift = driftFor('match');
+  const verifyDrift = driftFor('verify');
+  const retrieveDrift = driftFor('retrieve');
 
   const soak = {
     proto: SOAK.proto,
@@ -281,20 +319,31 @@ export function handleSummary(data) {
       p50_ms: stat('http_req_duration{op:match}', 'p(50)'),
       p95_ms: stat('http_req_duration{op:match}', 'p(95)'),
       p99_ms: stat('http_req_duration{op:match}', 'p(99)'),
-      p99_early_ms: matchP99Early,
-      p99_late_ms: matchP99Late,
+      p99_early_ms: matchDrift.early,
+      p99_late_ms: matchDrift.late,
       // The DRIFT signal: late/early p99. ~1.0 means no occupancy-driven drift
       // (the ring bound holds); a growing ratio is the O(n)-eviction fingerprint.
-      drift_ratio: driftRatio,
+      drift_ratio: matchDrift.ratio,
       error_rate: rate('http_req_failed{op:match}'),
+      // TRANSPORT errors only (see the Counter's definition). error_rate above
+      // counts completed non-2xx responses (404s); this counts requests that never
+      // completed. The soak step reads BOTH to classify a high error_rate as
+      // "SUT answering 404s" (this ~0) vs "SUT down" (this high).
+      transport_errors: count('soak_match_transport_errors'),
     },
     // Item 10b — event-log query cost. Latency here is read AGAINST occupancy by
-    // pairing with the step's requests_received_count / heap samples.
+    // pairing with the step's requests_received_count / heap samples. The
+    // early/late sub-percentiles + drift_ratio are the direct answer to the soak's
+    // central question — do the event-log SCANS slow as the log fills and stays
+    // full — so they mirror the match arm rather than being 2h aggregates only.
     verify: {
       samples: count('http_reqs{op:verify}'),
       p50_ms: stat('http_req_duration{op:verify}', 'p(50)'),
       p95_ms: stat('http_req_duration{op:verify}', 'p(95)'),
       p99_ms: stat('http_req_duration{op:verify}', 'p(99)'),
+      p99_early_ms: verifyDrift.early,
+      p99_late_ms: verifyDrift.late,
+      drift_ratio: verifyDrift.ratio,
       error_rate: rate('http_req_failed{op:verify}'),
     },
     retrieve: {
@@ -302,6 +351,9 @@ export function handleSummary(data) {
       p50_ms: stat('http_req_duration{op:retrieve}', 'p(50)'),
       p95_ms: stat('http_req_duration{op:retrieve}', 'p(95)'),
       p99_ms: stat('http_req_duration{op:retrieve}', 'p(99)'),
+      p99_early_ms: retrieveDrift.early,
+      p99_late_ms: retrieveDrift.late,
+      drift_ratio: retrieveDrift.ratio,
       error_rate: rate('http_req_failed{op:retrieve}'),
     },
   };

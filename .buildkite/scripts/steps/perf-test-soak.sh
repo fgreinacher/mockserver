@@ -244,6 +244,30 @@ RETRIEVE_SAMPLES="$(jq -r '.soak.retrieve.samples // 0' "$K6_RESULT")"
   fail_soak "SUT received only $RECEIVED_END requests (< SOAK_MIN_RECEIVED=$SOAK_MIN_RECEIVED) — the event log never filled, so the 10b latency was NOT measured against a full ring"
 [ "$SAMPLE_ROWS" -gt 0 ] 2>/dev/null || fail_soak "no server metric samples captured — occupancy trajectory is empty"
 
+# --- DIAGNOSTIC GUARD: "the SUT is answering, but with 404s" ---------------------
+# Build 324's first-ever soak reported a 54.2% match error rate that was
+# SELF-INFLICTED: the create arm PUT a distinct unbounded /simple expectation each
+# call, which filled maxExpectations and then EVICTED the seeded /simple match
+# expectation, so the SUT correctly 404'd most match requests. Every presence
+# assertion above PASSED (all arms had samples; received cleared its floor) while
+# three-quarters of the match arm was a 404 — a false-green shape the presence
+# checks cannot see. This guard catches exactly it: a HIGH match failure rate
+# (http_req_failed, which counts completed non-2xx responses) combined with ~ZERO
+# transport errors (requests that never completed) means the SUT was UP and
+# ANSWERING but returning non-2xx (almost always 404). A genuinely DOWN SUT shows a
+# high transport-error rate instead and is left to the k6 error-rate gate; this
+# guard deliberately does NOT fire on that shape.
+MATCH_ERR_RATE="$(jq -r '.soak.match.error_rate // 0' "$K6_RESULT")"
+MATCH_TRANSPORT_ERRORS="$(jq -r '.soak.match.transport_errors // 0' "$K6_RESULT")"
+# Float comparison via awk — a shell/jq STRING compare on rates is a known footgun
+# ("0.542" <= "0.05" mis-orders lexically). "High" = >=5% (the healthy match arm is
+# ~0%, well under the 1% k6 gate); "~zero transport" = transport-error rate <=0.5%.
+ANSWERING_WITH_404S="$(awk -v er="$MATCH_ERR_RATE" -v te="$MATCH_TRANSPORT_ERRORS" -v n="$MATCH_SAMPLES" \
+  'BEGIN{ ter=(n>0 ? te/n : 0); print (((er+0)>=0.05) && (ter<=0.005)) ? "yes" : "no" }')"
+if [ "$ANSWERING_WITH_404S" = "yes" ]; then
+  fail_soak "match arm failed ${MATCH_ERR_RATE} of requests with only ${MATCH_TRANSPORT_ERRORS} transport errors across ${MATCH_SAMPLES} samples — the SUT was UP and ANSWERING but returning non-2xx, NOT a transport/connection failure. Read the per-status breakdown in the uploaded partial k6 result before assuming a cause; this guard classifies the SHAPE, it does not diagnose. Two known causes of this shape, in order of likelihood: (1) the harness evicting its own match seed — the build-324 bug, where an unbounded 'create' arm filled maxExpectations and evicted the seeded /simple expectation, giving 404s; check createSimpleExpectation() still uses a stable id and a distinct path (/churn), and do NOT paper over it by raising maxExpectations. (2) the SUT genuinely returning completed 5xx under load, which is a real regression and looks nothing like (1) in the status breakdown."
+fi
+
 echo "--- ring-buffer bound: received_end=$RECEIVED_END (unbounded) live_set_floor=$LIVE_SET_FLOOR bytes dropped=$DROPPED_TOTAL threads_end=$THREADS_END"
 
 # --- assemble the notify-only soak artifact ------------------------------------
@@ -288,24 +312,32 @@ cat "$SOAK_JSON"
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$SOAK_JSON" "$REPO_ROOT/perf-soak.json"
   buildkite-agent artifact upload "perf-soak.json" || true
+  # Upload the per-30s occupancy/latency trajectory on EVERY outcome, not only the
+  # fail_soak path. Build 324 exited 99 on a k6 threshold — which skips fail_soak
+  # and reaches here — and its samples.csv died in the mktemp dir with the agent,
+  # so the trajectory that would have shown WHEN the match arm began 404-ing was
+  # lost. Same artifact name as fail_soak, so the evidence is at one path always.
+  [ -f "$SAMPLE_LOG" ] && { cp "$SAMPLE_LOG" "$REPO_ROOT/perf-soak-samples.csv" 2>/dev/null && buildkite-agent artifact upload "perf-soak-samples.csv" 2>/dev/null; } || true
   ANNOT="$(jq -r '
     "**Weekly soak** (\(.config.image), \(.config.server_memory) heap, k6_exit=\(.k6_exit))\n\n" +
     "| arm | samples | p50 ms | p95 ms | p99 ms | drift (late/early p99) | err |\n" +
     "|---|---|---|---|---|---|---|\n" +
     "| match | \(.soak.match.samples) | \(.soak.match.p50_ms) | \(.soak.match.p95_ms) | \(.soak.match.p99_ms) | \(.soak.match.drift_ratio) | \(.soak.match.error_rate) |\n" +
-    "| verify (10b) | \(.soak.verify.samples) | \(.soak.verify.p50_ms) | \(.soak.verify.p95_ms) | \(.soak.verify.p99_ms) | — | \(.soak.verify.error_rate) |\n" +
-    "| retrieve (10b) | \(.soak.retrieve.samples) | \(.soak.retrieve.p50_ms) | \(.soak.retrieve.p95_ms) | \(.soak.retrieve.p99_ms) | — | \(.soak.retrieve.error_rate) |\n\n" +
+    "| verify (10b) | \(.soak.verify.samples) | \(.soak.verify.p50_ms) | \(.soak.verify.p95_ms) | \(.soak.verify.p99_ms) | \(.soak.verify.drift_ratio) | \(.soak.verify.error_rate) |\n" +
+    "| retrieve (10b) | \(.soak.retrieve.samples) | \(.soak.retrieve.p50_ms) | \(.soak.retrieve.p95_ms) | \(.soak.retrieve.p99_ms) | \(.soak.retrieve.drift_ratio) | \(.soak.retrieve.error_rate) |\n\n" +
     ( if .ring.dropped_log_events == 0
       then ":lock: **Ring-buffer bound held**: 0 dropped log events across \(.ring.requests_received_total) requests received — the count-bounded event log evicted rather than grew (live-set floor \(.ring.live_set_floor_bytes) bytes, heap \(.ring.heap_start_bytes)→\(.ring.heap_end_bytes)).\n\n"
       else ":warning: **Event-log ring SATURATED**: \(.ring.dropped_log_events) dropped log events (\(.ring.requests_received_total) received) — the disruptor could not keep up; raise ringBufferSize or reduce log verbosity. (live-set floor \(.ring.live_set_floor_bytes) bytes, heap \(.ring.heap_start_bytes)→\(.ring.heap_end_bytes)).\n\n"
       end ) +
+    "_Read the verify/retrieve **drift** column with care: those arms run at 1/s, so each drift window holds only ~300 samples and their p99 can swing on a single GC pause. The match arm runs at 200/s and its drift is the trustworthy one. All three are notify-only and cannot red the build on drift alone._\n\n" +
     "_Notify-only: soak metrics are not gated and not fed to the daily baseline compare until ~8 weekly runs of variance exist (~2 months)._"
   ' "$SOAK_JSON")"
   STYLE="info"; [ "$SOAK_EXIT" -ne 0 ] && STYLE="error"
   printf '%s\n' "$ANNOT" | buildkite-agent annotate --style "$STYLE" --context perf-soak || true
 else
   cp "$SOAK_JSON" "$REPO_ROOT/perf-soak.json"
-  echo "(local run) soak artifact -> $REPO_ROOT/perf-soak.json"
+  [ -f "$SAMPLE_LOG" ] && cp "$SAMPLE_LOG" "$REPO_ROOT/perf-soak-samples.csv" 2>/dev/null || true
+  echo "(local run) soak artifact -> $REPO_ROOT/perf-soak.json (+ perf-soak-samples.csv)"
 fi
 
 # Propagate the k6 threshold verdict: a p99-drift / error-rate breach IS the soak

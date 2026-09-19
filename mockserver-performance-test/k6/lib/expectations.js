@@ -4,8 +4,10 @@
 //   - the same 4 expectations are seeded (the request matches the LAST one, so
 //     the matcher does a near-full scan — the realistic worst case)
 //   - the `match` action GETs /simple (data-plane hot path)
-//   - the `create` action PUTs a /simple expectation with remainingTimes:5
-//     (control-plane churn, exactly as the Locust `expectation` task did)
+//   - the `create` action PUTs a stable-id /churn expectation (control-plane
+//     churn — an in-place REPLACE, so it never grows the expectation store; see
+//     createSimpleExpectation below for why this differs from the legacy Locust
+//     task, which self-inflicted a 404 storm on the soak's match arm)
 //   - the `forward` action GETs /forward (proxy/override path)
 //
 // New scenarios add a large-body match and a regex-matcher workload to exercise
@@ -395,18 +397,43 @@ export function seedForward() {
 
 // --- actions (tagged so k6 reports per-operation) --------------------------
 
-const SIMPLE_EXPECTATION = JSON.stringify([
+// The `create` arm's job is to CHURN THE EVENT LOG with control-plane traffic —
+// NOT to grow the expectation store. Two independent properties keep it from
+// self-inflicting the match-arm 404 storm seen on soak build 324 (where an
+// unbounded /simple create at 10/s filled maxExpectations (~15k) in ~25 min and
+// then evicted the seeded /simple match expectation, so most match requests 404'd
+// and k6 scored a ~54% match error rate that was purely the harness's own doing):
+//   1. a STABLE `id` — PUT /expectation upserts by id (RequestMatchers.add ->
+//      getByKey(id)), so every PUT is an in-place REPLACE of the SAME entry. The
+//      store holds exactly ONE entry for this path no matter how many creates run
+//      (~72k over a 2h soak at 10/s => still 1 entry), so it never approaches
+//      maxExpectations and never evicts the /simple match seed. The endpoint still
+//      returns 201 on an upsert (HttpState PUT handler is unconditional), so the
+//      `create: 201` check stays green.
+//   2. a DISTINCT path (/churn) — even if the id were dropped, a /churn create can
+//      never shadow (priority-desc then created-asc order) or evict the /simple
+//      match seed the match/verify arms depend on.
+// times.remainingTimes:5 is retained only to mirror the legacy control-plane shape
+// (the Locust `expectation` task used it); it is inert here because nothing ever
+// GETs /churn, so the entry is never consumed and every PUT just resets it.
+const CHURN_EXPECTATION = JSON.stringify([
   {
-    httpRequest: { path: '/simple' },
-    httpResponse: { statusCode: 200, body: 'some simple response' },
+    id: 'perf-churn',
+    httpRequest: { path: '/churn' },
+    httpResponse: { statusCode: 200, body: 'some churn response' },
     times: { remainingTimes: 5 },
   },
 ]);
 
+// NOTE: name kept as createSimpleExpectation for its three callers (soak.js,
+// load.js, smoke.js). All three drive the `create` control-plane arm and match
+// via the seeded /simple; none depend on this creating a /simple entry or a
+// DISTINCT entry per call, so the stable-id /churn shape is a safe drop-in for
+// every caller (and fixes the same latent eviction in load.js/smoke.js too).
 export function createSimpleExpectation() {
   const res = http.put(
     `${CONFIG.controlPlane}/expectation`,
-    SIMPLE_EXPECTATION,
+    CHURN_EXPECTATION,
     jsonParams({ op: 'create', name: 'PUT /mockserver/expectation' }),
   );
   check(res, { 'create: 201': (r) => r.status === 201 });
