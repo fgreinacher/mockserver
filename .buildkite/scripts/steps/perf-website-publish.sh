@@ -11,24 +11,33 @@ set -euo pipefail
 # the two, so the published figures drifted into a stale customer-facing claim
 # (docs/plans/performance-programme.md, Finding 1). This step regenerates that
 # data file from the latest VALID run in S3 and, when the committed figures have
-# genuinely gone stale or moved, OPENS A PULL REQUEST with the refresh.
+# genuinely gone stale or moved, EMITS THE REFRESH AS BUILD ARTIFACTS: a
+# ready-to-apply patch plus the regenerated files themselves.
 #
 # It runs at the TAIL of the daily run, NON-GATING: a failure here never blocks
 # a merge and never fails the perf comparison. But it is FAIL-CLOSED about what
 # it publishes (see below) — it will refuse to publish rather than ship a wrong
 # or unverifiable number.
 #
-# WHY A PR, NOT A DIRECT COMMIT
-# -----------------------------
-# The figures are a customer-facing claim. A human should look at a swing before
-# it ships. So this NEVER pushes to master; it opens a PR and stops. A stale page
-# therefore becomes an OPEN PR (visible) rather than invisible rot.
+# WHY A PATCH ARTIFACT, NOT A PUSH / PR
+# -------------------------------------
+# The figures are a customer-facing claim, so a human should look at a swing
+# before it ships — AND a human is required anyway to reconcile the hand-authored
+# numbers on the page that this refresh does not touch (see the artifact note).
+# This step ALSO cannot push: the `perf` queue's IAM role grants only S3 on the
+# perf-results bucket; it holds NO git/gh credentials (those live on the release
+# stack alone). So instead of pushing a branch or opening a PR, it commits the
+# refresh to a fresh LOCAL branch and emits that commit as a `git format-patch`
+# patch (applied with `git am`) plus the regenerated files, all as Buildkite
+# artifacts. A stale page therefore surfaces as a downloadable patch on the daily
+# build rather than as invisible rot; a human applies it and opens the PR.
 #
-# WHEN IT OPENS A PR (the trigger)
-# --------------------------------
+# WHEN IT EMITS A PATCH (the trigger)
+# -----------------------------------
 # Only when the committed figure is more than PUBLISH_MAX_AGE_DAYS old (default
 # 30) OR a headline metric has moved more than PUBLISH_MOVE_PCT (default 10%).
-# Otherwise it exits 0 having changed nothing, so it does not open a PR every day.
+# Otherwise it exits 0 having changed nothing, so it does not emit a patch every
+# day.
 #
 # It KEYS THE AGE OFF THE COMMITTED FIGURE'S published_utc, NOT off the age of the
 # newest S3 object. Producer liveness (has the daily run stopped, or run and
@@ -69,14 +78,13 @@ set -euo pipefail
 # (last good figures still shown), and the step is loud (non-zero + annotation)
 # so the producer problem is fixed rather than silently papering the page.
 #
-# TEST SEAMS (so this is verifiable without real S3 / GitHub)
+# TEST SEAMS (so this is verifiable without real S3)
 #   PERF_PUBLISH_AWS_BIN   aws CLI to use            (default: aws)
-#   PERF_PUBLISH_GH_BIN    gh CLI to use             (default: gh)
 #   PERF_PUBLISH_GIT_BIN   git to use                (default: git)
-#   PERF_PUBLISH_DRY_RUN   =true: never write files / branch / PR; just report
-#                          the decision and the candidate (for local checks / CI
-#                          preview). Writes to $PERF_PUBLISH_OUT if set so the
-#                          candidate can be inspected.
+#   PERF_PUBLISH_DRY_RUN   =true: never write files / branch / commit / patch;
+#                          just report the decision and the candidate (for local
+#                          checks / CI preview). Writes to $PERF_PUBLISH_OUT if
+#                          set so the candidate can be inspected.
 #   PERF_PUBLISH_OUT       dry-run: write the candidate data file here
 
 BUCKET="${PERF_RESULTS_BUCKET:-mockserver-ci-perf-results}"
@@ -93,7 +101,6 @@ BEH_FIX_DATE="${PUBLISH_REGRESSION_FIX_DATE:-2026-09-16}"
 REGION="${AWS_REGION:-eu-west-2}"
 
 AWS_BIN="${PERF_PUBLISH_AWS_BIN:-aws}"
-GH_BIN="${PERF_PUBLISH_GH_BIN:-gh}"
 GIT_BIN="${PERF_PUBLISH_GIT_BIN:-git}"
 DRY_RUN="${PERF_PUBLISH_DRY_RUN:-false}"
 
@@ -117,6 +124,41 @@ annotate() {
   printf '\n%s\n' "$2"
 }
 
+# Upload one SUPPLEMENTARY file as a Buildkite artifact under a clean (basename)
+# path. Best-effort on purpose, matching the convention in perf-test-run.sh and
+# its siblings: these are diagnostic adjuncts, and losing one must not fail a
+# build whose real result is recorded elsewhere. No-ops cleanly when
+# buildkite-agent is absent (local runs), like annotate().
+#
+# Do NOT use this for the patch. See upload_patch_or_fail below for why.
+upload_artifact() {
+  [ -f "$1" ] || return 0
+  if command -v buildkite-agent >/dev/null 2>&1; then
+    ( cd "$(dirname "$1")" && buildkite-agent artifact upload "$(basename "$1")" ) || true
+  fi
+}
+
+# Upload THE PATCH, and fail loudly if it does not land.
+#
+# The patch is not an adjunct — it is the entire deliverable of this step, and the
+# success annotation states as fact that it "is attached to this build". $WORK is
+# trap-removed on EXIT, so a swallowed upload failure means the patch exists
+# nowhere, while the step still exits 0 and claims delivery. That is a false green
+# on the step's defining function, with no observable indicator anywhere: precisely
+# the failure this rework exists to avoid, since the whole point of emitting a
+# patch is that the refresh surfaces on the build rather than rotting invisibly.
+#
+# So this one does NOT get `|| true`. A failure here routes through fail(), the
+# same path every refuse condition uses, and the step is `soft_fail: true` in the
+# pipeline, so being loud costs a soft-failed step rather than a red daily build.
+upload_patch_or_fail() {
+  [ -s "$1" ] || fail "PATCH EMPTY" \
+    "\`git format-patch\` produced an empty or truncated patch at \`$1\`. Nothing usable was generated, so nothing is claimed to have been delivered."
+  command -v buildkite-agent >/dev/null 2>&1 || return 0
+  ( cd "$(dirname "$1")" && buildkite-agent artifact upload "$(basename "$1")" ) || fail "PATCH UPLOAD FAILED" \
+    "The refreshed figures were generated, but \`buildkite-agent artifact upload\` failed for \`$(basename "$1")\`, so the patch is NOT attached to this build and the working copy is discarded on exit. Nothing was shipped and nothing is recoverable from this build — re-run the step. See this job's log for the upload error."
+}
+
 fail() {
   annotate "error" ":no_entry: **Website perf publish: FAIL — $1**
 
@@ -126,7 +168,7 @@ _The committed figures were left unchanged (the page still shows the last good n
   exit 1
 }
 
-echo "--- :chart_with_upwards_trend: perf website publish — source s3://${BUCKET}/runs/${BRANCH}/ (age>${MAX_AGE_DAYS}d or move>${MOVE_PCT}% opens a PR)"
+echo "--- :chart_with_upwards_trend: perf website publish — source s3://${BUCKET}/runs/${BRANCH}/ (age>${MAX_AGE_DAYS}d or move>${MOVE_PCT}% emits a patch artifact)"
 
 [ -f "$JQ_FILTER" ] || fail "TRANSFORM MISSING" "The figures transform \`${JQ_FILTER}\` is missing from the checkout."
 
@@ -218,7 +260,7 @@ if [ "$DRY_RUN" = "true" ] && [ -n "${PERF_PUBLISH_OUT:-}" ]; then
   echo "--- dry-run: candidate written to ${PERF_PUBLISH_OUT}"
 fi
 
-# --- 4. compare against the COMMITTED figures — decide whether to open a PR ----
+# --- 4. compare against the COMMITTED figures — decide whether to emit a patch -
 # max_move = largest absolute % change across the headline metrics both carry.
 # age_days = age of the committed published_utc. Either over threshold triggers.
 TRIGGER="no"; REASONS=()
@@ -252,7 +294,7 @@ else
 fi
 
 if [ "$TRIGGER" != "yes" ]; then
-  annotate "info" ":white_check_mark: **Website perf figures are current — no PR opened.** Committed figures are ${AGE_DAYS}d old (window ${MAX_AGE_DAYS}d) and the largest headline move is ${MAX_MOVE}% (window ${MOVE_PCT}%). Latest run \`${NEWEST_KEY}\` (healthy_ceiling ${HC}, peak ${PK}) agrees closely enough to leave the page as-is."
+  annotate "info" ":white_check_mark: **Website perf figures are current — no patch emitted.** Committed figures are ${AGE_DAYS}d old (window ${MAX_AGE_DAYS}d) and the largest headline move is ${MAX_MOVE}% (window ${MOVE_PCT}%). Latest run \`${NEWEST_KEY}\` (healthy_ceiling ${HC}, peak ${PK}) agrees closely enough to leave the page as-is."
   echo "OK: no refresh needed (age=${AGE_DAYS}d, max_move=${MAX_MOVE}%)"
   exit 0
 fi
@@ -260,47 +302,94 @@ REASON_STR="$(printf '%s; ' "${REASONS[@]}")"
 echo "--- trigger: ${REASON_STR}"
 
 if [ "$DRY_RUN" = "true" ]; then
-  annotate "warning" ":memo: **Website perf publish (dry-run) WOULD open a PR.** Reason: ${REASON_STR%; }
-Candidate healthy_ceiling ${HC}, peak ${PK}, behaviours ${BEH}, from \`${NEWEST_KEY}\`. No files written, no branch, no PR (dry-run)."
-  echo "DRY-RUN: would open a PR (${REASON_STR%; })"
+  annotate "warning" ":memo: **Website perf publish (dry-run) WOULD emit a patch artifact.** Reason: ${REASON_STR%; }
+Candidate healthy_ceiling ${HC}, peak ${PK}, behaviours ${BEH}, from \`${NEWEST_KEY}\`. No files written, no branch, no commit, no patch (dry-run)."
+  echo "DRY-RUN: would emit a patch (${REASON_STR%; })"
   exit 0
 fi
 
-# --- 5. write the refreshed data + chart data, regenerate charts, open a PR ----
-# NEVER a direct commit to master: write on a fresh branch and open a PR.
+# --- 5. write the refreshed data + chart data, regenerate charts, emit a patch --
+# NEVER a push and NEVER a PR: the `perf` queue holds only the S3 perf-results
+# grant, no git/gh credentials. Commit the refresh to a fresh LOCAL branch and
+# emit that commit as a ready-to-apply patch (+ the regenerated files) as build
+# artifacts; a human applies it and opens the PR (also required to reconcile the
+# hand-authored numbers this refresh does not touch — see the annotation).
 # Dirty-worktree pre-check: this runs in the CI checkout, and a `git add` of
 # explicit paths on a tree with unrelated staged/modified changes could sweep them
-# into the PR. Refuse if the tree is dirty BEFORE we touch anything, so a refusal
-# still leaves the page untouched.
+# into the commit. Refuse if the tree is dirty BEFORE we touch anything, so a
+# refusal still leaves the page untouched.
 if [ -n "$("$GIT_BIN" -C "$REPO_ROOT" status --porcelain 2>/dev/null)" ]; then
   fail "WORKTREE NOT CLEAN" \
-    "The checkout at \`${REPO_ROOT}\` has uncommitted changes before publishing. Refusing so an unrelated change is not swept into the figures PR. (A fresh CI checkout is clean; investigate what dirtied it.)"
+    "The checkout at \`${REPO_ROOT}\` has uncommitted changes before publishing. Refusing so an unrelated change is not swept into the figures commit. (A fresh CI checkout is clean; investigate what dirtied it.)"
 fi
 mkdir -p "$(dirname "$DATA_FILE")" "$CHART_DATA_DIR"
 cp "$WORK/candidate.json" "$DATA_FILE"
 # Chart data the committed renderer reads (perf-sweep.json + perf-result.json).
 jq '{proto: (.sweep.proto // "http"), points: (.sweep.points // [])}' "$WORK/run.json" > "$CHART_DATA_DIR/perf-sweep.json"
 cp "$WORK/run.json" "$CHART_DATA_DIR/perf-result.json"
-# Regenerate the PNGs if the renderer's toolchain is present (best-effort: the PR
-# author / CI can rerun it; a missing matplotlib must not fail the publish).
+# Regenerate the PNGs if the renderer's toolchain is present (best-effort: whoever
+# applies the patch / CI can rerun it; a missing matplotlib must not fail the step).
 if command -v python3 >/dev/null 2>&1 && python3 -c "import matplotlib" >/dev/null 2>&1; then
   # PNGs live in images/ (the renderer's default --out), one level ABOVE the data dir.
-  python3 "$RENDER" --data "$CHART_DATA_DIR" --out "$IMAGES_DIR" || echo "WARNING: chart render failed — data files refreshed, PNGs left for the PR author" >&2
+  python3 "$RENDER" --data "$CHART_DATA_DIR" --out "$IMAGES_DIR" || echo "WARNING: chart render failed — data files refreshed, PNGs left for whoever applies the patch" >&2
 else
-  echo "--- matplotlib absent — chart data refreshed; PNGs will be regenerated in the PR" >&2
+  echo "--- matplotlib absent — chart data refreshed; PNGs regenerate when the patch is applied" >&2
 fi
 
-PR_BRANCH="perf/website-figures-$(date -u +%Y%m%d-%H%M%S)"
+WORK_BRANCH="perf/website-figures-$(date -u +%Y%m%d-%H%M%S)"
 COMMIT_MSG="docs(perf): refresh published performance figures from ${NEWEST_KEY##*/}"
-PR_BODY="Automated refresh of the public Scalability & Latency figures from the latest valid perf run.
+
+"$GIT_BIN" -C "$REPO_ROOT" checkout -b "$WORK_BRANCH" || fail "GIT BRANCH FAILED" "Could not create local branch \`${WORK_BRANCH}\`."
+# Stage the data file, the chart source data, and any regenerated PNGs in images/.
+"$GIT_BIN" -C "$REPO_ROOT" add "$IMAGES_DIR"/*.png 2>/dev/null || true
+"$GIT_BIN" -C "$REPO_ROOT" add "$DATA_FILE" "$CHART_DATA_DIR"
+"$GIT_BIN" -C "$REPO_ROOT" -c user.name="mockserver-perf-bot" -c user.email="ci@mock-server.com" commit -m "$COMMIT_MSG" \
+  || fail "GIT COMMIT FAILED" "Nothing to commit or commit failed on \`${WORK_BRANCH}\`."
+
+# Emit the commit as a ready-to-apply patch. `git format-patch` (applied with
+# `git am`) is chosen over `git diff` because it carries the commit message (which
+# records the source run) and author, and — with --binary — includes the binary
+# PNG diffs, so `git am` recreates the commit exactly. A plain `git diff` would
+# lose the message and, without --binary, could not carry the regenerated PNGs.
+PATCH_NAME="${WORK_BRANCH##*/}.patch"
+PATCH_FILE="$WORK/$PATCH_NAME"
+if ! "$GIT_BIN" -C "$REPO_ROOT" format-patch -1 --binary --stdout HEAD > "$PATCH_FILE" 2>"$WORK/patch.err"; then
+  fail "PATCH GENERATION FAILED" "\`git format-patch\` failed on \`${WORK_BRANCH}\`:
+\`\`\`
+$(cat "$WORK/patch.err" 2>/dev/null | head -c 600)
+\`\`\`"
+fi
+
+# Upload the patch AND the regenerated files as build artifacts, so a reviewer can
+# apply the change (the patch) or inspect the numbers without applying anything
+# (the files). Each upload no-ops cleanly when buildkite-agent is absent (local).
+upload_patch_or_fail "$PATCH_FILE"
+upload_artifact "$DATA_FILE"
+upload_artifact "$CHART_DATA_DIR/perf-sweep.json"
+upload_artifact "$CHART_DATA_DIR/perf-result.json"
+for _png in "$IMAGES_DIR"/*.png; do
+  upload_artifact "$_png"
+done
+
+annotate "success" ":memo: **Website perf figures refreshed — patch emitted as a build artifact (nothing pushed).**
 
 - **Source run:** \`${NEWEST_KEY}\`
-- **Trigger:** ${REASON_STR%; }
+- **Trigger:** ${REASON_STR%; } (largest headline move ${MAX_MOVE}%, window ${MOVE_PCT}%)
 - **Healthy ceiling:** ${HC} req/s (headline) · **peak achieved:** ${PK} req/s (labelled degraded)
 - **Per-behaviour percentiles:** ${BEH}
 
+**Nothing was pushed and no PR was opened** — the \`perf\` queue holds only the S3 perf-results grant, no git/gh credentials. The refresh is attached to this build as \`${PATCH_NAME}\` (a \`git format-patch\` patch) plus the regenerated \`perf_figures.json\`, chart data, and PNGs.
+
+**Apply it locally, then open the PR** (download \`${PATCH_NAME}\` from this build's artifacts first):
+\`\`\`
+git fetch origin ${BRANCH}
+git checkout -b ${WORK_BRANCH} origin/${BRANCH}
+git am ${PATCH_NAME}
+git push -u origin ${WORK_BRANCH} && gh pr create --fill --base ${BRANCH}
+\`\`\`
+
 **A human must reconcile the hand-authored numbers this refresh does NOT touch.**
-This step rewrites only \`_data/perf_figures.json\` (and the chart data/PNGs). The
+The patch rewrites only \`_data/perf_figures.json\` (and the chart data/PNGs). The
 following in \`mock_server/performance.html\` are hand-authored — if a headline moved,
 update them to match before merging:
   - the page \`description\` (front matter) — used as the meta description;
@@ -308,26 +397,6 @@ update them to match before merging:
   - matcher-scaling figures are a separate JMH source and are expected to differ.
 The page body prose (itemprop headline, at-a-glance bullet, per-instance paragraph),
 the provenance block, and both result tables are rendered from the data file and are
-already updated by this PR.
-
-Confirm the swing before shipping (that is why this is a PR, not a direct commit).
-Regenerate the PNG charts with \`images/perf-charts/render_perf_charts.py\` if they are
-not already updated here."
-
-"$GIT_BIN" -C "$REPO_ROOT" checkout -b "$PR_BRANCH" || fail "GIT BRANCH FAILED" "Could not create branch \`${PR_BRANCH}\`."
-# Stage the data file, the chart source data, and any regenerated PNGs in images/.
-"$GIT_BIN" -C "$REPO_ROOT" add "$IMAGES_DIR"/*.png 2>/dev/null || true
-"$GIT_BIN" -C "$REPO_ROOT" add "$DATA_FILE" "$CHART_DATA_DIR"
-"$GIT_BIN" -C "$REPO_ROOT" -c user.name="mockserver-perf-bot" -c user.email="ci@mock-server.com" commit -m "$COMMIT_MSG" \
-  || fail "GIT COMMIT FAILED" "Nothing to commit or commit failed for \`${PR_BRANCH}\`."
-"$GIT_BIN" -C "$REPO_ROOT" push -u origin "$PR_BRANCH" || fail "GIT PUSH FAILED" "Could not push \`${PR_BRANCH}\`."
-
-if "$GH_BIN" pr create --title "$COMMIT_MSG" --body "$PR_BODY" --base "$BRANCH" --head "$PR_BRANCH" 2>"$WORK/gh.err"; then
-  annotate "success" ":rocket: **Opened a PR to refresh the published performance figures.** Source \`${NEWEST_KEY}\`; ${REASON_STR%; }. Healthy ceiling ${HC} req/s, peak ${PK} req/s (degraded), behaviours ${BEH}."
-  echo "OK: PR opened from ${PR_BRANCH}"
-else
-  fail "GH PR CREATE FAILED" "Branch \`${PR_BRANCH}\` was pushed but \`gh pr create\` failed:
-\`\`\`
-$(cat "$WORK/gh.err" 2>/dev/null | head -c 600)
-\`\`\`"
-fi
+already updated by the patch."
+echo "OK: patch emitted (${PATCH_NAME}); nothing pushed, no PR opened"
+exit 0
