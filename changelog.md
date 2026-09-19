@@ -110,6 +110,22 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
   fewer entries, because the old accounting under-counted. Workloads that relied on the previous
   (larger) retention volume should raise `maxEventLogSizeInBytes` to compensate; the count bound
   (`maxLogEntries`) and entries with no request/response body are unaffected.
+- **The JUnit integrations now enable "dev mode" by default** (`mockserver-junit-jupiter`
+  `MockServerExtension` and `mockserver-junit-rule` `MockServerRule`). Dev mode fixes the two
+  in-memory store sizes at `maxLogEntries=1000` and `maxExpectations=1000` instead of deriving them
+  from the JVM heap ceiling (up to 100,000 and 15,000). For a test suite that starts many short-lived
+  MockServer instances in one JVM this cuts memory sharply — a measured ~117 MB down to ~52 MB across
+  32 in-JVM instances (~2 MB each) — and makes per-instance capacity deterministic. **This is a
+  behaviour change:** a suite that records more than 1000 log entries against a single MockServer
+  instance will now silently evict the oldest, so a `verify` that reaches back past the most recent
+  1000 entries can stop matching. When dev mode is in effect MockServer logs a one-time `INFO` line
+  naming the effective sizes and how to change them. **To keep the previous behaviour**, either raise
+  the caps explicitly (`-Dmockserver.maxLogEntries=…` / `-Dmockserver.maxExpectations=…`, which win
+  over the dev-mode default) or turn dev mode off entirely with `-Dmockserver.devMode=false` (or
+  `MOCKSERVER_DEV_MODE=false`); an explicit setting always beats the new default. Only the JUnit 4
+  rule and JUnit 5 extension enable it — the Spring test integration and a directly-constructed
+  `ClientAndServer` do not. (Dev mode is JVM-global, so a `ClientAndServer` constructed directly
+  after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
 - A long-lived keep-alive connection no longer leaks a small amount of memory on every request it

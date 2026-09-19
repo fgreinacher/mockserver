@@ -25,12 +25,12 @@ public class MockServerRule implements TestRule {
     private static final AtomicBoolean DEV_MODE_DEFAULT_LOGGED = new AtomicBoolean(false);
     /**
      * Single switch for whether the JUnit integration turns dev mode on by default.
-     * {@code false} = opt-in (current): the integration does not force dev mode and
-     * only respects an explicit {@code mockserver.devMode}. Flip to {@code true} to
-     * turn it on by default. This is the one line to change to move between the two
-     * shipping choices.
+     * {@code true} = on by default (current): the integration forces dev mode on
+     * unless the user has explicitly set {@code mockserver.devMode}. Set to
+     * {@code false} to make it opt-in again. This is the one line to change to move
+     * between the two shipping choices.
      */
-    static final boolean ENABLE_DEV_MODE_BY_DEFAULT = false;
+    static final boolean ENABLE_DEV_MODE_BY_DEFAULT = true;
     // Mirror of the package-private ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES /
     // DEV_MODE_MAX_EXPECTATIONS (both 1000), used only to tell whether dev mode actually
     // reduced the effective sizes when composing the discoverability line.
@@ -178,10 +178,12 @@ public class MockServerRule implements TestRule {
      * memory footprint (a measured ~117&nbsp;MB &rarr; ~52&nbsp;MB across 32 in-JVM
      * instances).
      * <p>
-     * Dev mode is <strong>opt-in</strong> ({@link #ENABLE_DEV_MODE_BY_DEFAULT} is
-     * {@code false}): the integration does not force it on. A user enables it with
-     * {@code -Dmockserver.devMode=true} (or {@code MOCKSERVER_DEV_MODE=true}). When
-     * it is enabled, an explicit {@code maxLogEntries} / {@code maxExpectations}
+     * Dev mode is <strong>on by default</strong> ({@link #ENABLE_DEV_MODE_BY_DEFAULT}
+     * is {@code true}): the integration forces it on unless the user has explicitly
+     * set {@code mockserver.devMode}. A user turns it off with
+     * {@code -Dmockserver.devMode=false} (or {@code MOCKSERVER_DEV_MODE=false}), which
+     * still wins because an explicit setting is honoured over the default. When dev
+     * mode is in effect, an explicit {@code maxLogEntries} / {@code maxExpectations}
      * value (system property, environment variable, or {@code mockserver.properties})
      * still wins over the 1000 default through normal property resolution — that is
      * how a suite that needs a larger store keeps one while still using dev mode.

@@ -16,9 +16,9 @@ import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 
 /**
- * Asserts the JUnit 4 rule's dev-mode policy: dev mode is opt-in (not forced on), an
- * explicit {@code -Dmockserver.devMode=true} enables the fixed 1000/1000 store sizes, an
- * explicit {@code maxLogEntries} still wins over that dev-mode default, and the
+ * Asserts the JUnit 4 rule's dev-mode policy: dev mode is on by default (fixing the
+ * 1000/1000 store sizes), an explicit {@code -Dmockserver.devMode=false} still turns it
+ * off, an explicit {@code maxLogEntries} still wins over the dev-mode default, and the
  * discoverability line is logged once per JVM and only when INFO is enabled. These mutate
  * global {@link ConfigurationProperties} system-property state, so each test fully resets
  * that state (system property, the cache-first value cache, and the once-per-JVM log latch)
@@ -45,33 +45,32 @@ public class MockServerRuleDevModeDefaultTest {
     }
 
     @Test
-    public void doesNotEnableDevModeByDefault() {
+    public void enablesDevModeByDefault() {
         MockServerRule.applyDevModeDefault();
 
-        assertThat("dev mode is opt-in, not forced on", ConfigurationProperties.devMode(), is(false));
-        assertThat(ConfigurationProperties.maxLogEntries(), is(greaterThan(1000)));
-        assertThat(ConfigurationProperties.maxExpectations(), is(greaterThan(1000)));
-    }
-
-    @Test
-    public void enablingDevModeFixesStoreSizes() {
-        System.setProperty(DEV_MODE, "true");
-
-        MockServerRule.applyDevModeDefault();
-
-        assertThat("an explicit -Dmockserver.devMode=true is honoured", ConfigurationProperties.devMode(), is(true));
+        assertThat("dev mode is on by default", ConfigurationProperties.devMode(), is(true));
         assertThat(ConfigurationProperties.maxLogEntries(), is(equalTo(1000)));
         assertThat(ConfigurationProperties.maxExpectations(), is(equalTo(1000)));
     }
 
     @Test
-    public void explicitMaxLogEntriesWinsOverEnabledDevMode() {
-        System.setProperty(DEV_MODE, "true");
+    public void explicitDevModeFalseWinsOverDefault() {
+        System.setProperty(DEV_MODE, "false");
+
+        MockServerRule.applyDevModeDefault();
+
+        assertThat("an explicit -Dmockserver.devMode=false is honoured over the default", ConfigurationProperties.devMode(), is(false));
+        assertThat(ConfigurationProperties.maxLogEntries(), is(greaterThan(1000)));
+        assertThat(ConfigurationProperties.maxExpectations(), is(greaterThan(1000)));
+    }
+
+    @Test
+    public void explicitMaxLogEntriesWinsOverDefaultDevMode() {
         System.setProperty(MAX_LOG_ENTRIES, "25000");
 
         MockServerRule.applyDevModeDefault();
 
-        assertThat("dev mode is enabled", ConfigurationProperties.devMode(), is(true));
+        assertThat("dev mode is on by default", ConfigurationProperties.devMode(), is(true));
         assertThat("an explicit size wins over the dev-mode 1000 default", ConfigurationProperties.maxLogEntries(), is(equalTo(25000)));
         assertThat(ConfigurationProperties.maxExpectations(), is(equalTo(1000)));
     }

@@ -75,8 +75,8 @@ mockserver.enableCORSForAllResponses=false</code></pre>
         <tr>
             <td><span class="inline_code">devMode</span></td>
             <td><span class="inline_code">MOCKSERVER_DEV_MODE</span></td>
-            <td><span class="this_value">false</span></td>
-            <td>Enable on your laptop to cap memory (1k expectations / 1k log entries) and avoid wasted heap</td>
+            <td><span class="this_value">false</span> (JUnit rule/extension: <span class="this_value">true</span>)</td>
+            <td>Enable on your laptop to cap memory (1k expectations / 1k log entries) and avoid wasted heap. On by default under the JUnit&nbsp;4 rule and JUnit&nbsp;5 extension; set <span class="inline_code">devMode=false</span> or raise <span class="inline_code">maxLogEntries</span>/<span class="inline_code">maxExpectations</span> to override</td>
         </tr>
         <tr>
             <td><span class="inline_code">logLevel</span></td>
@@ -549,7 +549,8 @@ mockserver.enableCORSForAllResponses=true</code></pre>
         <li><span class="inline_code">maxExpectations</span> is set to <span class="this_value">1,000</span> (instead of the heap-based default up to 15,000)</li>
     </ul>
     <p>This is useful when running MockServer locally during development, where retaining tens of thousands of log entries is unnecessary and wastes memory.</p>
-    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span></p>
+    <p><strong>Enabled by default under the JUnit integrations.</strong> The JUnit&nbsp;4 rule (<span class="inline_code">MockServerRule</span>) and the JUnit&nbsp;5 extension (<span class="inline_code">MockServerExtension</span>) turn dev mode <strong>on by default</strong>, because a test suite that starts many short-lived MockServer instances in one JVM benefits most from the smaller, deterministic footprint (a measured ~117&nbsp;MB down to ~52&nbsp;MB across 32 in-JVM instances). The practical consequence is the <span class="this_value">1,000</span>-entry log cap: if a single test records more than 1,000 log entries against one MockServer instance, the oldest are overwritten, so a <span class="inline_code">verify</span> that reaches back past the most recent 1,000 entries can stop matching. When dev mode is in effect MockServer logs a one-time <span class="inline_code">INFO</span> line naming the effective sizes and how to change them. To keep the old behaviour under JUnit, either raise the caps explicitly (<span class="inline_code">-Dmockserver.maxLogEntries=…</span> / <span class="inline_code">-Dmockserver.maxExpectations=…</span>, which win over the dev-mode default) or turn dev mode off with <span class="inline_code">-Dmockserver.devMode=false</span> (or <span class="inline_code">MOCKSERVER_DEV_MODE=false</span>). An explicit setting always beats the default. The Spring test integration and a directly-constructed <span class="inline_code">ClientAndServer</span> do not turn dev mode on themselves &mdash; for those it stays off unless you enable it. One caveat if you mix them in the same JVM: enabling dev mode is <strong>global</strong>, so once a JUnit rule or extension has run in a test fork, a <span class="inline_code">ClientAndServer</span> constructed directly afterwards in that same fork inherits the dev-mode store sizes too (unless it sets its own).</p>
+    <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">false</span> (server default; the JUnit&nbsp;4 rule and JUnit&nbsp;5 extension default it to <span class="this_value">true</span>)</p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.devMode(boolean enable)</code></pre>
     <p>System Property:</p>

@@ -16,9 +16,9 @@ import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.is;
 
 /**
- * Asserts the JUnit 5 extension's dev-mode policy: dev mode is opt-in (not forced on),
- * an explicit {@code -Dmockserver.devMode=true} enables the fixed 1000/1000 store sizes,
- * an explicit {@code maxLogEntries} still wins over that dev-mode default, and the
+ * Asserts the JUnit 5 extension's dev-mode policy: dev mode is on by default (fixing the
+ * 1000/1000 store sizes), an explicit {@code -Dmockserver.devMode=false} still turns it off,
+ * an explicit {@code maxLogEntries} still wins over the dev-mode default, and the
  * discoverability line is logged once per JVM and only when INFO is enabled. These mutate global
  * {@link ConfigurationProperties} system-property state, so each test fully resets that
  * state (system property, the cache-first value cache, and the once-per-JVM log latch)
@@ -45,35 +45,36 @@ class MockServerExtensionDevModeDefaultTest {
     }
 
     @Test
-    void doesNotEnableDevModeByDefault() {
+    void enablesDevModeByDefault() {
         MockServerExtension.applyDevModeDefault();
 
-        assertThat("dev mode is opt-in, not forced on", ConfigurationProperties.devMode(), is(false));
-        // the heap-ceiling default is larger than the dev-mode cap on the test JVM
-        assertThat(ConfigurationProperties.maxLogEntries(), is(greaterThan(1000)));
-        assertThat(ConfigurationProperties.maxExpectations(), is(greaterThan(1000)));
-    }
-
-    @Test
-    void enablingDevModeFixesStoreSizes() {
-        System.setProperty(DEV_MODE, "true");
-
-        MockServerExtension.applyDevModeDefault();
-
-        assertThat("an explicit -Dmockserver.devMode=true is honoured", ConfigurationProperties.devMode(), is(true));
+        assertThat("dev mode is on by default", ConfigurationProperties.devMode(), is(true));
+        // the default now fixes both store sizes at the dev-mode cap instead of the heap-ceiling default
         assertThat(ConfigurationProperties.maxLogEntries(), is(equalTo(1000)));
         assertThat(ConfigurationProperties.maxExpectations(), is(equalTo(1000)));
     }
 
     @Test
-    void explicitMaxLogEntriesWinsOverEnabledDevMode() {
-        // the headline capability: a suite that needs a larger store keeps one while using dev mode
-        System.setProperty(DEV_MODE, "true");
+    void explicitDevModeFalseWinsOverDefault() {
+        // an explicit opt-out must still beat the on-by-default policy
+        System.setProperty(DEV_MODE, "false");
+
+        MockServerExtension.applyDevModeDefault();
+
+        assertThat("an explicit -Dmockserver.devMode=false is honoured over the default", ConfigurationProperties.devMode(), is(false));
+        // with dev mode off the heap-ceiling default is larger than the dev-mode cap on the test JVM
+        assertThat(ConfigurationProperties.maxLogEntries(), is(greaterThan(1000)));
+        assertThat(ConfigurationProperties.maxExpectations(), is(greaterThan(1000)));
+    }
+
+    @Test
+    void explicitMaxLogEntriesWinsOverDefaultDevMode() {
+        // the headline capability: a suite that needs a larger store keeps one while dev mode is on by default
         System.setProperty(MAX_LOG_ENTRIES, "25000");
 
         MockServerExtension.applyDevModeDefault();
 
-        assertThat("dev mode is enabled", ConfigurationProperties.devMode(), is(true));
+        assertThat("dev mode is on by default", ConfigurationProperties.devMode(), is(true));
         assertThat("an explicit size wins over the dev-mode 1000 default", ConfigurationProperties.maxLogEntries(), is(equalTo(25000)));
         // the size the user did not set still takes the dev-mode default
         assertThat(ConfigurationProperties.maxExpectations(), is(equalTo(1000)));
