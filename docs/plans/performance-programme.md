@@ -1727,13 +1727,15 @@ degrading a test until it went red: ten retained entries with 10,000-byte bodies
 *exactly* 100,000. Live heap dumps at two body sizes then separated fixed from proportional
 cost (2,054 B overhead at 1 KB, 2,037 B at 8 KB — flat, so ~2 KB of structural graph per entry
 counted as zero; byte arrays scaled 1:1, confirming no hidden second body copy). Corrected in
-`f3ade3b73`: real retention moves from ~2.6× the budget to ~1.0× at WARN, and ~4.8× to
-~1.6–2.2× at INFO. The formatted message is deliberately still not counted — it is
-materialised after the weight is memoised and only at rendering levels, and the default budget
-divisor (`heap/8` at INFO against `heap/4` at WARN) already compensates for it, so counting it
-too would compensate twice. **Open decision:** the divisor was tuned against the under-counting
-weigher, so an honest weigher means the default budget now retains less real heap than before.
-Restoring prior default capacity is a sizing decision, not a fix.
+`f3ade3b73`. **The multiples first recorded here — ~1.0x at WARN and ~1.6-2.2x at INFO — were
+superseded on 2026-09-19** by a re-measurement against the honest weigher: the real figures are
+**2.0x at WARN and 3.0x at INFO**, because a decoded text body is retained twice (the decoded
+`String` and the raw `byte[]`) and counted once. ~1.0x is the ratio for a body retained ONCE,
+which is what a binary body does. The formatted message is deliberately still not counted — it is
+materialised after the weight is memoised and only at rendering levels, and the level-aware budget
+divisor already compensates for it, so counting it too would compensate twice. The divisors are
+now `heap/12` at INFO against `heap/8` at WARN — a 1.5x asymmetry matching the measured 3.0/2.0,
+not the 2x the original `heap/8`-against-`heap/4` pairing assumed. **Decision taken (2026-09-19):** the divisor was tuned against the under-counting weigher and has now been re-derived from live-heap measurement — see the "Byte-budget divisor" row in [What remains](#what-remains).
 
 **Note (item 0) — is the pre-fix baseline history still comparable, given every stored
 point has `instance_type:''`?** Yes: no re-baseline is needed, only the field populated from

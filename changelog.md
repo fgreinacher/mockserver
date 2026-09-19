@@ -12,7 +12,7 @@ log built an eager JSON tree roughly five times the size of the raw body for eve
 and held it for the life of the entry; measured across 20,000 retained entries, heap fell from
 429 MB to 61 MB. The event log now bounds itself honestly in bytes at both sites where it holds
 memory, and its weigher counts what an entry actually holds — the same budget now tracks real usage
-within ~1–2.2× instead of 2.6–4.8×. The request hot path shed the only material lock contention
+within a measured 2–3x instead of the 2.6–4.8x the body-only accounting produced, and the default budget is sized from that measurement rather than guessed. The request hot path shed the only material lock contention
 under sustained load: every event-log, correlation, stream and trace id is now generated from a
 contention-free source rather than the shared secure PRNG that serialised all worker event loops as
 request rate peaked. The container heap default is corrected from 75% to 60% of the container
@@ -25,6 +25,15 @@ throughput no longer collapses past the knee. Where the server previously peaked
 climbs to 28,533 and still holds 25,488 at the top of the ladder.
 
 ### Added
+- The default byte budget above was **derived from measurement, not chosen.** Its divisors were first
+  set while the weigher still counted only raw body bytes, and were not revisited when the weigher was
+  corrected mid-development — so they were re-derived against live-heap measurements before release.
+  Nothing here changes behaviour relative to the last published release, where this budget did not
+  exist; the re-derivation only means the value you get on upgrade is the measured one rather than the
+  interim guess. If you want the log to retain more history and have the heap headroom, set
+  `maxEventLogSizeInBytes` explicitly. Erring toward the smaller budget is deliberate: under-budgeting
+  evicts early and announces itself, while over-budgeting ends in the `OutOfMemoryError` the bound
+  exists to prevent.
 - Eight new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) covering both sites
   where the event log holds memory. Four cover the in-flight ring:
   `mock_server_event_log_ring_occupancy`, `_ring_capacity`, `_in_flight_bytes`, and
@@ -37,15 +46,19 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
 - The in-memory event log is now bounded by **size** as well as by entry count, and that size bound
   now covers both the retained entries and the entries still waiting in the in-flight queue.
   `maxEventLogSizeInBytes` was previously off by default; it now defaults to a share of the heap-ceiling
-  budget — a quarter at `WARN` and below, an eighth at `INFO` and above (rendering roughly doubles the
-  heap an entry retains). Workloads with bodies under roughly two kilobytes still reach the count bound
+  budget, sized so REAL retained heap is about a quarter of the ceiling at either log level. That takes
+  a different counted share at each, because a decoded JSON/XML/text body is retained twice (the decoded
+  string and the raw bytes) but counted once, and a rendering level memoises a log message embedding it
+  a third time: measured on live heaps, real retention is **2x** the counted figure at `WARN` and **3x**
+  at `INFO`. So the counted budget is an **eighth** of the ceiling budget at `WARN` and below and a
+  **twelfth** at `INFO` and above — a 1.5x asymmetry, not the 2x a first pass assumed. Workloads with bodies under roughly two kilobytes still reach the count bound
   first and are unaffected. Set `maxEventLogSizeInBytes=0` to restore count-only bounding. When either
   bound is hit, MockServer discards the newest entries rather than failing, logs a single warning naming
   which bound was hit and its current value with remedies ordered cheapest-first, and counts discards
   in `mock_server_dropped_log_events`. Any `verify` with an upper bound (`never`, `atMost`, `exactly`,
   `once`, `between`) now **fails** rather than passing on incomplete evidence — this guard also covers
   the pre-existing case where the in-flight queue was simply full, which could previously let such a
-  `verify` pass silently. Reducing the log level to `WARN` or below doubles the byte budget and lets
+  `verify` pass silently. Reducing the log level to `WARN` or below widens the counted byte budget by half again (a twelfth to an eighth) and lets
   the log keep pace with incoming traffic without affecting whether a `verify` sees a given request.
 - Two new JVM-level Prometheus metrics on the endpoint (`/mockserver/metrics`). `jvm_runtime_info` is
   an info-style gauge (value always `1`) whose labels report the running JVM and garbage collector:
@@ -105,10 +118,14 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
   bytes and a fixed structural overhead (~2 KB) for each log entry and request/response model object,
   rather than raw body bytes alone. The previous body-only accounting caused a heap dump of 20,000
   retained ~1 KB-body entries to show 2.6× the declared budget in use at `WARN`/`ERROR`/`OFF`, and
-  4.8× at `INFO`/`DEBUG`/`TRACE`; with accurate counting those ratios are ~1.0× and ~1.6–2.2×
-  respectively. **This is a behaviour change:** the same `maxEventLogSizeInBytes` value now retains
-  fewer entries, because the old accounting under-counted. Workloads that relied on the previous
-  (larger) retention volume should raise `maxEventLogSizeInBytes` to compensate; the count bound
+  4.8x at `INFO`/`DEBUG`/`TRACE`. With accurate counting, re-measured on live heaps, those ratios are
+  **2.0x** at `WARN`/`ERROR`/`OFF` and **3.0x** at `INFO`/`DEBUG`/`TRACE`. (An earlier note here put the
+  `WARN` figure at ~1.0x; that is the ratio for a body retained ONCE, which is what a binary body does —
+  not what the decode path produces for the text and JSON workloads a byte budget exists to bound.) **This is a behaviour change, and it applies only if you SET
+  `maxEventLogSizeInBytes` explicitly** — the property existed before but was off by default, so this
+  affects the value you chose, not the new heap-derived default described above. For an explicit value,
+  the same number now retains fewer entries, because the old accounting under-counted what an entry
+  holds; raise it to compensate if you relied on the previous retention volume. The count bound
   (`maxLogEntries`) and entries with no request/response body are unaffected.
 - **The JUnit integrations now enable "dev mode" by default** (`mockserver-junit-jupiter`
   `MockServerExtension` and `mockserver-junit-rule` `MockServerRule`). Dev mode fixes the two

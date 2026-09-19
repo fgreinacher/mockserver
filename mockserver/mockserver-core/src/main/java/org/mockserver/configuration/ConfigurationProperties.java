@@ -1970,30 +1970,56 @@ public class ConfigurationProperties {
         return heapBased > 0 ? heapBased : Math.min(floor, cap);
     }
 
-    // Fraction of the heap-ceiling budget (heapAvailableInKB) allotted by default to the bytes the
-    // event log retains in request/response bodies, at a NON-rendering log level (WARN/ERROR/OFF).
+    // Fraction of the heap-ceiling budget (heapAvailableInKB) allotted by default to what the event
+    // log retains, at a NON-rendering log level (WARN/ERROR/OFF).
+    //
+    // THE NUMBER IS DERIVED FROM MEASUREMENT, NOT CHOSEN. Both divisors were originally set while
+    // LogEntry.estimatedHeapSize counted ONLY raw body bytes (434ce2a77, 49005f5c3); the weigher was
+    // made honest afterwards (f3ade3b73) and the divisors were never re-derived. Re-derived 2026-09-19
+    // against the honest weigher, on live heaps (jmap -histo:live, which forces a GC so it reports
+    // RETENTION, not garbage), holding N entries with text bodies:
+    //
+    //   real retained heap / counted bytes   ->   k_WARN = 2.0,  k_INFO = 3.0   (large-body asymptote)
+    //   marginal retained heap per body byte ->   WARN 2.006-2.022, INFO 3.019-3.036
+    //
+    // WHY k IS 2.0 AND NOT 1.0. BodyDecoderEncoder.bytesToBody builds a JsonBody/XmlBody/StringBody
+    // from BOTH the decoded String AND the raw byte[], and all three retain both as final fields. So a
+    // text or JSON body is held TWICE in production and counted ONCE by the weigher. At a rendering
+    // level the memoised message embeds the body as text a third time, which is the step from 2.0 to
+    // 3.0. (An earlier comment here recorded "~1.0x at WARN" from a heap dump; that is the figure for a
+    // body retained once, which is what a BINARY body does - not what the decode path produces for the
+    // text/JSON workload a byte budget exists to bound. The measurement was honest and about the wrong
+    // body shape.)
+    //
+    // Sizing: real retained heap R = k * budget, and the design intent stated below is a QUARTER of
+    // usable heap. So divisor = k / 0.25: WARN 2.0/0.25 = 8, INFO 3.0/0.25 = 12. At the previous 4/8
+    // the log could reach ~48-50% (WARN) and ~37% (INFO) of the heap ceiling in real bytes - not the
+    // quarter this comment claimed, and not "ample room" for the expectation store (itself heap-sized)
+    // plus in-flight Netty buffers plus the working set.
+    //
     // A quarter leaves ample room for the expectation store, in-flight Netty buffers and JVM overhead
     // while still bounding the body memory that the maxLogEntries count cap cannot see (a count cap
     // treats a 10 MB body the same as a 10-byte one).
-    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 4;
-    // Tighter divisor used at a RENDERING log level (INFO/DEBUG/TRACE). At those levels the log
-    // consumer renders every received-request / response entry to the log, which memoizes the formatted
-    // message string ON the retained entry for its whole life in the deque; for a JSON-body workload
-    // that message embeds the body as text, so it is roughly as large as the raw body bytes. The weigher
-    // (LogEntry.estimatedHeapSize) now counts each entry's body bytes, header bytes and a fixed
-    // structural overhead HONESTLY — but it deliberately does NOT count that message (it is
-    // level-dependent and is materialized only AFTER the weight is memoized, so counting it would break
-    // the add==evict weight invariant; see the estimatedHeapSize javadoc). So per COUNTED byte, a
-    // rendering-level entry still retains materially more real heap than a non-rendering one: measured on
-    // a live heap dump of 20,000 ~1 KB-body entries, real retained heap per counted byte is ~1.0x at WARN
-    // versus ~1.6-2.2x at INFO (the difference being the uncounted message, ~1.5x the body). That ~2x
-    // real-heap asymmetry between the levels is exactly what this 2x-tighter divisor equalizes: halving
-    // the counted budget at rendering levels keeps the REAL retained heap a similar fraction of the
-    // ceiling regardless of verbosity, which is what stops the default (INFO) configuration exhausting a
-    // small heap under sustained large-body load. WARN/ERROR keep the larger budget — they do not render
-    // these entries, so their retention is not inflated (the honest weigher lands them near 1.0x) and
-    // their coverage is not regressed.
-    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING = 8;
+    //
+    // ERR TOWARDS THE LARGER DIVISOR. Under-budgeting evicts entries early: a verify can miss a request
+    // that happened - recoverable, self-announced (eviction is logged), and fixed by raising
+    // maxEventLogSizeInBytes. Over-budgeting ends in the OutOfMemoryError this bound exists to prevent -
+    // fatal, unrecoverable, and on a shared instance it takes every consumer with it. k = 2.0/3.0 is the
+    // large-body CEILING, so smaller and binary bodies retain BELOW the quarter target: the error is
+    // always in the safe direction.
+    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 8;
+    // Tighter divisor at a RENDERING log level (INFO/DEBUG/TRACE), where the consumer renders every
+    // entry and memoises the formatted message ON the retained entry for its whole life in the deque.
+    // The weigher deliberately does NOT count that message (it is level-dependent and materialises only
+    // AFTER the weight is memoised, so counting it would break the add==evict weight invariant; see the
+    // estimatedHeapSize javadoc), which is why a rendering-level entry retains more real heap per
+    // COUNTED byte than a non-rendering one.
+    //
+    // The measured asymmetry is 3.0/2.0 = 1.5x, NOT the 2x the previous 8-vs-4 pair encoded. So this
+    // divisor is 1.5x the non-rendering one, which equalises REAL retained heap at ~a quarter of the
+    // ceiling at both levels - the point being that the default (INFO) configuration should not exhaust
+    // a small heap under sustained large-body load.
+    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING = 12;
 
     /**
      * True when {@code logLevel} renders every received-request / response log entry to the log
@@ -2010,9 +2036,14 @@ public class ConfigurationProperties {
      * Derive the default {@code maxEventLogSizeInBytes} — the byte budget bounding the event log's
      * retained request/response bodies — from the deterministic heap <em>ceiling</em>
      * ({@link #heapAvailableInKB()}), so it is a constant for the JVM's life and does not depend on
-     * allocation ordering. The divisor is log-level-aware: a quarter of the ceiling budget at a
-     * non-rendering level (WARN/ERROR/OFF), an eighth at a rendering level (INFO/DEBUG/TRACE) where
-     * each retained entry costs about twice as much real heap as the weigher counts (see
+     * allocation ordering. The divisor is log-level-aware, and is chosen so REAL retained heap lands
+     * at roughly a quarter of the ceiling at either level — which takes a different COUNTED budget at
+     * each, because a text body is retained twice (decoded String + raw bytes) and counted once, and a
+     * rendering level memoises a message embedding it a third time. Measured real-heap-per-counted-byte
+     * is 2.0x at WARN and 3.0x at INFO, so the counted budget is an EIGHTH of the ceiling budget at a
+     * non-rendering level (WARN/ERROR/OFF) and a TWELFTH at a rendering level (INFO/DEBUG/TRACE) — a
+     * 1.5x asymmetry, not the 2x an earlier pairing assumed (see
+     * {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR} and
      * {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}). The same value also bounds the in-flight
      * ring backlog in {@code MockServerEventLog}, so tightening it at rendering levels bounds both the
      * retained deque and the ring that the deque budget alone cannot see.
@@ -2083,7 +2114,7 @@ public class ConfigurationProperties {
         // resolved value INCLUDING the injected default under the property key and never invalidates it,
         // freezing it JVM-wide at whatever logLevel() was in force on the first read. Now that the
         // default is log-level-aware, a first read at WARN/ERROR (e.g. a CI perf run started with
-        // MOCKSERVER_LOG_LEVEL=ERROR) would pin the larger heap/4 budget for a server later running at
+        // MOCKSERVER_LOG_LEVEL=ERROR) would pin the larger heap/8 budget for a server later running at
         // INFO — silently disabling the OOM protection this default exists to provide, in the dangerous
         // direction. So honour only an EXPLICIT override and recompute the (uncached) default from the
         // current log level on every call — the same pattern, and for the same reason, as
@@ -2130,10 +2161,13 @@ public class ConfigurationProperties {
      * </p>
      * <p>
      * The default is derived from the JVM heap <em>ceiling</em>, so it is on by default and constant for
-     * the JVM's life: a quarter of the same ceiling-based budget that sizes {@code maxLogEntries} at a
-     * non-rendering log level (WARN/ERROR), and an eighth at a rendering level (INFO/DEBUG/TRACE), where
-     * each retained entry costs about twice its raw body bytes because the rendered message and derived
-     * copies are memoised on it. The same budget also bounds the bytes held by entries still waiting to
+     * the JVM's life. It is sized so REAL retained heap is about a quarter of that ceiling at either
+     * log level, which takes a different COUNTED budget at each: an eighth of the same ceiling-based
+     * budget that sizes {@code maxLogEntries} at a non-rendering level (WARN/ERROR), and a twelfth at a
+     * rendering level (INFO/DEBUG/TRACE). The difference is measured: a decoded text body is retained
+     * twice (the decoded String and the raw bytes) but counted once, so real heap is about 2.0x the
+     * counted figure at WARN, rising to about 3.0x at a rendering level where the memoised message
+     * embeds the body a third time — a 1.5x asymmetry, not the 2x an earlier pairing assumed. The same budget also bounds the bytes held by entries still waiting to
      * be processed, so it caps both the retained log and the processing backlog. Set it to {@code 0} to
      * disable the size-based limit and bound the log only by {@code maxLogEntries}. Whichever of the two
      * bounds is reached first evicts; eviction is announced once per server in the log and (with the

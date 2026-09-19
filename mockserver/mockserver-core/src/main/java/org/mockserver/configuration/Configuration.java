@@ -1736,7 +1736,7 @@ public class Configuration {
             // Honour any EXPLICIT override first (programmatic set / system property / env), then derive
             // the default from THIS instance's log level — not the static ConfigurationProperties.logLevel()
             // — because the default is log-level-aware: a server configured via configuration.logLevel(INFO)
-            // must get the INFO (heap/8) budget even when the global level differs. Mirrors the way
+            // must get the INFO (heap/12) budget even when the global level differs. Mirrors the way
             // maxLogEntries()/maxExpectations() consult the instance devMode field to bypass the static value.
             Long explicit = ConfigurationProperties.explicitMaxEventLogSizeInBytes();
             if (explicit != null) {
@@ -1754,11 +1754,14 @@ public class Configuration {
      * which {@link #maxLogEntries} cannot (a count cap treats a 10 MB body the same as a 10-byte one).
      * </p>
      * <p>
-     * The default is derived from the JVM heap ceiling and is on by default: a quarter of the
-     * ceiling-based budget that sizes {@link #maxLogEntries} at a non-rendering log level (WARN/ERROR),
-     * halved to an eighth at a rendering level (INFO/DEBUG/TRACE) where each retained entry costs about
-     * twice as much heap as its raw body bytes (the rendered message and derived copies are memoised on
-     * the entry). The same budget also bounds the bytes held by entries waiting to be processed, so it
+     * The default is derived from the JVM heap ceiling and is on by default. It is sized so REAL
+     * retained heap is about a quarter of that ceiling at either log level, which takes a different
+     * COUNTED budget at each: an eighth of the ceiling-based budget that sizes {@link #maxLogEntries}
+     * at a non-rendering level (WARN/ERROR), and a twelfth at a rendering level (INFO/DEBUG/TRACE).
+     * The difference is measured, not assumed — a decoded text body is retained twice (the decoded
+     * String and the raw bytes) but counted once, so real heap is about 2.0x the counted figure at
+     * WARN; at a rendering level the memoised message embeds the body a third time, taking it to about
+     * 3.0x. That is a 1.5x asymmetry between the levels, not the 2x an earlier pairing assumed. The same budget also bounds the bytes held by entries waiting to be processed, so it
      * caps both the retained log and the processing backlog. Set it to 0 to disable the size-based limit
      * and bound the log only by {@link #maxLogEntries}; whichever bound is reached first evicts.
      * </p>

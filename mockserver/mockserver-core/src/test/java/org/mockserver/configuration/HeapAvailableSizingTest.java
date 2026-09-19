@@ -5,6 +5,8 @@ import org.slf4j.event.Level;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.closeTo;
+import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.greaterThan;
 
 /**
@@ -174,27 +176,33 @@ public class HeapAvailableSizingTest {
     // ----- defaultMaxEventLogSizeInBytes: byte budget is a log-level-aware fraction of the ceiling -----
 
     @Test
-    public void shouldDeriveDefaultEventLogByteBudgetAsAQuarterOfTheHeapBudgetAtNonRenderingLevel() {
-        // WARN does not render entries, so retention is not inflated -> a quarter of the ceiling budget.
-        // 200,000 KB available -> a quarter is 50,000 KB -> 51,200,000 bytes
+    public void shouldDeriveDefaultEventLogByteBudgetSoRealRetentionIsAQuarterAtNonRenderingLevel() {
+        // The QUARTER is of REAL retained heap, not of counted bytes, and the two differ by a measured
+        // factor of 2.0 at WARN: BodyDecoderEncoder builds a Json/Xml/StringBody from BOTH the decoded
+        // String AND the raw byte[], so a text body is retained twice and counted once. Hence a divisor
+        // of 8 on counted bytes, which lands real retention at ~a quarter of the ceiling.
+        // 200,000 KB available -> an eighth is 25,000 KB -> 25,600,000 counted bytes -> ~2x that retained.
         long value = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
 
-        assertThat(value, is((200000L / 4) * 1024L));
-        assertThat(value, is(51_200_000L));
+        assertThat(value, is((200000L / 8) * 1024L));
+        assertThat(value, is(25_600_000L));
     }
 
     @Test
-    public void shouldHalveDefaultEventLogByteBudgetAtRenderingLevel() {
-        // INFO renders every entry, memoising the message + derived copies on the retained entry, so a
-        // retained entry costs ~2x its raw body bytes (measured ~3.7x vs ~1.9x at WARN). Halving the
-        // counted budget keeps the REAL retained heap a similar fraction of the ceiling. 200,000 KB ->
-        // an eighth is 25,000 KB -> 25,600,000 bytes, exactly half the WARN budget.
+    public void shouldTightenDefaultEventLogByteBudgetByTheMeasuredAsymmetryAtRenderingLevel() {
+        // INFO renders every entry and memoises the formatted message on it, which embeds the body as
+        // text a THIRD time (String + raw byte[] + message), so real-heap-per-counted-byte is 3.0 at
+        // INFO against 2.0 at WARN. The asymmetry is therefore 1.5x, NOT the 2x an earlier 8-vs-4 pair
+        // encoded, so the rendering divisor is 1.5x the non-rendering one: 12 vs 8. That equalises REAL
+        // retained heap at ~a quarter of the ceiling at BOTH levels, which is the actual invariant.
+        // 200,000 KB -> a twelfth is 16,666 KB -> 17,065,984 bytes.
         long info = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.INFO);
         long warn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
 
-        assertThat(info, is((200000L / 8) * 1024L));
-        assertThat(info, is(25_600_000L));
-        assertThat(info, is(warn / 2));
+        assertThat(info, is((200000L / 12) * 1024L));
+        // the counted budget is tighter at a rendering level, by the measured 1.5x asymmetry
+        assertThat(info, is(lessThan(warn)));
+        assertThat((double) warn / info, is(closeTo(1.5d, 0.01d)));
     }
 
     @Test
@@ -207,8 +215,8 @@ public class HeapAvailableSizingTest {
         // logLevel() returns null when the level is OFF — treated as non-rendering (nothing is rendered)
         assertThat(ConfigurationProperties.rendersEveryLogEntry(null), is(false));
 
-        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.DEBUG), is((200000L / 8) * 1024L));
-        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.ERROR), is((200000L / 4) * 1024L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.DEBUG), is((200000L / 12) * 1024L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.ERROR), is((200000L / 8) * 1024L));
     }
 
     @Test
@@ -229,10 +237,10 @@ public class HeapAvailableSizingTest {
         long smallHeapWarn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(500_000L, Level.WARN);
         long largeHeapWarn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(4_000_000L, Level.WARN);
 
-        assertThat(smallHeapInfo, is((500_000L / 8) * 1024L));
-        assertThat(largeHeapInfo, is((4_000_000L / 8) * 1024L));
+        assertThat(smallHeapInfo, is((500_000L / 12) * 1024L));
+        assertThat(largeHeapInfo, is((4_000_000L / 12) * 1024L));
         assertThat(largeHeapInfo > smallHeapInfo, is(true));
-        assertThat(smallHeapWarn, is((500_000L / 4) * 1024L));
+        assertThat(smallHeapWarn, is((500_000L / 8) * 1024L));
         assertThat(largeHeapWarn > smallHeapWarn, is(true));
     }
 }
