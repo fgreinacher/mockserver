@@ -79,9 +79,21 @@ public class MatchingBenchmark {
      *       serialisation) once per candidate expectation on baseline — the path Unit D's per-request
      *       XML→JSON cache targets. BODY is matched before HEADERS in the field order, so a blank
      *       method/path on each expectation reaches the body matcher for ALL N expectations.</li>
+     *   <li>{@code JSON_DEEP_DEFER} / {@code JSON_DEEP_REJECT} — every expectation carries a
+     *       {@code JsonBody} (default {@code ONLY_MATCHING_FIELDS}) that is a nested object
+     *       <em>containing an array of objects</em>, so {@code JsonStringMatcher} routes through the
+     *       json-unit {@code ComparisonMatrix} the flat {@code JSON_BODY} arm never constructs — the
+     *       exact shape the structural pre-filter targets. In {@code JSON_DEEP_DEFER} the request
+     *       carries all the expected object keys (so the pure-negative pre-filter CANNOT prove a
+     *       non-match and defers to the full diff — measuring the pre-filter's fixed overhead), yet a
+     *       differing scalar makes the diff report not-similar so the scan still visits all N. In
+     *       {@code JSON_DEEP_REJECT} the request is missing a nested expected key, so the pre-filter
+     *       fast-rejects before the matrix is built — measuring the win. BODY precedes HEADERS in the
+     *       field order and the expectations carry blank method/path, so the body matcher is reached
+     *       for ALL N.</li>
      * </ul>
      */
-    @Param({"EXACT", "REGEX", "JSON_BODY", "HEADERS_MISS", "XML_BODY"})
+    @Param({"EXACT", "REGEX", "JSON_BODY", "HEADERS_MISS", "XML_BODY", "JSON_DEEP_DEFER", "JSON_DEEP_REJECT"})
     public String matcherType;
 
     /**
@@ -176,6 +188,16 @@ public class MatchingBenchmark {
                 r.withHeader(new Header("Content-Type", "application/xml"));
                 return r;
             }
+            case "JSON_DEEP_DEFER":
+                // carries EVERY expected object key (order.id, order.customer.{name,tier}, order.items),
+                // so the structural pre-filter cannot prove a non-match and defers to json-unit, which
+                // builds the ComparisonMatrix over the items array and finds order.id != any expected id
+                // -> not similar, scan continues. Measures the pre-filter's fixed defer overhead.
+                return request().withBody(new JsonBody(JSON_DEEP_DEFER_BODY, JsonBody.DEFAULT_MATCH_TYPE));
+            case "JSON_DEEP_REJECT":
+                // missing the nested order.customer.tier key every expectation requires, so the
+                // pre-filter fast-rejects before json-unit builds the ComparisonMatrix. Measures the win.
+                return request().withBody(new JsonBody(JSON_DEEP_REJECT_BODY, JsonBody.DEFAULT_MATCH_TYPE));
             default:
                 // matches none of the registered expectations -> full scan of all N
                 return request()
@@ -210,12 +232,48 @@ public class MatchingBenchmark {
                         "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":" + (1000000 + i) + "}},\"required\":[\"id\"]}"
                     ))
                 ).thenRespond(response().withBody("x" + i));
+            case "JSON_DEEP_DEFER":
+            case "JSON_DEEP_REJECT":
+                // blank method/path -> BODY is reached for all N; a nested-object-with-array-of-objects
+                // JsonBody (default ONLY_MATCHING_FIELDS) whose distinct order.id per expectation means
+                // no request ever matches, forcing the full scan through the json-unit path.
+                return new Expectation(
+                    request().withBody(new JsonBody(deepExpectedBody(i), JsonBody.DEFAULT_MATCH_TYPE))
+                ).thenRespond(response().withBody("d" + i));
             case "EXACT":
             default:
                 return new Expectation(request().withMethod("GET").withPath("/exact/path-" + i))
                     .thenRespond(response().withBody("e" + i));
         }
     }
+
+    /**
+     * The expected JSON body for the JSON_DEEP_* arms: a nested object CONTAINING AN ARRAY OF OBJECTS,
+     * so matching routes through json-unit's {@code ComparisonMatrix}. Each expectation gets a distinct
+     * {@code order.id} so no request matches (forcing the full scan).
+     */
+    private static String deepExpectedBody(int i) {
+        return "{\"order\":{\"id\":" + i + ",\"customer\":{\"name\":\"Acme\",\"tier\":\"gold\"},"
+            + "\"items\":[{\"sku\":\"AAA-111\",\"qty\":10,\"price\":19.99},"
+            + "{\"sku\":\"BBB-222\",\"qty\":5,\"price\":49.50}]}}";
+    }
+
+    /**
+     * DEFER request: carries every expected object key (order.id, order.customer.{name,tier},
+     * order.items) so the structural pre-filter cannot prove a non-match and defers to json-unit; the
+     * order.id (999999) matches no expectation so json-unit reports not-similar after building the matrix.
+     */
+    private static final String JSON_DEEP_DEFER_BODY =
+        "{\"order\":{\"id\":999999,\"customer\":{\"name\":\"Acme\",\"tier\":\"gold\"},"
+            + "\"items\":[{\"sku\":\"ZZZ-999\",\"qty\":0,\"price\":0.0}]}}";
+
+    /**
+     * REJECT request: structurally close but MISSING the nested order.customer.tier key every
+     * expectation requires, so the pre-filter fast-rejects before json-unit builds the ComparisonMatrix.
+     */
+    private static final String JSON_DEEP_REJECT_BODY =
+        "{\"order\":{\"id\":999999,\"customer\":{\"name\":\"Acme\"},"
+            + "\"items\":[{\"sku\":\"ZZZ-999\",\"qty\":0,\"price\":0.0}]}}";
 
     /** A non-trivial (~1KB), nested XML document so the DOM parse cost is visible per conversion. */
     private static final String XML_BODY =

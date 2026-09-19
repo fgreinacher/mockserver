@@ -12,12 +12,14 @@ import net.javacrumbs.jsonunit.core.listener.DifferenceContext;
 import net.javacrumbs.jsonunit.core.listener.DifferenceListener;
 import org.apache.commons.lang3.StringUtils;
 import org.hamcrest.Matcher;
+import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -177,15 +179,33 @@ public class JsonStringMatcher extends BodyMatcher<String> {
                         expected = matcher;
                         actual = matched;
                     }
-                    result = Diff
-                        .create(
-                            expected,
-                            actual,
-                            "",
-                            "",
-                            diffConfig
-                        )
-                        .similar();
+                    // Pure NEGATIVE structural pre-check on the pre-parsed Jackson nodes. It can
+                    // only fast-reject a PROVABLE non-match or defer ("run the real diff"), so it
+                    // can never turn a non-match into a match — the cheap reject saves json-unit
+                    // building a ComparisonMatrix (the profiled allocation/time hot spot) on bodies
+                    // that cannot possibly be similar.
+                    //
+                    // GATED OFF when detailedMatchFailures is enabled — do NOT "optimise" this gate
+                    // away. A pre-filtered reject skips json-unit's difference listener, so the
+                    // failure report would fall back to the generic "json match failed" text instead
+                    // of json-unit's specific "missing element at ..." diagnostic. Gating on
+                    // detailedMatchFailures makes the change OBSERVATIONALLY IDENTICAL: the verdict
+                    // is always identical, and whenever anyone has asked for diagnostics the exact
+                    // json-unit message is preserved — while the full win is kept in the shipped
+                    // default configuration (detailedMatchFailures defaults to false).
+                    if (useJacksonNodes && !detailedMatchFailures() && !canMatch((JsonNode) expected, (JsonNode) actual)) {
+                        result = false;
+                    } else {
+                        result = Diff
+                            .create(
+                                expected,
+                                actual,
+                                "",
+                                "",
+                                diffConfig
+                            )
+                            .similar();
+                    }
                 } catch (Throwable throwable) {
                     if (context != null) {
                         context.addDifference(mockServerLogger, throwable, "exception while perform json match failed expected:{}found:{}failed because:{}", this.matcher, matched, describe(throwable));
@@ -223,6 +243,87 @@ public class JsonStringMatcher extends BodyMatcher<String> {
         return StringUtils.isNotBlank(message)
             ? throwable.getClass().getName() + ": " + message
             : throwable.getClass().getName();
+    }
+
+    /**
+     * Whether detailed match-failure reports are enabled, read from the same instance
+     * {@link org.mockserver.configuration.Configuration} the logger already carries (the route the
+     * sibling matchers use), falling back to {@link ConfigurationProperties} when no instance
+     * configuration is set — exactly the {@code null}-handling contract documented on
+     * {@link MockServerLogger#getConfiguration()}. Used only to gate the structural pre-filter off
+     * when a caller has asked for detailed diagnostics, so the pre-filter never degrades a failure
+     * message.
+     */
+    private boolean detailedMatchFailures() {
+        org.mockserver.configuration.Configuration configuration =
+            mockServerLogger != null ? mockServerLogger.getConfiguration() : null;
+        return configuration != null
+            ? configuration.detailedMatchFailures()
+            : ConfigurationProperties.detailedMatchFailures();
+    }
+
+    /**
+     * Pure NEGATIVE structural pre-check over pre-parsed Jackson nodes: returns {@code false} ONLY
+     * when a non-match is PROVABLE, and {@code true} meaning "cannot prove a non-match — run the
+     * full json-unit diff". It MUST never return {@code false} for a pair json-unit would call
+     * similar; the shape of the checks is the correctness argument — it can only fast-reject or
+     * defer, never accept, so it can never turn a non-match into a match. The rules are independent
+     * of {@link MatchType}: each rejection ("expected object vs non-object actual", "expected key
+     * absent from actual", "expected array vs non-array actual") is a non-match under STRICT and
+     * ONLY_MATCHING_FIELDS alike.
+     */
+    private static boolean canMatch(JsonNode expected, JsonNode actual) {
+        if (expected == null) {
+            return true;
+        }
+        if (expected.isObject()) {
+            // an expected object can only be similar to an actual object
+            if (actual == null || !actual.isObject()) {
+                return false;
+            }
+            Iterator<Map.Entry<String, JsonNode>> fields = expected.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                JsonNode expectedValue = field.getValue();
+                // A JSON null expected value carries no key-existence obligation we can rely on
+                // (json-unit's null handling is option-dependent), and a json-unit."..." placeholder
+                // is a matcher directive whose semantics — including whether a missing key still
+                // matches — live entirely in json-unit. Defer both: skipping a field only ever
+                // widens what we defer, which is always safe for a pure-negative filter.
+                if (expectedValue.isNull() || isPlaceholder(expectedValue)) {
+                    continue;
+                }
+                JsonNode actualValue = actual.get(field.getKey());
+                if (actualValue == null) {
+                    // expected a concrete field that actual does not have -> "missing element"
+                    return false;
+                }
+                // recurse THROUGH OBJECTS ONLY; array element/order/subset semantics and every
+                // scalar comparison (regex, tolerance, matchNumbersAsStrings, custom matchers)
+                // stay entirely with json-unit
+                if (expectedValue.isObject() && !canMatch(expectedValue, actualValue)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (expected.isArray()) {
+            // check ONLY that actual is an array; never inspect elements
+            return actual != null && actual.isArray();
+        }
+        // scalars: never reject on a value
+        return true;
+    }
+
+    /**
+     * Whether a JSON node is a json-unit placeholder string (e.g. {@code ${json-unit.ignore-element}},
+     * {@code ${json-unit.any-string}}, {@code ${json-unit.matches:name}}). Detection is deliberately
+     * broad — matching the {@code ${json-unit.} marker anywhere in the string — because
+     * over-detecting only defers a field to json-unit (safe for a pure-negative filter), whereas
+     * under-detecting could fast-reject a field json-unit would have matched.
+     */
+    private static boolean isPlaceholder(JsonNode value) {
+        return value.isTextual() && value.textValue().contains("${json-unit.");
     }
 
     private static class Difference implements DifferenceListener {
