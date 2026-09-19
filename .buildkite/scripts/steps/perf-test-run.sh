@@ -1721,13 +1721,17 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
     # — a control proving nothing. The product got faster and the calibration went
     # stale; that is the ONLY reason this number changed.
     #
-    # 1200 was measured, not guessed. On a post-fix image against this exact SUT
-    # shape the ratio climbs monotonically — ~2.0 at 300, ~2.6 at 600, ~4.5 at 900,
-    # min 6.08 across repeats at 1200 — with zero stream errors, zero match errors
-    # and full delivery at every level.
+    # 600 is measured ON CI, which is what makes it trustworthy. The laptop curve
+    # (~2.0 at 300, ~2.6 at 600, ~4.5 at 900, min 6.08 at 1200) led to a default of
+    # 1200 via an extrapolation that turned out to be WRONG IN SHAPE: CI was assumed
+    # to need MORE concurrency than a laptop for the same ratio, because at 300 CI
+    # read 1.056 where the laptop read ~2.0. In fact CI has a far SHARPER knee — the
+    # laptop's own contention had flattened its curve. Measured on CI:
+    #     300  -> 1.056  (below the knee; the control proved nothing)
+    #     600  -> 2.536  (just past it — where the design wants to sit)
+    #     1200 -> 93.8   (deep in collapse, ~40x past the knee)
     #
-    # THE KNEE IS BOX-DEPENDENT, so treat 1200 as calibrated-with-margin rather than
-    # exact: those figures come from a developer laptop, where the same concurrency
+    # THE KNEE IS BOX-DEPENDENT, which is exactly why the CI figure governs: those figures come from a developer laptop, where the same concurrency
     # 300 read ~2.0 against CI's 1.056 on identical code. A 1-CPU quota buys
     # different real throughput on a dedicated CI core than on a contended laptop
     # vCPU, so CI needs MORE concurrency than the laptop for the same ratio. 1200
@@ -1739,7 +1743,7 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
     # => residence ~192 s exceeds the 90 s window, so ~300 x 90 x 200 events x ~30 B
     # ~= 166 MB — still far under the ~768 MB heap of the 1 GB SUT (and no OOM was
     # observed at 1200 in any run).
-    S_CONC="${K6_STREAM_CONCURRENCY:-1200}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
+    S_CONC="${K6_STREAM_CONCURRENCY:-600}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
     # No `sl` for S_LOAD on purpose: the under-load sample is taken INSIDE the load
     # window (STREAM_LOAD_START + sst + 3), not after it, so its duration is never needed.
     sw="$(to_secs "$S_WARMUP")"; sb="$(to_secs "$S_BASE")"; sst="$(to_secs "$S_SETTLE")"
