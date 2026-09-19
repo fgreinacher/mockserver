@@ -1705,7 +1705,10 @@ STREAMING_JSON='{}'
 if [ "${PERF_STREAMING:-true}" = "true" ]; then
   if command -v python3 >/dev/null 2>&1; then
     S_WARMUP="${K6_STREAM_WARMUP:-20s}"; S_BASE="${K6_STREAM_MATCH_BASELINE_DURATION:-45s}"
-    S_LOAD="${K6_STREAM_LOAD_DURATION:-90s}"; S_SETTLE="${K6_STREAM_SETTLE:-10s}"
+    # No S_LOAD: k6 receives K6_STREAM_LOAD_DURATION directly below, and only when it is
+    # SET — so a script-side default here would never reach k6 (config.js supplies the real
+    # default). Keeping one would be a value that looks like configuration and configures nothing.
+    S_SETTLE="${K6_STREAM_SETTLE:-10s}"
     # Default concurrency 1200 (not config.js's light-local 100), at delay 20 ms
     # against the dedicated 1-CPU / 2-scheduler-thread / 2-event-loop-thread SUT
     # below. WHY IT IS NOT 300 ANY MORE, which is the useful part of this comment:
@@ -1737,7 +1740,9 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
     # ~= 166 MB — still far under the ~768 MB heap of the 1 GB SUT (and no OOM was
     # observed at 1200 in any run).
     S_CONC="${K6_STREAM_CONCURRENCY:-1200}"; S_DELAY="${K6_STREAM_DELAY_MS:-20}"; S_PATH="${K6_STREAM_PATH:-/stream}"
-    sw="$(to_secs "$S_WARMUP")"; sb="$(to_secs "$S_BASE")"; sl="$(to_secs "$S_LOAD")"; sst="$(to_secs "$S_SETTLE")"
+    # No `sl` for S_LOAD on purpose: the under-load sample is taken INSIDE the load
+    # window (STREAM_LOAD_START + sst + 3), not after it, so its duration is never needed.
+    sw="$(to_secs "$S_WARMUP")"; sb="$(to_secs "$S_BASE")"; sst="$(to_secs "$S_SETTLE")"
     STREAM_LOAD_START=$(( sw + sb ))
     READER="$REPO_ROOT/mockserver-performance-test/k6/tools/sse-fidelity-reader.py"
     # --- dedicated, deliberately-constrained streaming SUT ---------------------
@@ -1822,18 +1827,18 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
     FID_LOAD="$(cat "$OUT_DIR/fidelity-load.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$FID_LOAD" || FID_LOAD='{}'
     HEAP_PER_STREAM="$(awk -v a="${STREAM_HEAP_IDLE:-}" -v b="${STREAM_HEAP_LOAD:-}" -v n="$S_CONC" 'BEGIN{ if(a!=""&&b!=""&&n+0>0&&(b-a)>0) printf "%.1f",(b-a)/n; else print "null" }')"
     STREAMING_JSON="$(jq -c \
-      --argjson fi "$FID_IDLE" --argjson fl "$FID_LOAD" \
+      --argjson fid "$FID_IDLE" --argjson fl "$FID_LOAD" \
       --argjson hi "${STREAM_HEAP_IDLE:-null}" --argjson hl "${STREAM_HEAP_LOAD:-null}" \
       --argjson hps "${HEAP_PER_STREAM:-null}" '
       (.streaming // {}) as $s | $s + {
-        intertoken_error_idle_p50_ms: ($fi.error_p50_ms // null),
-        intertoken_error_idle_p95_ms: ($fi.error_p95_ms // null),
-        intertoken_error_idle_p99_ms: ($fi.error_p99_ms // null),
+        intertoken_error_idle_p50_ms: ($fid.error_p50_ms // null),
+        intertoken_error_idle_p95_ms: ($fid.error_p95_ms // null),
+        intertoken_error_idle_p99_ms: ($fid.error_p99_ms // null),
         intertoken_error_load_p50_ms: ($fl.error_p50_ms // null),
         intertoken_error_load_p95_ms: ($fl.error_p95_ms // null),
         intertoken_error_load_p99_ms: ($fl.error_p99_ms // null),
-        intertoken_error_p95_ratio: (if (($fi.error_p95_ms // 0) > 0 and $fl.error_p95_ms != null) then (($fl.error_p95_ms / $fi.error_p95_ms) * 1000 | round) / 1000 else null end),
-        intertoken_reader_streams_idle: ($fi.streams_ok // null),
+        intertoken_error_p95_ratio: (if (($fid.error_p95_ms // 0) > 0 and $fl.error_p95_ms != null) then (($fl.error_p95_ms / $fid.error_p95_ms) * 1000 | round) / 1000 else null end),
+        intertoken_reader_streams_idle: ($fid.streams_ok // null),
         intertoken_reader_streams_load: ($fl.streams_ok // null),
         heap_idle_floor_bytes: $hi, heap_streaming_floor_bytes: $hl, heap_bytes_per_stream: $hps
       }' <<<"$K6_STREAM_OUT")"
