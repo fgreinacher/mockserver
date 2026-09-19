@@ -1842,6 +1842,53 @@ on server threads at all.**
 `ThreadLocalMap$Entry` — the gap is the stale-slot accumulation. Cheaper and deterministic: a
 weak-reference unit test in the shape of the existing `InFlightRequest` retention test.
 
+### G5. The daily perf run is skipped by any master commit that lands while it queues
+
+Found 2026-09-19 by asking why `mockserver-infra`'s "assert perf baseline is fresh" step reds
+**every** master build. It is not a flake and it is not caused by any code change — it fails on
+docs-only commits too. It is correct, and it is reporting a real outage.
+
+The chain:
+
+1. `terraform/buildkite-pipelines/pipelines.tf:283` sets `skip_intermediate_builds = true` with
+   **no branch filter**, for every pipeline via a shared `for_each`.
+2. The daily perf build is created at 04:00 and then **queues** — the perf queue is
+   scale-to-zero with `max_size=1`, so it waits for an agent to boot, and longer still if any
+   other perf build is running.
+3. Any push to master during that wait creates a newer build, and the queued daily is skipped.
+4. `perf-baseline-freshness.sh` then reports the last completed **scheduled** run as `skipped`,
+   not passed, and fails — which is exactly what it exists to do.
+
+The evidence is a clean correlation between the gap to the next build and the daily's fate:
+
+| daily | created | next build | outcome |
+|---|---|---|---|
+| #272 | 2026-09-18 04:00 | +5,437 s (~90 min) | **ran** (then failed on its own merits — the SUT crash) |
+| #312 | 2026-09-19 04:00 | **+272 s (~4.5 min)** | **skipped before it started** |
+
+**The rationale for leaving the filter off is recorded in the Terraform, and it is sound for
+every pipeline except this one.** The comment at `pipelines.tf:278-280` says skipping "still
+applies to queued (not-yet-started) builds on all branches — those report as `skipped`
+(neutral), not red, so they are left unfiltered." That reasoning treats a build as a *commit
+validation*, where skipping an obsolete one is free because a newer commit supersedes it. **For
+a scheduled perf run the build IS the measurement**, and nothing supersedes it — a skipped daily
+means no measurement happened that day. The setting was chosen against the wrong model of what
+the build is for.
+
+This is a third, independent cause of item 19 never firing: even with the notify-only gating bug
+fixed and the Maven ordering already fixed, **the daily cannot persist a baseline on any day
+master is busy** — and master is busy most days. It also explains why only two scheduled builds
+appear in the last hundred: the rest were skipped or crowded out.
+
+*Fix (needs approval — Terraform/infra):* give `skip_intermediate_builds` a
+`!master` branch filter mirroring the `cancel_intermediate_builds_branch_filter` two lines
+above, or scope the exemption to the perf pipeline alone. Prefer the narrower change: the
+existing behaviour is deliberate and correct for the commit-validation pipelines that share the
+`for_each`.
+
+*Verification after the change:* a daily that starts despite a master push landing during its
+queue wait, and `perf-baseline-freshness.sh` going green on the next master build.
+
 ### Confirmed non-gaps — checked and found already sound
 
 Recorded because a verified non-gap is worth as much as a finding, and stops the next sweep
