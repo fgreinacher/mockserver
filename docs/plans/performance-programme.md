@@ -1890,9 +1890,32 @@ It is driven by control-plane churn, not request data, so it is a slow-leak and 
 concern rather than a denial-of-service vector. **This plan examines no `ThreadLocal` retention
 on server threads at all.**
 
-*Measurement:* churn expectations in a soak and compare `jmap -histo` against `-histo:live` on
-`ThreadLocalMap$Entry` — the gap is the stale-slot accumulation. Cheaper and deterministic: a
-weak-reference unit test in the shape of the existing `InFlightRequest` retention test.
+**MEASURED 2026-09-19 — largely REFUTED, and downgraded to tidiness.** A deterministic
+weak-reference reproducer against the real `Expectation` settles it:
+
+- **It is not a retention leak.** The `ThreadLocalMap` key is a `WeakReference`, so an
+  instance-field `ThreadLocal` does **not** pin its owner — the cleared `Expectation` is collected
+  normally. The finding above implied otherwise; that part is wrong.
+- What lingers is only the stale entry's **value slot**, a boxed `Integer` usually inside the
+  `-128..127` cache, reachable through the live pooled thread's map until its next map operation.
+- **And the hot path is its own cleaner.** `recordMatch` calls `lastRotationSnapshot.set(...)` on
+  **every** match (`Expectation.java:1447,1449` — both branches), and a `set` performs
+  `ThreadLocalMap`'s incremental expunge. So the very traffic that creates stale slots reclaims
+  them. Demonstrated: after unrelated `ThreadLocal` churn on the same live thread, the leaked
+  value is reclaimed.
+
+The reproducer was degrade-tested and is genuinely mechanism-sensitive: two methods assert
+**opposite** outcomes of the identical probe, differing only by whether `remove()` ran, and both
+pass — so the leaky-case assertion would fail against a fixed implementation.
+
+*The test was deliberately NOT committed*, and the reasoning is worth keeping: it encodes the
+current leaky behaviour as an invariant, so it would become a **fix-blocker** the day someone adds
+the one-line `remove()`. Guarding a negligible, self-healing cost with a GC-and-reflection test is
+poor value, and a test that must be fought to fix the thing it describes is worse than no test.
+
+*Disposition:* close G4 as a low-priority tidiness item. If ever actioned, the cleaner fix is to
+stop using a `ThreadLocal` for the rotation snapshot at all — thread the snapshot through the
+`selectFromResponses` call path — rather than adding a `remove()`.
 
 ### G5. The daily perf run is skipped by any master commit that lands while it queues
 
@@ -1995,11 +2018,41 @@ is structurally incapable of showing either. This is the programme's recurring s
 instrument that runs, passes honestly, and is about the wrong subject — here the wrong
 *dimension* rather than the wrong quantity.
 
-*Measurement, and it is cheap because the arm already exists:* add `@Threads({1,4,8})` to
-`MatchingBenchmark`'s `REGEX` param and compare against a `regexMatchingTimeoutMillis=0`
-inline control. Report time/op and `gc.alloc.rate.norm` at each thread count. **Refuted** if
-per-op cost and allocation stay flat with thread count and the inline control is no cheaper;
-**confirmed** if they scale with threads or inline is materially cheaper.
+**MEASURED 2026-09-19 — CONFIRMED, and it is a performance problem rather than a code smell.**
+`MatchingTimeoutHandoffBenchmark` (JMH, `-f 1 -wi 5 -i 5 -prof gc`, 14-core laptop):
+
+| threads | pool (us/op) | inline (us/op) | **ratio** |
+|---:|---:|---:|---:|
+| 1 | 6.124 | 0.044 | **~139x** |
+| 4 | 18.677 | 0.045 | **~415x** |
+| 8 | 51.577 | 0.120 | ~430x (noisy) |
+
+The regex evaluation itself is the 0.044 us inline figure. **Everything above it is hand-off
+tax** — about 6 us to wrap 44 ns of work — plus a fixed **+104 B/op** for the task wrapper and
+`FutureTask`, independent of thread count. Pool-path time scales 3.0x then 8.4x with thread count
+while the inline path stays flat: the contention-plus-blocking signature the finding predicted.
+
+**The arms were proved to take different paths** before any ratio was believed, using the
+executor's own submitted-task counter: `timeout=5000` gives a submission delta of **1**,
+`timeout=0` gives **0**. So `regexMatchingTimeoutMillis=0` genuinely means inline — the `<= 0`
+disable branch, verified in code and at runtime, not an assumed sentinel. Per-trial teardown
+confirmed it every run: pool trials 1.6-2.1M submissions, inline trials 0.
+
+**The saturation comment is now quantified rather than asserted.** The pool caps at exactly
+**224 = cores x 16**, and the `AbortPolicy` inline fallback IS reachable above it (288 submitters
+-> 224 accepted, 64 inline). With a fixed 5 event loops feeding it, production cannot drive more
+than ~5 concurrent matches in, so "effectively unreachable under realistic concurrency" holds
+empirically — but it would stop holding for any future caller that escapes the 5-loop
+bottleneck, virtual threads being the obvious one.
+
+*Caveats:* the `-t 8` figure carries +/-42 us, over 80% of its mean — directional only. The
+trustworthy results are the single-thread ~6 us overhead (+/-1) and the ratios. This measures the
+hand-off primitive in isolation, not end-to-end throughput, and `-t 8` drives more concurrent
+pool pressure than a 5-loop server ever would — but each of those 5 loops still pays the ~6 us
+tax per non-literal match, which is the production-relevant number.
+
+*Not wired to a gate:* research, laptop-noisy at thread counts above 1, and there is no active
+change to guard against regressing.
 
 *One assumption in the code worth testing at the same time:* the saturation fallback runs the
 match inline with a WARN, and its comment calls that path "effectively unreachable under
