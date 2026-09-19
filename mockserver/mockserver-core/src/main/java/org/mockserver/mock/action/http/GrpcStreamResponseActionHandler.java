@@ -108,7 +108,7 @@ public class GrpcStreamResponseActionHandler {
         final String breakpointClientId;
         if (streamBreakpointsActive) {
             streamId = (request.getLogCorrelationId() != null
-                ? request.getLogCorrelationId() : java.util.UUID.randomUUID().toString()) + "-grpc-stream";
+                ? request.getLogCorrelationId() : org.mockserver.uuid.UUIDService.getNonSecureUUID()) + "-grpc-stream";
             reqMethod = request.getMethod() != null ? request.getMethod().getValue() : null;
             reqPath = request.getPath() != null ? request.getPath().getValue() : null;
             breakpointClientId = streamBreakpointMatcher.getClientId();

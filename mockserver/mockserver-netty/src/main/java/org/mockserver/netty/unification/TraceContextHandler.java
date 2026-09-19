@@ -7,8 +7,7 @@ import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.telemetry.TraceContextAttributes;
 import org.mockserver.telemetry.W3CTraceContext;
-
-import java.util.UUID;
+import org.mockserver.uuid.UUIDService;
 
 /**
  * Netty handler that extracts W3C {@code traceparent} / {@code tracestate}
@@ -84,12 +83,17 @@ public class TraceContextHandler extends ChannelDuplexHandler {
     }
 
     /**
-     * Generate a lowercase hex string of the specified length from random UUIDs.
+     * Generate a lowercase hex string of the specified length from random (version 4) UUIDs.
+     * The W3C {@code traceparent} contract forbids an all-zero trace/span id; that is guaranteed
+     * structurally here because a v4 UUID always has {@code '4'} in the version nibble (hex position
+     * 12) and one of {@code '8'/'9'/'a'/'b'} in the variant nibble (position 16), so the hex string can
+     * never be all zeros. A maintainer swapping {@link UUIDService#getNonSecureUUID()} for a different
+     * fast RNG MUST re-verify that non-zero property holds for the replacement.
      */
     static String randomHexString(int length) {
         StringBuilder sb = new StringBuilder(length);
         while (sb.length() < length) {
-            sb.append(UUID.randomUUID().toString().replace("-", ""));
+            sb.append(UUIDService.getNonSecureUUID().replace("-", ""));
         }
         return sb.substring(0, length);
     }

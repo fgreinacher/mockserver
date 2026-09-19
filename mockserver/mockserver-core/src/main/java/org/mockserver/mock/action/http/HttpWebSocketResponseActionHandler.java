@@ -74,7 +74,7 @@ public class HttpWebSocketResponseActionHandler {
         final boolean useWsDispatch;
         final String breakpointClientId;
         String correlationId = (request.getLogCorrelationId() != null
-            ? request.getLogCorrelationId() : java.util.UUID.randomUUID().toString());
+            ? request.getLogCorrelationId() : org.mockserver.uuid.UUIDService.getNonSecureUUID());
         if (streamBreakpointsActive) {
             streamId = correlationId + "-ws-stream";
             reqMethod = request.getMethod() != null ? request.getMethod().getValue() : null;

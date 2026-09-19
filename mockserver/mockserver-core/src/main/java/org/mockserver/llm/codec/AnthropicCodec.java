@@ -11,12 +11,12 @@ import org.mockserver.llm.ProviderCodec;
 import org.mockserver.llm.StreamingPhysicsExpander;
 import org.mockserver.llm.TokenCounter;
 import org.mockserver.model.*;
+import org.mockserver.uuid.UUIDService;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.model.SseEvent.sseEvent;
@@ -431,10 +431,10 @@ public class AnthropicCodec implements ProviderCodec {
     }
 
     private static String randomBase62(int length) {
-        String uuid = UUID.randomUUID().toString().replace("-", "");
+        String uuid = UUIDService.getNonSecureUUID().replace("-", "");
         // Pad if needed by appending another UUID
         while (uuid.length() < length) {
-            uuid = uuid + UUID.randomUUID().toString().replace("-", "");
+            uuid = uuid + UUIDService.getNonSecureUUID().replace("-", "");
         }
         return uuid.substring(0, length);
     }

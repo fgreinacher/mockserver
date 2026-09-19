@@ -159,7 +159,7 @@ public class CrudDataStore {
             item.put(idField, id);
             return String.valueOf(id);
         } else {
-            String id = UUIDService.getUUID();
+            String id = UUIDService.getNonSecureUUID();
             item.put(idField, id);
             return id;
         }

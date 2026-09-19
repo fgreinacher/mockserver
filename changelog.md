@@ -89,6 +89,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   client-registration ids, client-facing callback and breakpoint correlation ids, TLS keystore file
   names and cluster node ids — are unchanged and still use the secure generator. The ids are standard
   random (version 4) UUIDs as before, so nothing user-visible changes about their format or uniqueness.
+- Extending that change, the remaining hot-path identifiers that reached the same shared PRNG through
+  `java.util.UUID.randomUUID()` now use the fast, contention-free source too. `java.util.UUID.randomUUID()`
+  draws from the JDK's single static `SecureRandom` — the *same* lock as the shared `SecureRandom` above,
+  reached by a different route — so these sites carried the same contention. Moved: the per-request
+  **W3C trace and span ids** generated when `otelGenerateTraceId` is enabled (previously looping
+  `UUID.randomUUID()` for every request — the hottest of the set), several more internal **stream ids**
+  (WebSocket, gRPC and HTTP/3 response streams), and the **content ids inside mocked LLM responses** — the
+  `chatcmpl-…`, `resp_…`, `item_…` and `event_…` ids that MockServer, acting as the fake provider, prints
+  into OpenAI / Anthropic / Realtime / moderation bodies. Their format is unchanged: trace ids remain 32-
+  and 16-character lowercase hex as the W3C `traceparent` contract requires, and the LLM ids keep their
+  prefixes and lengths, so trace propagation and codec golden files are unaffected — a mocked provider's id
+  unpredictability is simulated, not a security guarantee. The **CRUD data-plane resource id** (minted on a
+  `POST` to a CRUD-backed data collection) also moves to the fast source and so becomes unique-but-guessable
+  rather than unguessable — a deliberate, approved trade-off for a data-plane test fixture, and the one
+  user-visible semantic change here. Ids whose unguessability is a **security** property — callback and
+  breakpoint correlation ids, client-registration ids, TLS keystore file names and certificate serials, the
+  QUIC token secret, SAML/OIDC mock-auth ids and the user-facing `uuid` / `rand_bytes` template functions —
+  are untouched and still use the secure generator.
 - The single event-log writer thread no longer re-reads the `logLevelOverrides` configuration from
   scratch for **every** log entry. Deciding whether to print an entry needs the per-category log-level
   overrides, and resolving them went through the general property machinery on each entry — a hashed

@@ -4,11 +4,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.mockserver.model.ModerationResponse;
+import org.mockserver.uuid.UUIDService;
 
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.UUID;
 
 /**
  * Pure, deterministic encoder for the OpenAI Moderations endpoint
@@ -106,9 +106,9 @@ public final class OpenAiModerationBodies {
     }
 
     private static String randomId(int length) {
-        String uuid = UUID.randomUUID().toString().replace("-", "");
+        String uuid = UUIDService.getNonSecureUUID().replace("-", "");
         while (uuid.length() < length) {
-            uuid = uuid + UUID.randomUUID().toString().replace("-", "");
+            uuid = uuid + UUIDService.getNonSecureUUID().replace("-", "");
         }
         return uuid.substring(0, length);
     }

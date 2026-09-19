@@ -1,10 +1,10 @@
 package org.mockserver.llm.realtime;
 
 import org.mockserver.llm.JsonEscape;
+import org.mockserver.uuid.UUIDService;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * Pure event codec for the <b>OpenAI Realtime API</b> (GA 2025 event protocol), spoken over a WebSocket at
@@ -33,7 +33,7 @@ public final class OpenAiRealtimeCodec {
     }
 
     private static String eventId() {
-        return "event_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        return "event_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
     }
 
     private static String esc(String value) {
@@ -44,7 +44,7 @@ public final class OpenAiRealtimeCodec {
      * The {@code session.created} frame a Realtime server sends immediately after the WebSocket handshake.
      */
     public static String sessionCreated(String model, String sessionId) {
-        String id = sessionId != null ? sessionId : "sess_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String id = sessionId != null ? sessionId : "sess_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
         return "{\"type\":\"session.created\",\"event_id\":\"" + eventId() + "\"," +
             "\"session\":{\"id\":\"" + esc(id) + "\",\"object\":\"realtime.session\",\"type\":\"realtime\"," +
             "\"model\":\"" + esc(model != null ? model : "gpt-realtime") + "\"," +
@@ -55,7 +55,7 @@ public final class OpenAiRealtimeCodec {
      * The {@code session.updated} acknowledgement returned in response to a client {@code session.update}.
      */
     public static String sessionUpdated(String model, String sessionId) {
-        String id = sessionId != null ? sessionId : "sess_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String id = sessionId != null ? sessionId : "sess_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
         return "{\"type\":\"session.updated\",\"event_id\":\"" + eventId() + "\"," +
             "\"session\":{\"id\":\"" + esc(id) + "\",\"object\":\"realtime.session\",\"type\":\"realtime\"," +
             "\"model\":\"" + esc(model != null ? model : "gpt-realtime") + "\"," +
@@ -67,7 +67,7 @@ public final class OpenAiRealtimeCodec {
      * {@code conversation.item.create}.
      */
     public static String conversationItemCreated(String itemId) {
-        String id = itemId != null ? itemId : "item_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String id = itemId != null ? itemId : "item_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
         return "{\"type\":\"conversation.item.created\",\"event_id\":\"" + eventId() + "\"," +
             "\"previous_item_id\":null," +
             "\"item\":{\"id\":\"" + esc(id) + "\",\"object\":\"realtime.item\",\"type\":\"message\"," +
@@ -87,8 +87,8 @@ public final class OpenAiRealtimeCodec {
             physics = RealtimeStreamingPhysics.defaults();
         }
         boolean audio = modality != RealtimeModality.TEXT;
-        String responseId = "resp_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
-        String itemId = "item_" + UUID.randomUUID().toString().replace("-", "").substring(0, 20);
+        String responseId = "resp_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
+        String itemId = "item_" + UUIDService.getNonSecureUUID().replace("-", "").substring(0, 20);
 
         String content = audio ? turn.resolvedTranscript() : turn.getText();
         List<String> tokens = RealtimeText.tokenize(content);

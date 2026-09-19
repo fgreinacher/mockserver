@@ -176,7 +176,7 @@ public class NettyResponseWriter extends ResponseWriter {
         if (streamBreakpointsActive) {
             streamId = request.getLogCorrelationId() != null
                 ? request.getLogCorrelationId() + "-stream"
-                : java.util.UUID.randomUUID() + "-stream";
+                : org.mockserver.uuid.UUIDService.getNonSecureUUID() + "-stream";
             reqMethod = request.getMethod() != null ? request.getMethod().getValue() : null;
             reqPath = request.getPath() != null ? request.getPath().getValue() : null;
             breakpointClientId = streamBreakpointMatcher.getClientId();

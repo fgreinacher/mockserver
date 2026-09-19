@@ -8,6 +8,16 @@ import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.telemetry.W3CTraceContext;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
@@ -251,5 +261,55 @@ public class TraceContextHandlerTest {
         // then — passes through unmodified
         Object received = channel.readOutbound();
         assertThat(received, is("outbound"));
+    }
+
+    @Test
+    public void shouldGenerateLowercaseHexOfExactLengthThatIsNeverAllZero() {
+        // when — the fast (non-secure) generator now backs randomHexString
+        // then — the W3C traceparent format contract holds: lowercase hex, exact length, non-zero
+        for (int i = 0; i < 1000; i++) {
+            String traceId = TraceContextHandler.randomHexString(32);
+            String spanId = TraceContextHandler.randomHexString(16);
+            assertThat("traceId must be 32 lowercase hex chars", traceId.matches("[0-9a-f]{32}"), is(true));
+            assertThat("spanId must be 16 lowercase hex chars", spanId.matches("[0-9a-f]{16}"), is(true));
+            // all-zero trace/span ids are invalid per the W3C spec
+            assertThat(traceId.equals("00000000000000000000000000000000"), is(false));
+            assertThat(spanId.equals("0000000000000000"), is(false));
+        }
+    }
+
+    @Test
+    public void shouldGenerateUniqueHexIdsAcrossConcurrentThreads() throws Exception {
+        // given — the fast path draws from a per-thread generator; ids must still be unique across threads
+        final int threads = 8;
+        final int perThread = 5000;
+        final ExecutorService pool = Executors.newFixedThreadPool(threads);
+        final CountDownLatch start = new CountDownLatch(1);
+        final Set<String> ids = ConcurrentHashMap.newKeySet();
+        final List<Future<Integer>> futures = new ArrayList<>();
+
+        // when — every thread mints 32-hex trace ids as fast as it can
+        for (int t = 0; t < threads; t++) {
+            futures.add(pool.submit(() -> {
+                start.await();
+                int added = 0;
+                for (int i = 0; i < perThread; i++) {
+                    if (ids.add(TraceContextHandler.randomHexString(32))) {
+                        added++;
+                    }
+                }
+                return added;
+            }));
+        }
+        start.countDown();
+        int totalAdded = 0;
+        for (Future<Integer> f : futures) {
+            totalAdded += f.get(30, TimeUnit.SECONDS);
+        }
+        pool.shutdownNow();
+
+        // then — no collisions: every generated id was distinct
+        assertThat(totalAdded, is(threads * perThread));
+        assertThat(ids.size(), is(threads * perThread));
     }
 }
