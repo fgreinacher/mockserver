@@ -1859,7 +1859,19 @@ The chain:
 4. `perf-baseline-freshness.sh` then reports the last completed **scheduled** run as `skipped`,
    not passed, and fails — which is exactly what it exists to do.
 
-The evidence is a clean correlation between the gap to the next build and the daily's fate:
+**Proven by controlled test, 2026-09-19, not merely inferred.** On the throwaway `mockserver-infra`
+branch, build **#1937** was created and left queued; build **#1938** was then created on the same
+branch seconds later. #1937 flipped to `skipped` **immediately and never started**. That is the
+mechanism reproduced on demand, independent of the perf pipeline.
+
+Note what the controlled test does and does not show. It used API-source builds on a feature
+branch; the daily is a schedule-source build on master. Both of those are covered by real
+observations rather than by assumption: **#312 was schedule-source, on master, and was skipped**,
+and the empty filter means the setting applies to every branch. The `!master` filter two lines
+above in the Terraform protects only *running* master builds from cancellation — it does not
+protect *queued* ones from being skipped.
+
+The supporting correlation between the gap to the next build and the daily's fate:
 
 | daily | created | next build | outcome |
 |---|---|---|---|
