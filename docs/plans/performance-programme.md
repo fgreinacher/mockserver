@@ -1922,8 +1922,59 @@ under clustering, any bounded-`Times` or scenario expectation turns each match i
 round-trip on the serving path, making latency a function of grid RTT rather than local matching.
 The plan lists clustered state generically; this specific hot-path placement is not named.
 
-*Measurement:* 2- and 3-node Infinispan cluster, limited-Times and scenario expectations at
-increasing rate, serving p95 and CAS retry rate versus the single-node path.
+**MEASURED 2026-09-19 — CONFIRMED and large, and it surfaced a correctness finding that matters
+more than the latency.**
+
+**The latency.** A bounded-`Times` match pays a synchronous distributed CAS on the request
+thread: **p50 175.8 us against 1.0 us** for the node-local fast path — a **169x** blow-up on the
+matching step, the instant a second node exists.
+
+| topology | p50 | vs 1-node |
+|---|---:|---:|
+| 1 node (no peer) | 9.5 us | 1.00x |
+| 2 nodes | 132.7 us | **13.9x** |
+| 3 nodes | 134.8 us | 14.1x |
+
+It is a **step function on "clustered with peers"**, not linear in node count: the jump is
+entirely 1->2 (no-network to one RTT), and 2->3 is flat because REPL_SYNC broadcasts and waits on
+the slowest ack in parallel. Note even the single-node CAS (~10 us) is ~10x the pure in-memory
+match — the Infinispan `cache.replace` machinery costs before any network. And 176 us is a
+**floor**: loopback RTT is ~120 us, where a real LAN is hundreds of microseconds to milliseconds.
+
+**The correctness finding, which is the more surprising half.** Under same-key contention (8
+threads, 2 nodes, `Times.exactly(50_000_000)` — a budget nowhere near exhausted) the CAS
+**refused 33.5% of matches**: 2,127 served, 1,073 dropped, at **7.43 CAS attempts per served
+match**. The bounded `MAX_CAS_RETRIES` (10) loop falls through to "not served" when a request
+loses the optimistic-version race more than ten times. So a `Times.exactly(N)` far from N can
+refuse to serve **purely from contention**.
+
+This contradicts an assumption written as fact in the code. The javadoc above
+`isClusteredLimitedTimes` states that "limited-Times expectations are low-count and **contention
+is rare**, so the common case is a single CAS write". Measured, the common case under concurrent
+load on one expectation is 7.43 writes. The fail-closed direction is the right choice — better to
+under-serve than over-serve a bounded `Times` — but the frequency was assumed, not measured.
+
+**The mechanism was proved before any ratio was trusted**, with a counting backend wrapping the
+SPI: the control arm (unlimited `Times`) recorded **0** shared-times CAS operations and 0 counter
+reads, the treatment arm recorded **exactly N** — one replicated write per match — and *both*
+arms recorded 0 expectation-store operations, confirming the CAS is the only backend I/O on the
+serving path. Two arms taking the same route would have shown identical counts. The test asserts
+mechanism **counts**, never latency magnitudes, so it is robust on a contended machine.
+
+**There is already an escape hatch**, which bounds how much this matters:
+`clusterSharedTimesEnabled(false)` (or `-Dmockserver.clusterSharedTimesEnabled=false`) restores
+the node-local fast path with no backend round-trip, at the cost of approximate per-node `Times`.
+
+*Topology:* in-JVM JGroups `SHARED_LOOPBACK` REPL_SYNC at 1, 2 and 3 members — the same fixture
+`ClusteredTwoNodeTest` uses. Docker was available but a multi-container cluster adds no fidelity
+over loopback for measuring a request-thread CAS and is far flakier. *Not measured:* real
+inter-host RTT.
+
+*Not committed, and for a different reason than the G2/G4 proofs.* Those asserted current BUGGY
+behaviour and would have locked bugs in. This one asserts **correct** current behaviour, so
+committing it would lock nothing in — it is a pure suite-weight call on an ~11 s clustered
+research test with no regression-protection role, and the exactly-N correctness is already
+covered by the committed G10 tests. *Not a gate:* it asserts no latency threshold, deliberately.
 
 ### G4. `Expectation` holds a per-instance `ThreadLocal` that is set and never removed
 
@@ -2152,7 +2203,7 @@ needs a resource, or is a decision rather than a task.
 
 | | Owed | True state |
 |---|---|---|
-| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **RUN AT LAST — and it found a bug in itself, not in the server.** Build **#324** (2026-09-19) is the first soak ever executed: a full 2 h against `5a4b27df8` (real commit, 6 behind master, so current code), `--memory=2g`, matchRate 200, verify/retrieve 1/s. It **failed its thresholds** with a 54.2% match error rate and p99 drifting 102 ms -> 390 ms (3.8x) while p50 held flat at 0.346 ms. Neither figure is a product defect: **the harness evicts its own match seed.** Full mechanism in [What the first soak actually measured](#what-the-first-soak-actually-measured) below. **This run is NOT item 10's baseline and must be re-run once the harness is fixed** — the occupancy control it was meant to establish is still unproven, and the run does not even carry the data to establish it |
+| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **BASELINE ESTABLISHED (build #340, 2026-09-19) — and the harness fix is vindicated.** The second soak ever run, on `cdac3b0bb` with the fixed harness. The self-inflicted failure is gone: **match error rate 54.17% -> 0**, and **drift 3.809 -> 1.0632**. That drift collapse is the headline — the apparent degradation-over-time in build #324 was an artefact of the harness evicting its own match seed and pinning the expectation store at 15,000, not real. p50 is **0.148 ms** and the tail does not move across two hours. Retention fell with it: heap end 902 MB -> **362 MB**, live-set floor 484 MB -> **282 MB**. **Item 10b now has its numbers**: verify p50 **98.2 ms** (drift 0.9665), retrieve p50 **271.8 ms** (drift 1.0485), both carrying the new early/late sub-percentiles, and `samples.csv` uploaded — build #324 lost it by exiting 99 before the upload path. **The run still fails its gate, but not for the stated reason.** The annotation says "data-plane p99 drift or error-rate gate tripped"; p99 was 96.051 ms against a 100 ms threshold and **passed**. What crossed is **p95: 62.644 ms against 25 ms**. `LIMITS` is a shared block documented as "standard thresholds shared by the load/stress/soak scenarios", so 25 ms was never calibrated for a 2 h soak against a full event log — a threshold inherited from a different subject. **Owed to close the item:** the reduced-`maxLogEntries` arm. Expect verify/retrieve well below 98/272 ms; at the default the log fills early and stays pinned at the cap, so there is no occupancy gradient for the metric to track, which is why both drifts are flat here. Also owed: correct the soak annotation to name the threshold that actually crossed |
 | **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
 | **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape |
 | **19. S3 -> website** | **CLOSED 2026-09-19** | **Closed by the second half of its own acceptance wording — "a PR, *or a reasoned decision not to open one*".** Every stage of the logic is proven: build **#325** read the newest self-describing S3 object, judged the candidate (`healthy_ceiling_rps=16000`, `peak_achieved_rps=28377.4`, 18 arms), fired its movement trigger, regenerated the chart data, branched and committed 3 files / 2,235 insertions — then died at `git push` on `could not read Username`. The reason is structural, not a missing config: the perf stack's IAM role grants only S3 on `mockserver-ci-perf-results`; the GitHub token is named solely by `read_release_secrets`, attached to the release stack. **The obvious fix was rejected on privilege grounds** — that token can push any branch and cut GitHub Releases, and the perf queue builds master and runs k6 on a public-IP box, so a poisoned dependency would inherit both, for a cosmetic docs refresh. The step now emits the refresh as a `git format-patch --binary` artifact plus the regenerated files, and annotates with what moved and the exact apply-then-PR commands. A human was always required in the loop anyway — the step's own text says "A human must reconcile the hand-authored numbers this refresh does NOT touch". `format-patch` over `git diff` is not a style choice: a plain diff emits `Binary files ... differ` for the chart PNGs, which `git am` rejects; the binary round-trip was proven to reproduce an identical SHA. The refuse path (build #290) is untouched and still fails closed. If auto-PR is ever wanted, the fallback is a fine-grained token scoped to this repo with `Contents`+`Pull requests` write only — **never** the release token |
