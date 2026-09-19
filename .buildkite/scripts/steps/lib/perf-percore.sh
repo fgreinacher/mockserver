@@ -410,7 +410,22 @@ for C in "${CORES_ARR[@]}"; do
             # Event-log RESIDENCE for this rung: how long a body lingers in the
             # count-bounded ring before eviction = maxLogEntries / achieved_rps.
             # LENGTHENS as rps falls (long at low C). retained bytes ~ constant.
-            retention_residence_s:(if $ach > 0 then (($maxlog / $ach) * 1000 | round) / 1000 else null end)
+            retention_residence_s:(if $ach > 0 then (($maxlog / $ach) * 1000 | round) / 1000 else null end),
+            # --- VU-pool diagnostics passed through from sweep.js (item 18 open
+            # question). vus_active_max is the peak CONCURRENT VUs this rung used —
+            # if it is ~1-2 while dropped_iterations>0, the 200-VU pool was NOT the
+            # constraint (198 VUs idle) and the drops need another explanation; a max
+            # ABOVE the preAllocatedVUs pool is the only per-rung proof the pool grew.
+            # (Whole-run pool growth is in the top-level .vus_diagnostics block, not
+            # here — k6 pre-inits the pool of every staggered scenario so growth
+            # cannot be attributed to one rung.) stall_time_buckets shows WHEN in the rung
+            # deep-tail requests fell — clustered => transient stall (the standing
+            # hypothesis), uniform => steady limit — a proxy for drop timing (a
+            # dropped iteration never runs code, so drops cannot be timestamped).
+            vus_active_max:.vus_active_max, vus_active_p95:.vus_active_p95, vus_active_avg:.vus_active_avg,
+            stalls:.stalls, stall_ms_threshold:.stall_ms_threshold,
+            stall_concurrency_max:.stall_concurrency_max, stall_concurrency_avg:.stall_concurrency_avg,
+            stall_time_buckets:.stall_time_buckets
           } ] as $rungs
     | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
     | ($rungs | map(select(.rig_valid)) | sort_by(.achieved_rps) | last) as $peakrung
@@ -466,6 +481,13 @@ for C in "${CORES_ARR[@]}"; do
           retained_bytes_estimate:($maxlog * $body),
           note:"count-bounded ring: retained bytes ~ maxLogEntries*body (≈constant vs rate); residence = maxLogEntries/achieved_rps lengthens as rps falls (see .ladder[].retention_residence_s)"
         },
+        # VU-pool diagnostics for this C, straight from sweep.js (item 18). Records
+        # the pool CONFIG the sweep ran with (preallocated_vus/max_vus) and k6's own
+        # whole-run VU gauges (vus_concurrent_overall_max, vus_initialized_global_max,
+        # vus_initialized_baseline and the vus_pool_grew bottom line)
+        # so the pool's actual growth for this C is legible without drilling into the
+        # per-rung ladder. Null on an old sweep artifact that predates the fields.
+        vus_diagnostics:($sweep[0].vus_diagnostics // null),
         client_pin_pct:$pin,
         ladder:$rungs,
         excluded:[ $rungs[] | select(.rig_valid|not) | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, error_rate, reason:.exclude_reason} ]
