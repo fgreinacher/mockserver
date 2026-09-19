@@ -1561,6 +1561,47 @@ Read `peak_achieved_rps` with care all the same: it still reports **2,000**, bec
 with ZERO dropped iterations. It has not moved and must not be read as "no improvement" — it measures a
 different property from the 26,937 knee, which is precisely the ambiguity item 19 must not publish past.
 
+**The ~930 MB Jackson mass was CHURN, not a leak — settled by experiment (2026-09-19).**
+Build 302's OOM dump ranked ~930 MB of `ObjectNode`/`LinkedHashMap`/`TextNode` as the dominant
+retainer, and a shallow histogram cannot tell retention from uncollected garbage. Rather than
+infer it, the question was settled the way the investigation said it had to be: comparing
+`jmap -histo` against `jmap -histo:live` (which forces a GC, so only reachable objects count)
+across ~1.07M JSON-body match requests on a deliberately small 512 MB heap.
+
+| sample | live ObjectNode | live TextNode | full instances |
+|---|---|---|---|
+| baseline (idle) | 1,345 | 1,453 | 382,199 |
+| under load (3 samples, ~67 s apart) | 18,437 → 18,436 → 18,430 | ~36,780 | 2.47M → 3.81M |
+| after load stops + forced GC | **1,480** | **1,718** | 1.18M |
+| after a further 200k matching requests | **1,485** | **1,733** | 2.10M |
+
+Three facts decide it. The live count does **not** track request volume — it is flat across
+three samples spanning hundreds of thousands of requests, where a leak would climb. It
+**collapses back to baseline** the instant load stops. And the residual above baseline is
+*identical* at 20k and 854k requests, i.e. bounded by thread count rather than requests. Up to
+68% of instances in the full histogram were already dead at sampling, mirroring build 302's dump
+being 2.02 GiB on disk against a 1,230 MiB max heap.
+
+What IS retained is architecturally bounded and small: `JsonStringMatcher`'s `matcherJsonNode`
+(one expected tree per expectation, in both the Jackson 2 and Jackson 3 namespaces) and
+`BODY_PARSE_CACHE`, a `ThreadLocal` holding only the last parsed body per worker thread. Neither
+scales with traffic. Everything else — the `Diff`/`ComparisonMatrix` state json-unit allocates per
+`matches()` call — is discarded on return.
+
+So the OOM was **allocation rate outrunning the collector on a saturated heap**, not retention.
+There is no reference to break and no leak fix to make; the levers are GC headroom and allocation
+rate. Two operational notes fall out: at `INFO` a non-matching request emits one
+`EXPECTATION_NOT_MATCHED` entry *per evaluated expectation*, so the CI SUT's 15 expectations
+multiplied both allocation and event-log pressure on exactly the worst-case path; and if this path
+ever needs higher rps the lever is a structural short-circuit before invoking `Diff`, not a leak
+hunt.
+
+**Caveat, and the one thing that would fully close it:** this was a local jar run (JDK 21, G1,
+512 MB, `hey` client), not the CI SUT, so absolute numbers do not transfer — the qualitative
+answer does, because the retained set is bounded by expectation and thread count by construction.
+A single `jmap -histo:live` on a CI agent a few seconds *after* load stops would confirm it on the
+real SUT: it should show ObjectNode back near the expectation-count baseline, not millions.
+
 **A memory bound that did not bound.** Separately, `estimatedHeapSize()` — the weigher behind
 `maxEventLogSizeInBytes` — counted raw body bytes and essentially nothing else. Measured by
 degrading a test until it went red: ten retained entries with 10,000-byte bodies weighed
