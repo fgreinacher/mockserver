@@ -6,58 +6,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release addresses a set of memory and throughput issues that compound under sustained load.
+Request and response bodies are no longer retained in their parsed form inside the event log — the
+log built an eager JSON tree roughly five times the size of the raw body for every logged request
+and held it for the life of the entry; measured across 20,000 retained entries, heap fell from
+429 MB to 61 MB. The event log now bounds itself honestly in bytes at both sites where it holds
+memory, and its weigher counts what an entry actually holds — the same budget now tracks real usage
+within ~1–2.2× instead of 2.6–4.8×. The request hot path shed the only material lock contention
+under sustained load: every event-log, correlation, stream and trace id is now generated from a
+contention-free source rather than the shared secure PRNG that serialised all worker event loops as
+request rate peaked. The container heap default is corrected from 75% to 60% of the container
+memory limit, because a committed heap needs roughly 1.5× in real memory and the old default did
+not fit, producing OOM-kills with no `OutOfMemoryError` in the logs.
+
+Measured together on a saturation sweep against the same hardware and the same offered-load ladder,
+throughput no longer collapses past the knee. Where the server previously peaked and then fell away
+— 26,020, then 23,463, then 19,517 requests per second at 32,000, 48,000 and 64,000 offered — it now
+climbs to 28,533 and still holds 25,488 at the top of the ladder.
+
 ### Added
-- Four new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`):
-  `mock_server_event_log_ring_occupancy` and `_ring_capacity` for the in-flight queue, and
-  `_in_flight_bytes` and `_max_in_flight_bytes` for the byte budget that bounds it. Together with the
-  existing `mock_server_dropped_log_events` these make it possible to watch a log backlog **building**
-  rather than inferring it afterwards from the damage: a rising occupancy with in-flight bytes
-  approaching the budget is the shape that precedes dropped entries. Read at scrape time from live
-  state, so the request path is unaffected.
-- Four further event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) for the **retained**
-  log — the entries kept after processing, the second place the event log holds memory:
-  `mock_server_event_log_retained_entries` and `_retained_bytes` for what is currently held, and
-  `_max_retained_entries` and `_max_retained_bytes` for the `maxLogEntries` / `maxEventLogSizeInBytes`
-  bounds in force. The existing `ring_*` / `in_flight_bytes` gauges cover only the in-flight queue, so a
-  scrape could not tell a run where the retained log is filling the heap from one where the log is empty.
-  Reading both sites side by side answers **which** part of the event log is holding the memory. Read at
+- Eight new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) covering both sites
+  where the event log holds memory. Four cover the in-flight ring:
+  `mock_server_event_log_ring_occupancy`, `_ring_capacity`, `_in_flight_bytes`, and
+  `_max_in_flight_bytes`. Four cover the retained deque: `mock_server_event_log_retained_entries`,
+  `_retained_bytes`, `_max_retained_entries`, and `_max_retained_bytes`. Together with the existing
+  `mock_server_dropped_log_events` counter, the ring gauges let you watch a log backlog building
+  rather than inferring it from damage afterwards; the retained gauges answer which part of the event
+  log is filling the heap, which a single-site scrape could not distinguish. Both sets are read at
   scrape time from live state, so the request path is unaffected.
-- The in-memory event log is now bounded by **size** as well as by entry count, and that bound now also
-  covers the entries waiting to be written. `maxEventLogSizeInBytes` was previously off by default, so the
-  only active bound was a count that cannot see how large an entry is -- a thousand small requests and a
-  thousand ten-megabyte responses counted the same. It now defaults to a share of the same heap-ceiling
-  budget that sizes `maxLogEntries`: a quarter at `WARN` and below, an eighth at `INFO` and above, because
-  rendering each entry to the console roughly doubles the heap it retains. Workloads with bodies under
-  roughly two kilobytes still reach the count bound first and are unaffected. Set
-  `maxEventLogSizeInBytes=0` to restore count-only bounding.
-- A burst of large request bodies no longer exhausts the heap before the log can bound itself. Requests are
-  handed to the event log through a fixed-size queue, and each entry sat in that queue holding its full
-  body: the size bound applied only after an entry was written, so at the default `INFO` level -- where
-  rendering makes writing slow enough for the queue to back up -- a 512 MB server died in about eleven
-  seconds under 256 KB bodies, with or without the size bound set. The queue is now bounded in bytes too,
-  and the same server serves indefinitely. Under that pressure MockServer discards the newest entries
-  rather than failing: it says so once in the log, counts them in `mock_server_dropped_log_events`, and any
-  `verify` with an upper bound (`never`, `atMost`, `exactly`, `once`, `between`) **fails** rather than
-  passing on evidence that was discarded. That guard now also covers the pre-existing case where the queue
-  was simply full, which could previously let such a `verify` pass silently.
-- When the event log first discards entries, MockServer now logs a single warning naming which bound was
-  hit and its current value, with remedies ordered cheapest-first. Eviction is what silently breaks a
-  later `verify`, so it is no longer invisible. Where the count bound is the one binding, the warning
-  suggests lowering the log level: the received-request and response entries a `verify` reads are retained
-  at every level, so reducing verbosity drops per-match diagnostics without affecting verification -- and
-  at `WARN` and below it also doubles the byte budget and lets the log keep up with incoming traffic. It
-  does not free body bytes directly, so it is not offered when the byte bound is the one binding.
-- New `jvm_runtime_info` metric on the Prometheus endpoint (`/mockserver/metrics`), an info-style gauge
-  whose labels name the running JVM and the garbage collector(s) actually in use: `gc`, `java_version`,
-  `java_runtime_version`, `java_vendor` and `vm_name`. The value is always `1` — the information is in the
-  labels, matching the existing `mock_server_build_info` metric. This lets a scrape record which JVM and GC
-  produced a given set of measurements, which could not previously be determined from the metrics endpoint.
-- New `jvm_memory_allocated_bytes` metric on the Prometheus endpoint (`/mockserver/metrics`), a monotonic
-  gauge reporting the cumulative bytes allocated across all threads since JVM start. Unlike the existing
-  `jvm_memory_used_bytes` level (which garbage-collection saw-tooths), the difference between two scrapes of
-  this counter is the exact allocation churn over that window — the basis for an allocation-per-operation
-  figure. It is **absent on a JVM that does not implement HotSpot allocation accounting** (the metric is
-  simply not emitted rather than reported as zero), so on such a JVM the series will not appear.
+- The in-memory event log is now bounded by **size** as well as by entry count, and that size bound
+  now covers both the retained entries and the entries still waiting in the in-flight queue.
+  `maxEventLogSizeInBytes` was previously off by default; it now defaults to a share of the heap-ceiling
+  budget — a quarter at `WARN` and below, an eighth at `INFO` and above (rendering roughly doubles the
+  heap an entry retains). Workloads with bodies under roughly two kilobytes still reach the count bound
+  first and are unaffected. Set `maxEventLogSizeInBytes=0` to restore count-only bounding. When either
+  bound is hit, MockServer discards the newest entries rather than failing, logs a single warning naming
+  which bound was hit and its current value with remedies ordered cheapest-first, and counts discards
+  in `mock_server_dropped_log_events`. Any `verify` with an upper bound (`never`, `atMost`, `exactly`,
+  `once`, `between`) now **fails** rather than passing on incomplete evidence — this guard also covers
+  the pre-existing case where the in-flight queue was simply full, which could previously let such a
+  `verify` pass silently. Reducing the log level to `WARN` or below doubles the byte budget and lets
+  the log keep pace with incoming traffic without affecting whether a `verify` sees a given request.
+- Two new JVM-level Prometheus metrics on the endpoint (`/mockserver/metrics`). `jvm_runtime_info` is
+  an info-style gauge (value always `1`) whose labels report the running JVM and garbage collector:
+  `gc`, `java_version`, `java_runtime_version`, `java_vendor`, and `vm_name` — so a scrape records
+  which JVM and GC produced a given set of measurements. `jvm_memory_allocated_bytes` is a monotonic
+  gauge reporting cumulative bytes allocated across all threads since JVM start; the difference between
+  two scrapes gives the exact allocation churn over that window. This metric is absent on JVMs that do
+  not implement HotSpot allocation accounting — the series will not appear rather than being reported
+  as zero.
 
 ### Changed
 - **The Docker images now cap the JVM heap at 60% of the container memory limit, down from 75%**
@@ -79,90 +76,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —
   which keeps the production dependency audit (`npm audit --omit=dev`) clean; the affected lodash functions are
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
-- Internal identifiers that need only to be **unique** — every event-log entry id, the per-request
-  log-correlation ids, and the internal gRPC/HTTP-3 stream ids — are now generated from a fast,
-  contention-free random source instead of the cryptographically-secure PRNG. Under sustained load the
-  secure PRNG's single process-wide lock had become the only material lock contention on the server:
-  every log entry (2-3 per request) minted a secure UUID, serialising all worker event loops on that
-  one monitor exactly as request rate peaked, which is visible in profiles as a throughput collapse
-  past the saturation knee. Values whose unguessability is a **security** property — session ids,
-  client-registration ids, client-facing callback and breakpoint correlation ids, TLS keystore file
-  names and cluster node ids — are unchanged and still use the secure generator. The ids are standard
-  random (version 4) UUIDs as before, so nothing user-visible changes about their format or uniqueness.
-- Extending that change, the remaining hot-path identifiers that reached the same shared PRNG through
-  `java.util.UUID.randomUUID()` now use the fast, contention-free source too. `java.util.UUID.randomUUID()`
-  draws from the JDK's single static `SecureRandom` — the *same* lock as the shared `SecureRandom` above,
-  reached by a different route — so these sites carried the same contention. Moved: the per-request
-  **W3C trace and span ids** generated when `otelGenerateTraceId` is enabled (previously looping
-  `UUID.randomUUID()` for every request — the hottest of the set), several more internal **stream ids**
-  (WebSocket, gRPC and HTTP/3 response streams), and the **content ids inside mocked LLM responses** — the
-  `chatcmpl-…`, `resp_…`, `item_…` and `event_…` ids that MockServer, acting as the fake provider, prints
-  into OpenAI / Anthropic / Realtime / moderation bodies. Their format is unchanged: trace ids remain 32-
-  and 16-character lowercase hex as the W3C `traceparent` contract requires, and the LLM ids keep their
-  prefixes and lengths, so trace propagation and codec golden files are unaffected — a mocked provider's id
-  unpredictability is simulated, not a security guarantee. The **CRUD data-plane resource id** (minted on a
-  `POST` to a CRUD-backed data collection) also moves to the fast source and so becomes unique-but-guessable
-  rather than unguessable — a deliberate, approved trade-off for a data-plane test fixture, and the one
-  user-visible semantic change here. Ids whose unguessability is a **security** property — callback and
-  breakpoint correlation ids, client-registration ids, TLS keystore file names and certificate serials, the
-  QUIC token secret and the user-facing `uuid` / `rand_bytes` template functions —
-  are untouched and still use the secure generator. (A later change re-examined the SAML/OIDC
-  mock-auth content ids named here as unchanged and moved them too — see the next entry.)
-- Completing that programme, the **third contended random source** — the shapes neither earlier pass
-  searched for — is taken off the hot path. `Math.random()` was called **once per document** while
-  scoring a rerank response (`RerankScoring`, behind the Cohere and Voyage rerank codecs), and
-  `Math.random()` delegates to one shared static `java.util.Random` whose step is an `AtomicLong` CAS
-  loop — real contention when a rerank request carries tens to hundreds of documents; it now draws from
-  `ThreadLocalRandom`. The random embedding-vector fallback (`EmbeddingVectors.generateRandomVector`)
-  likewise drops its per-call unseeded `new Random()` — which both allocates a generator and contends on
-  the JDK's static `seedUniquifier` — for `ThreadLocalRandom`; the seeded, reproducible fallback vector is
-  deliberately left on its hash-seeded constructor, which does not contend. Separately, the **content ids
-  inside mocked auth responses** move to the fast source: the opaque access-token and refresh-token
-  references and the authorization-/device-code lookup keys (`OidcTokenMinter`,
-  `OidcAuthorizationCodeCallback`, `OidcDeviceAuthorizationCallback`), the SAML `<Response>`,
-  `<Assertion>`, `SessionIndex` and `<LogoutResponse>` ids (`SamlResponseBuilder`,
-  `SamlLogoutResponseBuilder`), and the `sub` claim minted by the standalone `JWTGenerator` — each produced
-  per mock auth response. These are the content MockServer fabricates **while impersonating** an OIDC
-  provider, SAML IdP or JWT signer. Some of them (the authorization and device codes, the opaque access
-  token) are single-use bearer values the mock's *own* token/introspection endpoints validate — but since
-  any caller can obtain a token from the same mock directly (e.g. a `client_credentials` grant) without
-  ever holding one, guessing one grants no privilege it could not get by simply asking, so their
-  unpredictability is simulated, not a security boundary. Their format is unchanged
-  (still version-4 UUIDs and the same `mock-…` prefixes), and no golden file pins a rerank score or an
-  embedding value. Ids and secrets whose unguessability **is** a security property are untouched and still
-  use the secure generator: the OIDC device-flow **user_code** a human reads and types to approve, OIDC
-  signing-key ids, TLS certificate serials and keystore file names, client-facing callback and breakpoint
-  correlation ids, client-registration ids and the QUIC source-address token secret. An always-on CI guard
-  (`.buildkite/scripts/steps/check-shared-rng-hotpath.sh`) now fails the build when a new `Math.random()`,
-  unseeded `new Random()`, `UUID.randomUUID()` or `new SecureRandom()` appears in the server-runtime source
-  (mockserver-core / -netty / -async) without an allow-listed reason — because the defect both earlier
-  passes shared was the enumeration missing a shape, not the judgement, so the shape is now caught mechanically.
-- The single event-log writer thread no longer re-reads the `logLevelOverrides` configuration from
-  scratch for **every** log entry. Deciding whether to print an entry needs the per-category log-level
-  overrides, and resolving them went through the general property machinery on each entry — a hashed
-  map lookup, and a fresh JSON parse when overrides are actually configured. Because one thread does
-  this work serially for the whole server, at high request rates it was measured in profiles taking a
-  growing share of a CPU core (over 20% of that thread's time past the saturation knee), stealing
-  capacity from serving requests. The resolved overrides are now cached and reused, and re-resolved
-  only when the configuration actually changes — so a change made at runtime (programmatically or via
-  `PUT /mockserver/configuration`) still takes effect right away (from the next log entry). Nothing
-  user-visible changes about which entries are logged.
-- The `maxEventLogSizeInBytes` byte budget now measures each retained entry **much more honestly**, so
-  the same budget bounds real memory far more closely than before. The weigher that assigns each entry
-  its byte weight previously counted only the raw request/response **body** bytes and essentially no
-  overhead — a heap dump showed ten retained entries with 10 KB bodies weighing exactly 100 KB, i.e.
-  `bodies × 1` with zero of the structure that actually surrounds them. It now also counts the header
-  bytes and a fixed structural overhead (~2 KB) for the log entry and each request/response model object
-  it retains. Measured on a live heap dump of 20,000 retained ~1 KB-body entries, this brings the real
-  retained heap from about **2.6×** the budget to about **1.0×** at `WARN`/`ERROR`/`OFF`, and from about
-  **4.8×** to about **1.6–2.2×** at `INFO`/`DEBUG`/`TRACE` (the remaining `INFO` gap is the formatted log
-  message, which embeds the body as text and is retained only at a rendering level — the log-level-aware
-  default budget already compensates for it). **This is a behaviour change:** because the previous
-  accounting under-counted, the **same `maxEventLogSizeInBytes` value now retains fewer entries** — the
-  byte budget evicts sooner, which is the bound doing what it claims. Workloads that relied on the old
-  (larger) retention volume for a given budget should raise `maxEventLogSizeInBytes` to compensate; the
-  count bound (`maxLogEntries`) is unaffected, as are entries with no request/response body-bearing
-  message (pure diagnostics still weigh nothing).
+- Internal identifiers that need only to be **unique** are now generated from a fast, contention-free
+  random source, completing a three-phase programme. The first phase covered event-log entry ids,
+  per-request log-correlation ids, and internal gRPC/HTTP-3 stream ids — all minted 2–3 times per
+  request through the cryptographically-secure PRNG, whose single process-wide lock had become the
+  only material lock contention on the server under sustained load, serialising all worker event loops
+  as request rate peaked. The second phase extended this to W3C trace and span ids (generated on every
+  request when `otelGenerateTraceId` is enabled — the hottest site of the set), further internal stream
+  ids (WebSocket, gRPC, HTTP/3 response streams), and the content ids inside mocked LLM responses
+  (`chatcmpl-…`, `resp_…`, `item_…`, `event_…` ids). The third phase reached `Math.random()` in rerank
+  response scoring and unseeded `new Random()` in the random embedding-vector fallback, and moved the
+  content ids in mocked SAML IdP and OIDC provider responses. Throughout, ids whose unguessability is
+  a **security** property — session ids, callback and breakpoint correlation ids, TLS keystore file
+  names, certificate serials, the QUIC source-address token secret, OIDC signing-key ids, and
+  device-flow user-codes — are unchanged and still use the secure generator. All ids remain standard
+  version-4 UUIDs; trace ids remain 32- and 16-character lowercase hex as the W3C `traceparent`
+  contract requires — format and uniqueness are unchanged. **One user-visible semantic change:** the
+  CRUD data-plane resource id (minted on a `POST` to a CRUD-backed data collection) is now
+  unique-but-guessable rather than unguessable — a deliberate trade-off for a test fixture. An
+  always-on CI guard (`check-shared-rng-hotpath.sh`) now fails the build when a new `Math.random()`,
+  unseeded `new Random()`, `UUID.randomUUID()`, or `new SecureRandom()` appears in the server-runtime
+  source without an allow-listed reason.
+- Two event-log writer improvements that reduce CPU cost at high request rates. The writer thread no
+  longer re-resolves `logLevelOverrides` on every log entry — past the saturation knee this was
+  measured taking over 20% of the writer thread's time; the resolved overrides are now cached and
+  re-resolved only when the configuration actually changes, so a runtime change still takes effect from
+  the next entry. Separately, the byte weigher that enforces `maxEventLogSizeInBytes` now counts header
+  bytes and a fixed structural overhead (~2 KB) for each log entry and request/response model object,
+  rather than raw body bytes alone. The previous body-only accounting caused a heap dump of 20,000
+  retained ~1 KB-body entries to show 2.6× the declared budget in use at `WARN`/`ERROR`/`OFF`, and
+  4.8× at `INFO`/`DEBUG`/`TRACE`; with accurate counting those ratios are ~1.0× and ~1.6–2.2×
+  respectively. **This is a behaviour change:** the same `maxEventLogSizeInBytes` value now retains
+  fewer entries, because the old accounting under-counted. Workloads that relied on the previous
+  (larger) retention volume should raise `maxEventLogSizeInBytes` to compensate; the count bound
+  (`maxLogEntries`) and entries with no request/response body are unaffected.
 
 ### Fixed
 - A long-lived keep-alive connection no longer leaks a small amount of memory on every request it
@@ -184,14 +131,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reproduction holding 20,000 logged entries, retained heap fell from 429 MB to 61 MB, with the raw
   bodies and the entries themselves untouched. The effect scales with JSON body size and
   `maxLogEntries`, so the larger your bodies the more this returns.
-- Enabling dev mode programmatically now takes effect on `maxLogEntries` and `maxExpectations` even if
-  something has already read them. Their defaults were resolved through a cache that stores the
-  computed default under the property's own key and never invalidates it, so the first read froze the
-  heap-derived value for the life of the JVM and a later `ConfigurationProperties.devMode(true)` -- which
-  writes a different key -- could not dislodge it. The defaults are now recomputed on each read, so
-  every way of enabling dev mode works regardless of ordering. This also removes a source of
-  order-dependent behaviour in a shared JVM, where the value a test saw depended on which test read it
-  first. Explicitly configured values are unaffected.
 - Consuming a bounded `Times` (`Times.exactly(n)`, `once()`, `atMost(n)`) in a **cluster** no longer
   replicates the whole expectation on every match. The remaining count lived on the same replicated
   value as the expectation definition, and that value serialises the entire expectation to JSON on
@@ -202,70 +141,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   single-node deployments are unaffected. If memory pressure discards a counter, the expectation
   stops matching rather than resuming its original count -- it under-serves rather than over-serves,
   and says so in a warning naming `maxExpectations`.
-- A response body whose bytes were already materialised in the charset it is served in is no longer
-  encoded a second time on the way to the wire. When the body declares its own charset -- `withBody(json,
-  APPLICATION_JSON_UTF_8)`, `json(str, JSON_UTF_8)`, `withBody(str, charset)` -- that charset always wins
-  over the header, so the model's bytes are already the wire bytes and are now reused. Around half the
-  allocation and half the latency of writing a 256 KB explicit-charset JSON response. Bodies with no
-  declared charset (`withBody(String)`) still re-encode: their bytes use the ISO-8859-1 default and can
-  differ from a UTF-8 wire, so reusing them would emit a lossy body. One consequence worth knowing for
-  record-and-replay: a recorded body whose `Content-Type` declared a charset but whose bytes are malformed
-  for it is now replayed verbatim, where before it was decoded with replacement characters and re-encoded.
-- HTTP/3 requests with a text body (JSON, XML, plain text) no longer allocate the body twice on the way
-  in. The bridge decoded the accumulated QUIC buffer into a `byte[]` and then re-read that array into a
-  `String`; it now decodes straight from the buffer, so a single-component body skips the intermediate
-  array entirely and a multi-component one is no worse than before. Binary bodies are unchanged, and the
-  resulting request is byte-for-byte identical -- including for malformed input, which decodes with the
-  same replacement behaviour as before.
-- The default `maxLogEntries` and `maxExpectations` no longer depend on how much heap happened to be in use
-  when the first MockServer instance in a JVM started. They are now derived from the JVM heap **ceiling**
-  (`-Xmx`) — a value fixed for the JVM's lifetime — instead of the momentary free heap (`max − used`).
-  Previously the free-heap figure was read once and the resolved default cached JVM-wide with no reset path,
-  so whatever the heap looked like at that first read froze the store capacity for **every** instance for the
-  rest of the JVM: a test suite whose first mock server started after a heavy fixture silently got a small
-  store, the ring buffer then overwrote entries silently, and a later `verify` could stop finding requests it
-  should have — a plausible cause of failures that reproduce only on one machine or one test ordering (at
-  `-Xmx1g`, holding ~645 MB before the first read dropped the frozen `maxLogEntries` from 100,000 to ~45,957,
-  and a later allocation could not raise it). The default is now deterministic and identical for every
-  instance in the JVM, independent of allocation history. **Note this changes the default sizing basis, not a
-  bug in isolation:** the store is now sized to the heap the JVM is *allowed* rather than to what was free at
-  one moment, so on a heavily-used small heap the default is somewhat larger (and deterministic) than before.
-  Behaviour for an **explicitly set** `mockserver.maxLogEntries` / `mockserver.maxExpectations` (system
-  property, environment variable, or properties file) is unchanged — an explicit value is still resolved and
-  cached exactly as before and always wins. Deployments that need a smaller store should set the property
-  explicitly. On JVMs that do not report a usable heap maximum (e.g. GraalVM native images) the dev-mode floor
-  of 1,000 still applies.
-- JavaScript response/forward templates no longer construct a throw-away GraalVM engine and re-parse the
-  script on every request, which under concurrent load could monopolise the small shared action-dispatch
-  thread pool and starve unrelated workloads (plain matches, forwarding, Velocity templates, large-body
-  responses) — their tail latencies collapsed while medians stayed clean. The engine is now shared process-wide
-  and the parsed script is cached, so the second and subsequent renders of a template skip the parse entirely
-  and each render allocates far less. In a local harness on a 6-thread pool this cut single-render latency
-  roughly 4-5x (p50 ~0.9ms → ~0.16ms), raised render throughput ~2.7x, and more than halved the time an
-  unrelated request waited behind in-flight JavaScript renders. Each request still evaluates in its own fresh
-  JavaScript realm, so template output and per-request isolation are unchanged: nothing one template writes
-  (an implicit global, a `globalThis` assignment, a built-in prototype mutation) can be observed by another
-  request. JavaScript templates remain interpreter-only on a stock (non-GraalVM) JVM, so absolute throughput
-  is still bounded — the fix removes the catastrophic, contagious slowdown, it does not make JavaScript
-  templating fast.
-- Response and forward **template rendering** (Velocity, Mustache and JavaScript) now runs on a dedicated
-  bounded thread pool instead of the shared action-dispatch resource. Even after the shared-engine fix above
-  made each render cheaper, a burst of concurrent templated requests still collapsed *every* workload on the
-  server together — plain matches, forwarding and other templates alike — because rendering is a synchronous,
-  CPU-bound step that was dispatched inline on the Netty worker event loop (no delay) or on the small shared
-  scheduler pool (with a delay), so a slow render monopolised a resource every request type depends on. Template
-  actions are now dispatched onto their own fixed-size pool (sized like the action-handler pool,
-  `max(5, availableProcessors)`), so when renders saturate it they queue only among themselves and the event
-  loop and scheduler pool stay free to serve unrelated traffic. Configured response delays are still honoured
-  exactly, and WAR/servlet (synchronous) deployments still render inline. Templated responses now behave like
-  the other asynchronous actions (object callbacks, forwards): ordering for a single in-flight request per
-  connection is unchanged, but two pipelined HTTP/1.1 requests on one connection are no longer serialised
-  against each other (HTTP/2 is unaffected, having never guaranteed cross-stream ordering). In a
-  local harness that saturates a small pool with slow renders, the time an unrelated request waited fell from
-  ~1s to effectively zero. This isolates template cost; it does **not** by itself make a heavy templating
-  workload green — a separate, independent limit (large response bodies retained in the event log exhausting the
-  heap) is being addressed in the performance harness, and freeing the dispatch pool can admit more body
-  throughput, so that memory limit may be reached sooner rather than later.
+- Three classes of unnecessary allocation on the request and response hot paths are fixed. A response
+  body whose bytes were already materialised in the charset it is served in is no longer encoded a
+  second time on the way to the wire — around half the allocation and half the latency of writing a
+  256 KB explicit-charset JSON response; as a consequence, a recorded body whose `Content-Type`
+  declared a charset but whose bytes are malformed for it is now replayed verbatim (previously decoded
+  with replacement characters and re-encoded). HTTP/3 requests with a text body no longer allocate the
+  body twice on the way in — the QUIC bridge now decodes straight from the accumulated buffer rather
+  than into an intermediate `byte[]` before reading it into a `String`. Forward-proxy authentication
+  no longer allocates a per-request Netty buffer for the `Proxy-Authorization` value and leaves it for
+  the garbage collector; the value is now computed with the JDK Base64 encoder and is byte-for-byte
+  identical to the previous encoding.
+- `maxLogEntries` and `maxExpectations` defaults are now computed correctly. They are derived from the
+  JVM heap **ceiling** (`-Xmx`) — a value fixed for the JVM's lifetime — rather than the momentary
+  free heap, which was read once and cached JVM-wide with no reset path: at `-Xmx1g`, holding ~645 MB
+  before the first read dropped the frozen `maxLogEntries` from 100,000 to ~45,957, and a later
+  allocation could not raise it. The default is now deterministic and identical for every instance in
+  the JVM, independent of allocation history. Separately, enabling dev mode programmatically now takes
+  effect on `maxLogEntries` and `maxExpectations` even if something has already read them — the cache
+  that stored the computed default under the property's own key never invalidated it, so a later
+  `devMode(true)` call could not dislodge the frozen value. On JVMs that do not report a usable heap
+  maximum (e.g. GraalVM native images) the dev-mode floor of 1,000 still applies. Explicitly
+  configured values are unaffected.
+- JavaScript response and forward templates are now substantially faster and no longer degrade
+  unrelated workloads. Templates previously constructed a throw-away GraalVM engine and re-parsed the
+  script on every request; under concurrent load this monopolised the shared action-dispatch thread
+  pool. The engine is now shared process-wide and the parsed script is cached, cutting single-render
+  latency roughly 4–5× (p50 ~0.9 ms → ~0.16 ms) and raising render throughput ~2.7×. Template
+  rendering (Velocity, Mustache, and JavaScript) also now runs on a dedicated bounded thread pool
+  instead of the shared action-dispatch resource, so when renders saturate it they queue only among
+  themselves and the event loop stays free to serve plain matches, forwarding, and other traffic — in
+  a local harness the time an unrelated request waited behind in-flight template renders fell from ~1 s
+  to effectively zero. Each request still evaluates in its own fresh JavaScript realm, so per-request
+  isolation is unchanged. JavaScript templates remain interpreter-only on a stock JVM. Configured
+  response delays are still honoured exactly; WAR/servlet deployments still render inline.
 - Unusual request header values (a leading space, an embedded DEL `0x7F`, other control characters) are still
   accepted, matched and recorded byte-for-byte on the HTTP/2 multiplex server path. MockServer deliberately
   records malformed traffic so users can test how their own clients behave. The multiplex frame decoder
@@ -280,11 +189,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP/2→HTTP/1 conversion and keep their frame reader strict. Outbound response and trailer header names remain
   validated, and HTTP/2-forbidden connection-specific header names (for example `Connection`,
   `Transfer-Encoding`) are still rejected by the framing layer regardless.
-- Forward-proxy authentication no longer allocates a per-request memory buffer that was never released. Every
-  proxy-authenticated request built its expected `Proxy-Authorization` value with Netty buffers that were left
-  for the garbage collector instead of being freed, producing steady per-request garbage on a hot path. The
-  value is now computed with the JDK Base64 encoder, which is byte-for-byte identical to the previous encoding,
-  so authentication behaviour is unchanged.
 - HTTP/2 cleartext (h2c) with prior knowledge now works through the HTTP `CONNECT` forward proxy. A client
   that establishes a `CONNECT` tunnel and then speaks cleartext HTTP/2 (sending the `PRI * HTTP/2.0` connection
   preface, with no TLS and no HTTP/1.1 Upgrade) was previously downgraded to HTTP/1.1 and received no response,
