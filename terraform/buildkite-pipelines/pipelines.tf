@@ -275,12 +275,35 @@ resource "buildkite_pipeline" "pipeline" {
   # commit goes untested. Long pipelines (container-tests ~20m, performance-test)
   # were the worst hit because, without this filter, every fresh master commit
   # canceled the previous still-running build before it could report. master builds
-  # now always run to completion and report true pass/fail. Skipping still applies
-  # to queued (not-yet-started) builds on all branches — those report as "skipped"
-  # (neutral), not red, so they are left unfiltered.
+  # now always run to completion and report true pass/fail.
+  #
+  # SKIPPING of queued (not-yet-started) builds carries the SAME filter, and the
+  # reasoning that once left it unfiltered was wrong for one pipeline. That
+  # reasoning was: a skipped build reports "skipped" (neutral), not red, so
+  # dropping an obsolete queued build is free. True when a build is a COMMIT
+  # VALIDATION — a newer commit supersedes it and nothing is lost.
+  #
+  # It is false when the build IS THE MEASUREMENT. The daily performance run is
+  # created at 04:00 and then QUEUES, because the perf queue is scale-to-zero with
+  # max_size=1. Any push to master during that wait created a newer build and the
+  # queued daily was skipped before it ever started — so no measurement happened
+  # that day, and perf-baseline-freshness.sh correctly reddened every subsequent
+  # master build for reporting a producer that had not run.
+  #
+  # Proven on demand (2026-09-19) rather than inferred: on a throwaway branch,
+  # build #1937 was left queued and #1938 created seconds later; #1937 flipped to
+  # "skipped" immediately and never started. Observed for real on the daily —
+  # #312 (schedule, master) was skipped 272s after creation, while #272, which had
+  # a ~90 minute gap before the next build, ran.
+  #
+  # Filtering skip on !master therefore protects every scheduled/master build from
+  # being dropped before it runs, while keeping the cost saving where it is safe:
+  # feature and PR branches still skip their queued builds, which is what stops a
+  # rapid-iteration branch hogging the single perf agent.
   cancel_intermediate_builds               = true
   cancel_intermediate_builds_branch_filter = "!master"
   skip_intermediate_builds                 = true
+  skip_intermediate_builds_branch_filter   = "!master"
 
   steps = "steps:\n  - label: \":pipeline:\"\n    command: \"buildkite-agent pipeline upload ${each.value.file}\"\n"
 
