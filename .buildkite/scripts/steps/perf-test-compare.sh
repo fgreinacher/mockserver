@@ -128,7 +128,25 @@ fi
 # --- 1. gather this run's result ----------------------------------------------
 RESULT="$WORK/result.json"
 if command -v buildkite-agent >/dev/null 2>&1; then
-  buildkite-agent artifact download perf-result.json "$WORK/" || { echo "ERROR: no perf-result.json artifact" >&2; exit 0; }
+  # FAIL CLOSED, like every other precondition in this script. A missing result is
+  # the most fundamental failure there is — there is nothing to compare, nothing to
+  # persist, and no way to tell "the run did not measure" from "the run was fine"
+  # except by saying so. This used to `exit 0`: a silent green with no annotation,
+  # the one unguarded path in a file whose header declares it fails closed.
+  #
+  # It was unreachable while a positional `- wait: ~` gated this step, because a
+  # failed `run + sample` skipped compare outright. The explicit depends_on wiring
+  # in perf-test-guard.sh keeps that guarantee (perf-run is a fail-closed edge), but
+  # the guarantee now rests on Buildkite's dependency semantics rather than on the
+  # step never starting. So this path is made loud rather than left as a silent
+  # green that only a correct reading of those semantics keeps unreachable.
+  if ! buildkite-agent artifact download perf-result.json "$WORK/"; then
+    annotate "error" ":no_entry: **Perf compare found NO RESULT to compare** — \`perf-result.json\` was not uploaded by this build.
+
+The measurement step produced nothing, so there is no run to gate, baseline or publish. This fails the build deliberately (fail-closed): a missing result must never read as a passing comparison."
+    echo "ERROR: no perf-result.json artifact" >&2
+    exit 1
+  fi
   cp "$WORK/perf-result.json" "$RESULT"
   buildkite-agent artifact download perf-microbench.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-microbench-extra.json "$WORK/" 2>/dev/null || true

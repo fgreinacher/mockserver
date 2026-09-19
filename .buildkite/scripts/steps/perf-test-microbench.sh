@@ -89,11 +89,18 @@ OUT_JSON="$REPO_ROOT/perf-microbench.json"
 EXTRA_JSON="$REPO_ROOT/perf-microbench-extra.json"
 
 # Make a failure of THIS step less silent. perf-test-compare.sh owns the Buildkite
-# regression annotation, but it runs only AFTER this step passes
-# (it sits behind the `wait: ~` in perf-test-guard.sh). So when this backstop dies
-# — as it did silently from 2026-09-12, when a reactor-target/pom drift stopped the
-# benchmark deps resolving — the ONLY signal is a red square nobody watches. Emit a
-# failure annotation ourselves so a broken backstop is visible on the build itself.
+# regression annotation, but it does NOT surface a failure of this step at all:
+# perf-test-guard.sh wires compare to depend on this step with the PER-DEPENDENCY
+# property `allow_failure: true` (NOT the step-level `allow_dependency_failure`,
+# which Buildkite rejects on a depends_on edge and which, used at step level, would
+# apply to EVERY edge and destroy compare's fail-closed dependency on the
+# measurement step). So compare WAITS for this step's artifact but runs regardless
+# of its exit code. (That wiring is deliberate — see the DEPENDENCY
+# GRAPH note in perf-test-guard.sh — and it strengthens the case for this
+# self-annotation rather than weakening it.) So when this backstop dies — as it did
+# silently from 2026-09-12, when a reactor-target/pom drift stopped the benchmark
+# deps resolving — the ONLY signal is a red square nobody watches. Emit a failure
+# annotation ourselves so a broken backstop is visible on the build itself.
 annotate_on_failure() {
   local ec=$?
   if [ "$ec" -ne 0 ] && command -v buildkite-agent >/dev/null 2>&1; then
