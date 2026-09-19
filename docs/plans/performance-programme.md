@@ -1856,8 +1856,61 @@ no error.** This is adjacent to the plan's existing "verification query cost at 
 row, but that row frames it as single-query cost; the serialization-with-ingestion and the
 drop-under-verify consequence are not in the plan.
 
-*Measurement:* at ~100k occupancy sweep concurrent retrieve rate; record query p95 and dropped
-log events during the scan window, and confirm serving p95 is unaffected.
+**MEASURED 2026-09-19 — CONFIRMED with a counterfactual, and honestly bounded.**
+
+**The correctness risk is real.** An identical paced writer dropped **0** entries with no query
+running and **183,617** with one real scan running concurrently — same writer, same rate, same
+occupancy, the query the only difference. A second deterministic control isolates the drop path
+itself: an identical flood of 3x the ring gives 32,769 drops against a *held* consumer and 0
+against a free one. So the degrade-to-red exists in both directions.
+
+**But the trigger is bounded, and this is the part that keeps it in proportion.** Scan latency is
+linear in occupancy, and the ring is 16,384 slots:
+
+| occupancy | scan latency | write rate needed to overflow the ring during ONE scan |
+|---:|---:|---:|
+| 10,000 | 1.3 ms | ~13.0M entries/s |
+| 50,000 | 6.7 ms | ~2.45M entries/s |
+| **100,000 (default ceiling)** | **12.7 ms** | **~1.29M entries/s** |
+| 250,000 | 32.6 ms | ~0.50M entries/s |
+| 500,000 | 63.4 ms | ~0.26M entries/s |
+
+(Arithmetic checked independently: 16,384 / 0.0127 s = 1.29M/s.) At the default `maxLogEntries`
+of 100,000 that is roughly **430-650k req/s to a single node** — above realistic single-node
+throughput. So on default settings this is not reachable; it becomes practical with a raised log
+limit, expensive matchers (a regex or JSON-schema filter makes every entry-match dearer than the
+empty-matcher clone measured here, lengthening the scan), or **stacked queries**.
+
+**Stacking is the mechanism that makes it reachable, and it follows from the second result:**
+14 concurrent queries take **14.0x** a single scan on 14 cores. Retrieval does not scale with
+cores *at all* — every query serialises on the one consumer. So dashboard polling or several
+concurrent verifies do not overlap; they queue head-to-tail and the consumer stays frozen for
+their **cumulative** duration. The single-query threshold above is therefore the optimistic case.
+
+**The non-result is verified, not assumed.** A long query does NOT block the serving path. Max
+single-write latency during a scan was **14.6 us**, against 78.6 us idle — a dropped write
+actually returns *faster*. Writes are non-blocking (`tryPublishEvent`): they are dropped, never
+stalled. And matching never reads the event log, so the serving path is decoupled by
+construction.
+
+*Not measured:* end-to-end req/s to drop on a live Netty server under k6 (the log component was
+measured directly; the write-rate column is the bridge to a load figure, not a load figure);
+expensive-matcher scans; and `verify` specifically, which calls `drainDisruptor()` first and so
+adds a second consumer round-trip — `retrieveRequests` was measured as the cleaner O(n) scan.
+
+*Not a gate.* The trigger depends on load, config and query frequency together, so any
+wall-clock or drop-count threshold would be machine-tuned and flaky. The value is the
+architectural signal, which wants a fix rather than a gate: **run queries off the append path**
+(snapshot or copy-on-read, or a separate reader) so a scan cannot starve ingestion. The existing
+WARN-once and `mock_server_dropped_log_events` counter only *report* the loss.
+
+*The proof is deliberately not promoted to a committed core test*, for the same reason as G4's:
+its PASS asserts the **current buggy behaviour** (drops happen), so committing it would lock in
+the bug. The right committed test arrives *with* a fix and asserts the invariant "a query causes
+no drops" — which fails today, and whose degrade is already built: it is exactly the control arm.
+Note the held-consumer half of the mechanism is already pinned by the committed
+`MockServerEventLogDroppedEventsTest`; what is new here is that a **real query scan** is what
+holds the consumer.
 
 ### G3. Clustering puts a grid CAS on the matching thread per limited-Times match
 
