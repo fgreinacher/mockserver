@@ -1755,11 +1755,107 @@ needs a resource, or is a decision rather than a task.
 | **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **Wired, never run.** The harness (`perf-test-soak.sh`) and a real weekly schedule exist (`perf_soak_weekly`, Sundays 08:00, deliberately clear of the 04:00 daily). It is NOT waiting on a queue slot — the slot exists. Build **#324** (2026-09-19) is the first soak ever triggered. Needs two runs: a baseline showing the metric tracks occupancy, then the reduced-`maxLogEntries` arm showing it flattens |
 | **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
 | **18. req/s per core** | A trustworthy curve | **Harness complete and wired, but opt-in and never triggered.** `lib/perf-percore.sh` is invoked from `perf-test-run.sh`, emits `.serving_percore`, and compare validates it — behind `PERF_SERVING_PERCORE`, which defaults false and **is set nowhere in `.buildkite/` or `terraform/`**. Build 306 persisted `serving_percore:{}` with `attempted:false`. The one local run found the peak flat at ~14.4k rps regardless of SUT cores, because the containerised load path caps throughput **from C>=2 upward** on Docker Desktop for Mac — so only **C=1** is a clean server-side datum and C=16 is recorded skipped. The implementation took the plan's "stop at C=8 and say so" branch (skip record, `curve_complete_to_16=false`, compare annotates it) and leaves the "second box" as an env-overridable re-run. **Outstanding: a run on a dedicated native-Linux load generator** — or simply setting the flag on the CI box, which is 16 vCPU native Linux, precisely the hardware the local run lacked. Build **#325** (2026-09-19) is the first CI run with `PERF_SERVING_PERCORE` set; it is *running* in Buildkite (pipeline uploaded 07:28 UTC) but its perf-regression jobs are still waiting on the single agent slot the soak holds — "running build, scheduled jobs" is what queueing looks like on this pipeline, so do not read the build state as progress |
-| **19. S3 -> website** | A PR, or a reasoned decision not to open one | **Implementation done and wired unconditionally** as a `soft_fail` tail step after compare (`perf-test-guard.sh:162`). It opens a PR and never pushes to master, with age and movement triggers and a dry-run flag. **Its refuse path is PROVEN** — build #290 ran and correctly refused: *"NEWEST RUN IS NOT SELF-DESCRIBING (schema_version=1) ... nothing was shipped."* **The happy path has never fired**, and what blocks it is not development but a precondition: no `schema_version=2` run has reached the S3 baseline, because the daily compare keeps failing upstream. Done-when: one clean daily run persists a self-describing result and the step is observed either opening a refresh PR or exiting 0 having judged the page fresh |
+| **19. S3 -> website** | A PR, or a reasoned decision not to open one | **Implementation done and wired unconditionally** as a `soft_fail` tail step after compare (the publish step in `perf-test-guard.sh` — deliberately unnumbered, since the pending dependency-graph fix moves it). It opens a PR and never pushes to master, with age and movement triggers and a dry-run flag. **Its refuse path is PROVEN** — build #290 ran and correctly refused: *"NEWEST RUN IS NOT SELF-DESCRIBING (schema_version=1) ... nothing was shipped."* **The happy path has never fired.** This row used to blame "the daily compare keeps failing upstream". That was wrong in mechanism, and the true diagnosis points at a different fix: **the daily compare has never RUN** — in every failing daily `persist + compare` is `waiting_failed`, i.e. skipped, so `validity` has never been evaluated on a scheduled run at all. Four upstream causes — two of them already resolved — detailed under [Why item 19 never reached the baseline](#why-item-19-never-reached-the-baseline) below. Done-when unchanged: one clean daily run persists a self-describing result and the step is observed either opening a refresh PR or exiting 0 having judged the page fresh |
 | **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | **CLOSED (2026-09-19, `72bc3dafd`).** Build **#322** ran the ladder and the knee is far sharper on CI than the laptop curve predicted. **Provenance, because this matters and a reader would otherwise be misled: build 322's overall state is FAILED and its run is flagged `validity.valid=false`.** That flag is not about this measurement. Of the six validity checks exactly one failed — `sweep_client_had_headroom` — and its own detail scopes itself: *"every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) ... no server **throughput** figure is trustworthy"*. It fired because the bisect deliberately ran a **short 3-rung ladder** (2,000 / 16,000 / 32,000 offered), every rung of which sits at or above the k6 client's own capability, so none survived the headroom filter and `peak_achieved_rps` was recorded as 0. The streaming arm is a different scenario and its own check **passed** (`streaming_metrics_present`, ratio 2.5357), with the direct client-starvation signals all clean: `stream_dropped_iterations: 0`, `stream_error_rate: 0`, `match_under_stream_error_rate: 0`, 13,200 streams completed, and delivery ratios **above** 1.0 on both arms (1.0606 under stream, 1.1386 baseline) — a starved client under-delivers, it does not over-deliver. The harness behaved correctly throughout: it refused to baseline a run it could not fully vouch for (`valid=false` -> not persisted) and failed the build loudly rather than showing a green square. The numbers below come from the passing `perf regression — run + sample` job (exit 0), not from the failed compare step. Three CI data points: concurrency **300 -> 1.056x**, **600 -> 2.536x**, **1200 -> 93.8x**. The knee therefore sits between 300 and 600, and 1200 was an order of magnitude past it — a control that fires so hard it proves nothing about the margin. Item 12 now runs at **600**, where the control fires by 2.5x with headroom either side. This also corrects an extrapolation error of mine: I predicted ~3x at 1200 from the laptop curve, whose own contention had flattened it |
 | **JUnit `devMode` default** | A decision, not a task | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping it buys the recorded research figure of **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite that logs more than 1000 entries gets a `verify` that quietly stops matching. Two tests (`MockServerExtensionDevModeDefaultTest`, `MockServerRuleDevModeDefaultTest`) were written to pin opt-in, so flipping is a behaviour change for every consumer suite in the wild and would need consumer-doc updates. Spring test support has no devMode hook at all and would need one to be consistent. **Owner: the user — this is a shipped-default choice, not a measurement** |
 | **Byte-budget divisor** | A decision, not a task | The divisor was tuned against the OLD under-counting weigher, so an honest weigher means the default config retains less real heap than before. Restoring prior capacity is a sizing choice about shipped defaults |
-| **JSON diff cost** | Shipped; numbers owed | **Landed 2026-09-19 (`79d91c09e`).** The JFR profile puts `Diff.compareObjectNodes`/`ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. A measured prototype of a pure negative pre-filter gives -99.9% allocation on provable non-matches, +0.1% when it cannot fire, 0 false rejects in 800,000 pairs. The shipped filter is a pure-negative `canMatch(...)` in `JsonStringMatcher`, gated on `useJacksonNodes && !detailedMatchFailures()` so it never changes what a user is told about a failure. **Outstanding: the benchmark numbers on the new `JSON_DEEP_DEFER` / `JSON_DEEP_REJECT` arms of `MatchingBenchmark` were never captured** — the prototype figures above are what stands in for them, and a prototype is not the artefact that ships |
+| **JSON diff cost** | **CLOSED** — shipped and measured | **Landed 2026-09-19 (`79d91c09e`), and now measured on the shipped code rather than on a prototype.** The JFR profile put `Diff.compareObjectNodes` / `ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. The shipped filter is a pure-negative `canMatch(...)` in `JsonStringMatcher`, gated on `useJacksonNodes && !detailedMatchFailures()` so it never changes what a user is told about a failure. **The prototype's -99.9% headline is real but is a WARN-level number; at the shipped default of INFO the win is -37.9%.** Full measured table and what it revises in [What the JSON pre-filter actually buys](#what-the-json-pre-filter-actually-buys) below |
+
+### What the JSON pre-filter actually buys
+
+Measured 2026-09-19 on the shipped code (`MatchingBenchmark`, `-f 1 -wi 3 -i 5 -prof gc`,
+contended laptop — read the ratios, not the absolute magnitudes). The A/B is a
+measurement-only system property gating the short-circuit, so the only difference between
+arms is whether `canMatch` may fire. `gc.alloc.rate.norm`, filter OFF -> ON:
+
+| log level | arm | OFF (B/op) | ON (B/op) | change |
+|---|---|---:|---:|---:|
+| INFO (**shipped default**) | `JSON_DEEP_REJECT` | 5,602,962 | 3,481,014 | **-37.9%** |
+| INFO | `JSON_DEEP_DEFER` | 5,088,546 | 5,104,706 | +0.3% |
+| INFO | `JSON_BODY` | 4,093,328 | 2,915,196 | -28.8% |
+| WARN | `JSON_DEEP_REJECT` | 2,065,860 | 4,064 | **-99.80% (508x)** |
+| WARN | `JSON_DEEP_DEFER` | 1,697,859 | 1,733,059 | +2.1% |
+| WARN | `JSON_BODY` | 617,497 | 4,816 | -99.22% (128x) |
+
+Three things this says that the prototype figures did not.
+
+1. **The -99.9% headline is real, but it is a WARN-level number.** At the shipped default of
+   INFO the win is -37.9%, because INFO-level matching allocates for logging whether or not
+   the diff runs, so the filter can only remove the diff's share. Quoting -99.9% without the
+   log level overstates what a default deployment gets by more than an order of magnitude.
+2. **The cost when it cannot fire is small but not free** — +0.3% at INFO and +2.1% at WARN,
+   against a claimed +0.1%.
+3. **`JSON_BODY` is not the neutral control it was assumed to be.** Flat JSON improves too
+   (-28.8% at INFO, -99.2% at WARN), so the filter reaches further than the deep-array arms
+   alone suggested. That is a bonus, not a defect — but it means `JSON_BODY` cannot be cited
+   as an unaffected baseline.
+
+The `JSON_DEEP_DEFER` arm is what makes the table trustworthy: it is the case where the
+filter provably cannot short-circuit, and its near-zero movement is the evidence that the
+toggle isolates the filter and nothing else. Two earlier attempts at this measurement were
+discarded — the first compared against a parent commit where these benchmark arms did not
+yet exist (so its "before" was some other parameter combination, and it concluded the filter
+was broken), and the second reported the REJECT saving as "61%" by inverting the ratio. The
+numbers above are recomputed from the raw JMH output.
+
+### Why item 19 never reached the baseline
+
+Diagnosed 2026-09-19 against the pipeline and the last three weeks of daily builds. The
+short version: item 19 is not blocked by a measurement being judged invalid. It is blocked by
+the step that would do the judging never executing.
+
+1. **A notify-only step gates the gating step.** `run + sample`, `microbench` and
+   `HTTP/2 multiplex` run in parallel followed by a plain `- wait: ~`, and a plain wait fails
+   closed on ANY prior failure. Two of those steps declare themselves NOTIFY-ONLY in their own
+   comments — or rather ONE of them does. The HTTP/2 step says so literally: *"NOTIFY-ONLY,
+   no threshold (recorded only)"*. `microbench` carried no such annotation at all, yet its red
+   blocked the wait exactly the same way — which is the sharper version of the point: the
+   blocking behaviour never depended on how a step described itself.
+   So a notify-only failure skips persist. **Build 306 is both the proof and the cost**:
+   `run + sample` passed, `microbench` passed, `HTTP/2 multiplex` failed, and a fully valid
+   `schema_version: 3` result — `validity.valid: true`, no failed checks, `peak_achieved_rps`
+   2000.1 — was discarded. The run this plan elsewhere celebrates as the validating one never
+   reached the baseline.
+2. **A Maven build-ordering bug in the microbench step — HISTORICAL, already fixed.**
+   `mockserver-benchmark` was built without `mockserver-netty:<version>-SNAPSHOT` installed
+   first, so resolution failed identically every run: 4 of the 6 daily failures (builds 208,
+   209, 211, 224). Fixed by `b98d18f0c8` on 2026-09-16 at 06:56, which changed both
+   container invocations to `-pl mockserver-netty -am install`. The daily schedule is
+   `0 4 * * *` — 04:00 UTC, confirmed from the Buildkite cronline and from every build's
+   `created_at` — so all four failing dailies ran hours before the fix landed. Build 272 (2026-09-18) is the proof it worked: its
+   microbench step **passed**. Recorded here only so the four historical failures are
+   explained — there is nothing left to fix. This correction exists because the first pass at
+   this diagnosis listed it as a live remediation without checking whether it had already been
+   done; the investigating agent explained four real past failures and its "fix this" was read
+   as present tense.
+3. **One SUT crash, on build 272 only.** The MockServer container exits `ExitCode 3` (not
+   OOM) during k6 `setup()` expectation seeding. This is the one live measurement defect
+   besides (1). On that build `run + sample` failed while microbench and HTTP/2 both passed,
+   so the compare skip was *correct*: the measurement genuinely failed. A
+   `perf-jvm-diagnostics.tgz` post-mortem was uploaded and is where to continue.
+4. **Build 232 was something else entirely — and was the harness behaving correctly.** It did
+   not crash. `run + sample` aborted on its own provenance self-check: *"run configuration is
+   not fully recordable — refusing to emit a result that misrepresents what it measured:
+   image digest not resolvable via `docker inspect`"*. That is the attribution discipline
+   working as designed, declining to emit a result it could not key to a binary. It appears in
+   build 232 and nowhere else among the five later runs checked (272, 290, 306, 322, 324),
+   which is a small sample spanning a few days — enough to say no recurrence has been
+   observed, not enough to call it impossible. A digest that resolves on every other run
+   points at something transient around image creation rather than a standing
+   misconfiguration, but that mechanism is inferred, not established. An earlier draft of this section folded 232 and 272
+   together as "a recurring SUT crash". They are different classes, and only one is a bug.
+
+Note what this says about the *belief* rather than the bug. `sweep_client_had_headroom` — the
+check this plan had pointed at — appears in **zero** dailies, and for a sharper reason than
+"it passed": every daily whose `run + sample` succeeded emitted `schema_version: 1`, which
+carries no `validity` structure at all, so the check was never *evaluated* on a scheduled run
+rather than evaluated and passed. It fired only in the targeted bisect 322, whose short ladder
+explains it. The plan had generalised one targeted run's flag
+into a chronic daily condition, which is the same error as reading a number without asking what
+it is *of*. So the live list is short: defect (1), which has a fix drafted and pending approval, and
+defect (3), which needs the 272 post-mortem read. (2) is already fixed; (4) is the harness
+doing its job once. A single baseline-eligible `[perf-run]`
+that reaches compare would also unblock item 19 without either fix.
 
 **A correction worth recording, because it is this programme's own failure mode.** An earlier
 version of this section listed 17, 18 and 19 as "not started" research with day estimates
