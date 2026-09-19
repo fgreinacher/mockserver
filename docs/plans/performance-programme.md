@@ -1901,6 +1901,72 @@ existing behaviour is deliberate and correct for the commit-validation pipelines
 *Verification after the change:* a daily that starts despite a master push landing during its
 queue wait, and `perf-baseline-freshness.sh` going green on the next master build.
 
+### G6. Every non-literal matcher parks a Netty event-loop thread on a shared pool
+
+Found 2026-09-19. The highest-value CPU gap left, and the one most likely to be invisible to
+every instrument currently pointed at matching.
+
+`MatchingTimeoutExecutor.callWithTimeout` submits the real match to a **single JVM-wide**
+`ThreadPoolExecutor` and then blocks the calling thread on `future.get(timeoutMillis, ...)`
+(`MatchingTimeoutExecutor.java:137`). The calling thread is a **Netty event-loop thread**:
+`HttpRequestHandler` is added to the pipeline with no `EventExecutorGroup`
+(`PortUnificationHandler.java:519`), so `channelRead0` and the matching it drives run on the
+loop. `nioEventLoopThreadCount` is a fixed 5, so parking one stalls every connection
+multiplexed on it — not just the request being matched.
+
+Verified rather than assumed:
+
+| claim | evidence |
+|---|---|
+| The caller blocks | `future.get(timeoutMillis, TimeUnit.MILLISECONDS)` at `:137` |
+| It is on by default | `regexMatchingTimeoutMillis()` returns a **5000L** default (`ConfigurationProperties.java:3846`) |
+| The handler is on the event loop | added via `addLastIfNotPresent(pipeline, new HttpRequestHandler(...))`, no executor group (`PortUnificationHandler.java:519`) |
+| The pool is shared and global | `static final ExecutorService EXECUTOR`, `SynchronousQueue`, `MAX_POOL_SIZE = max(64, cores*16)` (`:59-70`) |
+| It is measured single-threaded only | `MatchingBenchmark` is `@Fork(1)` with **no `@Threads`** |
+
+The affected matchers are not a corner: regex (path, method, header, query, string body), XPath
+(`XPathEvaluator.java:87`), GraphQL `operationName` (`GraphQLMatcher.java:164`), JSON-RPC
+`method` (`JsonRpcMatcher.java:133`), and the LLM conversation matcher.
+
+**The existing literal short-circuit does not help here.** It skips only *pure-ASCII-literal*
+matcher values, so a genuine regex — the entire reason a user writes one — always takes the
+pool. And for a benign pattern completing in microseconds, the 5-second budget is never
+realised: all that is paid is the hand-off. That is a `FutureTask` allocation, a
+`SynchronousQueue` hand-off, a park/unpark across two threads, and a CAS on a shared
+`AtomicLong` whose javadoc says it is "exposed for tests" — contending on the production hot
+path for test observability.
+
+**Why no current instrument can see it.** `MatchingBenchmark` already drives this path and is
+gated daily for time and allocation per op — but single-threaded. Contention on a shared pool
+and blocking of a 5-thread event loop are *concurrency* phenomena; a single-threaded benchmark
+is structurally incapable of showing either. This is the programme's recurring shape again: an
+instrument that runs, passes honestly, and is about the wrong subject — here the wrong
+*dimension* rather than the wrong quantity.
+
+*Measurement, and it is cheap because the arm already exists:* add `@Threads({1,4,8})` to
+`MatchingBenchmark`'s `REGEX` param and compare against a `regexMatchingTimeoutMillis=0`
+inline control. Report time/op and `gc.alloc.rate.norm` at each thread count. **Refuted** if
+per-op cost and allocation stay flat with thread count and the inline control is no cheaper;
+**confirmed** if they scale with threads or inline is materially cheaper.
+
+*One assumption in the code worth testing at the same time:* the saturation fallback runs the
+match inline with a WARN, and its comment calls that path "effectively unreachable under
+realistic concurrency given the generous cap". `MAX_POOL_SIZE` is `max(64, cores*16)`, so on a
+16-core box that is 256 threads against 5 event loops — probably true, but it is an assumption
+written as a fact, and the same benchmark can check it.
+
+**Three smaller findings from the same sweep**, recorded without ceremony because each is real
+but narrower: `MediaType.parse` re-parses and re-allocates the same `Content-Type` per request
+with no cache (`MediaType.java:85-133`, called from `BodyDecoderEncoder.java:68,105`); the full
+request body is eagerly decoded to a `String` even when no matcher reads it
+(`BodyDecoderEncoder.java:106-124` — though it is retained for the event-log entry anyway, and
+`InboundDecodeBenchmark` already targets it but has never been run in CI); and XPath re-parses
+the XML DOM per candidate expectation **outside** the timeout wrapper, on the event-loop thread
+(`XPathEvaluator.java:81`), so that cost scales with body size x candidate count.
+
+*Confirmed non-gap from this sweep:* **regex `Pattern` compilation is cached**, not per-request
+— lazily compiled into volatile fields and reused (`NottableString.java:34-35,261-289`).
+
 ### Confirmed non-gaps — checked and found already sound
 
 Recorded because a verified non-gap is worth as much as a finding, and stops the next sweep
