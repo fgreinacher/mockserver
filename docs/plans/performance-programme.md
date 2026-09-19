@@ -1,10 +1,11 @@
 # Performance Programme
 
-**Status: acceptance table COMPLETE; a research tail remains.** All 18 acceptance rows are
-executed and recorded — items 0-8, 7b, 11, 13, 15a-d and both halves of 16 proven; 9a and 14
-recorded as REFUTED on measurement; 12 delivered with its calibration residual stated. What is
-left is the research-sized work (10, 17, 18, 19) plus one sizing decision, listed under
-"What remains" below.
+**Status: every acceptance row executed EXCEPT item 10's.** Items 0-8, 7b, 11, 13, 15a-d and
+both halves of 16 are proven; 9a and 14 are recorded as REFUTED on measurement; 12 is delivered
+with its calibration residual stated. **Item 10 is the one row with no evidence** — its harness
+and weekly schedule are wired, but no soak has ever executed, so its occupancy control has never
+been run. Items 17, 18 and 19 have no acceptance row at all and are further along than a reader
+would guess; see "What remains".
 
 Originally written 2026-09-16 against `master`
 at `b98d18f0c`. **Revised 2026-09-16 against `master` at `a984a8c3a`** after a second
@@ -1730,15 +1731,23 @@ weighed with that caveat regardless of the instance-type field.
 Everything in the acceptance table is executed. What is outstanding is either research-sized,
 needs a resource, or is a decision rather than a task.
 
-| | Owed | Why it is not done |
+| | Owed | True state |
 |---|---|---|
-| **10. soak** | A weekly 2h run proving the verification-query metric is sensitive to log occupancy | Needs a 2h slot on the `perf` queue, which is `max_size=1` |
-| **17** | N instances on one host — aggregate RSS, thread and port consumption, per-instance degradation | Research, 1-2 weeks |
-| **18** | req/s per core across pinned core counts | Research, ~1 week; note the top rung needs more cores than the client has on a 16 vCPU box |
-| **19** | Close the S3 → website loop via a PR, not a direct commit | 2-3 days |
-| **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | The control FIRES (93.8x) so this is refinement, not a gap — a short-ladder run reaches the streaming phase cheaply |
+| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **Wired, never run.** The harness (`perf-test-soak.sh`) and a real weekly schedule exist (`perf_soak_weekly`, Sundays 08:00, deliberately clear of the 04:00 daily). It is NOT waiting on a queue slot — the slot exists. Build **#324** (2026-09-19) is the first soak ever triggered. Needs two runs: a baseline showing the metric tracks occupancy, then the reduced-`maxLogEntries` arm showing it flattens |
+| **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding:** (a) the optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below; (b) two product follow-ups the research recommends — default the JUnit rule/extension to `devMode`, and stop caching DERIVED defaults in `readPropertyHierarchically` |
+| **18. req/s per core** | A trustworthy curve | **Harness complete and wired, but opt-in and never triggered.** `lib/perf-percore.sh` is invoked from `perf-test-run.sh`, emits `.serving_percore`, and compare validates it — behind `PERF_SERVING_PERCORE`, which defaults false and **is set nowhere in `.buildkite/` or `terraform/`**. Build 306 persisted `serving_percore:{}` with `attempted:false`. The one local run found the peak flat at ~14.4k rps regardless of SUT cores, because the containerised load path caps throughput **from C>=2 upward** on Docker Desktop for Mac — so only **C=1** is a clean server-side datum and C=16 is recorded skipped. The implementation took the plan's "stop at C=8 and say so" branch (skip record, `curve_complete_to_16=false`, compare annotates it) and leaves the "second box" as an env-overridable re-run. **Outstanding: a run on a dedicated native-Linux load generator** — or simply setting the flag on the CI box, which is 16 vCPU native Linux |
+| **19. S3 -> website** | A PR, or a reasoned decision not to open one | **Implementation done and wired unconditionally** as a `soft_fail` tail step after compare (`perf-test-guard.sh:162`). It opens a PR and never pushes to master, with age and movement triggers and a dry-run flag. **Its refuse path is PROVEN** — build #290 ran and correctly refused: *"NEWEST RUN IS NOT SELF-DESCRIBING (schema_version=1) ... nothing was shipped."* **The happy path has never fired**, and what blocks it is not development but a precondition: no `schema_version=2` run has reached the S3 baseline, because the daily compare keeps failing upstream. Done-when: one clean daily run persists a self-describing result and the step is observed either opening a refresh PR or exiting 0 having judged the page fresh |
+| **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | The control FIRES (93.8x), so this is refinement rather than a gap. Build **#322** runs it at concurrency 600 with a short ladder |
 | **Byte-budget divisor** | A decision, not a task | The divisor was tuned against the OLD under-counting weigher, so an honest weigher means the default config retains less real heap than before. Restoring prior capacity is a sizing choice about shipped defaults |
-| **JSON diff cost** | Under investigation | The JFR profile puts `Diff.compareObjectNodes`/`ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread across expectations — so the lever is the O(n*m) unordered-array comparison, not a faster parser |
+| **JSON diff cost** | Under implementation | The JFR profile puts `Diff.compareObjectNodes`/`ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. A measured prototype of a pure negative pre-filter gives -99.9% allocation on provable non-matches, +0.1% when it cannot fire, 0 false rejects in 800,000 pairs |
+
+**A correction worth recording, because it is this programme's own failure mode.** An earlier
+version of this section listed 17, 18 and 19 as "not started" research with day estimates
+attached. All three were substantially built; item 17's measured results were sitting in its own
+section of this very document. That text was written from the plan's prose rather than from the
+code and the stored build output — the same stale-fact defect the programme keeps finding in its
+instruments, committed in the document that catalogues it. **A plan asserting the state of work
+must be checked against build evidence, not against its own earlier paragraphs.**
 
 Two open questions from the original list also remain genuinely open: whether the published
 36,000 req/s knee is real (build 306 gives a clean-tier shape but the figure is still
