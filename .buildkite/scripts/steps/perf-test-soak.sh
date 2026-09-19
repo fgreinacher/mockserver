@@ -343,7 +343,7 @@ fi
 # Propagate the k6 threshold verdict: a p99-drift / error-rate breach IS the soak
 # failure signal and must red the build.
 if [ "$SOAK_EXIT" -ne 0 ]; then
-  echo "ERROR: soak thresholds crossed (k6 exit=$SOAK_EXIT) — data-plane p99 drift or error-rate gate tripped" >&2
+  echo "ERROR: soak thresholds crossed (k6 exit=$SOAK_EXIT) — read the k6 'thresholds on metrics' line above for WHICH one; the match arm gates on p95 AND p99 AND error rate, so do not assume p99 (build 340 crossed p95 at 62.6ms against 25ms while p99 passed at 96.1ms against 100ms)" >&2
   exit "$SOAK_EXIT"
 fi
 echo "--- soak complete (thresholds held)"
