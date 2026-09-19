@@ -3,9 +3,14 @@
 **Status: every acceptance row executed EXCEPT item 10's.** Items 0-8, 7b, 11, 13, 15a-d and
 both halves of 16 are proven; 9a and 14 are recorded as REFUTED on measurement; 12 is delivered
 and its calibration residual is now **closed** by a CI bisect (build 322). **Item 10 is the one
-row with no evidence** — its harness and weekly schedule are wired, but until 2026-09-19 no soak
-had ever executed. Build **#324** is the first, running now; its occupancy control needs a second
-arm after it. Items 17, 18 and 19 have no acceptance row at all and are further along than a reader
+row with no evidence** — its harness and weekly schedule are wired, and build **#324** on
+2026-09-19 is the first soak ever executed. It ran the full 2 h and **failed**, but on a bug in
+the harness rather than in the server: the soak's own `create` arm evicts the expectation its
+`match` arm depends on. So item 10 still has no baseline, and needs re-running once the harness
+fix lands. Item **18** also ran for the first time on CI (build #325) and is valid, but its curve
+is flat at 4,000 rps for every core count because the rung that decides the ceiling is
+client-limited — the measurement is of the load generator, not the server. Both are written up
+under "What remains". Items 17, 18 and 19 have no acceptance row at all and are further along than a reader
 would guess; see "What remains".
 
 Originally written 2026-09-16 against `master`
@@ -1752,14 +1757,124 @@ needs a resource, or is a decision rather than a task.
 
 | | Owed | True state |
 |---|---|---|
-| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **Wired, never run.** The harness (`perf-test-soak.sh`) and a real weekly schedule exist (`perf_soak_weekly`, Sundays 08:00, deliberately clear of the 04:00 daily). It is NOT waiting on a queue slot — the slot exists. Build **#324** (2026-09-19) is the first soak ever triggered. Needs two runs: a baseline showing the metric tracks occupancy, then the reduced-`maxLogEntries` arm showing it flattens |
+| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **RUN AT LAST — and it found a bug in itself, not in the server.** Build **#324** (2026-09-19) is the first soak ever executed: a full 2 h against `5a4b27df8` (real commit, 6 behind master, so current code), `--memory=2g`, matchRate 200, verify/retrieve 1/s. It **failed its thresholds** with a 54.2% match error rate and p99 drifting 102 ms -> 390 ms (3.8x) while p50 held flat at 0.346 ms. Neither figure is a product defect: **the harness evicts its own match seed.** Full mechanism in [What the first soak actually measured](#what-the-first-soak-actually-measured) below. **This run is NOT item 10's baseline and must be re-run once the harness is fixed** — the occupancy control it was meant to establish is still unproven, and the run does not even carry the data to establish it |
 | **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
-| **18. req/s per core** | A trustworthy curve | **Harness complete and wired, but opt-in and never triggered.** `lib/perf-percore.sh` is invoked from `perf-test-run.sh`, emits `.serving_percore`, and compare validates it — behind `PERF_SERVING_PERCORE`, which defaults false and **is set nowhere in `.buildkite/` or `terraform/`**. Build 306 persisted `serving_percore:{}` with `attempted:false`. The one local run found the peak flat at ~14.4k rps regardless of SUT cores, because the containerised load path caps throughput **from C>=2 upward** on Docker Desktop for Mac — so only **C=1** is a clean server-side datum and C=16 is recorded skipped. The implementation took the plan's "stop at C=8 and say so" branch (skip record, `curve_complete_to_16=false`, compare annotates it) and leaves the "second box" as an env-overridable re-run. **Outstanding: a run on a dedicated native-Linux load generator** — or simply setting the flag on the CI box, which is 16 vCPU native Linux, precisely the hardware the local run lacked. Build **#325** (2026-09-19) is the first CI run with `PERF_SERVING_PERCORE` set; it is *running* in Buildkite (pipeline uploaded 07:28 UTC) but its perf-regression jobs are still waiting on the single agent slot the soak holds — "running build, scheduled jobs" is what queueing looks like on this pipeline, so do not read the build state as progress |
+| **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape |
 | **19. S3 -> website** | A PR, or a reasoned decision not to open one | **Implementation done and wired unconditionally** as a `soft_fail` tail step after compare (the publish step in `perf-test-guard.sh` — deliberately unnumbered, since the pending dependency-graph fix moves it). It opens a PR and never pushes to master, with age and movement triggers and a dry-run flag. **Its refuse path is PROVEN** — build #290 ran and correctly refused: *"NEWEST RUN IS NOT SELF-DESCRIBING (schema_version=1) ... nothing was shipped."* **The happy path has never fired.** This row used to blame "the daily compare keeps failing upstream". That was wrong in mechanism, and the true diagnosis points at a different fix: **the daily compare has never RUN** — in every failing daily `persist + compare` is `waiting_failed`, i.e. skipped, so `validity` has never been evaluated on a scheduled run at all. Four upstream causes — two of them already resolved — detailed under [Why item 19 never reached the baseline](#why-item-19-never-reached-the-baseline) below. Done-when unchanged: one clean daily run persists a self-describing result and the step is observed either opening a refresh PR or exiting 0 having judged the page fresh |
 | **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | **CLOSED (2026-09-19, `72bc3dafd`).** Build **#322** ran the ladder and the knee is far sharper on CI than the laptop curve predicted. **Provenance, because this matters and a reader would otherwise be misled: build 322's overall state is FAILED and its run is flagged `validity.valid=false`.** That flag is not about this measurement. Of the six validity checks exactly one failed — `sweep_client_had_headroom` — and its own detail scopes itself: *"every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) ... no server **throughput** figure is trustworthy"*. It fired because the bisect deliberately ran a **short 3-rung ladder** (2,000 / 16,000 / 32,000 offered), every rung of which sits at or above the k6 client's own capability, so none survived the headroom filter and `peak_achieved_rps` was recorded as 0. The streaming arm is a different scenario and its own check **passed** (`streaming_metrics_present`, ratio 2.5357), with the direct client-starvation signals all clean: `stream_dropped_iterations: 0`, `stream_error_rate: 0`, `match_under_stream_error_rate: 0`, 13,200 streams completed, and delivery ratios **above** 1.0 on both arms (1.0606 under stream, 1.1386 baseline) — a starved client under-delivers, it does not over-deliver. The harness behaved correctly throughout: it refused to baseline a run it could not fully vouch for (`valid=false` -> not persisted) and failed the build loudly rather than showing a green square. The numbers below come from the passing `perf regression — run + sample` job (exit 0), not from the failed compare step. Three CI data points: concurrency **300 -> 1.056x**, **600 -> 2.536x**, **1200 -> 93.8x**. The knee therefore sits between 300 and 600, and 1200 was an order of magnitude past it — a control that fires so hard it proves nothing about the margin. Item 12 now runs at **600**, where the control fires by 2.5x with headroom either side. This also corrects an extrapolation error of mine: I predicted ~3x at 1200 from the laptop curve, whose own contention had flattened it |
 | **JUnit `devMode` default** | A decision, not a task | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping it buys the recorded research figure of **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite that logs more than 1000 entries gets a `verify` that quietly stops matching. Two tests (`MockServerExtensionDevModeDefaultTest`, `MockServerRuleDevModeDefaultTest`) were written to pin opt-in, so flipping is a behaviour change for every consumer suite in the wild and would need consumer-doc updates. Spring test support has no devMode hook at all and would need one to be consistent. **Owner: the user — this is a shipped-default choice, not a measurement** |
 | **Byte-budget divisor** | A decision, not a task | The divisor was tuned against the OLD under-counting weigher, so an honest weigher means the default config retains less real heap than before. Restoring prior capacity is a sizing choice about shipped defaults |
 | **JSON diff cost** | **CLOSED** — shipped and measured | **Landed 2026-09-19 (`79d91c09e`), and now measured on the shipped code rather than on a prototype.** The JFR profile put `Diff.compareObjectNodes` / `ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. The shipped filter is a pure-negative `canMatch(...)` in `JsonStringMatcher`, gated on `useJacksonNodes && !detailedMatchFailures()` so it never changes what a user is told about a failure. **The prototype's -99.9% headline is real but is a WARN-level number; at the shipped default of INFO the win is -37.9%.** Full measured table and what it revises in [What the JSON pre-filter actually buys](#what-the-json-pre-filter-actually-buys) below |
+
+### Why the per-core curve is still flat
+
+Build 325 is a valid run that answers the wrong question, and it reproduces the local
+result for a reason the plan had mis-attributed. The local run was explained away as a
+Docker-Desktop-for-Mac client cap. CI is native Linux with 16 vCPU and shows the same
+flatness, so that explanation was wrong — or at least incomplete.
+
+The ceiling rule is "highest rung where achieved >= 0.95 x offered, zero errors, p50 within
+3x the flat region". The ladder is 250 / 500 / 1,000 / 2,000 / 4,000 / 8,000 / 16,000 /
+32,000. At 4,000 the server delivers ~0.98 of offered and passes. At 8,000 it delivers:
+
+| SUT cores | achieved at 8,000 offered | ratio | k6 CPU | dropped iterations |
+|---:|---:|---:|---:|---:|
+| 1 | 7,475.6 | 0.9345 | 190.5% | 6,294 |
+| 2 | 7,485.8 | 0.9357 | 197.5% | 6,172 |
+| 4 | 7,527.6 | 0.9410 | 193.8% | 5,670 |
+| 8 | 7,539.3 | 0.9424 | 146.2% | 5,530 |
+
+Every one falls just under 0.95, so 8,000 is disqualified at every core count and the ceiling
+pins to 4,000 everywhere. The curve is flat **by construction**.
+
+**And the shortfall is client-side.** Those are `dropped_iterations` — k6 constant-arrival-rate
+iterations that never started because no VU was free. The server did not fail to answer; the
+client failed to ask. So the 0.95 delivery-ratio criterion, at the rung that decides the
+ceiling, is measuring **the load generator's ability to offer, not the server's ability to
+serve** — the exact error recorded as instance 1 of this programme's recurring failure
+(`handshakes_per_s` reporting k6's offered rate as capacity).
+
+The giveaway is in the numbers themselves: **8x the cores buys 0.85% more throughput** at that
+rung. No real server scales that way. A quantity that ignores an 8x change in the resource it
+is supposed to be a function of is not measuring that resource.
+
+**`client_limited_at_ceiling: false` is true and useless.** It reports on the 4,000 rung — the
+one called the ceiling, where k6 sat at 73-99% — not on the 8,000 rung that *disqualified* the
+step up. The load-bearing question is not "was the client limited where we stopped?" but "was
+the client limited at the rung that made us stop?". The flag answers the first.
+
+**There is real scaling in the data, just not where the rule looks.** At 16,000 offered the
+achieved rate goes 3,120 (1 core) -> 9,170 (2) -> 9,003 (4) -> 9,767 (8). One core to two
+nearly triples it, then it flattens — which hints the server ceiling is somewhere near
+9-10k rps and that two cores already reach it. But those rungs are excluded for latency
+(p95 ~1,000 ms), so nothing downstream sees them.
+
+**What would actually resolve it:** finer ladder rungs between 4,000 and 16,000 (the current
+octave steps jump straight past the knee), and a load generator with enough headroom at those
+rungs that `dropped_iterations` stays near zero — more k6 cores, a second generator host, or
+a lighter per-iteration client path. Re-running the present shape on a bigger box will
+reproduce 4,000 again.
+
+### What the first soak actually measured
+
+Build 324 failed loudly, which is the right outcome, but not for the reason the numbers
+suggest. The 54.2% is `http_req_failed{op:match}` — responses outside 200-399 — and across
+1.44 M requests there were **zero** transport errors and zero interrupted iterations. The SUT
+stayed up, took 2,317,706 requests and ended with 46 threads. So those are HTTP statuses, and
+the server was answering.
+
+The mechanism, confirmed against the code:
+
+1. The `match` arm depends on a seeded `/simple` expectation with `times: {unlimited: true}`.
+2. The `create` arm PUTs a **new** `/simple` expectation at 10/s with `times:
+   {remainingTimes: 5}` and **no id**, so each one is a distinct live entry — ~72,000 over 2 h.
+3. Matching runs priority-desc then `created`-asc, so the older seed **shadows** every one of
+   them. They are never matched, never consumed, and just accumulate.
+4. `maxExpectations` is capped at 15,000 and the soak step passes no override. Eviction is
+   **oldest-first by insertion**. At 10/s the store hits the cap at ~1,500 s — and the very
+   next creates evict the four seeds, including the `/simple` the match arm needs.
+5. From then on `/simple` falls through to `remainingTimes: 5` entries consumed at 200/s but
+   replenished at 50/s, so most requests find no live matcher and MockServer correctly
+   returns 404.
+
+The arithmetic reconciles: ~0% errors for the first ~25 min, ~75% for the remaining ~87 min,
+averaging 0.54 over 1,440,001 samples — against the reported 0.54168. It also explains WHICH
+thresholds tripped: `checks` and `http_req_failed{op:match}` fell over, while
+`http_req_failed{op:create}` did not — the control plane kept returning 201 throughout. A
+server that was actually failing would not be so selective.
+
+The p99 drift has the same root: once the seed is gone the expectation list is pinned at
+15,000 and every unmatched `/simple` scans all of it. That is expectation-store scan cost, not
+the event-log occupancy item 10 exists to measure. Note the early window (120-420 s) already
+showed p99 102 ms against a 0.346 ms median, *before* any eviction — unexplained, plausibly GC
+or lock contention, and not attributable from this log.
+
+**One honest gap:** the 404 status is *inferred*. `handleSummary` replaces k6's default
+summary, so no status histogram or per-time failure series was emitted. The attribution rests
+on the code path, the absence of any transport error, and the timing arithmetic — strong, but
+not a printed 404 count.
+
+**Why this is worth recording rather than just fixing.** Every presence assertion the soak
+makes passed: match/verify/retrieve all had samples, received exceeded its floor. The run was
+green on "did it measure?" while the match arm was three-quarters 404. That is this
+programme's signature failure — an instrument that runs, reports honestly, and is about the
+wrong subject — this time inside the soak harness itself.
+
+**What the fix is.** Give the `create` arm a stable `id` (an in-place replace still churns the
+event log, which is its actual purpose) and/or a distinct path such as `/churn` so it can
+never shadow or evict the match seed. Raising `maxExpectations` is NOT the fix — it only
+delays the same eviction. Both soak arms must carry the fix before the `maxLogEntries`
+comparison means anything, and `maxExpectations` must be held identical across arms so a
+smaller heap chosen to shrink the ring does not silently move the expectation cap too.
+
+**Also owed, so the re-run can answer the question:** emit early/late sub-percentiles for
+verify and retrieve (they exist only as 2 h aggregates — `verify` p50 151.5 ms, `retrieve` p50
+425.3 ms, both zero errors), and upload `samples.csv` on every outcome rather than only on the
+`fail_soak` path. Without a trajectory there is no way to see occupancy-sensitivity, which is
+the entire point of the control. `dropped_log_events: 0` says the ingestion ring never
+overflowed; it says nothing about whether verify latency tracks occupancy. Heap ran 27 MB ->
+902 MB with a 484 MB live-set floor under a ~1.5 GB ceiling, no OOM, stable threads — no sign
+of a leak, but with no trajectory a plateau is not demonstrated either.
 
 ### What the JSON pre-filter actually buys
 
