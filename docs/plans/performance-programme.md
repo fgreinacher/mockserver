@@ -2128,6 +2128,8 @@ stable and least machine-sensitive signal.
 index per-mutation, rather than full-rebuild-on-read; and deduplicate `toSortedList`'s rebuild
 across concurrent readers.
 
+**RESOLVED — shipped `0ba706b9d`.** The case-mode rebuild now reads the authoritative list under the same monitor as `onAdded`/`onRemoved`, so a concurrent add can no longer be placed into the state being replaced and lost. Overflow eviction and reset also reach the index now: the queue exposes a mutation listener so an evicted entry is removed rather than left servable. The regression test drives a controlled interleaving through a test-supplied `Supplier` rather than racing threads — reverting the fix fails it 5 runs out of 5, where the earlier timing-based version missed it 1 run in 3.
+
 ### G2. One event-log thread serializes every verify/retrieve/clear WITH log ingestion
 
 The disruptor has a single handler (`MockServerEventLog.java:475`) that both appends entries and
@@ -2358,6 +2360,8 @@ javadoc sites plus two rows of `docs/code/clustered-state.md` still described a 
 500us cap that the code no longer used. Both were found by sweeping the *identifiers*
 (`MAX_CAS_RETRIES`, `CAS_BACKOFF_*`) rather than the old values.
 
+**RESOLVED — shipped `2deb13cea`.** Both CAS retry loops now park for a bounded randomised interval between attempts. Spurious refusals on a non-exhausted budget fell from **32.1% to 0.1-2.5%**, and the work per served match fell with them (7.28 -> ~2.4 attempts) — the fix is cheaper, not a latency-for-correctness trade, because avoiding a collision saves a whole replicated round-trip. The javadoc claiming contention is rare now states what was measured.
+
 ### G4. `Expectation` holds a per-instance `ThreadLocal` that is set and never removed
 
 `Expectation.java:109` declares `private final ThreadLocal<Integer> lastRotationSnapshot` as an
@@ -2461,6 +2465,8 @@ existing behaviour is deliberate and correct for the commit-validation pipelines
 
 *Verification after the change:* a daily that starts despite a master push landing during its
 queue wait, and `perf-baseline-freshness.sh` going green on the next master build.
+
+**RESOLVED — shipped `cd7c8f8af`, then narrowed by `0ce6f1a17`.** The skip exemption is scoped to the perf pipeline alone (`skip_intermediate_builds_branch_filter` set only for `perf-test`), rather than applied uniformly. That narrowing was deliberate and is explained under G7: the `trigger` queue is hard-capped, so keeping every pipeline's queued master builds alive would have made a commit burst materially worse.
 
 ### G6. Every non-literal matcher parks a Netty event-loop thread on a shared pool
 
@@ -2603,6 +2609,8 @@ The second: an adversarial review found the escape defect and reported it as one
 the *class* of defect rather than fixing the reported line found two more in the same file, one of
 them in the sibling scanner (`scanCharClass`) that the review had not looked at. A review's finding
 list is a sample, not the set.
+
+**RESOLVED — shipped `e838244b7`.** `RegexComplexityClassifier` proves a pattern cannot backtrack super-linearly and lets it skip the pool hand-off; everything unproven, and all `find()`-style matching, keeps the timeout isolation unchanged. Three alphabet under-approximations found while building it are recorded in the status note above — each would have made a quadratic pattern classify as safe.
 
 ### G7. Trigger-queue capacity is oversubscribed by design under a commit burst
 
