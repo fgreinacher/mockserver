@@ -166,6 +166,13 @@ changed and why:
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- Retrieving or verifying requests while the server was under load could silently discard entries
+  from the request log, so a later `verify` could fail to find a request that had genuinely been
+  received -- with no error reported, only a single warning in the log. Queries ran on the same
+  internal thread that records incoming requests, so a long query stalled recording until the
+  buffer overflowed. Queries now run off that thread: a scan can no longer stall recording. A paced
+  writer that lost tens of thousands of entries while a query ran now loses none. What a query
+  returns is unchanged.
 - In a cluster, an expectation with a bounded `Times` could stop matching well before its count was
   used up. Under concurrent requests for the same expectation, the nodes competed to claim each
   remaining use and retried immediately on losing, so they kept colliding; after a bounded number of

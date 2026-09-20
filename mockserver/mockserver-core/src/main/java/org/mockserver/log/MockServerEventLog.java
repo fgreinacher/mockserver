@@ -36,9 +36,13 @@ import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,7 +52,6 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.commons.lang3.StringUtils.isBlank;
@@ -152,6 +155,18 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     private RequestDefinitionSerializer requestDefinitionSerializer;
     private final boolean asynchronousEventProcessing;
     private Disruptor<LogEntry> disruptor;
+    // Executor that runs the O(n) part of every query (retrieve / verify / clear-scan) OFF the single
+    // disruptor consumer thread. The consumer thread both APPENDS log entries and — historically — ran
+    // every query to completion on that same thread, so a query's O(n) scan (each entry doing a full
+    // cloned request match) blocked ingestion: while a scan ran, published entries backed up and, once
+    // the fixed ring filled, were DROPPED (only a WARN-once), losing evidence a later verify needs. The
+    // fix keeps only a cheap, consistent SNAPSHOT of the entry collection on the consumer thread (a
+    // reference-copy, taken in disruptor-sequence order so it observes exactly what an in-line scan would
+    // have — ordering/visibility unchanged) and hands the expensive scan+match+map to this pool, so a
+    // long query can no longer starve appends. A bounded fixed pool (CPU parallelism, fixed ceiling) with
+    // an unbounded queue: independent queries then run on separate threads rather than serialising on the
+    // one consumer. Daemon threads (SchedulerThreadFactory) so they never block JVM shutdown.
+    private ExecutorService logQueryExecutor;
     // The ringBufferSize the disruptor was actually built with. An LMAX ring is a fixed
     // power-of-two array sized at construction, so this is the value in force for the lifetime of
     // the disruptor regardless of later configuration mutation — see getRingBufferSizeInForce().
@@ -452,6 +467,21 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
 
     private void startRingBuffer() {
         ringBufferSizeInForce = configuration.ringBufferSize();
+        // Bounded pool for running query scans off the consumer thread (see logQueryExecutor field), with
+        // an unbounded queue so bursts of concurrent queries queue rather than being rejected and never
+        // touch the disruptor consumer thread. Sized max(2, cores/2): at least 2 so one slow query cannot
+        // head-of-line-block every other query/verify, but only up to half the cores — a query's dominant
+        // cost is per-entry request cloning during the match, which is memory-bandwidth bound, so running
+        // more scans in parallel does not raise query throughput (it can lower it via allocation/GC
+        // pressure) and would only steal cores from request serving and ingestion. Query parallelism is a
+        // non-goal here; keeping the consumer free to append (no dropped events) is the point.
+        int queryThreads = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
+        logQueryExecutor = new ThreadPoolExecutor(
+            queryThreads, queryThreads,
+            0L, TimeUnit.MILLISECONDS,
+            new LinkedBlockingQueue<>(),
+            new Scheduler.SchedulerThreadFactory("EventLog-Query")
+        );
         disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"));
 
         final ExceptionHandler<LogEntry> errorHandler = new ExceptionHandler<LogEntry>() {
@@ -482,6 +512,66 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         });
 
         disruptor.start();
+    }
+
+    /**
+     * Run a query's O(n) scan without starving log ingestion: dispatch onto the single disruptor
+     * consumer thread only long enough to take a cheap, consistent reference-copy of the retained
+     * entries, then run the supplied {@code scan} — the expensive part (predicate
+     * filtering plus the per-entry cloned request match) — OFF that thread on {@link #logQueryExecutor}.
+     * <p>
+     * Ordering/visibility are unchanged from running the whole query in-line on the consumer: the
+     * snapshot is taken in disruptor-sequence order, so it observes exactly the entries published before
+     * this query's RUNNABLE — the same set the old in-line scan saw. {@code verify()} still calls
+     * {@link #drainDisruptor()} first, so the snapshot still includes everything published before the
+     * verify. The snapshot is a new list of the SAME {@link LogEntry} references; those entries are
+     * effectively immutable after {@code processLogEntry}'s {@code cloneAndClear} (the only later mutation
+     * is a {@code clear()} tombstone flag, a benign concurrent-clear race that was already undefined in
+     * ordering), so the off-thread scan reads stable state.
+     *
+     * @param descending capture the snapshot newest-first (for the reverse-order UI / unmatched queries)
+     * @param scan       the O(n) body to run off the consumer thread against the snapshot
+     */
+    private void querySnapshot(boolean descending, Consumer<List<LogEntry>> scan) {
+        disruptor.publishEvent(new LogEntry()
+            .setType(RUNNABLE)
+            .setConsumer(() -> {
+                final List<LogEntry> snapshot;
+                if (descending) {
+                    snapshot = new ArrayList<>(eventLog.size());
+                    eventLog.descendingIterator().forEachRemaining(snapshot::add);
+                } else {
+                    // reference-only copy of the deque, taken on the consumer thread where no concurrent
+                    // append can occur, so it is a consistent point-in-time view; cheap relative to the
+                    // per-entry match that follows off-thread.
+                    snapshot = new ArrayList<>(eventLog);
+                }
+                runOffConsumer(() -> scan.accept(snapshot));
+            })
+        );
+    }
+
+    /**
+     * Run {@code task} on {@link #logQueryExecutor} (off the disruptor consumer thread). Exceptions are
+     * logged, not propagated, matching the disruptor exception handler that previously swallowed-and-logged
+     * a throwing query body. If the executor has been shut down (during {@link #stop()}), fall back to
+     * running the task inline on the current (consumer) thread so a waiting consumer / verify future still
+     * completes rather than hanging.
+     */
+    private void runOffConsumer(Runnable task) {
+        try {
+            logQueryExecutor.execute(() -> runQueryTask(task));
+        } catch (RejectedExecutionException shuttingDown) {
+            runQueryTask(task);
+        }
+    }
+
+    private static void runQueryTask(Runnable task) {
+        try {
+            task.run();
+        } catch (Throwable throwable) {
+            logger.error("exception while scanning event log snapshot for a query", throwable);
+        }
     }
 
     /**
@@ -709,6 +799,10 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             stopNotifications();
             eventLog.clear();
             disruptor.shutdown(2, SECONDS);
+            // Shut down the query pool AFTER draining the disruptor: any query RUNNABLE still in the ring
+            // gets to submit its scan, and once the pool is shut down a late submit falls back to running
+            // inline (see runOffConsumer). Daemon threads, so this never blocks JVM shutdown.
+            logQueryExecutor.shutdown();
         } catch (Throwable throwable) {
             if (!(throwable instanceof com.lmax.disruptor.TimeoutException)) {
                 if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
@@ -1024,97 +1118,82 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     private void retrieveLogEntries(RequestDefinition requestDefinition, Predicate<LogEntry> logEntryPredicate, Consumer<Stream<LogEntry>> consumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> {
-                // build the matcher (which can throw, e.g. for an invalid OpenAPI/schema filter)
-                // BEFORE invoking the consumer so any failure routes an empty stream to the consumer
-                // rather than being swallowed by the disruptor exception handler — otherwise a verify
-                // CompletableFuture waiting on the consumer would never complete and the caller hangs
-                Stream<LogEntry> logEntryStream;
-                try {
-                    HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
-                    logEntryStream = this.eventLog
-                        .stream()
-                        // cheap type/not-deleted predicate first so the expensive request matcher
-                        // (which clones the request and runs full matching) only runs for entries
-                        // that can actually be returned, not for deleted tombstones or wrong-type
-                        // entries — keeps /retrieve cost low as the log fills (#2359)
-                        .filter(logEntryPredicate)
-                        .filter(logItem -> logItem.matches(httpRequestMatcher));
-                } catch (Throwable throwable) {
-                    logger.error("exception building request matcher while retrieving log entries", throwable);
-                    logEntryStream = Stream.empty();
-                }
-                consumer.accept(logEntryStream);
-            })
-        );
+        querySnapshot(false, snapshot -> {
+            // build the matcher (which can throw, e.g. for an invalid OpenAPI/schema filter)
+            // BEFORE invoking the consumer so any failure routes an empty stream to the consumer
+            // rather than being swallowed by the disruptor exception handler — otherwise a verify
+            // CompletableFuture waiting on the consumer would never complete and the caller hangs
+            Stream<LogEntry> logEntryStream;
+            try {
+                HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
+                logEntryStream = snapshot
+                    .stream()
+                    // cheap type/not-deleted predicate first so the expensive request matcher
+                    // (which clones the request and runs full matching) only runs for entries
+                    // that can actually be returned, not for deleted tombstones or wrong-type
+                    // entries — keeps /retrieve cost low as the log fills (#2359)
+                    .filter(logEntryPredicate)
+                    .filter(logItem -> logItem.matches(httpRequestMatcher));
+            } catch (Throwable throwable) {
+                logger.error("exception building request matcher while retrieving log entries", throwable);
+                logEntryStream = Stream.empty();
+            }
+            consumer.accept(logEntryStream);
+        });
     }
 
     private <T> void retrieveLogEntries(RequestDefinition requestDefinition, Predicate<LogEntry> logEntryPredicate, Function<LogEntry, T> logEntryMapper, Consumer<Stream<T>> consumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> {
-                // build the matcher before invoking the consumer so a build failure routes an empty
-                // stream rather than being swallowed and hanging a waiting verify future — see above
-                Stream<T> resultStream;
-                try {
-                    RequestDefinition requestDefinitionMatcher = requestDefinition != null ? requestDefinition : request().withLogCorrelationId(UUIDService.getNonSecureUUID());
-                    HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinitionMatcher);
-                    resultStream = this.eventLog
-                        .stream()
-                        // cheap predicate before the expensive request matcher — see #2359
-                        .filter(logEntryPredicate)
-                        .filter(logItem -> logItem.matches(httpRequestMatcher))
-                        .map(logEntryMapper);
-                } catch (Throwable throwable) {
-                    logger.error("exception building request matcher while retrieving log entries", throwable);
-                    resultStream = Stream.empty();
-                }
-                consumer.accept(resultStream);
-            })
-        );
+        querySnapshot(false, snapshot -> {
+            // build the matcher before invoking the consumer so a build failure routes an empty
+            // stream rather than being swallowed and hanging a waiting verify future — see above
+            Stream<T> resultStream;
+            try {
+                RequestDefinition requestDefinitionMatcher = requestDefinition != null ? requestDefinition : request().withLogCorrelationId(UUIDService.getNonSecureUUID());
+                HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinitionMatcher);
+                resultStream = snapshot
+                    .stream()
+                    // cheap predicate before the expensive request matcher — see #2359
+                    .filter(logEntryPredicate)
+                    .filter(logItem -> logItem.matches(httpRequestMatcher))
+                    .map(logEntryMapper);
+            } catch (Throwable throwable) {
+                logger.error("exception building request matcher while retrieving log entries", throwable);
+                resultStream = Stream.empty();
+            }
+            consumer.accept(resultStream);
+        });
     }
 
     @SuppressWarnings("SameParameterValue")
     private <T> void retrieveLogEntries(List<String> expectationIds, Predicate<LogEntry> logEntryPredicate, Function<LogEntry, T> logEntryMapper, Consumer<Stream<T>> consumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> consumer.accept(this.eventLog
-                .stream()
-                .filter(logEntryPredicate)
-                .filter(logItem -> expectationIds == null || logItem.matchesAnyExpectationId(expectationIds))
-                .map(logEntryMapper)
-            ))
-        );
+        querySnapshot(false, snapshot -> consumer.accept(snapshot
+            .stream()
+            .filter(logEntryPredicate)
+            .filter(logItem -> expectationIds == null || logItem.matchesAnyExpectationId(expectationIds))
+            .map(logEntryMapper)
+        ));
     }
 
     public void retrieveLogEntriesByCorrelationId(String correlationId, Consumer<List<LogEntry>> listConsumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> listConsumer.accept(this.eventLog
-                .stream()
-                .filter(notDeletedPredicate)
-                .filter(logItem -> correlationId.equals(logItem.getCorrelationId()))
-                .collect(Collectors.toList())
-            ))
-        );
+        querySnapshot(false, snapshot -> listConsumer.accept(snapshot
+            .stream()
+            .filter(notDeletedPredicate)
+            .filter(logItem -> correlationId.equals(logItem.getCorrelationId()))
+            .collect(Collectors.toList())
+        ));
     }
 
     public void retrieveAlmostMatchedEntries(Consumer<List<LogEntry>> listConsumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> listConsumer.accept(this.eventLog
-                .stream()
-                .filter(notDeletedPredicate)
-                .filter(logItem -> logItem.getType() == EXPECTATION_NOT_MATCHED)
-                .filter(logItem -> {
-                    String msg = logItem.getMessageFormat();
-                    return msg != null && msg.startsWith("closest expectation:");
-                })
-                .collect(Collectors.toList())
-            ))
-        );
+        querySnapshot(false, snapshot -> listConsumer.accept(snapshot
+            .stream()
+            .filter(notDeletedPredicate)
+            .filter(logItem -> logItem.getType() == EXPECTATION_NOT_MATCHED)
+            .filter(logItem -> {
+                String msg = logItem.getMessageFormat();
+                return msg != null && msg.startsWith("closest expectation:");
+            })
+            .collect(Collectors.toList())
+        ));
     }
 
     /**
@@ -1127,35 +1206,29 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     public void retrieveUnmatchedRequests(int limit, Consumer<List<LogEntry>> listConsumer) {
         drainDisruptor();
         final int effectiveLimit = Math.max(1, Math.min(limit, 100));
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> {
-                List<LogEntry> entries = StreamSupport
-                    .stream(Spliterators.spliteratorUnknownSize(this.eventLog.descendingIterator(), 0), false)
-                    .filter(notDeletedPredicate)
-                    .filter(logItem -> logItem.getType() == NO_MATCH_RESPONSE)
-                    .limit(effectiveLimit)
-                    .collect(Collectors.toList());
-                listConsumer.accept(entries);
-            })
-        );
+        querySnapshot(true, snapshot -> {
+            List<LogEntry> entries = snapshot
+                .stream()
+                .filter(notDeletedPredicate)
+                .filter(logItem -> logItem.getType() == NO_MATCH_RESPONSE)
+                .limit(effectiveLimit)
+                .collect(Collectors.toList());
+            listConsumer.accept(entries);
+        });
     }
 
     public <T> void retrieveLogEntriesInReverseForUI(RequestDefinition requestDefinition, Predicate<LogEntry> logEntryPredicate, Function<LogEntry, T> logEntryMapper, Consumer<Stream<T>> consumer) {
-        disruptor.publishEvent(new LogEntry()
-            .setType(RUNNABLE)
-            .setConsumer(() -> {
-                HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
-                consumer.accept(
-                    StreamSupport
-                        .stream(Spliterators.spliteratorUnknownSize(this.eventLog.descendingIterator(), 0), false)
-                        // cheap predicate before the expensive request matcher — see #2359
-                        .filter(logEntryPredicate)
-                        .filter(logItem -> logItem.matches(httpRequestMatcher))
-                        .map(logEntryMapper)
-                );
-            })
-        );
+        querySnapshot(true, snapshot -> {
+            HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
+            consumer.accept(
+                snapshot
+                    .stream()
+                    // cheap predicate before the expensive request matcher — see #2359
+                    .filter(logEntryPredicate)
+                    .filter(logItem -> logItem.matches(httpRequestMatcher))
+                    .map(logEntryMapper)
+            );
+        });
     }
 
     public Future<String> verify(Verification verification) {

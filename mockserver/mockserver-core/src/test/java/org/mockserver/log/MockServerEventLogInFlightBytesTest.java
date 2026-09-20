@@ -323,14 +323,20 @@ public class MockServerEventLogInFlightBytesTest {
     private CountDownLatch blockConsumer(MockServerEventLog log) throws InterruptedException {
         CountDownLatch consumerBlocked = new CountDownLatch(1);
         CountDownLatch release = new CountDownLatch(1);
-        log.retrieveMessageLogEntries(request(), entries -> {
-            consumerBlocked.countDown();
-            try {
-                release.await(10, SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        });
+        // Hold the single disruptor CONSUMER thread directly with a RUNNABLE marker so the ring backs up.
+        // (A retrieve can no longer be used to block the consumer: queries now run OFF the consumer thread
+        // on the query executor — that is exactly the ingestion-starvation fix — so a parked retrieve
+        // callback would block a query thread and leave the consumer free to keep draining.)
+        log.add(new LogEntry()
+            .setType(LogEntry.LogMessageType.RUNNABLE)
+            .setConsumer(() -> {
+                consumerBlocked.countDown();
+                try {
+                    release.await(10, SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }));
         assertThat(consumerBlocked.await(10, SECONDS), is(true));
         return release;
     }
