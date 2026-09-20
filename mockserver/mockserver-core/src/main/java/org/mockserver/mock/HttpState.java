@@ -7651,7 +7651,7 @@ public class HttpState {
             org.mockserver.async.AsyncApiControlPlaneRegistry registry = org.mockserver.async.AsyncApiControlPlaneRegistry.getInstance();
             if (!registry.isAvailable()) {
                 return response().withStatusCode(NOT_IMPLEMENTED.code())
-                    .withBody("{\"error\":\"AsyncAPI messaging module is not available — mockserver-async is not on the classpath\"}", MediaType.JSON_UTF_8);
+                    .withBody(errorJson(org.mockserver.async.AsyncApiControlPlaneRegistry.NOT_AVAILABLE), MediaType.JSON_UTF_8);
             }
             String body = request.getBodyAsString();
             if (body == null || body.isBlank()) {
@@ -7674,7 +7674,7 @@ public class HttpState {
             org.mockserver.async.AsyncApiControlPlaneRegistry registry = org.mockserver.async.AsyncApiControlPlaneRegistry.getInstance();
             if (!registry.isAvailable()) {
                 return response().withStatusCode(NOT_IMPLEMENTED.code())
-                    .withBody("{\"error\":\"AsyncAPI messaging module is not available — mockserver-async is not on the classpath\"}", MediaType.JSON_UTF_8);
+                    .withBody(errorJson(org.mockserver.async.AsyncApiControlPlaneRegistry.NOT_AVAILABLE), MediaType.JSON_UTF_8);
             }
             String body = request.getBodyAsString();
             if (body == null || body.isBlank()) {
@@ -7713,7 +7713,7 @@ public class HttpState {
             org.mockserver.async.AsyncApiControlPlaneRegistry registry = org.mockserver.async.AsyncApiControlPlaneRegistry.getInstance();
             if (!registry.isAvailable()) {
                 return response().withStatusCode(NOT_IMPLEMENTED.code())
-                    .withBody("{\"error\":\"AsyncAPI messaging module is not available — mockserver-async is not on the classpath\"}", MediaType.JSON_UTF_8);
+                    .withBody(errorJson(org.mockserver.async.AsyncApiControlPlaneRegistry.NOT_AVAILABLE), MediaType.JSON_UTF_8);
             }
             com.fasterxml.jackson.databind.JsonNode result = registry.status();
             com.fasterxml.jackson.databind.ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
@@ -7794,7 +7794,7 @@ public class HttpState {
             org.mockserver.async.AsyncApiControlPlaneRegistry registry = org.mockserver.async.AsyncApiControlPlaneRegistry.getInstance();
             if (!registry.isAvailable()) {
                 return response().withStatusCode(NOT_IMPLEMENTED.code())
-                    .withBody("{\"error\":\"AsyncAPI messaging module is not available — mockserver-async is not on the classpath\"}", MediaType.JSON_UTF_8);
+                    .withBody(errorJson(org.mockserver.async.AsyncApiControlPlaneRegistry.NOT_AVAILABLE), MediaType.JSON_UTF_8);
             }
             String body = request.getBodyAsString();
             if (body == null || body.isBlank()) {

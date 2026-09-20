@@ -49,10 +49,13 @@ export default function AsyncApiDialog({
       try {
         const next = await getAsyncApiStatus(connectionParams);
         if (cancelled) return;
-        setUnavailable(next === null);
+        setUnavailable(false);
         setStatus(next);
       } catch (e) {
-        if (!cancelled) setError(humanizeError(e).message);
+        if (cancelled) return;
+        // the server's 501 says how to enable the module; show that rather than a local paraphrase
+        if (e instanceof AsyncApiUnavailableError) { setUnavailable(true); setStatus(null); setError(e.message); }
+        else setError(humanizeError(e).message);
       }
     }
     void load();
@@ -117,8 +120,8 @@ export default function AsyncApiDialog({
         </Typography>
         {unavailable && (
           <Alert severity="warning" sx={{ mb: 1.5 }}>
-            The AsyncAPI module (mockserver-async) is not on this server's classpath, so broker
-            mocking is unavailable.
+            {/* the server's message says how to enable the module; fall back only if it sent none */}
+            {error ?? "The AsyncAPI module (mockserver-async) is not on this server's classpath, so broker mocking is unavailable."}
           </Alert>
         )}
         {error && !unavailable && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}

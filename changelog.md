@@ -97,6 +97,15 @@ changed and why:
   as zero.
 
 ### Changed
+- **The "AsyncAPI module is not available" error now tells you how to enable it.** Asking for
+  message-broker mocking (Kafka, RabbitMQ/AMQP, MQTT) on a server without the optional
+  `mockserver-async` module previously returned only the fact that it was missing, leaving you to
+  find the artifact, work out which version to use, and guess how to add it in a container. The
+  message now names `org.mock-server:mockserver-async`, says the `mockserver-bom` manages its
+  version, and notes that the standalone jar and the Docker images already bundle it (mounting the
+  jar into `/libs` covers a build that does not). The same text is used by the `501 Not Implemented`
+  responses from all four `/mockserver/asyncapi` routes, by the equivalent Java API, and by the
+  dashboard, which now shows the server's message instead of a shorter one of its own.
 - **The Docker image is about 17% smaller to download** (~163 MB to ~135 MB, measured on
   linux/arm64; linux/amd64 is trimmed the same way). This matters most on a Kubernetes node that
   does not already have the image cached, where pulling it is the overwhelming majority of the time

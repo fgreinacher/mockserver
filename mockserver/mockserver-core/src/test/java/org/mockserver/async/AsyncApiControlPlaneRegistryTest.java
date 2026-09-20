@@ -88,6 +88,50 @@ public class AsyncApiControlPlaneRegistryTest {
         assertThat(registry.generateHttpExpectations("channel"), is("[{\"httpRequest\":{\"path\":\"/channel\"}}]"));
     }
 
+    /**
+     * The not-available message IS the user experience of an opt-in feature: a caller who asked for
+     * AsyncAPI mocking without the module needs to learn how to get it, not merely that they lack it.
+     * Naming the missing module alone leaves them to guess the coordinates and, in a container, where
+     * to put the jar. Pinned here because nothing else would fail if the actionable half were edited
+     * away, leaving a message that is still technically true and no longer useful.
+     */
+    @Test
+    public void notAvailableMessageTellsTheUserHowToEnableIt() {
+        AsyncApiControlPlaneRegistry registry = new AsyncApiControlPlaneRegistry();
+
+        String message = registry.verify("{}");
+
+        assertThat("must name the artifact to add, not just the module that is missing",
+            message, containsString("mockserver-async"));
+        assertThat("must name the group so the coordinates are complete",
+            message, containsString("org.mock-server"));
+        assertThat("must say where the version comes from, or the user has to guess it",
+            message, containsString("mockserver-bom"));
+        assertThat("must tell a container user where to put the jar - /libs is already on the "
+                + "classpath in every image variant",
+            message, containsString("/libs"));
+    }
+
+    /**
+     * Four entry points report the same absence, and a caller who hits any one of them needs the
+     * same instructions. They are only as consistent as the single constant behind them, so pin
+     * that they stay identical rather than trusting that a later edit touches all four.
+     */
+    @Test
+    public void everyEntryPointReportsTheSameNotAvailableMessage() {
+        AsyncApiControlPlaneRegistry registry = new AsyncApiControlPlaneRegistry();
+        String expected = registry.verify("{}");
+
+        assertThat(registry.load("{}").get("error").asText(), is(expected));
+        assertThat(registry.status().get("error").asText(), is(expected));
+        try {
+            registry.generateHttpExpectations("{}");
+            throw new AssertionError("expected IllegalStateException when no implementation registered");
+        } catch (IllegalStateException e) {
+            assertThat(e.getMessage(), is(expected));
+        }
+    }
+
     @Test(expected = IllegalStateException.class)
     public void shouldThrowGeneratingHttpExpectationsWhenNoImpl() {
         AsyncApiControlPlaneRegistry registry = new AsyncApiControlPlaneRegistry();

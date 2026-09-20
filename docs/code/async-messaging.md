@@ -168,7 +168,7 @@ Verify that recorded messages match the given criteria. Mirrors the semantics of
 | 202 Accepted | Verification passed |
 | 406 Not Acceptable | Verification failed (body contains human-readable failure reason) |
 | 400 Bad Request | Malformed request (missing channel, invalid JSON) |
-| 501 Not Implemented | mockserver-async module is not on the classpath |
+| 501 Not Implemented | mockserver-async module is not on the classpath; the response body names the artifact, where its version comes from, and the container mount point, so a caller can act on it without leaving the error |
 
 **Example — verify at least 1 message on "orders" with a specific user name:**
 ```json
@@ -202,7 +202,7 @@ It reuses the same `AsyncApiParser` and `MessageExampleGenerator` as the broker 
 |--------|---------|
 | 201 Created | One GET expectation created per channel (body is the upserted expectation array) |
 | 400 Bad Request | Missing or unparseable spec, or a spec with no channels |
-| 501 Not Implemented | mockserver-async module is not on the classpath |
+| 501 Not Implemented | mockserver-async module is not on the classpath; the response body names the artifact, where its version comes from, and the container mount point, so a caller can act on it without leaving the error |
 
 ### Reset
 
@@ -508,7 +508,12 @@ The `mockserver-async` module is wired into the running server:
 - **mockserver-netty** declares `mockserver-async` as an optional dependency
 - **mockserver-netty-no-dependencies** (the standalone/Docker jar) explicitly includes `mockserver-async` so it's bundled by the shade plugin
 - **Registration**: `MockServer.createServerBootstrap()` uses reflection to call `AsyncApiControlPlaneImpl.registerIfAvailable()` at startup, avoiding a hard compile-time dependency
-- When the module is absent from the classpath, the `/mockserver/asyncapi` endpoints respond with 501 (Not Implemented)
+- When the module is absent from the classpath, the `/mockserver/asyncapi` endpoints respond with 501 (Not Implemented).
+  All four routes, and the in-process `AsyncApiControlPlaneRegistry` methods, return the single
+  `AsyncApiControlPlaneRegistry.NOT_AVAILABLE` text rather than their own copies — the message is the
+  whole user experience of an opt-in feature, so it says how to enable the module and must not drift
+  between surfaces. The reachable case is a build depending on `mockserver-netty`/`mockserver-core`
+  directly (the optional dependency is not pulled in); the shaded jar and the Docker images bundle it already.
 
 ## Dependencies
 

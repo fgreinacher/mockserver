@@ -8,15 +8,41 @@
 import { buildBaseUrl } from './mcpClient';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 
+/**
+ * Raised on a 501, carrying the server's own explanation where there is one. The server knows how
+ * to enable the module — which artifact, which version, where to mount it in a container — and the
+ * dashboard shows that message rather than restating a shorter version of it here, which would go
+ * stale the moment the server's advice changed.
+ */
 export class AsyncApiUnavailableError extends Error {
-  constructor() {
-    super('AsyncAPI messaging module is not available — the server does not have mockserver-async on its classpath.');
+  constructor(serverMessage?: string) {
+    super(
+      serverMessage && serverMessage.trim()
+        ? serverMessage
+        : 'AsyncAPI messaging module is not available — the server does not have mockserver-async on its classpath.',
+    );
     this.name = 'AsyncApiUnavailableError';
   }
 }
 
+/**
+ * Build the 501 error, preferring the server's `{error}` body over the local fallback text. Any
+ * failure to read that body falls back rather than propagating: a dashboard that reports a parse
+ * error instead of "the module is missing" is worse than one with a slightly vaguer message.
+ */
+async function unavailableError(res: Response): Promise<AsyncApiUnavailableError> {
+  let message: string | undefined;
+  try {
+    const body = (await res.json()) as Record<string, unknown> | null;
+    if (body && typeof body.error === 'string') message = body.error;
+  } catch {
+    // non-JSON or bodyless 501 — use the fallback text
+  }
+  return new AsyncApiUnavailableError(message);
+}
+
 async function jsonOrError(res: Response): Promise<Record<string, unknown>> {
-  if (res.status === 501) throw new AsyncApiUnavailableError();
+  if (res.status === 501) throw await unavailableError(res);
   const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
   if (!res.ok) {
     throw new Error(typeof body.error === 'string' ? body.error : `HTTP ${res.status} ${res.statusText}`);
@@ -46,7 +72,7 @@ export async function generateHttpExpectations(params: ConnectionParams, specBod
     headers: { 'Content-Type': 'application/json' },
     body: specBody,
   });
-  if (res.status === 501) throw new AsyncApiUnavailableError();
+  if (res.status === 501) throw await unavailableError(res);
   const body = (await res.json().catch(() => null)) as unknown;
   if (!res.ok) {
     const err = body && typeof body === 'object' ? (body as Record<string, unknown>).error : undefined;
@@ -55,10 +81,14 @@ export async function generateHttpExpectations(params: ConnectionParams, specBod
   return Array.isArray(body) ? body : [];
 }
 
-/** Current AsyncAPI broker-mock status. Returns null when the module is unavailable (501). */
-export async function getAsyncApiStatus(params: ConnectionParams, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+/**
+ * Current AsyncAPI broker-mock status. Throws {@link AsyncApiUnavailableError} when the module is
+ * absent (501), as the sibling calls do — this is the call the dashboard makes on open, so it is
+ * the one that decides which text a user sees, and returning a bare `null` here threw away the
+ * server's explanation before anything could display it.
+ */
+export async function getAsyncApiStatus(params: ConnectionParams, signal?: AbortSignal): Promise<Record<string, unknown>> {
   const res = await fetch(`${buildBaseUrl(params)}/mockserver/asyncapi`, { signal });
-  if (res.status === 501) return null;
   return jsonOrError(res);
 }
 
@@ -80,7 +110,7 @@ export async function verifyAsyncApi(params: ConnectionParams, body: string): Pr
     headers: { 'Content-Type': 'application/json' },
     body,
   });
-  if (res.status === 501) throw new AsyncApiUnavailableError();
+  if (res.status === 501) throw await unavailableError(res);
   if (res.status === 202) return { verified: true, message: '' };
   if (res.status === 406) return { verified: false, message: await res.text() };
   throw new Error((await res.text()) || `HTTP ${res.status} ${res.statusText}`);

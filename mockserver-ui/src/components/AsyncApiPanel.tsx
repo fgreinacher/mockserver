@@ -19,7 +19,7 @@ import CheckCircleIcon from '@mui/icons-material/CheckCircle';
 import ErrorOutlinedIcon from '@mui/icons-material/ErrorOutlined';
 import HubIcon from '@mui/icons-material/Hub';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
-import { getAsyncApiStatus } from '../lib/asyncApi';
+import { getAsyncApiStatus, AsyncApiUnavailableError } from '../lib/asyncApi';
 import { useAutoRefresh } from '../hooks/useAutoRefresh';
 import { humanizeError } from '../lib/errorMessage';
 import { monospaceFontFamily } from '../theme';
@@ -72,6 +72,7 @@ function truncatePayload(payload: string, maxLength = 120): string {
 export default function AsyncApiPanel({ connectionParams }: AsyncApiPanelProps) {
   const [status, setStatus] = useState<AsyncApiStatus | null>(null);
   const [unavailable, setUnavailable] = useState(false);
+  const [unavailableMessage, setUnavailableMessage] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filterText, setFilterText] = useState('');
 
@@ -79,16 +80,20 @@ export default function AsyncApiPanel({ connectionParams }: AsyncApiPanelProps) 
   const loadStatus = useCallback(async (signal?: AbortSignal) => {
     try {
       const result = await getAsyncApiStatus(connectionParams, signal);
-      if (result === null) {
-        setUnavailable(true);
-        setStatus(null);
-      } else {
-        setUnavailable(false);
-        setStatus(result as unknown as AsyncApiStatus);
-      }
+      setUnavailable(false);
+      setUnavailableMessage(null);
+      setStatus(result as unknown as AsyncApiStatus);
       setLoadError(null);
     } catch (e) {
       if (signal?.aborted) return;
+      if (e instanceof AsyncApiUnavailableError) {
+        // the server's 501 names the artifact and where to get it; show that, not a local summary
+        setUnavailable(true);
+        setUnavailableMessage(e.message);
+        setStatus(null);
+        setLoadError(null);
+        return;
+      }
       setLoadError(humanizeError(e).message);
     }
   }, [connectionParams]);
@@ -164,8 +169,8 @@ export default function AsyncApiPanel({ connectionParams }: AsyncApiPanelProps) 
       {unavailable && (
         <Alert severity="warning" sx={{ mb: 1.5 }}>
           <AlertTitle>Module Unavailable</AlertTitle>
-          The AsyncAPI module (mockserver-async) is not on this server&apos;s classpath.
-          Broker mocking requires the mockserver-async jar.
+          {unavailableMessage ??
+            "The AsyncAPI module (mockserver-async) is not on this server's classpath. Broker mocking requires the mockserver-async jar."}
         </Alert>
       )}
 

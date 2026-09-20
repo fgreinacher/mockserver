@@ -22,6 +22,23 @@ describe('AsyncApiPanel', () => {
     });
   });
 
+  it("shows the server's own how-to-enable text, not a local summary", async () => {
+    // the panel's status poll is the first thing that learns the module is missing, so it is the
+    // surface that decides what a user is told; it used to discard the 501 body and print its own
+    // shorter sentence, which said nothing about how to get the module
+    const exampleServerMessage = 'not available: add org.mock-server:mockserver-async, or mount it at /libs';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 501, json: async () => ({ error: exampleServerMessage }) }),
+    );
+
+    render(<AsyncApiPanel connectionParams={params} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(exampleServerMessage)).toBeInTheDocument();
+    });
+  });
+
   it('shows empty state when no spec is loaded', async () => {
     vi.stubGlobal(
       'fetch',

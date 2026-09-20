@@ -1411,6 +1411,17 @@ when nothing is registered. The endpoints answer **501 Not Implemented** rather 
    `clustered` variant pattern, would make it a tag change instead.
 4. **Make the 501 actionable.** This is the whole user experience of an opt-in feature: the response
    should name the artifact to add and the image tag to use, not merely report "not available".
+   **DONE 2026-09-20 — and it did not wait on the packaging decision**, because the 501 is already
+   reachable today: a build that depends on `mockserver-netty` or `mockserver-core` directly does not
+   pull in the optional module (the fat jars and images do bundle it — verified, 55 async classes and
+   4,167 kafka classes in all three `jar-with-dependencies` classifiers). One
+   `AsyncApiControlPlaneRegistry.NOT_AVAILABLE` constant now names `org.mock-server:mockserver-async`,
+   says `mockserver-bom` manages the version, and gives `/libs` as the container path. It replaced
+   **seven** separate copies of the old text: three in the registry and **four hand-written JSON
+   literals in `HttpState`** — the four that users actually hit over HTTP, which the first pass at this
+   missed entirely by fixing only the in-process API. The dashboard was an eighth surface: it discarded
+   the server's 501 body and rendered its own shorter sentence, so it now shows the server's message.
+   Pinned by tests at both boundaries, each degrade-proven red.
 
 **Done when:** the default fat jar is ~11 MiB smaller, a Maven user gets async mocking by adding one
 dependency, a container user by changing a tag or mounting a jar, and someone who does neither gets a

@@ -75,6 +75,26 @@ public class AsyncApiControlPlaneRegistry {
     }
 
     /**
+     * What to tell a caller who asked for AsyncAPI mocking without the module present.
+     * <p>
+     * Naming the missing module is not enough on its own: this is the entire user experience of an
+     * opt-in feature, so the message has to say how to obtain it. The reachable case is a build that
+     * depends on mockserver-netty or mockserver-core directly, where mockserver-async is an optional
+     * dependency and so is not pulled in; the shaded jar and the Docker images bundle it already,
+     * which is why the classpath-mount advice is phrased as the exception rather than the remedy.
+     * <p>
+     * Public because the same absence is reported over HTTP as a 501 by the control plane, which
+     * must say the same thing as the in-process API rather than keep its own copy.
+     */
+    public static final String NOT_AVAILABLE =
+        "AsyncAPI messaging module is not available. MockServer mocks HTTP out of the box; "
+            + "message-broker mocking (Kafka, RabbitMQ/AMQP, MQTT) lives in a separate artifact. "
+            + "Add org.mock-server:mockserver-async to the classpath at the same version as "
+            + "mockserver-core - the mockserver-bom manages that version for you. The standalone "
+            + "jar and the Docker images bundle it already; where a build does not, mounting the "
+            + "jar into /libs puts it on the server's classpath.";
+
+    /**
      * Delegate verify to the registered implementation, or return a not-available message.
      *
      * @return {@code null} if verification passes; a failure description if it fails;
@@ -82,7 +102,7 @@ public class AsyncApiControlPlaneRegistry {
      */
     public String verify(String verificationJson) {
         if (delegate == null) {
-            return "AsyncAPI messaging module is not available — mockserver-async is not on the classpath";
+            return NOT_AVAILABLE;
         }
         return delegate.verify(verificationJson);
     }
@@ -95,14 +115,14 @@ public class AsyncApiControlPlaneRegistry {
      */
     public String generateHttpExpectations(String requestBody) {
         if (delegate == null) {
-            throw new IllegalStateException("AsyncAPI messaging module is not available — mockserver-async is not on the classpath");
+            throw new IllegalStateException(NOT_AVAILABLE);
         }
         return delegate.generateHttpExpectations(requestBody);
     }
 
     private JsonNode notAvailableResponse() {
         ObjectNode node = MAPPER.createObjectNode();
-        node.put("error", "AsyncAPI messaging module is not available — mockserver-async is not on the classpath");
+        node.put("error", NOT_AVAILABLE);
         return node;
     }
 }

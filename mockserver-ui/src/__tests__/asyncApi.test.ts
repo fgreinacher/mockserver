@@ -21,9 +21,29 @@ describe('asyncApi client', () => {
     await expect(loadAsyncApi(params, 'x')).rejects.toBeInstanceOf(AsyncApiUnavailableError);
   });
 
-  it('getAsyncApiStatus returns null on 501 and the status object otherwise', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 501 }));
-    expect(await getAsyncApiStatus(params)).toBeNull();
+  it('carries the server\'s own how-to-enable message off a 501', async () => {
+    // the server knows which artifact, which version and where to mount it; the dashboard shows
+    // that message verbatim rather than a local paraphrase that would drift from the server's
+    // advice, so this asserts propagation and deliberately does not restate the server's wording
+    // a stand-in for whatever the server sends, not a copy of it: the server's exact wording is
+    // pinned by the Java tests, and duplicating it here would only give it somewhere to go stale
+    const exampleServerMessage = 'not available: add the artifact, mount it at /libs';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 501, json: async () => ({ error: exampleServerMessage }) }));
+    await expect(loadAsyncApi(params, 'x')).rejects.toThrow(exampleServerMessage);
+  });
+
+  it('falls back to its own message when the 501 carries no readable body', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 501 }));
+    await expect(loadAsyncApi(params, 'x')).rejects.toThrow('mockserver-async');
+  });
+
+  it('getAsyncApiStatus throws the unavailable error on 501 and returns the status otherwise', async () => {
+    // this is the call the dashboard makes on open, so it decides which text the user sees first;
+    // it used to answer a bare null, discarding the server's explanation before anything could show it
+    const exampleServerMessage = 'not available: add the artifact, mount it at /libs';
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 501, json: async () => ({ error: exampleServerMessage }) }));
+    await expect(getAsyncApiStatus(params)).rejects.toBeInstanceOf(AsyncApiUnavailableError);
+    await expect(getAsyncApiStatus(params)).rejects.toThrow(exampleServerMessage);
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ loaded: true }) }));
     expect(await getAsyncApiStatus(params)).toEqual({ loaded: true });
