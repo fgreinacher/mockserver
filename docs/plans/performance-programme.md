@@ -322,7 +322,8 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | D2 | P | dark | Stress past the knee; sustained soak | **lint-only — nothing runs them** | — |
 | **D3 Proxy** | all | continuous (partial) | Forward **action** latency at 200 rps | daily | median + MAD |
 | **D3** | C | **continuous** | Forward connection-pool exhaustion at 1,500 rps. **Wired in `19686f9f1`** — it had never executed and was not even linted | daily | `forward_guard.error_rate`; infra failure now announces itself |
-| **D3** | all | **none** | CONNECT tunnel; SOCKS4/5; transparent proxy; binary proxying; HTTP/2 relay; upstream-proxy chaining; proxy MITM TLS | — | — |
+| **D3** | all | continuous | **CONNECT tunnel** — `proxy.js` `forward_connect` arm, landed with item 9a. Notify-only under the `behaviours.*` budgets; the row below is what remains uncovered | daily | notify-only `behaviours.forward_connect_proxy.*` |
+| **D3** | all | **none** | SOCKS4/5; transparent proxy; binary proxying; HTTP/2 relay; upstream-proxy chaining; proxy MITM TLS | — | — |
 | D4 CPU | L | none | Idle-instance CPU floor | — | — |
 | D4 | C | continuous | CPU start/end/peak/ratio over a 6-minute growth run | daily | ratio vs median + MAD, floor 1.30 |
 | D4 Memory | L | none | Per-instance RSS; idle heap floor; whether the documented `-Xmx512m` sidecar recipe works | — | the 512 MB recipe is **prose only, never measured** |
@@ -1294,6 +1295,69 @@ The effect was the same size as the noise: the zero-connection baselines in that
 132-171 us, a spread of about ±13%, against a claimed effect of +14%. A four-point rise inside that
 spread is not rare enough to mean anything. Had the repeat not been run this item would have shipped
 a curve.
+
+#### 18 residual (2026-09-20) — the container is NOT the explanation, and the load generator probably is
+
+Item 18 left one question: the per-core ladder reads a flat ~6,000 rps healthy ceiling at 1, 2, 4 and
+8 cores with the SUT drawing roughly **one core's worth** however many it is given, and the harness's
+own attribution declines to blame the server (`peak_limited_by=load_path_or_virtualization` at C>1).
+Separating a genuine single-threaded limit from a containerised-loopback one needed a different
+experiment. Run natively on an Apple M3 Max (14 cores), same jar, same `sweep.js` ladder
+2k-32k, 10 s rungs:
+
+| arm | peak achieved | server CPU max (100% = 1 core) |
+|---|---:|---:|
+| native, `nioEventLoopThreadCount=1` | 23,531 rps | 168% |
+| native, 4 loops | 31,083 rps | 273% |
+| native, 8 loops | 30,704 rps | 317% |
+| native, 8 loops, `disableLogging=true` | 31,084 rps | 269% |
+| **same jar in Docker, 8 loops** | **27,651 rps** | — |
+
+**Three findings, and the most useful one is negative.**
+
+1. **The server is not single-threaded-limited.** Pushed hard it used **317%** CPU and served
+   **30,704 rps** — so "draws roughly one core's worth however many it is given" is a property of
+   the CI rig, not of the code.
+2. **Containerisation costs ~10%, not 5x.** The identical jar behind Docker's port forwarding on the
+   same box reached 27,651 rps against 30,704 native. That **refutes the virtualisation half** of the
+   harness's attribution: a container cannot turn 30k into 6k.
+3. **The event log's single disruptor consumer is not the limiter** at these rates — disabling
+   logging entirely changed peak throughput not at all (31,084 vs 31,083). A reasonable hypothesis,
+   measured and dead.
+
+**What that leaves — and the load-side story is only half-settled.** The evidence that the server is
+not the constraint is the **CPU**: it scaled 168% -> 273% -> 317% with event-loop count, and p50 stayed
+at 0.11-0.23 ms throughout, so it was neither pinned at one core nor queueing. That matters because
+the other signal here, k6's `dropped_iterations`, is *not* on its own decisive: above ~8k offered the
+shortfall equals the drops almost exactly (16k offered: 3,965 drops over 10 s, 2.5% of iterations,
+against an achieved rate 2.5% short), but **a saturated server would produce the same signature** —
+slow-but-correct responses hold VUs, new iterations cannot start, and drops rise with `error_rate 0`.
+The CPU and latency data are what rule that reading out, not the arithmetic.
+
+**And the obvious client explanation does not survive its own diagnostics either.** If k6 were simply
+VU-starved the pool would be exhausted; it was not. `vus_concurrent_overall_max` was **669** against
+`max_vus` 4,000 native (1,188 native-vs-docker), with `vus_pool_grew: true` and
+`vus_initialized_global_max` 1,664. So the drops are real, the server did not cause them, and plain VU
+exhaustion did not either — which is precisely the ladder's own flagged-and-unexplained VU-pool
+question, reproduced here on completely different hardware.
+
+**So `healthy_ceiling_rps` is set on the client side or in the load path, and the specific mechanism
+is still open.** Under a strict no-drops rule this native run's healthy ceiling falls **between 4,000
+(the last fully clean rung) and 8,000 (the first rung with drops)** — the same order as CI's 6,000,
+while the server was nowhere near saturated. The owed experiment is therefore not another deployment
+topology but a load generator that can saturate the server — several k6 processes, several client
+hosts, or a different generator — plus an answer to why k6 drops iterations with three quarters of
+its VU pool unused. Until then the per-core curve measures the load path.
+
+*Honest limits.* Different hardware from CI, so absolute numbers are not comparable — the
+**shape** is (does the server exceed one core when pushed: natively yes, in CI no). Client and server
+shared this 14-core box, which depresses the native figures and makes the native-vs-container
+contrast conservative rather than flattering; `sweep.js` ran with its committed VU settings
+(`preAllocatedVUs` 200, `maxVUs` 4,000). **Client CPU was not recorded** — only the server's was — so
+"the client had headroom" is asserted here from the unused VU pool, not from a client CPU
+measurement, which is a weaker basis than the CI ladder's own client-CPU figures. And Docker Desktop's port forwarding on macOS is **not** CI's
+Linux bridge networking, so finding ~10% here bounds the cost of *this* containerisation, not of
+every containerisation.
 
 **Two client ceilings, and the first is invisible — this is the transferable part.**
 
@@ -2333,6 +2397,73 @@ index per-mutation, rather than full-rebuild-on-read; and deduplicate `toSortedL
 across concurrent readers.
 
 **RESOLVED — shipped `0ba706b9d`.** The case-mode rebuild now reads the authoritative list under the same monitor as `onAdded`/`onRemoved`, so a concurrent add can no longer be placed into the state being replaced and lost. Overflow eviction and reset also reach the index now: the queue exposes a mutation listener so an evicted entry is removed rather than left servable. The regression test drives a controlled interleaving through a test-supplied `Supplier` rather than racing threads — reverting the fix fails it 5 runs out of 5, where the earlier timing-based version missed it 1 run in 3.
+
+### Gaps found by a 2026-09-20 survey, framed by USE CASE rather than by hot path
+
+The G1-G7 sweep asked "what is absent?" across CPU, memory and scalability. This one asked a
+different question — *which way of using MockServer has nobody measured?* — because the programme has
+overwhelmingly optimised one profile: a long-lived central deployment under sustained HTTP load.
+Findings are unmeasured; each names the measurement that would settle it.
+
+#### G8. The init-file watcher re-reads and re-hashes the WHOLE file every poll, forever
+
+`FileWatcher.getFileHash` is `Arrays.hashCode(Files.readAllBytes(path))`
+(`FileWatcher.java:96-102`) — a full file read and a whole-file `byte[]` allocation **every poll,
+whether or not the file changed**. The poll runs at a fixed rate
+(`watchInitializationJsonPollPeriodMillis`, default **5000 ms**,
+`ConfigurationProperties.java:4438-4439`) on a shared JVM-wide pool, and one watcher is created **per
+expanded path** (`ExpectationFileWatcher.java:39-74`), so a glob multiplies it.
+
+`watchInitializationJson` defaults to **false** (`ConfigurationProperties.java:4421-4422`), so this
+only bites users who opt in — but opting in *is* the central/Kubernetes pattern, where the init file
+comes from a ConfigMap and is expected to be watched. A supposedly idle server does continuous disk
+IO and allocation proportional to file size.
+
+*Nothing covers it:* there is no coverage-map row for the watcher, and no perf step enables watching
+— the growth and soak SUTs boot from init files but never watch them. *Measurement:* boot idle with
+a multi-MB init file, `watch=true` vs `false`, compare allocation rate and CPU over a few minutes;
+or a JMH bench of `getFileHash` across file sizes. About an hour, and it folds into item 8's idle
+footprint arm. **Verified against the code; severity medium and opt-in-gated.**
+
+#### G9. Control-plane HTTP throughput — create/clear/reset/verify as real round trips
+
+The in-process halves are measured (`ExpectationLoadingBenchmark` for registration,
+`CandidateIndexChurnBenchmark` for add/clear churn, `EventLogQueryLatencyBenchmark` for
+verify/retrieve), but **nothing measures the full HTTP round trip**: JSON DTO deserialization plus
+the control-plane handler for `PUT /expectation`, `/reset`, `/clear`, `/verify` and
+`/verifySequence`. In the k6
+scripts these appear only in `setup`/`teardown`, never as a measured arm; every measured arm is data
+plane.
+
+That round trip is the **per-test cost** for the instance-per-test-method and parallel-suite
+patterns, which are a large share of real usage and the profile items 17 and 22 already say the
+programme under-serves. *Measurement:* one k6 arm looping create + reset (and a `verifySequence`
+variant), recording rate and p99. About half a day on the existing rig. **Severity medium-high on
+reach; partially bounded because the dominant sub-costs are covered in-process.**
+
+#### G10. Reload-under-traffic when the watched file changes
+
+`ExpectationFileWatcher.addExpectationsFromInitializer` is `synchronized`
+(`ExpectationFileWatcher.java:99`) and runs a full JSON re-parse plus `requestMatchers.update(...)`
+on a watcher thread *while the server serves*. G1 established that any store mutation forces the next
+request to rebuild the sorted list and candidate index, so a bulk reload is that rebuild plus a parse.
+*Partly reconstructable* from `ExpectationLoadingBenchmark` + G1, which is why it ranks below G8/G9.
+*Measurement:* a k6 arm that rewrites the watched file mid-run and watches match p99. ~1 day.
+
+#### G11. Connection churn on the plaintext serving path — note only
+
+Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode,
+which is TLS. A non-pooling client over plaintext HTTP/1.1 — some stdlib clients, curl in a loop,
+short-lived serverless invocations — pays Netty pipeline setup and protocol detection per connection,
+and that is measured nowhere. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither
+is plaintext accept churn. **Low-to-medium and somewhat theoretical** (most clients pool). Worth one
+arm only if it is near-free.
+
+**Checked and found genuinely covered** (recorded so they are not re-investigated): proxy recording
+retrieval shares the event-log query machinery G2 characterises; large and file-backed bodies and all
+three template engines are covered by `regression.js` arms; matching across 1-1000 expectations for
+every matcher shape is covered by `MatchingBenchmark`; ongoing expectation-persistence write cost is
+a deliberate documented exclusion, not an oversight.
 
 ### G2. One event-log thread serializes every verify/retrieve/clear WITH log ingestion
 
