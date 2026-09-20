@@ -84,6 +84,14 @@ changed and why:
   as zero.
 
 ### Changed
+- **Stopping a MockServer is now effectively instant** (about 107ms faster each time). Shutdown
+  asked Netty for a "quiet period" before closing its event loops, and any non-zero quiet period
+  costs a fixed ~100ms wait regardless of whether there is anything left to do. It was redundant:
+  shutdown already waits for in-flight requests separately, and now waits for their bytes to flush.
+  This is most visible when a suite creates a MockServer per test method or per test class, where
+  that cost was paid on every single one -- a 32-instance suite spent roughly three quarters of its
+  time in shutdown.
+
 - **Helm: pods become ready about two seconds sooner, and graceful shutdown is now configurable.**
   The readiness probe waited two seconds before its first check and then polled every two seconds,
   so a server that is actually serving ~0.4s after start was not marked ready for 2-4s; it now
@@ -177,6 +185,12 @@ changed and why:
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- A response still being sent when the server was stopped could arrive truncated, or not at all.
+  Shutdown waited for responses to be *handed off* for writing rather than for their bytes to reach
+  the network, so a large or delayed response could still be queued when the server tore down its
+  connections -- the client then saw a partial body or a closed connection. Shutdown now waits for
+  the final write of each response to actually flush. This mattered most where a response is large
+  or deliberately delayed and the server is stopped underneath it, such as a rolling deployment.
 - Retrieving or verifying requests while the server was under load could silently discard entries
   from the request log, so a later `verify` could fail to find a request that had genuinely been
   received -- with no error reported, only a single warning in the log. Queries ran on the same

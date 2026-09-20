@@ -312,6 +312,102 @@ public class StopDrainIntegrationTest {
     }
 
     /**
+     * The safety proof for the zero Netty quiet period on the boss/worker event-loop shutdown
+     * (LifeCycle.stopAsync). The quiet period used to be the only thing that could let an in-flight
+     * response settle before the loops were torn down; the claim is that drainInFlightRequests()
+     * already does that explicitly, so the quiet period is redundant and safe to drop to zero.
+     *
+     * This asserts the claim against the hardest case: a response that is BOTH delayed (so it is
+     * genuinely still in flight when stop() is called — the bytes are produced only after stop
+     * begins) AND large enough (2 MiB) to span many socket writes (SO_SNDBUF is typically a few
+     * hundred KiB). If the drain did not hold the worker loop open until the last write flushed, the
+     * client would see a truncated body or a reset connection. The body content is verified byte-for-
+     * byte, not just by length, so a partial flush cannot pass.
+     *
+     * Degrade proof (see the report accompanying this change): re-running this test with
+     * stopDrainMillis(0) — which disables the drain, leaving nothing to protect the in-flight
+     * response once the quiet period is also zero — turns it RED (the client receives a truncated
+     * body / reset), confirming the assertion is real and that the safety comes from the drain, not
+     * from the Netty quiet period.
+     */
+    @Test
+    public void largeDelayedResponseInFlightAcrossStopArrivesIntact() throws Exception {
+        // given - a generous drain timeout, and a 2 MiB deterministic body served after a delay
+        ConfigurationProperties.stopDrainMillis(30_000L);
+        MockServer mockServer = newServer();
+        int port = mockServer.getLocalPort();
+        MockServerClient mockServerClient = new MockServerClient("localhost", port);
+        try {
+            final int bodySize = 2 * 1024 * 1024; // 2 MiB - spans many socket writes
+            StringBuilder builder = new StringBuilder(bodySize);
+            // repeating but position-sensitive pattern so any dropped/misordered chunk is detectable
+            for (int i = 0; i < bodySize; i++) {
+                builder.append((char) ('A' + (i % 26)));
+            }
+            final String expectedBody = builder.toString();
+
+            mockServerClient
+                .when(request().withPath("/large-slow"))
+                .respond(response().withBody(expectedBody).withDelay(TimeUnit.SECONDS, 1));
+
+            // when - fire the large slow request on its own thread; the response bytes are produced
+            // only after the 1s delay, i.e. AFTER we call stop() below, so the write happens during
+            // the drain window
+            final CountDownLatch requestSent = new CountDownLatch(1);
+            final AtomicReference<HttpResponse> received = new AtomicReference<>();
+            final AtomicReference<Throwable> failure = new AtomicReference<>();
+            Thread requester = new Thread(() -> {
+                try {
+                    requestSent.countDown();
+                    HttpResponse response = httpClient
+                        .sendRequest(request().withPath("/large-slow").withHeader("Host", "localhost:" + port), new InetSocketAddress("localhost", port))
+                        .get(30, TimeUnit.SECONDS);
+                    received.set(response);
+                } catch (Throwable t) {
+                    failure.set(t);
+                }
+            }, "drain-large-requester");
+            requester.setDaemon(true);
+            requester.start();
+
+            // wait until the request is genuinely counted in-flight on the server
+            requestSent.await(5, TimeUnit.SECONDS);
+            long waitStart = System.currentTimeMillis();
+            while (mockServer.getRequestsInFlight() == 0 && System.currentTimeMillis() - waitStart < 5_000) {
+                Thread.sleep(5);
+            }
+            assertThat("request should be in flight before stop", mockServer.getRequestsInFlight(), is(greaterThanOrEqualTo(1)));
+
+            // and - stop while the large delayed response is still pending
+            long stopStart = System.currentTimeMillis();
+            CompletableFuture<String> stopFuture = mockServer.stopAsync();
+
+            // then - stop blocks until the in-flight request drains (past the ~1s delay)
+            stopFuture.get(30, TimeUnit.SECONDS);
+            long stopElapsed = System.currentTimeMillis() - stopStart;
+            assertThat("stop should have waited for the ~1s delayed response to drain, took " + stopElapsed + "ms",
+                stopElapsed, is(greaterThanOrEqualTo(500L)));
+
+            // and - the client received the COMPLETE, intact body (not truncated, not reset)
+            requester.join(30_000);
+            assertThat("requester failed: " + failure.get(), failure.get(), is((Throwable) null));
+            assertThat(received.get(), is(org.hamcrest.Matchers.notNullValue()));
+            assertThat(received.get().getStatusCode(), is(200));
+            String actualBody = received.get().getBodyAsString();
+            assertThat("in-flight response body was truncated: got " + actualBody.length() + " of " + bodySize + " bytes",
+                actualBody.length(), is(bodySize));
+            assertThat("in-flight response body content did not survive the stop intact",
+                actualBody, is(expectedBody));
+            assertThat(mockServer.getRequestsInFlight(), is(0));
+            assertThat(mockServer.isRunning(), is(false));
+        } finally {
+            if (mockServer.isRunning()) {
+                mockServer.stop();
+            }
+        }
+    }
+
+    /**
      * A normal request through the real server must increment and then decrement the counter, so it
      * returns to zero with no leak (which would otherwise make stop() always wait the full timeout).
      */

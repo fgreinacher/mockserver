@@ -425,10 +425,28 @@ public abstract class LifeCycle implements Stoppable {
                 }
 
                 // Shut down all event loops to terminate all threads.
-                bossGroup.shutdownGracefully(5, 5, MILLISECONDS);
-                workerGroup.shutdownGracefully(5, 5, MILLISECONDS);
+                //
+                // Quiet period is 0 (not the Netty default of 2s, nor the 5ms once used here). Netty's
+                // graceful shutdown sleeps for the whole quiet period whenever tasks are still pending
+                // at shutdown (SingleThreadEventExecutor.confirmShutdown does Thread.sleep(quietPeriod)
+                // in its poll loop, guarded by an early-out only when quietPeriod == 0), so ANY non-zero
+                // quiet period — even 5ms — triggers a fixed ~100ms poll wait per group on this JVM.
+                // Across an instance-per-test-method suite that dominated the run (~107ms per stop()).
+                //
+                // The quiet period is redundant here: stopAsync() has ALREADY drained in-flight data-plane
+                // requests explicitly via drainInFlightRequests() (bounded by stopDrainMillis, default
+                // 15s) BEFORE this point, so there is no in-flight work for the quiet period to let settle.
+                // The timeout is kept non-zero so a task that is genuinely mid-execution still has a bounded
+                // window to finish before the loop is forced down. This mirrors the lazily-created forward
+                // group's own immediate-shutdown path above (shutdownGracefully(0, 0, ...)).
+                //
+                // StopDrainIntegrationTest.drainWaitsForRealInFlightRequestWithResponseDelay and
+                // .largeDelayedResponseInFlightAcrossStopArrivesIntact prove an in-flight (delayed,
+                // multi-write) response still completes intact with the zero quiet period.
+                bossGroup.shutdownGracefully(0, 5, MILLISECONDS);
+                workerGroup.shutdownGracefully(0, 5, MILLISECONDS);
                 if (forwardGroupToStop != null) {
-                    forwardGroupToStop.shutdownGracefully(5, 5, MILLISECONDS);
+                    forwardGroupToStop.shutdownGracefully(0, 5, MILLISECONDS);
                 }
 
                 // Wait until all threads are terminated.

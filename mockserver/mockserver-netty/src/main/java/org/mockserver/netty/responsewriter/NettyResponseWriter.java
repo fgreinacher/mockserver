@@ -45,9 +45,10 @@ public class NettyResponseWriter extends ResponseWriter {
     // NettyResponseWriter is created per request, so this is race-free.
     private final long startNanos;
     // WS7.2 graceful-shutdown in-flight token for this exchange; may be null (e.g. when no
-    // LifeCycle is available). Completed exactly once when the response is dispatched here,
-    // releasing this request from the drain counter. The token's own guard makes this safe even
-    // when the channel-close safety net also fires.
+    // LifeCycle is available). Completed exactly once when this exchange's TERMINAL response write
+    // FLUSHES (see completeInFlightOnFlush) -- not when the response is dispatched -- so the drain
+    // waits for bytes on the wire rather than for hand-off. The channel-close safety net may fire
+    // first instead; the token's own idempotent guard makes either order safe.
     private final org.mockserver.netty.InFlightRequest inFlightRequest;
 
     public NettyResponseWriter(Configuration configuration, MockServerLogger mockServerLogger, ChannelHandlerContext ctx, Scheduler scheduler) {
@@ -69,19 +70,45 @@ public class NettyResponseWriter extends ResponseWriter {
             Metrics.observeRequestDurationSeconds(durationSeconds);
             Metrics.observeRequestDurationByMethodSeconds(durationSeconds, request != null ? request.getMethod("") : null);
         }
-        // Release this exchange from the graceful-shutdown drain counter now that its response is
-        // being dispatched. This is the single funnel for every data-plane response (normal,
-        // streaming, chunked, forward/proxy, error, breakpoint-modified), so it covers all of them
-        // with one decrement. The token guards against double-completion if the channel-close net
-        // also fires. Done here (response hand-off) rather than per-write-future to keep it off the
-        // many divergent async write sub-paths; the close-future net backstops dropped exchanges.
-        if (inFlightRequest != null) {
-            inFlightRequest.complete();
-        }
+        // Release this exchange from the graceful-shutdown drain counter only when its TERMINAL
+        // response write has actually flushed to the socket — NOT here at response hand-off. This is
+        // still the single funnel for every data-plane response (normal, streaming, chunked,
+        // forward/proxy, error, breakpoint-modified), but each of those paths now completes the token
+        // from its terminal write's ChannelFuture via completeInFlightOnFlush(...), so
+        // drainInFlightRequests() holds stopAsync() open until the bytes are on the wire. Completing
+        // at hand-off (the previous behaviour) let the drain counter reach zero while the body was
+        // still queued: stopAsync() then tore the event loops down mid-flush and Netty force-closed
+        // the channel, truncating the in-flight response (PrematureChannelClosureException on the
+        // client). Intermediate writes — the streaming response head and each streamed chunk — must
+        // NOT complete the token. The token's idempotent guard and the channel-close safety net still
+        // release it exactly once for an exchange that errors, is cancelled, or whose channel dies
+        // before any terminal write is attempted.
         if (response.getStreamingBody() != null) {
             writeStreamingResponse(ctx, request, response);
         } else {
             writeAndCloseSocket(ctx, request, response);
+        }
+    }
+
+    /**
+     * Release this exchange's graceful-shutdown drain token once its terminal response write has
+     * flushed. Attaches a listener to the terminal write's {@link ChannelFuture} so
+     * {@code LifeCycle.drainInFlightRequests()} holds the event loops open until the bytes are on the
+     * wire rather than merely dispatched. The listener fires on success, failure, <em>and</em>
+     * cancellation of the write, so a response that errors or whose channel dies still releases its
+     * token; the token's own idempotent guard makes this safe alongside the channel-close safety net.
+     * When no write was attempted (the channel is already gone, so {@code future} is {@code null}) the
+     * token is completed directly — there are no bytes left to flush and the close-future net has
+     * nothing to protect. Null-safe when no {@link org.mockserver.netty.InFlightRequest} is present.
+     */
+    private void completeInFlightOnFlush(ChannelFuture future) {
+        if (inFlightRequest == null) {
+            return;
+        }
+        if (future == null) {
+            inFlightRequest.complete();
+        } else {
+            future.addListener(ignored -> inFlightRequest.complete());
         }
     }
 
@@ -287,11 +314,16 @@ public class NettyResponseWriter extends ResponseWriter {
                                 break;
                             }
                             case CLOSE: {
-                                // End the stream: send LastHttpContent and close
-                                ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).addListener(future -> {
+                                // End the stream: send LastHttpContent and close. This breakpoint
+                                // action terminates the stream without going through onComplete (it
+                                // never calls requestMore), so this LastHttpContent write is the
+                                // terminal write — release the in-flight token once it flushes.
+                                ChannelFuture closeFrameFuture = ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
+                                closeFrameFuture.addListener(future -> {
                                     ctx.close();
                                     // Do NOT request more — stream is ended
                                 });
+                                completeInFlightOnFlush(closeFrameFuture);
                                 break;
                             }
                             default: {
@@ -318,7 +350,12 @@ public class NettyResponseWriter extends ResponseWriter {
                     StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
                 }
                 if (ctx.channel().isActive()) {
-                    ctx.writeAndFlush(lastContentWithTrailers(response)).addListener(future -> {
+                    // The terminating LastHttpContent is the terminal write of a streaming response —
+                    // release the in-flight token when it flushes so the drain waits for the full
+                    // stream to reach the wire (on a keep-alive connection the channel is NOT closed
+                    // here, so the close-future net would otherwise not release it until much later).
+                    ChannelFuture lastFuture = ctx.writeAndFlush(lastContentWithTrailers(response));
+                    lastFuture.addListener(future -> {
                         boolean closeChannel;
                         ConnectionOptions connectionOptions = response.getConnectionOptions();
                         if (connectionOptions != null && connectionOptions.getCloseSocket() != null) {
@@ -330,6 +367,10 @@ public class NettyResponseWriter extends ResponseWriter {
                             ctx.close();
                         }
                     });
+                    completeInFlightOnFlush(lastFuture);
+                } else {
+                    // Stream completed but the channel is already gone — nothing left to flush.
+                    completeInFlightOnFlush(null);
                 }
             },
             // onError
@@ -339,7 +380,12 @@ public class NettyResponseWriter extends ResponseWriter {
                     StreamFrameBreakpointRegistry.getInstance().evictStream(streamId);
                 }
                 if (ctx.channel().isActive()) {
-                    ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT).addListener(future -> ctx.close());
+                    // Error terminates the stream: the LastHttpContent + close is the terminal write.
+                    ChannelFuture errorFuture = ctx.writeAndFlush(LastHttpContent.EMPTY_LAST_CONTENT);
+                    errorFuture.addListener(future -> ctx.close());
+                    completeInFlightOnFlush(errorFuture);
+                } else {
+                    completeInFlightOnFlush(null);
                 }
             }
         );
@@ -382,8 +428,11 @@ public class NettyResponseWriter extends ResponseWriter {
         if (chunkDelay != null && chunkSize != null && chunkSize > 0) {
             writeChunkedResponseWithDelay(ctx, response, connectionOptions, closeChannel, chunkDelay, lifecycleProfile);
         } else {
+            // Normal / error / breakpoint-modified response: this single writeAndFlush IS the whole
+            // response, so it is the terminal write — complete the in-flight token when it flushes.
             ChannelFuture channelFuture = ctx.writeAndFlush(response);
             addCloseSocketListener(channelFuture, connectionOptions, closeChannel, lifecycleProfile);
+            completeInFlightOnFlush(channelFuture);
         }
     }
 
@@ -421,6 +470,12 @@ public class NettyResponseWriter extends ResponseWriter {
             Metrics.incrementHttpChaosInjected("drop");
         }
         headFuture.addListener((ChannelFutureListener) future -> forceReset(future.channel()));
+        // The response head is the only write on the mid-response-RST fault path (the body is never
+        // sent — the connection is reset), so it is terminal: release the in-flight token once it has
+        // flushed (or failed). The forced reset that follows closes the channel; the close-future net
+        // would also release the token, but completing on the head write keeps the drain semantics
+        // identical to every other path (flush, not dispatch).
+        completeInFlightOnFlush(headFuture);
     }
 
     /**
@@ -482,8 +537,10 @@ public class NettyResponseWriter extends ResponseWriter {
         List<DefaultHttpObject> httpObjects = new org.mockserver.mappers.MockServerHttpResponseToFullHttpResponse(mockServerLogger)
             .mapMockServerResponseToNettyResponse(response);
         if (httpObjects.size() <= 1) {
+            // Nothing to chunk — a single writeAndFlush of the whole response is the terminal write.
             ChannelFuture channelFuture = ctx.writeAndFlush(response);
             addCloseSocketListener(channelFuture, connectionOptions, closeChannel, lifecycleProfile);
+            completeInFlightOnFlush(channelFuture);
             return;
         }
         ChannelFuture headerFuture = ctx.writeAndFlush(httpObjects.get(0));
@@ -493,6 +550,9 @@ public class NettyResponseWriter extends ResponseWriter {
                     ReferenceCountUtil.release(httpObjects.get(i));
                 }
                 addCloseSocketListener(headerFuture, connectionOptions, closeChannel, lifecycleProfile);
+                // The header write failed, so no chunks will be sent: this failed write is terminal.
+                // completeInFlightOnFlush fires on the (already-failed) future, releasing the token.
+                completeInFlightOnFlush(headerFuture);
                 return;
             }
             long cumulativeDelayMs = 0;
@@ -504,10 +564,20 @@ public class NettyResponseWriter extends ResponseWriter {
                     if (ctx.channel().isActive()) {
                         ChannelFuture chunkFuture = ctx.writeAndFlush(chunk);
                         if (isLast) {
+                            // The final chunk is the terminal write of a chunked response — release
+                            // the in-flight token once it flushes so the drain waits for the whole
+                            // body, not just the head.
                             addCloseSocketListener(chunkFuture, connectionOptions, closeChannel, lifecycleProfile);
+                            completeInFlightOnFlush(chunkFuture);
                         }
                     } else {
                         ReferenceCountUtil.release(chunk);
+                        if (isLast) {
+                            // Channel died before the final chunk could be written: no bytes remain to
+                            // flush, so release the token directly (the close-future net also covers
+                            // this, but completing here keeps the token from lingering until close).
+                            completeInFlightOnFlush(null);
+                        }
                     }
                 }, cumulativeDelayMs, TimeUnit.MILLISECONDS);
             }
