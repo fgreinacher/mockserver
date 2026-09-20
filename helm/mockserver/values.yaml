@@ -33,6 +33,29 @@ app:
   #   jvmOptions: "-Xmx512m"
   jvmOptions: ""
   serviceAccountName: default
+  # Seconds Kubernetes waits after SIGTERM before SIGKILL. Must comfortably exceed
+  # preStopSleepSeconds + the server's own in-flight drain (mockserver.stopDrainMillis,
+  # default 15s), or a graceful shutdown gets cut short by the kill.
+  terminationGracePeriodSeconds: 45
+  # Seconds to pause BEFORE MockServer is told to shut down, so Kubernetes has time to
+  # remove this pod from Service endpoints first. On deletion the SIGTERM and the endpoint
+  # removal happen in PARALLEL, and endpoint propagation to kube-proxy/ingress takes
+  # seconds - so without this pause the server can begin shutting down while traffic is
+  # still being routed to it, and those requests fail. MockServer's own drain does not
+  # help here: it waits for requests already IN FLIGHT, not ones still arriving.
+  #
+  # Set 0 to disable (the default). The image is distroless and has NO SHELL, so the
+  # usual `exec: ["sh","-c","sleep 5"]` hook cannot work; this uses the native
+  # `lifecycle.preStop.sleep` action, which the kubelet performs itself.
+  #
+  # REQUIRES KUBERNETES 1.30+. The PodLifecycleSleepAction feature (KEP-3960) is Beta and
+  # on by default from 1.30; in 1.29 it is Alpha and OFF unless the cluster explicitly
+  # enables the PodLifecycleSleepAction feature gate. Enabling this on a cluster that does
+  # not support it is the dangerous case - you would believe you had a graceful-shutdown
+  # pause and not have one - so it is off by default and you should confirm your cluster
+  # version before turning it on. Leave at 0 on older clusters: the block is then omitted
+  # from the manifest entirely.
+  preStopSleepSeconds: 0
   runAsUser: 65534
   # -- Set MOCKSERVER_PROPERTY_FILE to /config/<propertiesFileName> even when
   # app.config.enabled is false. Enable this when you mount an EXTERNAL ConfigMap

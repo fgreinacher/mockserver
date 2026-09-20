@@ -84,6 +84,17 @@ changed and why:
   as zero.
 
 ### Changed
+- **Helm: pods become ready about two seconds sooner, and graceful shutdown is now configurable.**
+  The readiness probe waited two seconds before its first check and then polled every two seconds,
+  so a server that is actually serving ~0.4s after start was not marked ready for 2-4s; it now
+  checks immediately and every second (measured: `kubectl apply` to Ready fell from ~4s to ~2.8s).
+  Two new values are available for graceful shutdown: `app.terminationGracePeriodSeconds` (default
+  45, which must stay comfortably above `mockserver.stopDrainMillis`) and `app.preStopSleepSeconds`
+  (default 0, off). Enabling the latter pauses before shutdown begins so Kubernetes has time to stop
+  routing traffic to the pod first -- MockServer's own drain waits for requests already in flight,
+  not for ones still arriving because endpoint removal has not yet propagated. It needs Kubernetes
+  1.30+ and the image has no shell, so it uses the native `preStop.sleep` action.
+
 - Regular-expression matching is faster for the common case. A regex that can be proven incapable of
   catastrophic backtracking is now evaluated directly instead of being handed to the internal timeout
   thread pool, removing a thread hand-off from every such match. Patterns that cannot be proven safe
