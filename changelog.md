@@ -37,6 +37,10 @@ changed and why:
 | Matching a regular expression | one internal thread hand-off removed per match, for any pattern provably free of catastrophic backtracking |
 | Memory across 32 JUnit-managed instances | **117 MB → 52 MB** — the JUnit rule and extension now default to dev-mode sizing |
 | Clustered expectations with a bounded `Times` | spurious refusals under concurrent load cut **roughly tenfold** — from ~32% to low single digits — at about a third of the coordination work |
+| Stopping a MockServer | **~107 ms → ~0 ms** each time — paid on every instance, so a suite creating one per test method spent roughly three quarters of its time here |
+| Docker image download | **~163 MB → ~135 MB (−17%)** — the dominant cost of a first deploy onto a Kubernetes node that has not cached the image |
+| Optional Linux-only build of the standalone JAR | **~13 MB smaller** than the default, for CI agents that start with an empty disk |
+| Kubernetes pod marked ready (Helm chart) | **~4 s → ~2.8 s** — the readiness probe's cadence, not the server, was the delay |
 
 ### Added
 - **Slimmer, optional builds of the standalone JAR for Linux CI and containers.** Alongside the
