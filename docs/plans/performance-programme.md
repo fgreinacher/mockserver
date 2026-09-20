@@ -2586,7 +2586,32 @@ flagged the 15,000 arm as sitting at the cap. A second version then claimed the 
 on a watcher thread *while the server serves*. G1 established that any store mutation forces the next
 request to rebuild the sorted list and candidate index, so a bulk reload is that rebuild plus a parse.
 *Partly reconstructable* from `ExpectationLoadingBenchmark` + G1, which is why it ranks below G8/G9.
-*Measurement:* a k6 arm that rewrites the watched file mid-run and watches match p99. ~1 day.
+
+**MEASURED 2026-09-21 — no detectable data-plane impact.** 200 rps of steady traffic against one
+unchanging path for 60 s, with the watched file rewritten three times mid-run (poll period 1 s), and
+the reload verified to have actually happened by checking the final file version's expectations were
+live on the server — a run where the file changed but nothing reloaded would measure nothing and look
+exactly like the control.
+
+| arm | p50 | p95 | max | requests > 25 ms | > 100 ms |
+|---|---:|---:|---:|---:|---:|
+| control, 2,000 expectations, no reload | 0.80 ms | 1.72 ms | 17.76 ms | 0 | 0 |
+| control, repeat | 0.73 ms | 1.66 ms | 43.09 ms | 4 | 0 |
+| 3 reloads, 2,000 expectations | 0.77 ms | 1.67 ms | 68.33 ms | 8 | 0 |
+| 3 reloads, repeat | 0.71 ms | 1.70 ms | 17.31 ms | 0 | 0 |
+| 3 reloads, 5,000 expectations | 1.55 ms | 2.60 ms | 32.04 ms | 4 | 0 |
+
+**Percentiles do not move at all** — p50 and p95 are identical across reload and control, and no
+request anywhere exceeded 100 ms in 12,000 per arm. The tail counts looked like a signal in take 1
+(control 0 slow requests against the reload arm's 8) and **inverted in the repeat** (control 4,
+reload 0), so they are box noise rather than a reload effect. That is the third time in this
+programme a single run produced a trend a repeat destroyed.
+
+The higher p50 in the 5,000 arm is store size, not reload — the same effect G9 and G1 measure.
+
+*Limits.* 2,000-5,000 expectations and a file of that size; a far larger file would pay a longer
+parse, and the parse is the part this did not isolate. Three reloads per run is a small sample for a
+tail statistic, which is exactly why the tail counts are reported as noise rather than as a result.
 
 #### G11. Connection churn on the plaintext serving path — note only
 
