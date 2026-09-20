@@ -1442,6 +1442,29 @@ initialisation baking build-machine facts into the image. It also cannot serve t
 all, since a native executable cannot sit on a test classpath, which is how JUnit users consume
 MockServer. The jlink bundle remains the correct JVM-less distribution mechanism.
 
+**SHIPPED 2026-09-20 (`c627a79c8`), and the Linux residual is CLOSED.** Two additive classified
+artifacts now attach alongside the unchanged default: `linux-x86_64` at 86.31 MiB (-13.13) and
+`linux-aarch_64` at 86.08 MiB (-13.36), each carrying exactly the three ELF `.so` its architecture
+can load. The default was proven unchanged against a pristine `origin/master` build — 43,866 entries
+with identical names, order and CRC-32, and an empty `diff -rq` of the extracted trees.
+
+**The natives were then proven to ACTIVATE, not merely to be present.** Everything up to that point
+ran on macOS, where a Linux `.so` cannot be `dlopen`ed at all, so the evidence was only that the
+right files were in the jar. Running each slim jar in a real Linux container of its own architecture
+(arm64 native, amd64 under emulation, `uname -m` confirming `x86_64`) reports for both:
+`OpenSsl.isAvailable=true`, `versionString=BoringSSL`, `defaultServerProvider=OPENSSL`,
+`unavailabilityCause=none`, `Epoll.isAvailable=true`. End to end on arm64: ready in ~1s, expectation
+created (201), request served, and `Netty epoll transport is available` in the server log.
+
+**That distinction is the whole point of the check.** MockServer falls back to the JDK SSL provider
+**silently** when tcnative fails to load, and Netty falls back from epoll to NIO the same way, so a
+successful HTTPS request is not evidence of anything — the server would serve it either way. Only
+the provider and availability values distinguish a working native path from a degraded one.
+
+**Still owed and NOT verified here:** the release path — two extra artifacts are signed, staged and
+published automatically as attached artifacts, but that has not been exercised, and this repo has
+been bitten before by faults that appear only on release-only paths.
+
 **Done when:** the transitive download a typical JUnit consumer actually pays is measured (not
 estimated); the classified fat-jar artifacts exist for the two Linux targets with the default
 unchanged; and the library-path options are costed for a user with a recommendation, rather than
