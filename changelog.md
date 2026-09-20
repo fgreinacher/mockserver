@@ -84,6 +84,15 @@ changed and why:
   as zero.
 
 ### Changed
+- **The Docker image is about 17% smaller to download** (~163 MB to ~135 MB, measured on
+  linux/arm64; linux/amd64 is trimmed the same way). This matters most on a Kubernetes node that
+  does not already have the image cached, where pulling it is the overwhelming majority of the time
+  before MockServer is serving. Two changes: the bundled Netty native libraries are trimmed to the
+  architecture the container actually runs on, and the JAR is stored uncompressed inside the image
+  so the image layer can compress it properly. Nothing is lost -- the removed files are macOS and
+  Windows binaries that a Linux container could never load. Native TLS (BoringSSL), HTTP/2, the
+  native epoll transport and the AppCDS startup archive were all verified unchanged.
+
 - **Stopping a MockServer is now effectively instant** (about 107ms faster each time). Shutdown
   asked Netty for a "quiet period" before closing its event loops, and any non-zero quiet period
   costs a fixed ~100ms wait regardless of whether there is anything left to do. It was redundant:

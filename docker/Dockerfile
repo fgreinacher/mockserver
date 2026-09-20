@@ -88,9 +88,56 @@ FROM ${source} AS intermediate
 # NOTE: the JVM inside this runtime image is JDK 25 — the MockServer library itself is still
 # compiled to the Java 17 bytecode floor (see AGENTS.md Java Compatibility Policy); running that
 # jar on a newer JVM is fully supported and is a runtime-only choice, independent of compilation.
+# ── Per-arch native trim + uncompressed repack (image download-size optimisation) ──
+# The fat jar bundles netty native binaries for EVERY platform under META-INF/native/:
+# linux, macOS and windows, each in x86_64 + aarch64. A linux container can only ever
+# load its own arch's ELF .so — the macOS blobs are Mach-O (.jnilib) and the Windows
+# ones are PE (.dll), object formats an ELF loader physically cannot map, and the
+# wrong-arch linux .so is just as unusable. Dropping them removes ~13 MiB from the
+# compressed image download with zero loss of function. Keyed on the same TARGETARCH
+# used above to fetch the matching tcnative.
+#
+# The KEEP filter is the "*<arch>.so" SUFFIX, and that shape is deliberate: the linux
+# natives for one arch are THREE differently-named files —
+#   libnetty_tcnative_linux_<arch>.so
+#   libnetty_quiche42_linux_<arch>.so
+#   libnetty_transport_native_epoll_<arch>.so   <-- note: NO "linux_" in the name
+# so a "linux_<arch>" filter would silently delete the epoll .so and degrade epoll to
+# NIO with no error anywhere in the log. Matching the "<arch>.so" suffix keeps all
+# three ELF .so and drops .jnilib/.dll/wrong-arch. NEVER narrow this filter such that
+# it could remove this arch's epoll, tcnative or quiche .so.
+#
+# The jar is then repacked with STORED (uncompressed) entries. A jar is already a zip,
+# so the image layer's gzip gains almost nothing on it; storing the class bytes raw lets
+# the layer gzip compress them and shrinks the jar layer a further ~16 MiB. The AppCDS
+# training run below re-derives /mockserver.jsa from THIS repacked jar, so the archive
+# stays consistent (verified to map under -Xshare:on).
+FROM intermediate AS jarprep
+RUN apk add --no-cache zip unzip
+ARG TARGETARCH=amd64
+WORKDIR /jarprep
+# Two details in the RUN below that are easy to undo by accident:
+#   MANIFEST.MF is re-added FIRST. A plain recursive `zip -r` orders entries by filesystem
+#   walk, leaving the manifest buried. Random-access JarFile (what `java -jar` and `-cp` use)
+#   finds it wherever it sits, but a streaming java.util.jar.JarInputStream reader only looks
+#   at the first couple of entries and would silently see a null manifest.
+#   The final grep FAILS THE BUILD if no native for this arch survived the trim. Without it a
+#   filter that silently matched nothing would still produce a working - merely larger - image,
+#   and the whole size win would disappear with no signal.
+RUN set -eu; \
+    if [ "$TARGETARCH" = "amd64" ]; then ARCH=x86_64; else ARCH=aarch_64; fi; \
+    cp /mockserver-netty-jar-with-dependencies.jar app.jar; \
+    for e in $(unzip -l app.jar 'META-INF/native/*' | awk '/META-INF\/native\/.+[^\/]$/{print $NF}'); do \
+      case "$e" in *"$ARCH".so) : ;; *) echo "trim $e"; zip -q -d app.jar "$e" ;; esac; \
+    done; \
+    mkdir ex && (cd ex && unzip -q ../app.jar) && rm app.jar; \
+    (cd ex && zip -q -0 -X ../app.jar META-INF/MANIFEST.MF && zip -q -0 -X -r ../app.jar . -x META-INF/MANIFEST.MF); \
+    echo "kept natives:"; unzip -l app.jar 'META-INF/native/*'; \
+    unzip -l app.jar 'META-INF/native/*' | grep -q "$ARCH.so" || { echo "ERROR: no $ARCH native survived the trim"; exit 1; }
+
 FROM eclipse-temurin:26-jdk-noble AS appcds-build
 
-COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
+COPY --from=jarprep /jarprep/app.jar /mockserver-netty-jar-with-dependencies.jar
 
 # Same module set validated end-to-end for the jlink binary bundle (scripts/build-binary-bundle.sh,
 # docs/code/cli.md). On JDK 25 jlink uses the --compress=zip-<level> form (zip-6 = the default ZIP
