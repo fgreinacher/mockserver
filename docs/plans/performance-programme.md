@@ -1178,6 +1178,258 @@ keep-alive, HTTP/2 and TLS (session state is the interesting axis). k6 is not su
 holding tens of thousands of idle connections; likely a purpose-built driver. Schedule after
 everything above.
 
+#### 22. Startup for the instance-per-test pattern — **research, about a week**
+
+Requested 2026-09-20. Users create a MockServer per test method or per test class, sometimes many
+in parallel. That is not the profile the shipped startup work optimised — all of it targets a
+**process** launch (Docker/CLI), and a JUnit suite launches no process at all.
+
+**Start from what item 17 already measured, because it reframes the problem.** In-JVM per-instance
+start does **not** degrade with N: cold first launch ~520-630 ms, then **warm launches of 7-15 ms,
+flat through N=32**. So the per-method pattern is not paying a per-instance penalty worth chasing.
+Essentially the whole cost is a **one-time ~520-630 ms class-load** in the first instance of each
+test JVM. A 100-method class pays roughly 0.6 s once plus ~1 s spread across the methods.
+
+**The gap is that none of the shipped startup work reaches this case.** AppCDS is baked into the
+Docker image and the Leyden AOT cache into the `-aot` variant; a developer running a JUnit suite on
+a host JDK, or a Gradle/Maven forked test JVM, gets **neither**. The one-time cost above is exactly
+the cost those techniques remove, and it is currently removed only for the profile that needs it
+least — a long-lived server amortises 600 ms instantly, whereas a test JVM pays it per fork.
+
+Questions, in the order they are worth answering:
+
+1. **Can a class-data archive be made to work for the library case?** JDK 19+ offers
+   `-XX:+AutoCreateSharedArchive -XX:SharedArchiveFile=...`, which self-populates on first run and
+   is used thereafter — a natural fit for a repeatedly-forked test JVM. Options run from "document
+   it" through "the JUnit rule/extension detects and suggests it" to "ship an archive". Measure the
+   saving on a *second* fork before choosing; if it does not move the one-time cost materially,
+   stop here and record that.
+2. **Is per-instance `startupWarmup` right when instances share a JVM?** It defaults on and runs
+   from `LifeCycle.java:658`, which the in-JVM path reaches too — so instance #2..#N each fire a
+   warm-up request whose classes are already loaded. Probably harmless (it is inside the measured
+   7-15 ms) but nobody has checked whether it is pure waste at N, or whether the background thread
+   per instance matters at N=32. Measure before changing anything: this defaults ON and any change
+   is user-visible.
+3. **What does the whole suite actually pay?** Measure a realistic shape — one test class, N
+   methods, instance per method — end to end, and decompose it into JVM fork, first-instance class
+   load, per-instance start, per-instance stop, and port bind. **Stop is as interesting as start**
+   and has never been measured: a per-method instance is also *torn down* per method, and a slow or
+   lingering shutdown shows up as suite time just as surely.
+
+**Done when:** the suite-level decomposition above exists for at least the per-method and
+per-class shapes; each candidate is accepted or rejected against a measured saving rather than a
+plausible mechanism; and any user-facing recommendation lands in the consumer docs, since this
+profile is one users configure themselves.
+
+**MEASURED 2026-09-20 — and it REFUTES this item's own framing.** Apple M3 Max, Zulu JDK 21.0.3,
+`-Xmx2g`, 8.0.1-SNAPSHOT, per-method shape N=32, median of 5 forks, `devMode=true`. The dominant
+cost is **not** the one-time class load. It is **per-instance `stop()`**:
+
+| phase | value | paid | share of suite |
+|---|---:|---|---:|
+| cold first-instance ready | 655 ms | once | 14.6% |
+| warm start (call + ready) | ~10.5 ms | x31 | 7.2% |
+| **per-instance `stop()`** | **~107 ms** | **x32** | **76.2%** |
+| suite total | ~4496 ms | | |
+
+Per-class is ~768 ms at the same N and **flat in N** — about 6x cheaper — because it pays start and
+stop once. So the one-time-class-load framing holds for per-*class* and is simply wrong for
+per-*method*, which is the shape this item was written about.
+
+**Root cause, proven three ways rather than inferred from a ratio.** JFR wall-clock stacks put the
+dominant blocked frame at `SingleThreadEventExecutor.confirmShutdown`; `javap` shows a hardcoded
+`Thread.sleep(100)` in its quiet-period branch, guarded by an early-out only when
+`gracefulShutdownQuietPeriod == 0`; and a Netty micro-probe reproducing MockServer's exact condition
+measured `shutdownGracefully(5,5,MS)` = **105 ms** against `shutdownGracefully(0,5,MS)` = **0.2 ms**.
+MockServer called the former on its boss and worker groups in `LifeCycle.stopAsync()`.
+
+**Fixed, and measured end to end:** warm `stop()` **108.0 ms -> 0.0 ms**, start unaffected (so the
+change hit the intended target and nothing else), projecting a 32-method suite from ~4496 ms to
+roughly **1.1 s**. The quiet period was redundant because `stopAsync()` already drains in-flight
+requests explicitly via `drainInFlightRequests()` *before* the event-loop shutdown, and the file
+already used `shutdownGracefully(0, 0, ...)` for the forward group.
+
+**The safety argument was verified, not trusted.** A regression test fires a response that is both
+delayed (1 s, so its bytes are produced only after `stop()` begins) and large (2 MiB, spanning many
+socket writes), then stops the server mid-flight and asserts the body arrives byte-for-byte intact.
+The degrade proof is the interesting half: with the drain disabled (`stopDrainMillis(0)`) — so only
+the now-zero quiet period could protect the response — the test **fails** with the 2 MiB response
+truncated. That demonstrates the protection comes from the explicit drain and not from the Netty
+quiet period, which is precisely the claim that justified removing it.
+
+**Second candidate — adopt as guidance, not code.** JDK 19+ dynamic CDS
+(`-XX:+AutoCreateSharedArchive`) on a forked test JVM cut cold first-instance **call** ~294 -> ~88 ms
+(**-70%**) and cold **ready** ~645 -> ~430 ms (**-33%**), with the mechanism proven by
+`-Xlog:class+load`: 5,259 classes served from the mmap'd archive versus 2,010 parsed and verified
+from the fat jar in the control. This is the mechanism that reaches the profile AppCDS and the
+Leyden AOT cache never do, since both are baked into images. Its saving is on the **one-time** cost,
+so it is ~5% of a large per-method suite but ~28% of a per-class or small one.
+
+**Third candidate — REJECTED on measurement.** Flipping the `startupWarmup` default off gains
+nothing at N: instances #2..N already have the classes loaded, so it saves ~8 ms per instance at
+best, thread counts are indistinguishable at N=32, and it is a user-visible shipped default that
+genuinely helps the first instance and realistic pollers. Trivial next to a 107 ms stop.
+
+*Not measured, recorded so it is not assumed:* the real `MockServerExtension`/`MockServerRule`/Spring
+overhead (the harness drove `ClientAndServer` directly), Maven/Gradle forked-suite wall clock, JUnit
+**parallel** execution, and Linux/epoll — the `confirmShutdown` sleep lives in platform-independent
+`netty-common`, so it should apply there too, but that was not run. **Expected to be cheap or free elsewhere:** everything
+here targets one-time class loading and per-instance construction, which is also what a
+light-footprint, low-request-volume deployment pays and never amortises — so a win here should
+help that profile too, and must be shown not to cost the long-lived server anything.
+
+#### 23. Container launch for Kubernetes and Testcontainers — **research, about a week**
+
+Requested 2026-09-20, and the first question is **what the time is actually spent on**, because the
+plan has never measured that for a container.
+
+**Established:** `docker run` → ready is **566 ms** with AppCDS (from 855 ms, −34%), the `-aot`
+variant is ~580 ms on a host JDK, and the cold first-request burst (~350 ms) is covered by
+`startupWarmup` to 5-11 ms *provided* the client's first request arrives after warmup finishes.
+
+**What is not established is whether any of that is the dominant term.** For a Kubernetes pod on a
+node without the image cached, or a Testcontainers run on a cold CI agent, the wall-clock a user
+experiences is image **pull + extract**, then container create, then the JVM, then the first
+request. If pull dominates, further JVM tuning is optimising the wrong subject — the same failure
+this programme has hit repeatedly. So:
+
+1. **Decompose `kubectl apply` → serving, and Testcontainers `start()` → ready**, on a cold node
+   and a warm one, into pull / extract / create / JVM-to-bind / first-request. Report the split
+   before proposing any fix. This is the item's main deliverable; everything below is contingent
+   on it.
+2. **If pull dominates, the lever is image size**, not startup: measure the layer breakdown and
+   what a slimmer variant would actually save on a cold pull. Note `-aot` and AppCDS archives make
+   the image *bigger*, so they may be a net loss on a cold node and a net win on a warm one — an
+   explicit trade to measure, not to assume.
+3. **Testcontainers wait strategies interact with the warmup window.** A strategy that polls
+   immediately can pay the cold burst that `startupWarmup` exists to hide; one that polls later
+   sees it already paid. Establish which strategies users actually configure, and whether our
+   documented recommendation is the one that avoids the burst. Readiness must stay
+   `PUT /mockserver/status` — a listening port is not readiness.
+4. **Is `-aot` ready to stop being experimental**, and is checkpoint/restore (CRaC) worth a spike
+   for the container case? Both are only worth pursuing if step 1 says JVM start is the dominant
+   term.
+
+**Done when:** the decomposition exists for cold and warm nodes, each subsequent question is
+answered against it rather than in the abstract, and any recommendation reaches
+[docs/code/startup-performance.md](../code/startup-performance.md) and the consumer docs. **A
+negative result closes this item honourably** — "pull dominates and JVM start is already a small
+share" is a useful, publishable answer, and stops the next person re-optimising a term that does
+not matter.
+
+**MEASURED 2026-09-20 — and the negative result is the headline.** Apple Silicon, Docker Engine
+29.8.0 (arm64), k3d v5.9.0 / k3s v1.35.5, image `mockserver/mockserver:latest` = 8.0.0 (AppCDS,
+Temurin-25 distroless), arm64 manifest `sha256:247c732a…`. Cold state forced with `docker rmi -f`
++ `docker image prune -f` between every rep; readiness polled at 5 ms, never a listening port.
+
+| phase | cold node | warm node |
+|---|---:|---:|
+| image pull (download + extract) | **28.0 s** (n=3; ~25.7 s download, ~2.3 s extract) | 0 s |
+| container create | 57 ms | 57 ms |
+| JVM start → port bind | 370 ms | 370 ms |
+| port bind → first `status` 200 | ~44 ms | ~44 ms |
+| **total** | **~28.5 s** | **~0.5 s** |
+
+**On a cold node the pull is ~98% of wall-clock and the entire JVM path is under 2%.** So for a
+first deploy onto a node, JVM startup tuning optimises the wrong term — which is exactly why this
+item was written to measure the split before proposing a fix. The 370 ms is taken from Docker's own
+`State.StartedAt` against the "started on port" log line, not inferred from a ratio. A live
+confirmation of the readiness rule fell out of it: the TCP port accepted at ~69 ms while real
+readiness was ~414 ms — 345 ms during which a port-based wait would have been wrong.
+
+**The AppCDS/AOT cold-pull tension this item flagged is REFUTED, not confirmed.** `latest-aot`
+compressed download is **153.4 MiB against 155.0 MiB** for standard — the AOT variant is marginally
+*smaller*. The `.jsa` layer costs ~9.6 MiB compressed but is offset by the jlink-trimmed runtime.
+They are a warm-start win at approximately zero cold-pull cost: **keep both**, and do not remove
+them to shrink a pull they do not meaningfully grow.
+
+**The actionable finding was in Kubernetes, not in MockServer.** On a warm node the server is
+serving ~0.4 s after container start, but the pod was not marked Ready for 2–4 s, because the Helm
+chart's readiness probe used `initialDelaySeconds: 2` with `periodSeconds: 2` — the first probe did
+not fire until 2 s, and the polling granularity added up to 2 s more. Measured: `initialDelay 0 /
+period 1` cut apply→Ready from ~4 s to **2.78 s**. **Fixed** in
+`helm/mockserver/templates/deployment.yaml`, with `failureThreshold` raised 10 → 20 to preserve the
+same ~20 s tolerance for a slow start now each failure costs 1 s rather than 2 s. Failing readiness
+only withholds a pod from the Service endpoints — it never restarts it — so probing early is free:
+`/mockserver/ready` simply answers 503 until seeding finishes.
+
+**Questions closed without work, on the evidence:** the Testcontainers wait strategy is already
+correct (`MockServerContainer.java` waits on `PUT /mockserver/status` for 200, deliberately not a
+port wait), and with `startupWarmup` on, the ~350 ms cold burst is paid by the warmup thread or the
+wait probe, never by a user's first business request. **`-aot` should NOT be promoted out of
+experimental and CRaC should NOT be spiked** — both were contingent on JVM start being the dominant
+term, and it is not. If image size is ever pursued, the large terms are the fat jar (99.8 MB
+on-disk) and the jlink runtime (82.4 MB); an apparently unused AWT/font stack in the distroless base
+is a ~8–9 MB candidate, small against a 155 MiB download.
+
+*Limits, recorded so the ratio is not over-read:* arm64 only, one network at ~6 MB/s, extract timed
+via `docker load` as a proxy for the concurrent download-and-unpack path, the k8s cold pull observed
+once (29.4 s, independently consistent with the Docker figure), and a single-node k3d cluster. **The
+robust result is the ratio — pull ≫ JVM — not the 28 s**, which any registry mirror or pull-through
+cache would change substantially.
+
+#### 24. Published-artifact size for CI pipelines — **research + a shippable change**
+
+Requested 2026-09-20, and it shares most of its evidence with item 23. Build agents frequently start
+with an empty disk or pull through a remote cache, so the size of what we publish to Maven Central
+is a recurring cost for every pipeline using MockServer as a test dependency — not only for
+`docker pull`.
+
+**Measured composition of the fat jar** (43,856 entries, 249.4 MiB uncompressed, 91.4 MiB
+compressed-in-jar; it is 59% of the 155 MiB image download):
+
+| component | compressed | note |
+|---|---:|---|
+| `META-INF/native/` — ALL platforms | **17.12 MiB (19% of the jar)** | only ~3.73 MiB is usable by any one target |
+| `org/apache/kafka` (+ snappy 2.31, protobuf 1.62) | 8.54 MiB | async-messaging; Kafka is isolated in `mockserver-async`, snappy and protobuf sit in `mockserver-core` |
+| both Jackson generations (`com/fasterxml` 2.13 + `tools/jackson` 2.23) | 4.36 MiB | J2/J3 coexistence, blocked upstream on swagger-parser |
+
+**The foreign-platform natives are provably unusable, not merely unlikely to be used.** `file` on the
+extracted libraries: the macOS ones are **Mach-O**, the Windows one is **PE32+**, only the Linux ones
+are **ELF**. A Linux container's `dlopen` is an ELF loader, and Netty selects by `os.name`+arch at
+runtime, so inside a linux/arm64 image it only ever looks for `linux_aarch_64`. **No "all platforms"
+image variant is therefore worth having** — it would ship bytes no process in any Linux container
+could load. The multi-arch build already produces one image per architecture, so each keeps its own
+ELF and drops the other's.
+
+**Two different mechanisms, and only the first is simple:**
+
+- **The fat jar** can carry per-platform classifiers additively: publish
+  `mockserver-netty-<ver>-linux-aarch_64.jar` (and x86_64) alongside an **unchanged**
+  `jar-with-dependencies`. Nothing breaks, and `docker/Dockerfile` already branches on `TARGETARCH`
+  and fetches the fat jar from `repo1.maven.org`, so one change serves both the image and pipelines.
+- **The ordinary library path cannot be fixed that way.** MockServer's own jar holds no natives; they
+  arrive transitively from `netty-tcnative-boringssl-static`, declared with **no classifier** in
+  `mockserver-core/pom.xml:76` and `mockserver-netty/pom.xml:141` — i.e. the all-platforms uber-jar.
+  A classifier on our artifact cannot change what our dependencies resolve to. Note the repo already
+  uses the classified pattern correctly for `netty-transport-native-epoll`
+  (`mockserver-netty/pom.xml:156,162`), so tcnative is an inconsistency rather than a deliberate
+  choice. Options — `<optional>`, a `-slim` module, or a documented exclusion recipe — all have
+  user-visible cost and need deciding, not assuming.
+
+**The default must stay all-platforms.** A team with macOS laptops and Linux CI sharing one
+Maven/Gradle configuration has to keep working, so every change here is **additive only**.
+
+**Scope deliberately narrowed:** build the classified artifacts for **linux x86_64 and linux aarch64
+only**, not all five platforms. The benefit is concentrated in containers and CI agents — the
+empty-disk case — whereas a macOS or Windows developer pulls into a warm local `~/.m2` once. Each
+extra artifact must be built, GPG-signed, staged, published and verified every release, and this
+repo has been bitten before by faults that only appear on release-only paths, so two extra artifacts
+is a materially different proposition from five.
+
+**Settled, do not re-investigate: a GraalVM native binary is not the answer.** Two recorded spikes
+end in NO-GO ([docs/code/startup-performance.md](../code/startup-performance.md)); the second
+measured a **178 MB binary** — larger than the 99 MB fat jar, so it would make downloads *worse* —
+alongside silent-failure modes that survive `--exact-reachability-metadata` and build-time
+initialisation baking build-machine facts into the image. It also cannot serve the library case at
+all, since a native executable cannot sit on a test classpath, which is how JUnit users consume
+MockServer. The jlink bundle remains the correct JVM-less distribution mechanism.
+
+**Done when:** the transitive download a typical JUnit consumer actually pays is measured (not
+estimated); the classified fat-jar artifacts exist for the two Linux targets with the default
+unchanged; and the library-path options are costed for a user with a recommendation, rather than
+changed unilaterally.
+
 ## Proving a performance change is still correct
 
 **A performance PR whose only evidence is a faster number must not merge.** The benchmark is
@@ -1912,6 +2164,43 @@ Note the held-consumer half of the mechanism is already pinned by the committed
 `MockServerEventLogDroppedEventsTest`; what is new here is that a **real query scan** is what
 holds the consumer.
 
+#### Status (2026-09-20) — shipped `8185b2bfb`, and it exposed a latent defect on the way
+
+The fix landed: an identical paced writer that lost **~90,000** entries with a concurrent query now
+loses **0**, ordering and visibility unchanged, with a degrade-proven regression test. Concurrent
+query throughput did **not** improve (~1.0x -> ~0.55x at six threads, memory-bandwidth bound), which
+was never the goal and is recorded rather than glossed.
+
+**But the commit regressed observable behaviour, and the programme found it rather than a user.**
+Isolating by commit with one identical test and one variable:
+
+| commit | `largeDelayedResponseInFlightAcrossStopArrivesIntact` |
+|---|---|
+| `a3f0f0750` (parent) | 15/15 pass |
+| `8185b2bfb` (this fix) | **1 failure — response truncated** |
+
+A large response in flight when the server stops could arrive truncated
+(`PrematureChannelClosureException`) or not at all. **The defect is long-standing, not new:**
+`NettyResponseWriter.sendResponse` calls `inFlightRequest.complete()` at method *entry*, before
+`writeAndFlush`, so `drainInFlightRequests()` waits for response **dispatch** and not for bytes on
+the wire — the code comment states that trade-off deliberately ("the close-future net backstops
+dropped exchanges"), but that net only decrements the counter *after* the channel closes; it does
+not hold the channel open. Moving query work off the consumer thread made `stop()` faster and
+removed the incidental slack that had been winning the race.
+
+**Two wrong turns before the right one, both worth remembering.** First the truncation was
+attributed to the neighbouring `stop()` quiet-period change (5 ms -> 0); running both arms showed
+*identical* failure, so that change was innocent — a plausible adjacent culprit is not evidence.
+Second, a fix agent was dispatched with a brief asserting a tree state nobody had verified: its
+isolated worktree was branched from the session's starting commit rather than master, so it wrote
+its own rendition of the test, could not reproduce, and correctly **refused to fix what it could not
+see**. The decisive experiment — a detached worktree at the parent commit, the *real* test copied
+in, one run — was cheap and should have come first.
+
+*The lesson for this plan specifically:* **a performance change that removes waiting is a
+concurrency change.** Fixed sleeps, poll granularity and quiet periods routinely pay for races
+nobody has written down, and the bill arrives when they are optimised away.
+
 ### G3. Clustering puts a grid CAS on the matching thread per limited-Times match
 
 Inside `firstMatchingExpectation`, a clustered limited-`Times` match calls
@@ -2381,6 +2670,16 @@ the child used a real queue, native triggers created children normally.
 
 Two further observations from the same run: a genuinely failed child **does** fail the parent under
 `async: false`, and cancelling a parent cancels its child.
+
+**CONFIRMED IN PRODUCTION by the very commit that shipped it** (dispatcher build 7256, master,
+`a3f0f0750`). The push emitted **15 native trigger steps, every one recording `agent=NO`**, and all
+15 created their child builds. Under the previous script that same commit would have held **15
+trigger agents** for the full duration of their children, against a hard cap of 16 — one ordinary
+commit was enough to saturate the queue by itself, which is exactly how item 18's re-run came to
+sit `scheduled` for 58 minutes. Master dispatch now demands **zero** agents from that queue. The
+new `:hourglass: guard every child step declares a timeout` step ran and passed on the same build.
+Still unobserved, and only visible over time: how a child reaching `canceled` or `not_run`
+independently of the parent is reported.
 
 **What the two rejections actually cost is asymmetric.** Dropping `retry` is harmless and arguably
 correct — that block exists to survive **Spot reclamation of the agent running the script**, and a
