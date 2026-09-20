@@ -122,6 +122,16 @@ MockServer could lose data and report nothing.
   as zero.
 
 ### Changed
+- **The Docker image is smaller again — another ~10 MB off the download.** The image already
+  trimmed Netty's native libraries to the architecture the container actually runs on. Four more
+  libraries ship native binaries the same way and were not covered: zstd-jni, snappy, JNA and
+  lz4-java. Between them they carried binaries for AIX, FreeBSD, Solaris, macOS, Windows and a
+  dozen Linux architectures, none of which a Linux container can load — zstd-jni alone ships 18
+  platform builds where exactly one is usable. All four are now trimmed to the running
+  architecture alongside Netty's, measured at **10.4 MB (15%) off the compressed image layer**.
+  Nothing is lost: the removed files are for operating systems and processor architectures the
+  container cannot execute, and the build now fails if the correct binary for any of the five
+  libraries is missing after the trim.
 - **The "AsyncAPI module is not available" error now tells you how to enable it.** Asking for
   message-broker mocking (Kafka, RabbitMQ/AMQP, MQTT) on a server without the optional
   `mockserver-async` module previously returned only the fact that it was missing, leaving you to

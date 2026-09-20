@@ -116,24 +116,60 @@ FROM intermediate AS jarprep
 RUN apk add --no-cache zip unzip
 ARG TARGETARCH=amd64
 WORKDIR /jarprep
+# FIVE native families are trimmed, not one. netty's live under META-INF/native/ and are matched by
+# ARCH SUFFIX; zstd-jni, snappy, JNA and lz4-java each use their own directory layout and are matched by
+# DIRECTORY PREFIX. Measured in the 8.0.1 fat jar: 28.17 MiB of native binaries, of which 14.62 MiB
+# cannot be loaded by a linux container at all - zstd-jni alone ships 18 platform builds where
+# exactly one is loadable. Trimming only META-INF/native/ left roughly
+# 9 MiB of unusable binaries in the image.
+#
 # Two details in the RUN below that are easy to undo by accident:
 #   MANIFEST.MF is re-added FIRST. A plain recursive `zip -r` orders entries by filesystem
 #   walk, leaving the manifest buried. Random-access JarFile (what `java -jar` and `-cp` use)
 #   finds it wherever it sits, but a streaming java.util.jar.JarInputStream reader only looks
 #   at the first couple of entries and would silently see a null manifest.
-#   The final grep FAILS THE BUILD if no native for this arch survived the trim. Without it a
+#   The final greps FAIL THE BUILD if no native for this arch survived the trim. Without them a
 #   filter that silently matched nothing would still produce a working - merely larger - image,
-#   and the whole size win would disappear with no signal.
+#   and the whole size win would disappear with no signal. There is one assertion PER FAMILY on
+#   purpose: a single combined check passes as long as any one family survives, which is exactly
+#   how a broken filter for one of the other four would go unnoticed. lz4-java was found only by
+#   listing what SURVIVED a trim run - it had been invisible in the by-owner breakdown.
 RUN set -eu; \
-    if [ "$TARGETARCH" = "amd64" ]; then ARCH=x86_64; else ARCH=aarch_64; fi; \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+      ARCH=x86_64; \
+      KEEP_ZSTD="linux/amd64/"; \
+      KEEP_SNAPPY="org/xerial/snappy/native/Linux/x86_64/"; \
+      KEEP_JNA="com/sun/jna/linux-x86-64/"; \
+      KEEP_LZ4="net/jpountz/util/linux/amd64/"; \
+    else \
+      ARCH=aarch_64; \
+      KEEP_ZSTD="linux/aarch64/"; \
+      KEEP_SNAPPY="org/xerial/snappy/native/Linux/aarch64/"; \
+      KEEP_JNA="com/sun/jna/linux-aarch64/"; \
+      KEEP_LZ4="net/jpountz/util/linux/aarch64/"; \
+    fi; \
     cp /mockserver-netty-jar-with-dependencies.jar app.jar; \
     for e in $(unzip -l app.jar 'META-INF/native/*' | awk '/META-INF\/native\/.+[^\/]$/{print $NF}'); do \
       case "$e" in *"$ARCH".so) : ;; *) echo "trim $e"; zip -q -d app.jar "$e" ;; esac; \
     done; \
+    trim_prefix() { \
+      keep="$1"; glob="$2"; \
+      for e in $(unzip -l app.jar "$glob" | awk '$NF ~ /\.(so|dll|dylib|jnilib)$/ {print $NF}'); do \
+        case "$e" in "$keep"*) : ;; *) echo "trim $e"; zip -q -d app.jar "$e" ;; esac; \
+      done; \
+    }; \
+    trim_prefix "$KEEP_ZSTD"   '*libzstd-jni*'; \
+    trim_prefix "$KEEP_SNAPPY" 'org/xerial/snappy/native/*'; \
+    trim_prefix "$KEEP_JNA"    'com/sun/jna/*'; \
+    trim_prefix "$KEEP_LZ4"    'net/jpountz/util/*'; \
     mkdir ex && (cd ex && unzip -q ../app.jar) && rm app.jar; \
     (cd ex && zip -q -0 -X ../app.jar META-INF/MANIFEST.MF && zip -q -0 -X -r ../app.jar . -x META-INF/MANIFEST.MF); \
-    echo "kept natives:"; unzip -l app.jar 'META-INF/native/*'; \
-    unzip -l app.jar 'META-INF/native/*' | grep -q "$ARCH.so" || { echo "ERROR: no $ARCH native survived the trim"; exit 1; }
+    echo "kept natives:"; unzip -l app.jar 'META-INF/native/*' "${KEEP_ZSTD}*" "${KEEP_SNAPPY}*" "${KEEP_JNA}*" "${KEEP_LZ4}*"; \
+    unzip -l app.jar 'META-INF/native/*' | grep -q "$ARCH.so" || { echo "ERROR: no netty $ARCH native survived the trim"; exit 1; }; \
+    unzip -l app.jar | grep -q "${KEEP_ZSTD}libzstd-jni" || { echo "ERROR: no zstd native for $TARGETARCH survived the trim"; exit 1; }; \
+    unzip -l app.jar | grep -q "${KEEP_SNAPPY}libsnappyjava" || { echo "ERROR: no snappy native for $TARGETARCH survived the trim"; exit 1; }; \
+    unzip -l app.jar | grep -q "${KEEP_JNA}libjnidispatch" || { echo "ERROR: no JNA native for $TARGETARCH survived the trim"; exit 1; }; \
+    unzip -l app.jar | grep -q "${KEEP_LZ4}liblz4-java" || { echo "ERROR: no lz4 native for $TARGETARCH survived the trim"; exit 1; }
 
 FROM eclipse-temurin:26-jdk-noble AS appcds-build
 
