@@ -9,6 +9,7 @@ import org.mockserver.test.Retries;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -69,6 +70,92 @@ public class FileWatcherTest {
         }
     }
 
+    /**
+     * The fingerprint is computed by streaming the file through a fixed 64 KB buffer rather than
+     * materialising it, so a change in the very LAST byte of a file spanning several buffers is the
+     * case a chunked loop gets wrong — by dropping the final partial read, or by re-hashing a stale
+     * buffer tail. A whole-file hash could not fail this; a chunked one can.
+     */
+    @Test
+    public void shouldDetectAChangeToTheFinalByteOfAMultiBufferFile() throws Exception {
+        // given - comfortably more than one 64 KB read, with a partial final chunk
+        File watchedFile = temporaryFolder.newFile("multibuffer-" + System.nanoTime() + ".json");
+        byte[] content = new byte[(64 * 1024 * 3) + 7];
+        Arrays.fill(content, (byte) 'a');
+        Files.write(watchedFile.toPath(), content);
+        AtomicInteger updateCount = new AtomicInteger(0);
+        FileWatcher fileWatcher = new FileWatcher(watchedFile.toPath(), updateCount::incrementAndGet, throwable -> {
+        }, mockServerLogger, POLL_PERIOD_MILLIS);
+        try {
+            // when - only the last byte differs
+            content[content.length - 1] = (byte) 'b';
+            Files.write(watchedFile.toPath(), content);
+
+            // then
+            Retries.tryWaitForSuccess(() -> assertThat("a change in the final byte of a multi-buffer file must be seen",
+                updateCount.get(), greaterThanOrEqualTo(1)), 150, 100, MILLISECONDS);
+        } finally {
+            fileWatcher.setRunning(false);
+        }
+    }
+
+    /**
+     * The fingerprint must stay byte-exact over content that is not text. This does NOT pin the
+     * arithmetic — masking each byte with 0xFF would change every hash value and still pass, and
+     * rightly so, since the value is only ever compared with another reading of the same file. What
+     * it does catch is a rewrite that decodes the stream instead of reading it: a {@code Reader} with
+     * a charset maps every invalid byte to the same replacement character, so two files differing
+     * only in a high byte hash identically and an edit is silently never seen. Verified by degrading
+     * exactly that way, which fails this test and no other.
+     */
+    @Test
+    public void shouldDetectAChangeConfinedToBytesAboveSevenBits() throws Exception {
+        // given
+        File watchedFile = temporaryFolder.newFile("highbytes-" + System.nanoTime() + ".json");
+        Files.write(watchedFile.toPath(), new byte[]{(byte) 0x80, (byte) 0xFF, (byte) 0xA5});
+        AtomicInteger updateCount = new AtomicInteger(0);
+        FileWatcher fileWatcher = new FileWatcher(watchedFile.toPath(), updateCount::incrementAndGet, throwable -> {
+        }, mockServerLogger, POLL_PERIOD_MILLIS);
+        try {
+            // when - same length, one high byte changed
+            Files.write(watchedFile.toPath(), new byte[]{(byte) 0x80, (byte) 0xFE, (byte) 0xA5});
+
+            // then
+            Retries.tryWaitForSuccess(() -> assertThat("a change confined to a byte above 0x7F must be seen",
+                updateCount.get(), greaterThanOrEqualTo(1)), 150, 100, MILLISECONDS);
+        } finally {
+            fileWatcher.setRunning(false);
+        }
+    }
+
+    /**
+     * The whole point of the buffered rewrite is that an UNCHANGED file costs nothing but a read, so
+     * the poll must stay silent across many cycles. This is the regression that would matter most:
+     * a chunked hash that is not deterministic across reads would fire continuously and reload the
+     * expectation set on every poll.
+     */
+    @Test
+    public void shouldStaySilentWhileAMultiBufferFileIsUnchanged() throws Exception {
+        // given
+        File watchedFile = temporaryFolder.newFile("stable-" + System.nanoTime() + ".json");
+        byte[] content = new byte[(64 * 1024 * 2) + 11];
+        Arrays.fill(content, (byte) 'z');
+        Files.write(watchedFile.toPath(), content);
+        AtomicInteger updateCount = new AtomicInteger(0);
+        FileWatcher fileWatcher = new FileWatcher(watchedFile.toPath(), updateCount::incrementAndGet, throwable -> {
+        }, mockServerLogger, POLL_PERIOD_MILLIS);
+        try {
+            // when - several poll cycles pass with no edit at all
+            Thread.sleep(POLL_PERIOD_MILLIS * 4);
+
+            // then
+            assertThat("an unchanged file must never be reported as changed",
+                updateCount.get(), equalTo(0));
+        } finally {
+            fileWatcher.setRunning(false);
+        }
+    }
+
     @Test
     public void shouldNotInvokeUpdatedHandlerWhenFileBecomesUnreadable() throws Exception {
         // given - a file that exists and is being watched
@@ -85,7 +172,7 @@ public class FileWatcherTest {
             // file must NOT be treated as a content change. Before the fix, the IOException
             // returned hash 0 which differs from the original content hash and would have
             // triggered exactly one spurious update.
-            Thread.sleep(500 * 4);
+            Thread.sleep(POLL_PERIOD_MILLIS * 4);
             assertThat("a deleted/unreadable file must not be treated as a content change",
                 updateCount.get(), equalTo(0));
         } finally {
@@ -129,7 +216,7 @@ public class FileWatcherTest {
         Files.write(watchedFile.toPath(), "v1".getBytes(StandardCharsets.UTF_8));
 
         // then - no update is ever delivered
-        Thread.sleep(500 * 3);
+        Thread.sleep(POLL_PERIOD_MILLIS * 3);
         assertThat("a stopped watcher must not deliver updates", updateCount.get(), equalTo(0));
     }
 

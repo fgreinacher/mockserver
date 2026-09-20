@@ -241,6 +241,18 @@ MockServer could lose data and report nothing.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **Watching the initialization file no longer churns memory while the server is idle.** With
+  `watchInitializationJson=true`, MockServer re-read the *entire* initialization file every poll (5
+  seconds by default) to fingerprint it -- whether or not the file had changed -- allocating a byte
+  array the size of the file each time. For a 10 MB file that is roughly 360 MB of garbage every
+  three minutes on a server serving no traffic at all, and each of those arrays is large enough that
+  the JVM handles it as a "humongous" allocation. Measured on an idle server with a 256 MB heap,
+  watching turned zero garbage collections into a heap repeatedly filling to ~230 MB. The file is now
+  fingerprinted by streaming it through a small fixed buffer, so an unchanged file costs a read and
+  nothing else; the same idle server now performs no collections. Change detection is unchanged. This
+  affected only deployments with watching enabled -- typically a central or Kubernetes deployment
+  whose initialization file comes from a mounted volume or ConfigMap -- and the effect grew with file
+  size, with the number of files matched when the path is a glob, and with shorter poll periods.
 - A response still being sent when the server was stopped could arrive truncated, or not at all.
   Shutdown waited for responses to be *handed off* for writing rather than for their bytes to reach
   the network, so a large or delayed response could still be queued when the server tore down its

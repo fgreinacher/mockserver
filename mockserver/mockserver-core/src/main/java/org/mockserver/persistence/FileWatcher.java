@@ -6,6 +6,7 @@ import org.mockserver.scheduler.Scheduler;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -31,6 +32,12 @@ public class FileWatcher {
         }
         return scheduler;
     }
+
+    /**
+     * Read size for the fingerprint. Any value comfortably below G1's humongous threshold (half a
+     * region, so 512 KB on a small heap) keeps the per-poll allocation in the young generation.
+     */
+    private static final int HASH_BUFFER_BYTES = 64 * 1024;
 
     private volatile boolean running = true;
     private final ScheduledFuture<?> scheduledFuture;
@@ -92,10 +99,33 @@ public class FileWatcher {
      * {@code null} when the file cannot be read (missing, mid-rewrite, or
      * otherwise unreadable). Callers must treat {@code null} as "no reliable
      * reading this iteration" rather than as a content change.
+     * <p>
+     * Streamed through a small fixed buffer rather than {@code Files.readAllBytes}, because this runs
+     * on every poll whether or not the file changed. Materialising the whole file allocated a byte[]
+     * the size of the file each time: for a 10 MB initialization file at the default 5 s period that
+     * is ~364 MB of garbage every three minutes, and in G1 each of those arrays is a <em>humongous</em>
+     * allocation. Measured on an idle server with no traffic at all, watching turned that from
+     * <b>zero</b> collections into a heap repeatedly filling to ~230 MB of a 256 MB heap and being
+     * collected. Buffered, the same poll allocates 64 KB.
+     * <p>
+     * The arithmetic is deliberately {@link Arrays#hashCode(byte[])}'s, computed incrementally, so the
+     * fingerprint is unchanged from the previous implementation — though nothing depends on that, since
+     * the value is only ever compared against another reading of the same file. What the contract
+     * actually requires is that it is stable for unchanged content and differs for changed content,
+     * including a change in the final byte of a multi-chunk file and a change confined to a byte above
+     * 0x7F, both of which a chunked loop can get wrong and are pinned by tests.
      */
     private Integer getFileHash(Path path) {
-        try {
-            return Arrays.hashCode(Files.readAllBytes(path));
+        byte[] buffer = new byte[HASH_BUFFER_BYTES];
+        try (InputStream inputStream = Files.newInputStream(path)) {
+            int hash = 1;
+            int read;
+            while ((read = inputStream.read(buffer)) != -1) {
+                for (int i = 0; i < read; i++) {
+                    hash = 31 * hash + buffer[i];
+                }
+            }
+            return hash;
         } catch (IOException ioe) {
             return null;
         }

@@ -2420,10 +2420,38 @@ comes from a ConfigMap and is expected to be watched. A supposedly idle server d
 IO and allocation proportional to file size.
 
 *Nothing covers it:* there is no coverage-map row for the watcher, and no perf step enables watching
-— the growth and soak SUTs boot from init files but never watch them. *Measurement:* boot idle with
-a multi-MB init file, `watch=true` vs `false`, compare allocation rate and CPU over a few minutes;
-or a JMH bench of `getFileHash` across file sizes. About an hour, and it folds into item 8's idle
-footprint arm. **Verified against the code; severity medium and opt-in-gated.**
+— the growth and soak SUTs boot from init files but never watch them.
+
+**MEASURED AND FIXED 2026-09-20.** The measurement was the one proposed: a 10.1 MB initialization
+file, a 256 MB heap, `-Xlog:gc`, and a server left idle for 180 s with **zero traffic**, so anything
+that moves is the poll loop and nothing else. One variable — the watch flag.
+
+| arm | young GCs during idle | what the GC log shows |
+|---|---:|---|
+| `watch=false` | **0** | last collection at t=0.9 s; silent thereafter |
+| `watch=true` (before) | **2** | both `G1 Humongous Allocation`, heap 239M->50M and 231M->48M |
+| `watch=true` (after the fix) | **0** | silent, like `watch=false` |
+
+The shape matters more than the count. At the default 5 s period a 10.1 MB file is re-read ~36 times
+in 180 s — about **364 MB of garbage** — and because each read allocates a `byte[]` the size of the
+file, in G1 **every one of those is a humongous allocation**, which bypasses the young generation and
+is collected differently. An idle server went from never collecting at all to repeatedly filling
+~230 MB of a 256 MB heap with garbage from a file that never changed. It scales linearly with file
+size and with glob breadth (one watcher per expanded path) and inversely with the poll period.
+
+**Fixed by streaming the fingerprint through a fixed 64 KB buffer** instead of materialising the
+file. The arithmetic is unchanged — `Arrays.hashCode`'s, computed incrementally — so the fingerprint
+is identical, though nothing depends on that since the value is only ever compared with another
+reading of the same file. Post-fix the idle server is silent again: **0 GCs, 0 humongous
+allocations**. Three tests pin the hazards a chunked loop introduces that a whole-file hash could not
+have: a change in the final byte of a multi-buffer file, a change confined to bytes above 0x7F, and
+silence across many polls of an unchanged multi-buffer file. Each was degrade-proven — dropping the
+final partial read fails the first, decoding the stream as text instead of reading bytes fails the
+second.
+
+*Not claimed:* the CPU difference. It measured 0.73 s per 180 s before and 0.40 s after, but that is
+a single pair on a laptop and too small to distinguish from noise; the GC and allocation result is
+the reproducible one.
 
 #### G9. Control-plane HTTP throughput — create/clear/reset/verify as real round trips
 
