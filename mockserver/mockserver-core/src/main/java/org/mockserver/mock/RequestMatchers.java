@@ -25,8 +25,10 @@ import org.slf4j.event.Level;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -2101,10 +2103,17 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * replication acks from all members). The backend {@code get()} reads
      * from the node-local replica (no network), but each retried CAS
      * <i>write</i> blocks the worker until replication completes. The
-     * worst-case bound is {@code MAX_CAS_RETRIES} (10) replicated writes
-     * under extreme cross-node contention on the SAME expectation; in
-     * practice limited-Times expectations are low-count and contention is
-     * rare, so the common case is a single CAS write. Latency-sensitive
+     * worst-case bound is {@code MAX_CAS_RETRIES} (20) replicated writes,
+     * interleaved with up to {@code MAX_CAS_RETRIES - 1} short randomised
+     * backoff parks (each capped at {@code CAS_BACKOFF_CAP_NANOS} = 1ms),
+     * under sustained cross-node contention on the SAME expectation. The
+     * common (uncontended) case takes a single CAS write and no backoff. Under
+     * measured concurrent load on ONE hot limited-Times key, however, the CAS
+     * is genuinely contended and averages several attempts per served match —
+     * limited-Times expectations are NOT necessarily low-count or lightly hit.
+     * The randomised backoff (see {@link #backoffBeforeCasRetry(int)}) exists
+     * precisely so that contention converts into served matches after a retry
+     * rather than into refused matches. Latency-sensitive
      * clustered deployments that can tolerate approximate (per-node) Times
      * may disable this via
      * {@code Configuration.clusterSharedTimesEnabled(false)} /
@@ -2129,8 +2138,97 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * consumption. Bounds the worst-case number of synchronous replicated
      * writes performed on the request-worker thread per match (see
      * {@link #consumeTimesViaBackendCas(Expectation)}).
+     * <p>
+     * Raised from 10 to 20 when randomised backoff was added between retries
+     * (see {@link #backoffBeforeCasRetry(int)}): backoff makes each retry
+     * <i>productive</i> (losers de-synchronise instead of re-colliding), so a
+     * higher ceiling converts the tail of contended matches into serves rather
+     * than drops. Without backoff the extra retries would merely re-collide and
+     * waste more replicated writes; with backoff they win. The worst-case
+     * blocking is still bounded — {@code MAX_CAS_RETRIES} replicated writes plus
+     * at most {@code MAX_CAS_RETRIES - 1} randomised parks, each capped at
+     * {@link #CAS_BACKOFF_CAP_NANOS} (1ms) -- an absolute worst case of roughly
+     * 17ms of parking, reached only if every one of 20 attempts loses AND every
+     * jittered draw lands at its maximum. That bound is deliberate: the
+     * alternative to waiting is refusing a match the budget still allows.
      */
-    private static final int MAX_CAS_RETRIES = 10;
+    private static final int MAX_CAS_RETRIES = 20;
+
+    /**
+     * Base unit for the exponential CAS-retry backoff, in nanoseconds (150us).
+     * The first retry parks for a uniform-random interval in {@code [0, 150us]};
+     * each subsequent retry doubles the window, capped at
+     * {@link #CAS_BACKOFF_CAP_NANOS}. See {@link #backoffBeforeCasRetry(int)}.
+     */
+    private static final long CAS_BACKOFF_BASE_NANOS = 150_000L;
+
+    /**
+     * Upper bound on any single CAS-retry backoff park, in nanoseconds (1ms).
+     * Chosen relative to the measured contended round-trip cost of one CAS
+     * (~176us on the loopback REPL_SYNC harness): a park of up to a few
+     * round-trips is enough to thin same-key contention, while keeping the
+     * worst-case worker-thread stall bounded and small. See
+     * {@link #backoffBeforeCasRetry(int)}.
+     */
+    private static final long CAS_BACKOFF_CAP_NANOS = 1_000_000L;
+
+    /**
+     * Ceiling on the left-shift used to grow the backoff window, purely an
+     * overflow guard — it is NOT a retry bound and is deliberately not derived
+     * from {@link #MAX_CAS_RETRIES}. The window is clamped to
+     * {@link #CAS_BACKOFF_CAP_NANOS} regardless, so this only keeps the shift
+     * itself from running away if the retry ceiling is ever raised: at the
+     * current base, a shift beyond ~45 would overflow a {@code long}.
+     */
+    private static final int MAX_BACKOFF_SHIFT = 20;
+
+    /**
+     * Parks the request-worker thread for a bounded, randomised interval before
+     * the next shared-Times CAS retry, so that threads that just lost a CAS on
+     * the SAME key de-synchronise instead of immediately re-reading and
+     * re-colliding on the next attempt.
+     * <p>
+     * <b>Why backoff at all.</b> The optimistic CAS loop that used to retry
+     * <i>immediately</i> maximised the collision rate under same-key contention:
+     * every loser re-submitted its next replicated CAS at essentially the same
+     * instant as every other loser, so at most one made progress per generation
+     * and the rest wasted a full replicated round-trip. Measured on the 2-node
+     * loopback REPL_SYNC harness (8 threads, one hot {@code Times} key with a
+     * budget nowhere near exhausted), the immediate-retry loop refused ~36% of
+     * matches purely from contention at ~7.4 CAS attempts per served match — a
+     * bounded {@code Times.exactly(N)} nowhere near N dropping matches only
+     * because losers re-collided.
+     * <p>
+     * <b>Shape: exponential backoff with full jitter.</b> The window doubles
+     * with the attempt number ({@code CAS_BACKOFF_BASE_NANOS << attempt}) up to
+     * {@code CAS_BACKOFF_CAP_NANOS}, and the actual park is drawn uniformly from
+     * {@code [0, window]}. Full jitter (rather than a fixed or purely
+     * exponential delay) is what breaks the lock-step: two losers that failed on
+     * the same generation park for <i>different</i> durations and thus retry at
+     * different times. {@link ThreadLocalRandom} is used so the draw itself adds
+     * no contention.
+     * <p>
+     * <b>Cost.</b> The park is bounded at {@code CAS_BACKOFF_CAP_NANOS} (1ms)
+     * and only ever taken after a CAS has already <i>failed</i> — i.e. only on
+     * the contended path, which already paid a wasted ~176us replicated
+     * round-trip. On the uncontended common case (first CAS wins) no backoff is
+     * taken at all. {@link LockSupport#parkNanos} is used rather than
+     * {@code Thread.sleep} to avoid millisecond-granularity oversleep; a
+     * spurious early wake-up is harmless here (it merely retries a little
+     * sooner).
+     *
+     * @param attempt the zero-based index of the CAS attempt that just failed
+     */
+    private static void backoffBeforeCasRetry(int attempt) {
+        long window = CAS_BACKOFF_BASE_NANOS << Math.min(attempt, MAX_BACKOFF_SHIFT);
+        if (window <= 0 || window > CAS_BACKOFF_CAP_NANOS) {
+            window = CAS_BACKOFF_CAP_NANOS;
+        }
+        long parkNanos = ThreadLocalRandom.current().nextLong(window + 1);
+        if (parkNanos > 0) {
+            LockSupport.parkNanos(parkNanos);
+        }
+    }
 
     /**
      * Result of a shared-Times CAS attempt on the backend.
@@ -2161,27 +2259,36 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      *       already {@code <= 0}, return failure + exhausted.</li>
      *   <li>Build a new entry with {@code remainingTimes - 1} and attempt
      *       {@link KeyValueStore#compareAndSet} with the read version.</li>
-     *   <li>If CAS fails (concurrent write from another node), retry
-     *       from step 1 (bounded to {@code MAX_CAS_RETRIES}).</li>
+     *   <li>If CAS fails (concurrent write from another node), back off a
+     *       bounded, randomised interval (see
+     *       {@link #backoffBeforeCasRetry(int)}) and retry from step 1
+     *       (bounded to {@code MAX_CAS_RETRIES}).</li>
      *   <li>If CAS succeeds, return success.</li>
      * </ol>
      * <p>
-     * <b>Bounded retries:</b> if the CAS loop exhausts all retries
-     * without succeeding (extreme contention), the method returns failure.
-     * This is a conservative choice: the expectation is not served rather
-     * than risking a double-serve. In practice, CAS contention is rare
-     * because limited-Times expectations are low-count by nature.
+     * <b>Bounded retries and backoff:</b> if the CAS loop exhausts all retries
+     * without succeeding (sustained contention), the method returns failure.
+     * This is a conservative choice: the expectation is not served rather than
+     * risking a double-serve (it <b>fails closed</b>). Contention on a single
+     * hot limited-Times key is NOT rare — measured concurrent load on one key
+     * drives the optimistic CAS through several attempts per served match — so
+     * each retry parks for a short randomised interval to de-synchronise
+     * same-key losers; without that de-synchronisation the losers re-collide
+     * immediately and a {@code Times.exactly(N)} budget nowhere near N refuses
+     * matches purely from contention.
      * <p>
      * <b>Runs on the request-worker (event-loop) thread.</b> Each
      * {@code compareAndSet} on a clustered {@code REPL_SYNC} backend is a
      * synchronous replicated write (a network round-trip awaiting acks from
      * all cluster members). The {@code get()} reads from the local replica
-     * and does not hit the network. The worst-case blocking on the worker
-     * is therefore {@code MAX_CAS_RETRIES} (10)
-     * replicated writes; the common (uncontended) case is a single write.
-     * This path is gated by {@link #isClusteredLimitedTimes(Expectation)},
-     * which can be disabled via {@code clusterSharedTimesEnabled=false} for
-     * latency-sensitive deployments (see that method's javadoc).
+     * and does not hit the network. The worst-case blocking on the worker is
+     * therefore {@code MAX_CAS_RETRIES} (20) replicated writes interleaved with
+     * up to {@code MAX_CAS_RETRIES - 1} randomised backoff parks (each capped at
+     * {@code CAS_BACKOFF_CAP_NANOS} = 1ms); the common (uncontended) case is a
+     * single write with no backoff. This path is gated by
+     * {@link #isClusteredLimitedTimes(Expectation)}, which can be disabled via
+     * {@code clusterSharedTimesEnabled=false} for latency-sensitive deployments
+     * (see that method's javadoc).
      *
      * @param expectation the expectation whose shared Times to consume
      * @return the CAS result indicating success or failure/exhaustion
@@ -2226,7 +2333,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 // CAS succeeded — this node wins this match slot
                 return new ConsumeTimesResult(true, false);
             }
-            // CAS failed — another node wrote concurrently; retry with fresh read
+            // CAS failed — another node wrote concurrently. Back off a bounded,
+            // randomised interval before retrying so same-key losers de-collide
+            // (see backoffBeforeCasRetry); skip the park after the final attempt.
+            if (attempt < MAX_CAS_RETRIES - 1) {
+                backoffBeforeCasRetry(attempt);
+            }
         }
 
         // Exhausted retries without success — conservative failure
@@ -2278,7 +2390,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 // CAS succeeded — this node wins this match slot
                 return new ConsumeTimesResult(true, false);
             }
-            // CAS failed — another node wrote concurrently; retry with fresh read
+            // CAS failed — another node wrote concurrently. Back off a bounded,
+            // randomised interval before retrying so same-key losers de-collide
+            // (see backoffBeforeCasRetry); skip the park after the final attempt.
+            if (attempt < MAX_CAS_RETRIES - 1) {
+                backoffBeforeCasRetry(attempt);
+            }
         }
         // Exhausted retries without success — conservative failure
         return new ConsumeTimesResult(false, false);

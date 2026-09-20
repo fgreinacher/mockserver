@@ -152,6 +152,13 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- In a cluster, an expectation with a bounded `Times` could stop matching well before its count was
+  used up. Under concurrent requests for the same expectation, the nodes competed to claim each
+  remaining use and retried immediately on losing, so they kept colliding; after a bounded number of
+  attempts a request was refused even though uses remained. Requests now wait a brief random moment
+  before retrying, which both removes almost all of those spurious refusals and lowers the work done
+  per match. A `Times` count is still never exceeded across the cluster. Only clustered deployments
+  with `clusterSharedTimesEnabled` (the default) were affected.
 - Expectations added, removed or evicted while the server was under load could be silently dropped
   from (or left stale in) the internal matching index, so a request that should have matched returned
   no match -- or one that should no longer match still did. This only affected servers holding enough

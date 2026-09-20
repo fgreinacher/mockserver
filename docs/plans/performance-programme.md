@@ -1970,11 +1970,64 @@ the node-local fast path with no backend round-trip, at the cost of approximate 
 over loopback for measuring a request-thread CAS and is far flakier. *Not measured:* real
 inter-host RTT.
 
-*Not committed, and for a different reason than the G2/G4 proofs.* Those asserted current BUGGY
-behaviour and would have locked bugs in. This one asserts **correct** current behaviour, so
-committing it would lock nothing in — it is a pure suite-weight call on an ~11 s clustered
-research test with no regression-protection role, and the exactly-N correctness is already
-covered by the committed G10 tests. *Not a gate:* it asserts no latency threshold, deliberately.
+*Originally not committed* — and for a different reason than the G2/G4 proofs. Those asserted
+current BUGGY behaviour and would have locked bugs in. This one asserted **correct** current
+behaviour, so committing it would have locked nothing in; it was a pure suite-weight call on an
+~11 s clustered research test with no regression-protection role, the exactly-N correctness being
+already covered by the committed G10 tests.
+
+**That call is reversed as of 2026-09-20, because the fix gave it a role it did not have.** With
+the backoff landed, nothing else in the suite fails if someone deletes it — the file's other
+assertions are all mechanism counts (CAS >= served, a read per attempt, contention actually
+occurring), every one of which stays green with the backoff removed. It now carries a single
+deliberate magnitude assertion, `dropRate < 0.10`, which is degrade-proven in both directions:
+green at 0.1% with the fix, red at 34.8% with it reverted. The threshold sits ~5x above the
+observed post-fix noise (0.1-2.1% across runs) and ~3x below the defect, so it can neither flake
+on a loaded machine nor miss a removal. *Still not a latency gate:* it asserts no magnitude about
+time, deliberately — only that contention may not refuse matches the budget allows.
+
+#### Status (2026-09-20) — fixed, and the fix costs fewer round-trips than the bug
+
+The correctness half is addressed. The CAS retry loop had **no backoff at all**: every loser
+re-read and re-CASed at essentially the same instant, so at most one thread made progress per
+generation and the rest each burned a full replicated round-trip. That is what turned contention
+into refusals.
+
+Both retry loops (the dedicated-counter path and the legacy on-entry path) now park for a bounded
+randomised interval between attempts — exponential with full jitter, base 150us, capped at 1ms —
+and `MAX_CAS_RETRIES` rises 10 -> 20, which only helps *because* backoff makes the extra attempts
+productive rather than merely re-colliding.
+
+Measured on this machine, same harness, before and after:
+
+| | before (retries=10, no backoff) | after (retries=20, jittered backoff) |
+|---|---:|---:|
+| served | 2173 | 3183 |
+| dropped despite a non-exhausted budget | 1027 | 17 |
+| drop rate | **32.1%** | **0.5%** |
+| CAS attempts per served match | 7.28 | 3.74 |
+
+The before-figure independently reproduces the 33.5% previously recorded here, so the defect is
+real and repeatable rather than an artefact of one run. **The after-figure is noisy** — a second
+run of the restored build measured 2.1% / 2.42 — so the honest claim is an order-of-magnitude
+reduction, not a specific number.
+
+The counter-intuitive part is that the fix is **cheaper**, not a latency-for-correctness trade:
+attempts per served match roughly halve. Avoiding a collision saves an entire ~176us replicated
+write, which costs far more than the park that prevented it.
+
+Fail-closed is unchanged — true exhaustion still refuses, and nothing can over-serve a bounded
+`Times`. The worst case is now bounded at 20 replicated writes plus at most 19 parks, about 17ms,
+reached only if every attempt loses and every jittered draw lands at its maximum.
+
+*Two things were removed from the in-flight change before it went anywhere near a commit:* three
+`public static` diagnostic counters and a `static` block installing a JVM **shutdown hook** that
+wrote a scratch file into the temp directory — debugging instrumentation that had also been wired
+into the proof test, so deleting it broke the test's compile and proved it was load-bearing only
+for the experiment. And the constants had been retuned without their descriptions following: four
+javadoc sites plus two rows of `docs/code/clustered-state.md` still described a 25us base and a
+500us cap that the code no longer used. Both were found by sweeping the *identifiers*
+(`MAX_CAS_RETRIES`, `CAS_BACKOFF_*`) rather than the old values.
 
 ### G4. `Expectation` holds a per-instance `ThreadLocal` that is set and never removed
 
@@ -2242,9 +2295,16 @@ of **16 agents** (4 instances x 4). That is up to ~100 blocking waits competing 
 roughly 6x oversubscribed. The cap is fine at a normal commit cadence and cannot absorb a burst,
 which is what this session's ~15 master commits produced.
 
-**This is not a perf-programme bug, but it gates the perf programme**: every perf run's dispatch
-goes through that queue, so both of item 10's remaining arms and item 18's re-run are blocked
-behind unrelated pipelines waiting on each other.
+**This is not a perf-programme bug, but it gates the perf programme** — though not by the
+mechanism this section originally claimed. **Corrected 2026-09-20.** It is NOT that perf dispatch
+traverses the queue. The daily regression run is a Buildkite schedule attached **directly** to
+`mockserver-performance-test` and never touches the dispatcher at all; a commit touching
+`mockserver-performance-test/` does dispatch it (`generate-pipeline.sh:117`), but that is not the
+binding path either. The actual coupling is that the perf pipeline's **own** commit-guard/dispatch
+step declares `queue: "trigger"` (`pipeline-perf-test.yml:46`), so **every perf build contends for
+those same 16 hard-capped agents however it was started** — scheduled, dispatched or API-triggered.
+That is what left item 18's re-run `scheduled` for 58 minutes, and it blocks item 10's remaining
+arms the same way.
 
 **It also changes the risk assessment of the G5 fix, and that is the part worth acting on.** The
 review of the `skip_intermediate_builds_branch_filter` change concluded the blast radius was safe
@@ -2260,10 +2320,51 @@ considered and rejected for want of this evidence. The daily perf run still gets
 the other 19 pipelines keep skipping queued master builds, which is what currently relieves
 trigger-queue pressure during a burst.
 
-*Options if the capacity itself is worth addressing, none measured:* raise
-`trigger_max_size`; make the trigger steps asynchronous so they do not hold an agent while
-waiting; or have the dispatcher fan out without a blocking wait and report child outcomes
-separately. The first is cheapest and the queue runs deliberately small instances.
+**Options, re-assessed 2026-09-20 against the repo's own history — and two of the three
+"obvious" ones have already been tried and reverted.** This is why the blocking script exists; it
+is the survivor of that loop, not an oversight:
+
+- **Native Buildkite `trigger` steps** (which occupy no agent) were adopted and reverted **twice**
+  — `23c51bab8` replaced them with the API script because bot-authored PRs have no Buildkite
+  permissions, so an author-inherited trigger step **fails silently**; `c6653fe2a` tried again and
+  `553784bf3` reverted again for the same reason. `docs/infrastructure/ci-cd.md` states it
+  outright. Dependabot still authors in-repo PR branches, so the reason is **not stale** — but it
+  is specific to PR builds and does not apply to master commits.
+- **Fire-and-forget async** was tried (`eaee7774f`) to fix this exact agent starvation and reverted
+  (`16928ddcd`) because the parent then "always passed regardless of child build outcome" — it
+  defeats the gate entirely.
+
+That leaves a **conditional hybrid** as the only option that solves the master-burst case without
+reintroducing a known defect: emit native `trigger` steps when `BUILDKITE_PULL_REQUEST` is false
+and keep the script for PRs, a change confined to `generate-pipeline.sh`. It needs no Terraform
+apply, leaves `min_size` at 0, and takes master dispatch demand from ~100 concurrent agent-holds
+to zero. **Two Buildkite semantics must be proven on a throwaway build first**, because neither is
+verifiable from the repo and one of them is load-bearing: how a `skip_intermediate_builds`-
+superseded child is reported (it must map to neutral/pass, matching `trigger-pipeline.sh:207-215`,
+or rebased builds go falsely red), and whether `timeout_in_minutes` bounds an `async: false` wait.
+
+A risk-free fallback that needs no semantics check: add `concurrency: 1` +
+`concurrency_group: "trigger/<slug>"` to the emitted steps, capping holds at ~19 (one per child
+pipeline) rather than ~100. It bounds the burst instead of eliminating it, and layers under the
+hybrid.
+
+**Empirical status (2026-09-20), partial.** One of the three premises is now VERIFIED and the two
+load-bearing ones are NOT. On throwaway pipelines, a native trigger step records `type=trigger`
+with **no agent assigned** — so the central claim, that native triggers consume no agent, holds
+and the fix would genuinely take master dispatch from ~100 concurrent holds to zero. The two
+Buildkite semantics remain **inconclusive**: both scratch runs failed with `triggered_build: null`,
+i.e. the trigger never created a child, so neither the superseded-child mapping nor the timeout
+question was exercised at all. That failure looks like scratch misconfiguration rather than a real
+semantic — the two scratch child pipelines were created with different default branches (`main`
+and `master`) — but it was not diagnosed, so nothing should be concluded from it in either
+direction. **Do not adopt the hybrid until the superseded-child mapping is actually observed**: if
+a skipped child reports as failed rather than neutral, every rebase turns master falsely red,
+which is worse than the saturation being fixed. Four `zz-scratch-trigger-semantics-*` pipelines
+are left in the org for that re-run and should be deleted once it is done.
+
+Raising `trigger_max_size` remains available and is genuinely cheap in dollars (the queue runs
+`t3.small`/`t3.micro`), but it needs a `terraform apply` the user must run, and it treats the
+symptom — the agents still block on `sleep`+`curl`.
 
 ### Confirmed non-gaps — checked and found already sound
 
@@ -2294,7 +2395,7 @@ needs a resource, or is a decision rather than a task.
 |---|---|---|
 | **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **BASELINE ESTABLISHED (build #340, 2026-09-19) — and the harness fix is vindicated.** The second soak ever run, on `cdac3b0bb` with the fixed harness. The self-inflicted failure is gone: **match error rate 54.17% -> 0**, and **drift 3.809 -> 1.0632**. That drift collapse is the headline — the apparent degradation-over-time in build #324 was an artefact of the harness evicting its own match seed and pinning the expectation store at 15,000, not real. p50 is **0.148 ms** and the tail does not move across two hours. Retention fell with it: heap end 902 MB -> **362 MB**, live-set floor 484 MB -> **282 MB**. **Item 10b now has its numbers**: verify p50 **98.2 ms** (drift 0.9665), retrieve p50 **271.8 ms** (drift 1.0485), both carrying the new early/late sub-percentiles, and `samples.csv` uploaded — build #324 lost it by exiting 99 before the upload path. **The run still fails its gate, but not for the stated reason.** The annotation says "data-plane p99 drift or error-rate gate tripped"; p99 was 96.051 ms against a 100 ms threshold and **passed**. What crossed is **p95: 62.644 ms against 25 ms**. `LIMITS` is a shared block documented as "standard thresholds shared by the load/stress/soak scenarios", so 25 ms was never calibrated for a 2 h soak against a full event log — a threshold inherited from a different subject. **Owed to close the item:** the reduced-`maxLogEntries` arm. Expect verify/retrieve well below 98/272 ms; at the default the log fills early and stays pinned at the cap, so there is no occupancy gradient for the metric to track, which is why both drifts are flat here. Also owed: correct the soak annotation to name the threshold that actually crossed |
 | **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
-| **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape. **Re-run attempted 2026-09-19 as build #347 and it measured nothing — root-caused 2026-09-20.** The ladder died at bash PARSE time before a single core-count ran: `7ee0470b8` (the VU/stall diagnostics this very row asked for) added comment prose containing `k6's` and `pool's` INSIDE the single-quoted `jq` program at `lib/perf-percore.sh:490,492`. `#` does not start a comment inside a single-quoted string but `'` closes it, so bash re-tokenised the remainder as shell and choked on `$sweep[0].vus_diagnostics`. The two apostrophes BALANCE, which is why `bash -n` passed it — the same defect class, and the same file, as the earlier shipped syntax error. Ancestry settles it: `7ee0470b8` (bug) IS an ancestor of `abdc5a020` (what #347 ran); `a4303f5ee` (the reword plus the `shellcheck -S error` guard that catches what `bash -n` cannot) is NOT. **#347 ran one commit too early; master is already fixed.** Action is a re-run at or after `a4303f5ee`, not a code change. Two things worth keeping from it: the compare gate fired correctly (`serving_percore_attempted: true` with an empty block = RED) and stopped exactly the silent green it was built for, though its annotation's candidate-cause list omitted the actual one, a parse-time crash of the producer; and `serving_percore_attempted` is set unconditionally at `perf-test-run.sh:2259` BEFORE the producer is invoked, so it records intent to launch, not work performed. *Advisory, not done:* the jq program is embedded as a single-quoted string full of prose, so any future apostrophe re-breaks it — loading it from a `.jq` file with `-f` (as `perf-website-figures.jq` already does) would make the class structurally impossible |
+| **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape. **Re-run attempted 2026-09-19 as build #347 and it measured nothing — root-caused 2026-09-20.** The ladder died at bash PARSE time before a single core-count ran: `7ee0470b8` (the VU/stall diagnostics this very row asked for) added comment prose containing `k6's` and `pool's` INSIDE the single-quoted `jq` program at `lib/perf-percore.sh:490,492`. `#` does not start a comment inside a single-quoted string but `'` closes it, so bash re-tokenised the remainder as shell and choked on `$sweep[0].vus_diagnostics`. The two apostrophes BALANCE, which is why `bash -n` passed it — the same defect class, and the same file, as the earlier shipped syntax error. Ancestry settles it: `7ee0470b8` (bug) IS an ancestor of `abdc5a020` (what #347 ran); `a4303f5ee` (the reword plus the `shellcheck -S error` guard that catches what `bash -n` cannot) is NOT. **#347 ran one commit too early; master is already fixed.** Action is a re-run at or after `a4303f5ee`, not a code change. Two things worth keeping from it: the compare gate fired correctly (`serving_percore_attempted: true` with an empty block = RED) and stopped exactly the silent green it was built for, though its annotation's candidate-cause list omitted the actual one, a parse-time crash of the producer; and `serving_percore_attempted` is set unconditionally at `perf-test-run.sh:2259` BEFORE the producer is invoked, so it records intent to launch, not work performed. *Advisory, not done:* the jq program is embedded as a single-quoted string full of prose, so any future apostrophe re-breaks it — loading it from a `.jq` file with `-f` (as `perf-website-figures.jq` already does) would make the class structurally impossible. **Re-run as build #358 on `a4303f5ee` (2026-09-20) and THE LADDER FINALLY EMITTED** — the root cause was exactly the one commit of ancestry. Four core-counts measured (1c/2c/4c/8c); C=16 correctly recorded infeasible, so `curve_complete_to_16` stays false. Per-core `healthy_ceiling_rps` 4000 / 8000 / 4000 / 4000, `rps_per_core` 4000 / 4000 / 1000 / 500, `healthy_ceiling_p50_ms` 0.219 / 0.126 / 0.151 / 0.157, `peak_achieved_rps` 7463 / 13849 / 13933 / 13818. **What this does NOT establish, and the row's original debt therefore stands:** `healthy_ceiling_rps` is quantised to the ladder's own rungs (4000, 8000, ...), which is why it reads non-monotonically across 1->2->4->8 — that is rung spacing, not a server curve; and `peak_achieved_rps`, where the apparent 2c->4c flattening at ~13.9k lives, is the metric this plan already establishes measures the CLIENT (see the section of that name). So item 18 now has a working instrument and still lacks a ladder that can resolve the knee — the owed work is unchanged, but it is no longer blocked on a producer that cannot run. *Build #358's overall state is FAILED for an unrelated reason:* `MultiplePortMockingIntegrationTest` hit `Runtime Exception while binding MockServer to port 44569` in the h2-multiplex step (1 error across 2208 tests) — the known find-then-bind port race, and #358 ran a commit predating the G1/G6 work, so neither is implicated |
 | **19. S3 -> website** | **CLOSED 2026-09-19** | **Closed by the second half of its own acceptance wording — "a PR, *or a reasoned decision not to open one*".** Every stage of the logic is proven: build **#325** read the newest self-describing S3 object, judged the candidate (`healthy_ceiling_rps=16000`, `peak_achieved_rps=28377.4`, 18 arms), fired its movement trigger, regenerated the chart data, branched and committed 3 files / 2,235 insertions — then died at `git push` on `could not read Username`. The reason is structural, not a missing config: the perf stack's IAM role grants only S3 on `mockserver-ci-perf-results`; the GitHub token is named solely by `read_release_secrets`, attached to the release stack. **The obvious fix was rejected on privilege grounds** — that token can push any branch and cut GitHub Releases, and the perf queue builds master and runs k6 on a public-IP box, so a poisoned dependency would inherit both, for a cosmetic docs refresh. The step now emits the refresh as a `git format-patch --binary` artifact plus the regenerated files, and annotates with what moved and the exact apply-then-PR commands. A human was always required in the loop anyway — the step's own text says "A human must reconcile the hand-authored numbers this refresh does NOT touch". `format-patch` over `git diff` is not a style choice: a plain diff emits `Binary files ... differ` for the chart PNGs, which `git am` rejects; the binary round-trip was proven to reproduce an identical SHA. The refuse path (build #290) is untouched and still fails closed. If auto-PR is ever wanted, the fallback is a fine-grained token scoped to this repo with `Contents`+`Pull requests` write only — **never** the release token |
 | **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | **CLOSED (2026-09-19, `72bc3dafd`).** Build **#322** ran the ladder and the knee is far sharper on CI than the laptop curve predicted. **Provenance, because this matters and a reader would otherwise be misled: build 322's overall state is FAILED and its run is flagged `validity.valid=false`.** That flag is not about this measurement. Of the six validity checks exactly one failed — `sweep_client_had_headroom` — and its own detail scopes itself: *"every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) ... no server **throughput** figure is trustworthy"*. It fired because the bisect deliberately ran a **short 3-rung ladder** (2,000 / 16,000 / 32,000 offered), none of whose rungs survived the headroom filter, so `peak_achieved_rps` was recorded as 0. **Mechanism corrected 2026-09-19:** this row first said those rungs sat "at or above the k6 client's own capability". Client CPU was never the constraint — build 325 measured it at 13.6% utilisation on the equivalent rung. The real binding constraint is that `sweep.js` never received this plan's own Finding-3 fix and still ramps `preAllocatedVUs` 200 -> `maxVUs` 4,000 mid-run; see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). **Corrected again, same day:** I then said the VU ramp was the cause. It is not — that rung needed under one VU from a pool of 200, so no ramp was possible. The exact chain is: the 2,000 rung dropped 133 iterations (~0.4%), `rig_valid` requires `dropped_iterations <= 0` with no tolerance, so every rung was rig-invalid, `peak_achieved_rps` became `max over []` = 0, and the check keys off `peak > 0`. See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server). The streaming arm is a different scenario and its own check **passed** (`streaming_metrics_present`, ratio 2.5357), with the direct client-starvation signals all clean: `stream_dropped_iterations: 0`, `stream_error_rate: 0`, `match_under_stream_error_rate: 0`, 13,200 streams completed, and delivery ratios **above** 1.0 on both arms (1.0606 under stream, 1.1386 baseline) — a starved client under-delivers, it does not over-deliver. The harness behaved correctly throughout: it refused to baseline a run it could not fully vouch for (`valid=false` -> not persisted) and failed the build loudly rather than showing a green square. The numbers below come from the passing `perf regression — run + sample` job (exit 0), not from the failed compare step. Three CI data points: concurrency **300 -> 1.056x**, **600 -> 2.536x**, **1200 -> 93.8x**. The knee therefore sits between 300 and 600, and 1200 was an order of magnitude past it — a control that fires so hard it proves nothing about the margin. Item 12 now runs at **600**, where the control fires by 2.5x with headroom either side. This also corrects an extrapolation error of mine: I predicted ~3x at 1200 from the laptop curve, whose own contention had flattened it |
 | **JUnit `devMode` default** | **DONE 2026-09-19 (`c4252ea97`)** | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping buys the recorded **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite logging more than 1000 entries gets a `verify` that quietly stops matching. **The user approved the flip on 2026-09-19 knowing that trade-off.** Scope of the change: flip the constant in both modules; update `MockServerExtensionDevModeDefaultTest` and `MockServerRuleDevModeDefaultTest`, which were written to pin opt-in; decide whether Spring test support (which has no devMode hook at all) gets one for consistency; and update the consumer docs, since this changes behaviour for every JUnit-integration suite in the wild. **This is a user-visible default change and needs a changelog entry** |
