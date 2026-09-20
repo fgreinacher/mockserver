@@ -339,7 +339,7 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | D6 | L | none | N parallel instances: port pressure, aggregate threads, aggregate RSS, GC interference | — | — |
 | D6 | L | **none** | **Dev mode.** `mockserver.devMode` exists specifically for this profile and nobody knows what it saves | — | — |
 | **NEW D2, D4** | C, P | **none** | **LLM / SSE streaming.** Per-token delays are scheduled onto a `max(5, cores)` pool; under saturation scheduler-thread starvation delays per-token emission (fidelity drift) and the `writeAndFlush` each task hands off loads the shared event loops a concurrent `match` uses (see item 12 — the original `CallerRunsPolicy`-on-the-event-loop claim was measured wrong) | — | — |
-| **NEW D1, D2** | C | **none** | **HTTP/3 / QUIC** — a full second transport with different physics | — | — |
+| **NEW D1, D2** | C | continuous (bridge only) | **HTTP/3 / QUIC.** `Http3RequestBridgeBenchmark` A/Bs the HTTP/3 and HTTP/2 request bridges in one run (item 20a); it runs in the daily microbench step's promoted set. The **transport itself is still unmeasured** — no end-to-end HTTP/3 ladder exists (20b, deferred on 20a's answer) | daily | notify-only `microbench_extra.*` wildcards (`time_per_op`, `alloc_bytes_per_op`), no gating flag |
 | **NEW D1, D2, D4** | C | **none** | **Clustered state** (`StateBackend`, Infinispan) — the feature built for the exact profile the owner named | — | — |
 | **NEW D2** | C | **none** | **WASM rule bodies** — a per-request interpreter on the matching path when used | — | — |
 | **NEW D2, D4** | C | **none** | **Dashboard WebSocket fan-out** while serving traffic | — | — |
@@ -1170,6 +1170,41 @@ rather than invisible rot. Requires item 0 for the provenance line. Finding 3 is
 - **20b (defer):** an end-to-end HTTP/3 throughput ladder. There is no HTTP/3 client in k6, so
   this needs a purpose-built driver — most of the cost and most of the risk. Only worth it
   once 20a shows something, or a user reports a problem.
+
+**20a DONE — shipped `e219041ac`, and the answer is no.** `Http3RequestBridgeBenchmark` runs both
+bridges in one JMH run behind a `protocol` param, from an already-decoded headers frame to a
+MockServer request model, on the real `Http3RequestBridge` and the real multiplex child pipeline.
+The deterministic signal is `gc.alloc.rate.norm`; the timing rows are secondary. The crossover it
+found — the bridge making **two** body-sized allocations for text content types, copying the
+composite into a `byte[]` and then building a `String` from it — was then removed by `169014ab1`,
+which decodes straight from the accumulated buffer.
+
+**Re-measured after that fix (2026-09-20, Apple M3 Max, Zulu 21.0.3, `@Fork(1)`, `-prof gc`).
+HTTP/3 now allocates LESS than HTTP/2 at every body size, so the crossover is gone:**
+
+| body | HTTP/2 B/op | HTTP/3 B/op | HTTP/3 ÷ HTTP/2 | recorded at 20a, pre-fix |
+|---:|---:|---:|---:|---:|
+| empty | 7,689.7 | 3,736.0 | **0.49** | ~0.5 |
+| 1 KB | 12,860.9 | 7,096.0 | **0.55** | ~0.67 |
+| 16 KB | 43,436.7 | 37,680.0 | **0.87** | ~1.25 |
+
+The 16 KB row is the one the fix targeted, and the arithmetic corroborates the mechanism rather than
+merely agreeing in direction: 1.25 × 43,436.7 = 54,295.9, which is **16,615.9 B/op above** the
+measured post-fix figure — one 16,384-byte body copy, to within ~232 bytes. That residual sits inside
+the rounding of the "about 1.25" it comes from (1.245 closes it exactly, to a 16,384-byte array plus a
+16-byte header), so it corroborates the *size* of what was removed and is not a byte-exact
+reconciliation. It is also an **inference from the pre-fix ratio, not a second measurement**: the
+pre-fix absolutes were not re-run here, because that means installing an older `8.0.1-SNAPSHOT` into
+the shared `~/.m2`, where a concurrent session would pick it up.
+
+Both framing biases still run **against** HTTP/3 and are still uncorrected (the HTTP/2 arm reuses
+one `EmbeddedChannel`, omitting per-stream construction it really pays; the HTTP/3 arm composites
+`Unpooled` heap buffers where production uses pooled direct ones). So these ratios are a **ceiling
+on HTTP/3's relative cost**, and the absolute HTTP/3 figures are not production-representative.
+
+**20b stays deferred, and now on evidence rather than on cost.** Its trigger was "once 20a shows
+something"; 20a showed the opposite of the thing that would have justified building an HTTP/3
+driver. Revisit only if a user reports an HTTP/3 throughput problem.
 
 #### 21. Connection-scaling ceiling — **research, lowest priority**
 
