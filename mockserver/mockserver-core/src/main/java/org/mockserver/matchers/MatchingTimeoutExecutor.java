@@ -105,7 +105,24 @@ public final class MatchingTimeoutExecutor {
      * @throws Exception any checked exception thrown by the task (other than TimeoutException)
      */
     public static <T> T callWithTimeout(Callable<T> task, long timeoutMillis, T onTimeout, OnTimeout onTimeoutCallback) throws Exception {
-        if (timeoutMillis <= 0) {
+        return callWithTimeout(task, timeoutMillis, onTimeout, onTimeoutCallback, false);
+    }
+
+    /**
+     * As {@link #callWithTimeout(Callable, long, Object, OnTimeout)}, but with an {@code inlineSafe}
+     * fast path. When {@code inlineSafe} is {@code true} the task is run directly on the calling
+     * thread with no pool hand-off — the caller has <em>proven</em> (via
+     * {@link RegexComplexityClassifier}) that the work cannot backtrack super-linearly, so the pool's
+     * DoS isolation is unnecessary and its per-call microsecond tax is avoided. This is only ever
+     * passed {@code true} for a pattern the classifier has proven linear under an anchored full
+     * match; any pattern that could pin a thread keeps {@code inlineSafe == false} and the pool. A
+     * non-positive timeout still disables the timeout for every task, safe or not.
+     *
+     * @return the task's result, or {@code onTimeout} when the timeout fires
+     * @throws Exception any checked exception thrown by the task (other than TimeoutException)
+     */
+    public static <T> T callWithTimeout(Callable<T> task, long timeoutMillis, T onTimeout, OnTimeout onTimeoutCallback, boolean inlineSafe) throws Exception {
+        if (inlineSafe || timeoutMillis <= 0) {
             return task.call();
         }
         // Wrap the user task so that any residual interrupt flag left on a recycled pool
@@ -189,6 +206,19 @@ public final class MatchingTimeoutExecutor {
      * @return the match result, or {@code false} on timeout/error
      */
     public static boolean matchesWithRegexTimeout(MockServerLogger mockServerLogger, String description, Pattern pattern, Callable<Boolean> matchOperation) {
+        return matchesWithRegexTimeout(mockServerLogger, description, pattern, matchOperation, false);
+    }
+
+    /**
+     * As {@link #matchesWithRegexTimeout(MockServerLogger, String, Pattern, Callable)}, but callers
+     * that evaluate the pattern as an <em>anchored full match</em> ({@link java.util.regex.Matcher#matches()})
+     * pass {@code anchoredFullMatch == true}. That lets a pattern proven linear by
+     * {@link RegexComplexityClassifier} skip the pool hand-off and run inline. It MUST stay
+     * {@code false} for {@link java.util.regex.Matcher#find()}-based callers: find()'s outer
+     * position scan can make an otherwise-linear pattern quadratic, so the classifier's anchored-match
+     * proof does not cover it and those calls must keep the pool's isolation.
+     */
+    public static boolean matchesWithRegexTimeout(MockServerLogger mockServerLogger, String description, Pattern pattern, Callable<Boolean> matchOperation, boolean anchoredFullMatch) {
         // Prefer the live Configuration carried by the logger (the matcher graph's existing
         // configuration carrier) so a timeout set over PUT /mockserver/configuration takes effect;
         // fall back to the static store when no instance is available.
@@ -197,6 +227,10 @@ public final class MatchingTimeoutExecutor {
         long timeoutMillis = configuration != null
             ? configuration.regexMatchingTimeoutMillis()
             : ConfigurationProperties.regexMatchingTimeoutMillis();
+        // Only an anchored full match against a pattern proven linear may skip the pool: an
+        // unproven or find()-based pattern keeps its DoS isolation.
+        boolean inlineSafe = anchoredFullMatch
+            && RegexComplexityClassifier.isAnchoredInlineSafe(pattern.pattern(), (pattern.flags() & Pattern.CASE_INSENSITIVE) != 0);
         try {
             return callWithTimeout(
                 matchOperation,
@@ -214,7 +248,8 @@ public final class MatchingTimeoutExecutor {
                         // callers without a MockServerLogger still get an observable trace of the timeout
                         LOGGER.warn("{} regex evaluation timed out after {}ms for pattern:{} — treating as non-match (raise mockserver.regexMatchingTimeoutMillis or simplify the pattern to suppress this)", description, fired, pattern.pattern());
                     }
-                });
+                },
+                inlineSafe);
         } catch (Exception e) {
             return false;
         }

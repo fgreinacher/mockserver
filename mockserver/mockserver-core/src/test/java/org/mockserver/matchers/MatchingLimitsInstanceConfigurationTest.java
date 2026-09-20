@@ -52,8 +52,11 @@ public class MatchingLimitsInstanceConfigurationTest {
         Configuration configuration = Configuration.configuration().regexMatchingTimeoutMillis(0L);
 
         long before = MatchingTimeoutExecutor.submittedTaskCount();
+        // Use a regex NOT provably linear (a quantified group) so it is the timeout=0 setting - not the
+        // G6 inline-safe classifier - that keeps this match off the pool; a provably-linear pattern
+        // would run inline regardless and make this test pass for the wrong reason.
         new RegexStringMatcher(loggerWith(configuration), false).matches(
-            NottableString.string("[0-9]+"), NottableString.string("12345"));
+            NottableString.string("([0-9])+"), NottableString.string("12345"));
 
         assertThat("a zero regexMatchingTimeoutMillis on the instance must run the match inline, "
                 + "so nothing is submitted to the shared timeout pool",
@@ -62,10 +65,12 @@ public class MatchingLimitsInstanceConfigurationTest {
 
     @Test
     public void shouldUseRegexTimeoutPoolWhenInstanceLeavesTheTimeoutUnset() {
-        // no instance value -> the static default (5000ms) applies -> the pool IS used
+        // no instance value -> the static default (5000ms) applies -> the pool IS used. Use a regex
+        // not provably linear (a quantified group) so the G6 inline-safe classifier does not bypass
+        // the pool - this test is about timeout resolution, not classification.
         long before = MatchingTimeoutExecutor.submittedTaskCount();
         new RegexStringMatcher(loggerWith(null), false).matches(
-            NottableString.string("[0-9]+"), NottableString.string("12345"));
+            NottableString.string("([0-9])+"), NottableString.string("12345"));
 
         assertThat(MatchingTimeoutExecutor.submittedTaskCount() - before, is(1L));
     }

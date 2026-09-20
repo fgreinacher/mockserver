@@ -70,6 +70,13 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
   as zero.
 
 ### Changed
+- Regular-expression matching is faster for the common case. A regex that can be proven incapable of
+  catastrophic backtracking is now evaluated directly instead of being handed to the internal timeout
+  thread pool, removing a thread hand-off from every such match. Patterns that cannot be proven safe
+  -- and all `find()`-style matching -- keep the timeout protection exactly as before, so a pathological
+  expression still cannot hang the server. This changes performance only: which requests match, and
+  what a mismatch reports, are unchanged.
+
 - **The Docker images now cap the JVM heap at 60% of the container memory limit, down from 75%**
   (`-XX:MaxRAMPercentage=60.0` in every `docker/**/Dockerfile` ENTRYPOINT). In a memory-limited
   container with no explicit heap set, the default heap is now smaller — for a 2 GiB container it

@@ -162,7 +162,7 @@ public class GraphQLMatcher extends BodyMatcher<String> {
             // shared regex matching timeout so a pathological pattern cannot pin a worker thread (ReDoS)
             final Pattern pattern = compiledOperationNamePattern;
             return MatchingTimeoutExecutor.matchesWithRegexTimeout(mockServerLogger, "graphql operationName", pattern,
-                () -> pattern.matcher(actualOperationName).matches());
+                () -> pattern.matcher(actualOperationName).matches(), true);
         }
         return false;
     }

@@ -131,7 +131,7 @@ public class JsonRpcMatcher extends BodyMatcher<String> {
             // regex matching timeout so a pathological pattern cannot pin a worker thread (ReDoS)
             final Pattern pattern = compiledMethodPattern;
             return MatchingTimeoutExecutor.matchesWithRegexTimeout(mockServerLogger, "json-rpc method", pattern,
-                () -> pattern.matcher(actualMethod).matches());
+                () -> pattern.matcher(actualMethod).matches(), true);
         }
         return false;
     }

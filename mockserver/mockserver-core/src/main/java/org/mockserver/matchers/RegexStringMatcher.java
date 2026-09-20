@@ -223,6 +223,11 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
         long timeoutMillis = configuration != null
             ? configuration.regexMatchingTimeoutMillis()
             : ConfigurationProperties.regexMatchingTimeoutMillis();
+        // NottableString.matches() performs an anchored full match, so a pattern the classifier
+        // proves linear can run inline without the pool hand-off. caseSensitive == false means the
+        // pattern is compiled CASE_INSENSITIVE, which the classifier must account for when checking
+        // quantifier-alphabet disjointness. Any pattern it cannot prove safe keeps the pool.
+        boolean inlineSafe = RegexComplexityClassifier.isAnchoredInlineSafe(pattern.getValue(), !caseSensitive);
         try {
             return MatchingTimeoutExecutor.callWithTimeout(
                 () -> pattern.matches(input, caseSensitive),
@@ -237,7 +242,8 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                                 .setArguments(fired, pattern)
                         );
                     }
-                });
+                },
+                inlineSafe);
         } catch (PatternSyntaxException pse) {
             throw pse;
         } catch (Exception e) {

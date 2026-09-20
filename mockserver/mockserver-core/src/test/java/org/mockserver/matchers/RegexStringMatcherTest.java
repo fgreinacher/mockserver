@@ -166,13 +166,26 @@ public class RegexStringMatcherTest {
     }
 
     @Test
-    public void shouldEnterExecutorPoolForRealRegexNonMatch() throws Exception {
+    public void shouldEnterExecutorPoolForRegexNotProvablyLinear() throws Exception {
         long submittedBefore = executorSubmittedTaskCount();
-        // a real regex (contains metacharacters) that does not match still exercises the executor path
+        // a regex that cannot be proven free of catastrophic backtracking (a quantified group) must
+        // still be evaluated via the timeout-protected executor pool - G6 only lets PROVABLY-linear
+        // patterns skip it, never one like this.
+        assertThat(new RegexStringMatcher(new MockServerLogger(), string("(a+)+z"), false).matches("some_value"), is(false));
+        long submittedAfter = executorSubmittedTaskCount();
+        assertThat("a regex not provably linear must still be evaluated via the timeout-protected executor pool",
+            submittedAfter - submittedBefore > 0L, is(true));
+    }
+
+    @Test
+    public void shouldRunProvablyLinearRegexInlineWithoutExecutorPool() throws Exception {
+        long submittedBefore = executorSubmittedTaskCount();
+        // a real regex (contains metacharacters) but provably linear ([a-z]+ and \d+ are disjoint):
+        // G6 runs it inline on the calling thread, skipping the pool hand-off entirely.
         assertThat(new RegexStringMatcher(new MockServerLogger(), string("some_[a-z]{4}"), false).matches("some_value"), is(false));
         long submittedAfter = executorSubmittedTaskCount();
-        assertThat("a real regex must still be evaluated via the timeout-protected executor pool",
-            submittedAfter - submittedBefore > 0L, is(true));
+        assertThat("a provably-linear regex must run inline, not via the pool",
+            submittedAfter - submittedBefore, is(0L));
     }
 
     @Test
@@ -184,13 +197,19 @@ public class RegexStringMatcherTest {
     @Test
     public void shouldKeepRegexPathForNonAsciiLiteralValue() throws Exception {
         // 'İ' (U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE) folds differently under UNICODE_CASE
-        // than under String.equalsIgnoreCase, so non-ASCII values must keep the regex path.
-        long submittedBefore = executorSubmittedTaskCount();
-        // a non-matching non-ASCII literal still goes through the executor (proving it is not short-circuited)
-        new RegexStringMatcher(new MockServerLogger(), string("café"), false).matches("teapot");
-        long submittedAfter = executorSubmittedTaskCount();
-        assertThat("a non-ASCII literal must keep the timeout-protected regex path",
-            submittedAfter - submittedBefore > 0L, is(true));
+        // than under String.equalsIgnoreCase, so a non-ASCII value must NOT be short-circuited by the
+        // pure-ASCII-literal fast path: it must keep the regex evaluation (which applies UNICODE_CASE).
+        // Since G6, a provably-linear regex - including a non-ASCII literal - is evaluated inline
+        // rather than via the pool, so the guarantee under test is that it still enters the regex
+        // path (isPureAsciiLiteral is false), not which thread runs it.
+        assertThat("a non-ASCII literal must not be treated as a pure-ASCII literal (would skip the regex path)",
+            invokeIsPureAsciiLiteral("café"), is(false));
+    }
+
+    private static boolean invokeIsPureAsciiLiteral(String s) throws Exception {
+        java.lang.reflect.Method m = RegexStringMatcher.class.getDeclaredMethod("isPureAsciiLiteral", String.class);
+        m.setAccessible(true);
+        return (boolean) m.invoke(null, s);
     }
 
     // --- case-sensitive (matchExactCase) constructor ---
@@ -266,12 +285,13 @@ public class RegexStringMatcherTest {
         try {
             final java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(threads);
             final java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
-            // a value with a regex metacharacter so it takes the timeout-protected executor path
-            // (not the pure-literal short-circuit), and that genuinely matches the input.
+            // a value that is NOT provably linear (a quantified group) so it takes the timeout-protected
+            // executor path - not the pure-literal short-circuit and not the G6 inline fast path - and
+            // that genuinely matches the input, so pool saturation is actually exercised.
             final java.util.List<java.util.concurrent.Future<Integer>> results = new java.util.ArrayList<>(threads);
             for (int i = 0; i < threads; i++) {
                 results.add(pool.submit(() -> {
-                    final RegexStringMatcher matcher = new RegexStringMatcher(new MockServerLogger(), string("some_[a-z]{5}"), false);
+                    final RegexStringMatcher matcher = new RegexStringMatcher(new MockServerLogger(), string("(some_[a-z]{5})"), false);
                     ready.countDown();
                     start.await();
                     int spurious = 0;

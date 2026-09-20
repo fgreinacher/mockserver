@@ -796,6 +796,8 @@
                         <!-- Resets the LlmCostBudgetMonitor and RateLimitRegistry singletons -->
                         <exclude>**/ConfigurationInstanceEnforcementTest.java</exclude>
                         <exclude>**/MatchingLimitsInstanceConfigurationTest.java</exclude>
+                        <!-- Asserts against the process-wide MatchingTimeoutExecutor submitted-task counter -->
+                        <exclude>**/MatchingTimeoutInlineSafeTest.java</exclude>
                         <exclude>**/LlmMetricsTest.java</exclude>
                         <!-- WS7.6: mutates the mockserver.perExpectationMetrics system property + static Metrics / default PrometheusRegistry -->
                         <exclude>**/PerExpectationMetricsTest.java</exclude>
@@ -1014,6 +1016,7 @@
                                 <include>**/LlmCostBudgetMonitorTest.java</include>
                                 <include>**/ConfigurationInstanceEnforcementTest.java</include>
                                 <include>**/MatchingLimitsInstanceConfigurationTest.java</include>
+                                <include>**/MatchingTimeoutInlineSafeTest.java</include>
                                 <include>**/LlmMetricsTest.java</include>
                                 <include>**/PerExpectationMetricsTest.java</include>
                                 <include>**/LogEntryRedactionTest.java</include>
