@@ -1385,6 +1385,38 @@ once (29.4 s, independently consistent with the Docker figure), and a single-nod
 robust result is the ratio — pull ≫ JVM — not the 28 s**, which any registry mirror or pull-through
 cache would change substantially.
 
+#### 25. AsyncAPI as an opt-in extra — **mostly already built**
+
+Requested 2026-09-20, as the cheaper alternative to removing the async stack outright. The
+async-exclusive libraries are **~11.0 MiB** (kafka-clients 8.54, lz4 0.83, rabbitmq/amqp 0.59, avro
+0.60, mqtt-paho 0.39, zstd 0.04) — worth removing from the default only if users who want it can get
+it back trivially.
+
+**The decoupling already exists and works.** `MockServer.java:225-241` registers the control plane
+reflectively — `Class.forName("org.mockserver.async.controlplane.AsyncApiControlPlaneImpl")` — and
+swallows `ClassNotFoundException`, so there is **no compile-time dependency** on the module. Core
+holds the seam: `AsyncApiControlPlane` (interface) plus `AsyncApiControlPlaneRegistry`, whose javadoc
+already says "the module is not on the classpath" and whose methods return a not-available response
+when nothing is registered. The endpoints answer **501 Not Implemented** rather than failing.
+
+**So the remaining work is packaging, not architecture:**
+
+1. Exclude `mockserver-async` and its exclusive transitives from the fat-jar assembly. The existing
+   classified slim descriptors are the template.
+2. `mockserver-async` is already a published module (it is in `mockserver-bom`), so a Maven user adds
+   one dependency and it works — nothing else to build.
+3. For containers, the drop-in path already exists: the image ENTRYPOINT runs
+   `-cp /mockserver-netty-jar-with-dependencies.jar:/libs/*`, so **mounting the async jar into
+   `/libs` is already sufficient**. An `-async` image tag, following the existing `graaljs` /
+   `clustered` variant pattern, would make it a tag change instead.
+4. **Make the 501 actionable.** This is the whole user experience of an opt-in feature: the response
+   should name the artifact to add and the image tag to use, not merely report "not available".
+
+**Done when:** the default fat jar is ~11 MiB smaller, a Maven user gets async mocking by adding one
+dependency, a container user by changing a tag or mounting a jar, and someone who does neither gets a
+501 that tells them exactly what to do. **Still a product decision**, because it changes what a
+default install can do.
+
 #### 24. Published-artifact size for CI pipelines — **research + a shippable change**
 
 Requested 2026-09-20, and it shares most of its evidence with item 23. Build agents frequently start
@@ -1461,9 +1493,25 @@ created (201), request served, and `Netty epoll transport is available` in the s
 successful HTTPS request is not evidence of anything — the server would serve it either way. Only
 the provider and availability values distinguish a working native path from a degraded one.
 
-**Still owed and NOT verified here:** the release path — two extra artifacts are signed, staged and
-published automatically as attached artifacts, but that has not been exercised, and this repo has
-been bitten before by faults that appear only on release-only paths.
+**The release path is verified — by snapshot, with no release required.** Every master push runs
+`:nexus: deploy snapshot to Sonatype` (`pipeline-java.yml:282`, gated on `build.branch == 'master'`),
+and `deploy -DskipTests` still runs `package`, so the assembly builds and ATTACHES the classified
+artifacts and they deploy with everything else. Confirmed rather than assumed: mockserver-java build
+**2359** — the slim-jars commit `c627a79c8` — shows `deploy snapshot` **passed**, and the Sonatype
+snapshot metadata for `mockserver-netty:8.0.1-SNAPSHOT` now lists **both**
+`jar-with-dependencies-linux-x86_64` and `jar-with-dependencies-linux-aarch_64` alongside the
+unchanged default and `brew-tar`.
+
+**One gap remains, and it is narrow:** the snapshot deploy sets `-Dgpg.skip=true` deliberately
+(snapshots are not signature-checked by Central Portal), so **GPG signing of the two new artifacts is
+the only part of the release path still unexercised**. Everything upstream of it — assembly,
+attachment, staging, deployment, and the artifacts being resolvable from a real repository — is now
+proven on a snapshot.
+
+**This makes snapshots the right harness for artifact changes generally:** a master push is enough to
+test packaging end to end, and the perf pipeline already consumes snapshot images the same way
+(`MOCKSERVER_IMAGE` defaults to the mutable `mockserver-snapshot-graaljs` tag, rebuilt per master
+push), so performance work never needs a release either.
 
 **Done when:** the transitive download a typical JUnit consumer actually pays is measured (not
 estimated); the classified fat-jar artifacts exist for the two Linux targets with the default
