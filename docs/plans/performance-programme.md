@@ -2465,9 +2465,69 @@ plane.
 
 That round trip is the **per-test cost** for the instance-per-test-method and parallel-suite
 patterns, which are a large share of real usage and the profile items 17 and 22 already say the
-programme under-serves. *Measurement:* one k6 arm looping create + reset (and a `verifySequence`
-variant), recording rate and p99. About half a day on the existing rig. **Severity medium-high on
-reach; partially bounded because the dominant sub-costs are covered in-process.**
+programme under-serves.
+
+**MEASURED 2026-09-20 — CONFIRMED, and it splits about 60/40 between `clear` and the request match
+itself.** The cycle was modelled the way a suite pays it: **serially, one VU**, because a suite does
+create -> exercise -> verify -> clean up one test at a time, so what a user feels is a sum of
+latencies and not a throughput figure. One cycle = 3x `expectation` + one data-plane GET + `verify`
++ 3x targeted `clear`, 200 cycles per arm, native server on localhost. Every call is timed, so the
+cycle is accounted for rather than attributed:
+
+| expectations registered | cycle | 3x clear | data-plane GET | 3x create | verify | unexplained |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 3.0 ms | 1.17 ms | 0.30 ms | 1.08 ms | 0.44 ms | 0.00 ms |
+| 1,000 | 4.0 ms | 1.88 ms | 0.78 ms | 0.93 ms | 0.45 ms | −0.04 ms |
+| 5,000 | 8.0 ms | 3.97 ms | 2.08 ms | 0.89 ms | 0.47 ms | 0.60 ms |
+| 15,000 (at the cap) | 20.5 ms | 11.56 ms | 6.76 ms | 1.01 ms | 0.55 ms | 0.61 ms |
+
+**The per-test cycle grows with store size, and two things cause it.** Between the empty store and
+the 15,000 row it is **~6.8x**, though that row is the cap-affected one — on the clean 5,000 row it
+is **~2.7x**, so the effect is well established before the cap is anywhere near. Of the +17.5 ms at
+15,000, `clear` contributes **+10.4 ms (59%)** and the single data-plane GET **+6.5 ms (37%)**. `create` is flat (1.08 -> 1.01 ms for three) and `verify` barely moves (0.44 -> 0.55 ms).
+The residual never exceeds 0.61 ms, so the decomposition is essentially complete — this is not an
+attribution, it is an accounting.
+
+**Only the first half is a control-plane finding.** `RequestMatchers.clear(RequestDefinition)`
+(`RequestMatchers.java:1165-1180`) runs a full match against **every** registered expectation, so it
+is O(n) in store size, and the cycle performs three of them. Note the helper it iterates through,
+`getHttpRequestMatchersCopy` (`:1999-2001`), takes **no copy** despite its name — it returns
+`httpRequestMatchers.stream()`, a lazy stream over the skip-list-backed queue
+(`CircularPriorityQueue.java:269-271`). The O(n) traversal is the cost; there is no snapshot. The GET's
+growth is the matching path and belongs to G1, which already measured it far more precisely — its
+presence here simply shows that a caller feels both costs together.
+
+**Which use case this hits is not the one the gap named.** For instance-per-test-method the store
+stays small, so the cycle stays near 3 ms and a 1,000-test suite pays about 3 s in total. It bites
+the **long-lived shared server**, where expectations accumulate: the same suite pays about 8 s at
+5,000 expectations, and both its cleanup and its mocked requests get slower together.
+
+*A candidate fix, not attempted here:* `clear` by a simple path could consult the candidate index
+instead of scanning, as matching already does. It needs care, because a clear's request definition
+can be a broader matcher than any single indexed key — and all three clears measured here were
+simple path clears, so a broader matcher may well behave differently and is unmeasured. **Fixing
+`clear` alone would not flatten the cycle**: it would remove 59% of the growth and leave the GET's
+37%, which is G1's O(n) matching cost and has to be addressed there.
+
+*Limits.* **The parallel-suite case the gap also named is not covered.** This models one suite
+thread, so it bounds the serial per-test pattern only; several suites sharing one server present
+concurrent control-plane calls, where a throughput ceiling and contention matter rather than a sum of
+latencies, and the serial figure does not bound that. One VU against a native server on localhost; a
+remote server adds its round-trip time to each of the cycle's seven calls. Expectations were small. The 15,000 row sits exactly at the default
+`maxExpectations`, which is `min(heapKB/10, 15000)` and so is **15,000 for any heap at or above
+150 MB** — the store was therefore full, and adding the cycle's three expectations evicted three
+seeded ones (the run ended at 14,997 of 15,000). Read that row as a full store rather than as a
+clean store-size point; the 0 / 1,000 / 5,000 rows are clean, with the seed fully intact.
+
+**The first attempt at this measurement was invalid, and how it failed is worth keeping.** The cycle
+originally began with `PUT /mockserver/reset`, which wipes every expectation — so the seeded store
+was destroyed on iteration 1 of 200 and all four arms silently became the empty arm. It produced a
+perfectly flat curve across 0 to 15,000 expectations and a confident conclusion that the control
+plane does not scale with store size: the exact opposite of the truth. Nothing in the output looked
+wrong — the numbers were plausible, consistent and reproducible. What caught it was asking what the
+harness left behind; the runner now asserts the seed survived, and that same assertion is what
+flagged the 15,000 arm as sitting at the cap. A second version then claimed the growth was entirely
+`clear`, which timing the GET disproved.
 
 #### G10. Reload-under-traffic when the watched file changes
 
