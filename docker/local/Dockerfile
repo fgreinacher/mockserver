@@ -13,10 +13,10 @@
 #   JDK 25 AOT cache in docker/aot/Dockerfile), so the trimmed JDK runtime is baked into this image
 #   alongside the archive. Multi-arch builds each train + bake their own archive.
 # - There is no distroless/java17 base that ships a matching CDS-capable runtime for a baked
-#   archive, so a jlink-trimmed JDK 25 runtime (same module set as the binary bundle, see
+#   archive, so a jlink-trimmed JDK 26 runtime (same module set as the binary bundle, see
 #   scripts/build-binary-bundle.sh and docs/code/cli.md) is copied onto distroless/java-base — the
 #   same base+digest as docker/aot/Dockerfile.
-# - The JVM inside this image is JDK 25; the MockServer library itself is still compiled to the
+# - The JVM inside this image is JDK 26; the MockServer library itself is still compiled to the
 #   Java 17 bytecode floor (AGENTS.md Java Compatibility Policy). Running that jar on a newer JVM is
 #   fully supported — the JDK bump here is a runtime-only choice, independent of the compile target.
 # - Runtime uses -XX:SharedArchiveFile with the default -Xshare:auto semantics, so a missing or
@@ -29,16 +29,16 @@
 # https://www.mock-server.com
 #
 
-# AppCDS build stage — jlink-trimmed JDK 25 runtime + training run producing the AppCDS archive
+# AppCDS build stage — jlink-trimmed JDK 26 runtime + training run producing the AppCDS archive
 FROM eclipse-temurin:26-jdk-noble AS appcds-build
 
 COPY mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
 
 # Same module set validated end-to-end for the jlink binary bundle (scripts/build-binary-bundle.sh,
-# docs/code/cli.md): java.se aggregator + Netty Unsafe + TLS crypto + DNS + zipfs. On JDK 25 jlink
+# docs/code/cli.md): java.se aggregator + Netty Unsafe + TLS crypto + DNS + zipfs. From JDK 25 onwards jlink
 # uses the --compress=zip-<level> form (zip-6 = the default ZIP level, same spelling docker/aot uses
-# on JDK 25); the legacy numeric --compress=2 form was deprecated after JDK 17 and is removed on
-# JDK 25. A jlink image does not carry the JDK's default CDS base archive, so -Xshare:dump
+# on JDK 25 — that image genuinely is 25); the legacy numeric --compress=2 form was deprecated
+# after JDK 17 and is removed from JDK 25 onwards. A jlink image does not carry the JDK's default CDS base archive, so -Xshare:dump
 # regenerates it from the bundled lib/classlist — the dynamic AppCDS archive below is layered on
 # that base, and the base is carried into the runtime image with /runtime.
 RUN "$JAVA_HOME/bin/jlink" \
@@ -61,7 +61,7 @@ RUN /runtime/bin/java -XX:ArchiveClassesAtExit=/mockserver.jsa \
     kill -TERM "$SERVER_PID" && wait "$SERVER_PID" || true; \
     ls -l /mockserver.jsa
 
-# runtime image — distroless base + trimmed JDK 25 runtime + jar + AppCDS archive
+# runtime image — distroless base + trimmed JDK 26 runtime + jar + AppCDS archive
 # (digest-pinned per repo convention; update the digest together with the Temurin 25 build, since
 # the baked AppCDS archive is specific to the JDK build it was trained with — same base+digest as
 # docker/aot/Dockerfile)
@@ -93,6 +93,10 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}"
 # expose ports.
 EXPOSE 1080
 
+# NOTE: the /usr/lib/jvm/temurin25-trimmed path name is HISTORICAL and does NOT track the JDK
+# version - this image ships JDK 26. It is referenced by the ENTRYPOINT and HEALTHCHECK below
+# and by sibling Dockerfiles, so it is left as-is rather than churned; read the FROM line above
+# for the actual version.
 COPY --from=appcds-build /runtime /usr/lib/jvm/temurin25-trimmed
 COPY --from=appcds-build /mockserver-netty-jar-with-dependencies.jar /
 COPY --from=appcds-build /mockserver.jsa /

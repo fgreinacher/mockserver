@@ -1310,6 +1310,23 @@ this programme has hit repeatedly. So:
    for the container case? Both are only worth pursuing if step 1 says JVM start is the dominant
    term.
 
+**SHIPPED 2026-09-20 (`e342089d5`), and the arm64-only residual is now CLOSED.** The image lost
+**27.78 MiB (-17.0%)**, 163.25 -> 135.47 MiB compressed, by trimming `META-INF/native/` to the
+architecture the container can actually load and repacking the fat jar `zip -0` so the layer's gzip
+works on raw class bytes rather than on an already-compressed zip.
+
+The commit shipped with one stated caveat — only linux/arm64 had ever been built — and that caveat
+is now discharged rather than left standing. A linux/amd64 image was built under emulation and all
+seven checks passed: readiness 200; exactly the three x86_64 ELF libraries kept (`tcnative`,
+`quiche42`, `transport_native_epoll`) with every `.jnilib`, `.dll` and `aarch_64.so` gone; the log
+reporting `Netty epoll transport is available`; a BoringSSL probe returning
+`defaultServerProvider=OPENSSL`; AppCDS mapping under `-Xshare:on` with fatal-on-failure; HTTP/2 over
+ALPN returning `http_version=2`; and the build-time guard visibly trimming 9 entries and keeping 3.
+Compressed download on amd64 is **136.54 MiB**, within 0.8% of arm64, so the reduction is
+architecturally symmetric. **Every one of those checks is positive by design** — epoll silently
+degrading to NIO, TLS silently falling back to JDK SSL and AppCDS silently not mapping are the three
+failure modes here, and none of them announces itself.
+
 **Done when:** the decomposition exists for cold and warm nodes, each subsequent question is
 answered against it rather than in the abstract, and any recommendation reaches
 [docs/code/startup-performance.md](../code/startup-performance.md) and the consumer docs. **A
