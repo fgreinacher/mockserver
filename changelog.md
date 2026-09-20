@@ -6,41 +6,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release addresses a set of memory and throughput issues that compound under sustained load.
-Request and response bodies are no longer retained in their parsed form inside the event log — the
-log built an eager JSON tree roughly five times the size of the raw body for every logged request
-and held it for the life of the entry; measured across 20,000 retained entries, heap fell from
-429 MB to 61 MB. The event log now bounds itself honestly in bytes at both sites where it holds
-memory, and its weigher counts what an entry actually holds — the same budget now tracks real usage
-within a measured 2–3x instead of the 2.6–4.8x the body-only accounting produced, and the default budget is sized from that measurement rather than guessed. The request hot path shed the only material lock contention
-under sustained load: every event-log, correlation, stream and trace id is now generated from a
-contention-free source rather than the shared secure PRNG that serialised all worker event loops as
-request rate peaked. The container heap default is corrected from 75% to 60% of the container
-memory limit, because a committed heap needs roughly 1.5× in real memory and the old default did
-not fit, producing OOM-kills with no `OutOfMemoryError` in the logs.
+This release is the result of a sustained performance programme. Every figure below is measured, and
+the entries further down say what changed and why. Throughput is the headline, but the changes most
+likely to affect a test suite are the **silent failures under load** listed last — cases where
+MockServer could lose data and report nothing.
 
-Measured together on a saturation sweep against the same hardware and the same offered-load ladder,
-throughput no longer collapses past the knee. Where the server previously peaked and then fell away
-— 26,020, then 23,463, then 19,517 requests per second at 32,000, 48,000 and 64,000 offered — it now
-climbs to 28,533 and still holds 25,488 at the top of the ladder.
+**Throughput and latency**
 
-At a glance — each figure below is measured, and the individual entries further down say what
-changed and why:
+- **19,517 → 25,488 requests/sec** actually served when clients offer 64,000/sec. Past its limit the
+  server used to serve *less* as load rose — 26,020, then 23,463, then 19,517 at 32,000, 48,000 and
+  64,000 offered. It now climbs to 28,533 and still holds 25,488 at the top of the ladder.
+- **~114x faster** generation of internal ids at 32 threads. The shared secure PRNG behind every
+  event-log, correlation, stream and trace id was the only material lock contention on the request
+  path, serialising all worker event loops as request rate peaked.
+- **−37.9% allocation** when a JSON body does not match, at the default log level — a non-match is
+  now proven before a full diff is built.
+- **3,486 → 86 bytes per comparison** when recording why a match failed; diffs are built only if
+  something actually reads them.
+- One internal thread hand-off removed per regular-expression match, for any pattern provably free
+  of catastrophic backtracking.
 
-| What | Measured effect |
-|---|---|
-| Requests actually served when clients push 64,000/sec at it | **19,517 → 25,488 req/sec** — past its limit the server used to serve *less* as load rose; now it holds up |
-| Heap retained by the event log (20,000 logged entries) | **429 MB → 61 MB** — parsed copies of request/response bodies are no longer kept |
-| Generating internal ids under load (32 threads) | **~114x faster** — the shared secure PRNG was the only material lock contention on the request path |
-| Allocation when a JSON body does not match | **−37.9%** at the default log level — a non-match is now proven before a full diff is built |
-| Allocation when recording why a match failed | **3,486 → 86 bytes per comparison** — diffs are built only if something reads them |
-| Matching a regular expression | one internal thread hand-off removed per match, for any pattern provably free of catastrophic backtracking |
-| Memory across 32 JUnit-managed instances | **117 MB → 52 MB** — the JUnit rule and extension now default to dev-mode sizing |
-| Clustered expectations with a bounded `Times` | spurious refusals under concurrent load cut **roughly tenfold** — from ~32% to low single digits — at about a third of the coordination work |
-| Stopping a MockServer | **~107 ms → ~0 ms** each time — paid on every instance, so a suite creating one per test method spent roughly three quarters of its time here |
-| Docker image download | **~163 MB → ~135 MB (−17%)** — the dominant cost of a first deploy onto a Kubernetes node that has not cached the image |
-| Optional Linux-only build of the standalone JAR | **~13 MB smaller** than the default, for CI agents that start with an empty disk |
-| Kubernetes pod marked ready (Helm chart) | **~4 s → ~2.8 s** — the readiness probe's cadence, not the server, was the delay |
+**Memory**
+
+- **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
+  copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
+  life of the entry.
+- A long-lived keep-alive connection no longer leaks a tracking object **on every request it
+  carries**. A connection-pooling client, load balancer or browser made the heap grow in proportion
+  to the number of requests on that connection, ending in an `OutOfMemoryError`.
+- The event log now bounds itself honestly in bytes at both sites where it holds memory, and its
+  weigher counts what an entry actually holds: the budget tracks real usage within a measured
+  **2–3x**, instead of the 2.6–4.8x the body-only accounting produced. The default budget is sized
+  from that measurement rather than guessed.
+- Container heap default corrected from **75% to 60%** of the container memory limit. A committed
+  heap needs roughly 1.5x that in real memory, so the old default did not fit — producing OOM-kills
+  with no `OutOfMemoryError` in the logs.
+- **117 MB → 52 MB** across 32 JUnit-managed instances, now that the JUnit rule and extension
+  default to dev-mode sizing. This one is a behaviour change — see the entry below before upgrading.
+
+**Startup, size and deployment**
+
+- Stopping a MockServer is **~107 ms → ~0 ms** each time. It is paid per instance, so a suite
+  creating one per test method spent roughly three quarters of its time here.
+- Docker image download **~163 MB → ~135 MB (−17%)** — the dominant cost of a first deploy onto a
+  Kubernetes node that has not cached the image.
+- Optional Linux-only builds of the standalone JAR, **~13 MB smaller** than the default, for CI
+  agents that start with an empty disk. The default artifact is unchanged.
+- Kubernetes pod marked ready **~4 s → ~2.8 s** — the readiness probe's cadence, not the server,
+  was the delay.
+
+**Silent failures under load — nothing was reported when these happened**
+
+- Retrieving or verifying requests while under load could **discard entries from the request log**,
+  so a later `verify` failed to find a request that had genuinely been received. A paced writer that
+  lost tens of thousands of entries while a query ran now loses none.
+- Expectations added, removed or evicted during churn could be **silently dropped from, or left
+  stale in, the internal matching index** — so a request that should have matched returned no match,
+  or one that should no longer match still did.
+- A response still being sent when the server was stopped could **arrive truncated, or not at all**.
+- In a cluster, an expectation with a bounded `Times` could **stop matching well before its count
+  was used up**. Spurious refusals under concurrent load are cut roughly tenfold.
 
 ### Added
 - **Slimmer, optional builds of the standalone JAR for Linux CI and containers.** Alongside the
@@ -233,8 +258,10 @@ changed and why:
   used up. Under concurrent requests for the same expectation, the nodes competed to claim each
   remaining use and retried immediately on losing, so they kept colliding; after a bounded number of
   attempts a request was refused even though uses remained. Requests now wait a brief random moment
-  before retrying, which both removes almost all of those spurious refusals and lowers the work done
-  per match. A `Times` count is still never exceeded across the cluster. Only clustered deployments
+  before retrying, which cuts those spurious refusals roughly tenfold -- from about 32% of requests to
+  low single digits -- and does so at about a third of the coordination work per match, because
+  avoiding a collision saves a whole replicated round-trip rather than trading latency for
+  correctness. A `Times` count is still never exceeded across the cluster. Only clustered deployments
   with `clusterSharedTimesEnabled` (the default) were affected.
 - Expectations added, removed or evicted while the server was under load could be silently dropped
   from (or left stale in) the internal matching index, so a request that should have matched returned
