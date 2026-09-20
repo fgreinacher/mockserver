@@ -2360,7 +2360,60 @@ and `master`) — but it was not diagnosed, so nothing should be concluded from 
 direction. **Do not adopt the hybrid until the superseded-child mapping is actually observed**: if
 a skipped child reports as failed rather than neutral, every rebase turns master falsely red,
 which is worse than the saturation being fixed. Four `zz-scratch-trigger-semantics-*` pipelines
-are left in the org for that re-run and should be deleted once it is done.
+were deleted once the re-run completed.
+
+**Resolved empirically 2026-09-20 — one gate cleared, one failed, and the failure reshapes the
+fix.** The earlier `triggered_build: null` was scratch misconfiguration, but not the suspected
+default-branch mismatch: the scratch child routed to a non-existent queue, and in a clustered
+Buildkite org that makes **build creation itself** fail with `422 Queue ... does not exist`. Once
+the child used a real queue, native triggers created children normally.
+
+- **Q1 (superseded child) — SAFE, directly observed.** A child skipped by
+  `skip_intermediate_builds` reports on the parent's native trigger step as `skipped` with
+  `soft_failed = false`, NOT as `failed`. A rapid rebase or push therefore cannot turn master
+  falsely red, which was the dangerous outcome. This was the load-bearing gate and it clears.
+- **Q2 (bounded wait) — FAILED, and worse than "unbounded".** `timeout_in_minutes` is not merely
+  ignored on a `trigger` step, it is **rejected at config validation** (`422 ... is not a valid
+  property on the 'trigger' step`). The emitted steps currently carry `timeout_in_minutes: 120`,
+  so copying them verbatim onto native trigger steps would **fail the pipeline upload outright**.
+  The same is true of the `retry: { automatic: { exit_status: -1, limit: 2 } }` block they also
+  carry. Both must be dropped, not translated.
+
+Two further observations from the same run: a genuinely failed child **does** fail the parent under
+`async: false`, and cancelling a parent cancels its child.
+
+**What the two rejections actually cost is asymmetric.** Dropping `retry` is harmless and arguably
+correct — that block exists to survive **Spot reclamation of the agent running the script**, and a
+native trigger step has no agent to reclaim, so the hazard it guards against disappears with it.
+Dropping `timeout_in_minutes` is a real change to the failure contract: nothing on the parent side
+bounds the wait for a stuck child.
+
+**That risk is smaller than it first appears, and it is enumerable rather than a judgement call.**
+Child pipelines almost all bound their own steps, so a stuck child is normally cut short by its own
+timeouts and the parent's wait is transitively bounded. The exceptions are a short list of steps
+carrying no `timeout_in_minutes` of their own — in `pipeline-java.yml` (21 timeouts across ~22
+steps), `pipeline-maven-plugin.yml` (3/5), `pipeline-python.yml` (6/7), `pipeline-ruby.yml` (5/6)
+and `pipeline-ui.yml` (11/12). **Closing those gaps is a cheap prerequisite that makes the hybrid
+safe**, and is good hygiene regardless of whether the hybrid is ever adopted.
+
+**Prerequisite DONE 2026-09-20** (user approved the close-gaps-then-hybrid path). The gap was
+smaller than the file-level counts implied: only **six** agent-run steps across the whole
+`.buildkite/` tree carried no bound of their own — one `docker pull` in `pipeline-java.yml`, a
+`docker pull` plus a `junit-annotate` in `pipeline-maven-plugin.yml`, and a `junit-annotate` in
+each of `pipeline-python.yml`, `pipeline-ruby.yml` and `pipeline-ui.yml`. The rest of the apparent
+shortfall was `wait`/`block`/`group` entries, which take no timeout. All six now carry
+`timeout_in_minutes: 10`, every changed file still parses under a real YAML parser, and a re-scan
+finds no untimed agent-run step **in the pipeline YAML files**.
+
+**That is NOT full transitive bounding, and the first draft of this note overstated it.** Review
+found two agent-run stretches the scan could not see: the Terraform-defined bootstrap step every
+child pipeline runs (`buildkite-agent pipeline upload`, `pipelines.tf`) carries no timeout, and the
+agent's checkout/bootstrap phase is not a step and cannot carry one. There is also no agent-level
+`command_timeout` default. So a child wedged in either leaves the parent waiting indefinitely,
+where the command path capped it at two hours. Accepted rather than fixed, because a native trigger
+step holds no agent: the wait is a visible zombie build, not the queue saturation this change
+exists to remove. The per-step convention is now enforced by
+`check-pipeline-step-timeouts.sh` rather than left as a comment asking people to keep it.
 
 Raising `trigger_max_size` remains available and is genuinely cheap in dollars (the queue runs
 `t3.small`/`t3.micro`), but it needs a `terraform apply` the user must run, and it treats the

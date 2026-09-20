@@ -14,6 +14,7 @@ steps:
 
   - label: ":docker: update docker image"
     command: "docker pull mockserver/mockserver:maven"
+    timeout_in_minutes: 10
     retry:
       automatic:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)
@@ -42,6 +43,7 @@ steps:
           artifacts: "mockserver/mockserver-maven-plugin/**/TEST-*.xml"
           always-annotate: true
           fail-build-on-error: false
+    timeout_in_minutes: 10
 
   - label: ":s3: save maven cache"
     command: ".buildkite/scripts/cache-save.sh maven"

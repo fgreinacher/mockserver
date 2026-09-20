@@ -67,6 +67,7 @@ steps:
       - junit-annotate#8a549e5220869601737287b4d6a9293703dc5a6f:  # v2.7.0
           artifacts: "mockserver-client-ruby/test-reports/*.xml"
           always-annotate: true
+    timeout_in_minutes: 10
 
   - label: ":s3: save bundler cache"
     command: ".buildkite/scripts/cache-save.sh bundler"

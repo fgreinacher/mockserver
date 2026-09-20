@@ -41,6 +41,34 @@ fi
 
 STEPS=""
 
+# --- Native trigger vs command-step trigger (hybrid) -------------------------
+# A native Buildkite `trigger` step runs inside the Buildkite backend and
+# occupies NO agent. The alternative — a `command` step that runs
+# trigger-pipeline.sh — holds an agent for the child build's entire duration
+# (it polls in a loop), which saturates the small agent cap when several
+# dispatcher builds run at once. So we prefer the native step.
+#
+# BUT the native step is only safe for NON-PR (push) builds. A native trigger
+# step creates the child build as the *parent build's author*, inheriting that
+# author's Buildkite permissions. Bot-authored PRs (e.g. Dependabot) have no
+# Buildkite permissions, so a native trigger step fails SILENTLY for them —
+# the child build is simply never created and nothing turns red. The
+# command/script path avoids this because trigger-pipeline.sh authenticates
+# with the pipeline's own API token and passes the PR metadata explicitly.
+# This exact hybrid was adopted and reverted twice for this reason
+# (23c51bab8, 553784bf3); DO NOT "simplify" it into an unconditional native
+# trigger or you will silently break every bot PR again.
+#
+# BUILDKITE_PULL_REQUEST is the literal string "false" on push builds and the
+# PR number otherwise. We take the native path ONLY on an explicit "false"; a
+# PR number OR an unset/empty value both fall through to the safe command
+# path (the conservative direction — worst case is an agent held, never a
+# silently-skipped build).
+USE_NATIVE_TRIGGER=false
+if [ "${BUILDKITE_PULL_REQUEST:-}" = "false" ]; then
+  USE_NATIVE_TRIGGER=true
+fi
+
 # A server change alters the wire format every client library encodes against,
 # and test-fixtures/ is the shared parity corpus every client round-trips. Both
 # must run the client conformance suites, or wire drift ships with zero
@@ -58,7 +86,52 @@ fi
 emit_trigger() {
   local pipeline_slug="$1"
   local label="$2"
-  STEPS="${STEPS}  - label: \":pipeline: ${label}\"
+
+  if [ "$USE_NATIVE_TRIGGER" = "true" ]; then
+    # Native trigger step — occupies no agent.
+    #
+    # It MUST NOT carry `timeout_in_minutes` or `retry:`: both are rejected by
+    # Buildkite config validation on a `trigger` step (HTTP 422 "... is not a
+    # valid property on the 'trigger' step") and would fail the whole pipeline
+    # UPLOAD, not silently no-op. Dropping `retry` is also correct on its own —
+    # that block only guards the agent running the polling script against Spot
+    # reclamation, and a native trigger has no agent to reclaim.
+    #
+    # `async: false` (the default, set explicitly for clarity) makes a failed
+    # child fail this parent, and makes cancelling the parent cancel the child.
+    # A superseded child reports as `skipped` (neutral), which async:false does
+    # not treat as a failure.
+    #
+    # commit/branch/message are set explicitly to reproduce exactly what
+    # trigger-pipeline.sh sends (the parent build's values). The native-step
+    # defaults are NOT these — they are HEAD, the child pipeline's default
+    # branch, and the trigger step's label respectively. The non-PR path sends
+    # no env (trigger-pipeline.sh's ENV_VARS is {} for non-PR builds), so
+    # build.env is omitted. `ignore_pipeline_branch_filters` has no native-step
+    # equivalent and is unnecessary here: a push build's branch is master, which
+    # passes every child pipeline's branch filter.
+    #
+    # Each value is JSON-encoded with `jq -Rs .` so an arbitrary, multi-line
+    # commit message becomes a single valid YAML scalar (JSON strings are valid
+    # YAML flow scalars). Every `$` is then doubled so buildkite-agent's
+    # pre-upload variable interpolation renders it back to a single literal `$`
+    # (`$$` -> `$`) instead of expanding `$FOO` from the agent environment.
+    local commit branch message
+    commit=$(printf '%s' "${BUILDKITE_COMMIT:-}" | jq -Rs . | sed 's/\$/$$/g')
+    branch=$(printf '%s' "${BUILDKITE_BRANCH:-}" | jq -Rs . | sed 's/\$/$$/g')
+    message=$(printf '%s' "${BUILDKITE_MESSAGE:-}" | jq -Rs . | sed 's/\$/$$/g')
+    STEPS="${STEPS}  - label: \":pipeline: ${label}\"
+    trigger: \"${pipeline_slug}\"
+    async: false
+    build:
+      commit: ${commit}
+      branch: ${branch}
+      message: ${message}
+"
+  else
+    # PR (or unknown) build — keep the polling command step byte-for-byte so the
+    # PR auth and bot-PR handling in trigger-pipeline.sh is preserved.
+    STEPS="${STEPS}  - label: \":pipeline: ${label}\"
     command: \".buildkite/scripts/trigger-pipeline.sh ${pipeline_slug} '${label}'\"
     timeout_in_minutes: 120
     agents:
@@ -68,6 +141,7 @@ emit_trigger() {
         - exit_status: -1
           limit: 2
 "
+  fi
 }
 
 trigger_if_changed() {
@@ -135,16 +209,8 @@ trigger_if_changed "^docker_build/maven/" "mockserver-build-image" "MockServer B
 # that only weakens .claude/agents/review-final.md would trigger no pipeline at all.
 if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^(\.buildkite/|\.github/|terraform/|docker/|scripts/|helm/|docs/|examples/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml|AGENTS\.md|CLAUDE\.md|opencode\.jsonc|\.opencode/|\.claude/)"; then
   echo "--- :pipeline: Triggering MockServer Infra (infra changes)"
-  STEPS="${STEPS}  - label: \":pipeline: MockServer Infra\"
-    command: \".buildkite/scripts/trigger-pipeline.sh mockserver-infra 'MockServer Infra'\"
-    timeout_in_minutes: 120
-    agents:
-      queue: trigger
-    retry:
-      automatic:
-        - exit_status: -1
-          limit: 2
-"
+  # Same hybrid as every other trigger (native on push, command on PR).
+  emit_trigger "mockserver-infra" "MockServer Infra"
 fi
 
 # Runs on EVERY build, deliberately outside the path-filtered triggers above. The client version
@@ -188,6 +254,17 @@ ALWAYS_STEPS='  - label: ":package: validate client version pins"
           limit: 2
   - label: ":game_die: guard against new shared-RNG hot-path calls"
     command: ".buildkite/scripts/steps/check-shared-rng-hotpath.sh"
+    timeout_in_minutes: 5
+    agents:
+      queue: trigger
+    retry:
+      automatic:
+        - exit_status: -1   # agent lost (e.g. Spot reclamation)
+          limit: 2
+        - exit_status: 255  # agent forced shutdown
+          limit: 2
+  - label: ":hourglass: guard every child step declares a timeout"
+    command: ".buildkite/scripts/steps/check-pipeline-step-timeouts.sh"
     timeout_in_minutes: 5
     agents:
       queue: trigger

@@ -996,9 +996,22 @@ When multiple commits land on `master` in quick succession (e.g. from concurrent
 
 Cancel intermediate (running) builds is set to `!master` (disabled on master) on **every** pipeline because cancelling on master drops legitimate builds and shows misleading failures. This filter is now applied uniformly in Terraform (`terraform/buildkite-pipelines/pipelines.tf`). Previously several child pipelines (`mockserver-container-tests`, `mockserver-performance-test`, `mockserver-infra`, the per-client and release pipelines) had empty filters — so a fresh master commit cancelled the previous still-running build before it could report, which was especially disruptive for the long-running container-tests (~20m) and performance-test pipelines. The parent pipeline's trigger jobs still hold a (cheap, `trigger`-queue) agent while waiting on children.
 
-### Why Not Native Trigger Steps
+### Why Native Trigger Steps Are Used on Push Builds Only
 
-Buildkite's native `trigger` step type would solve this — it doesn't consume an agent. However, native triggers cannot be used because PR build authorisation requires the script-based approach (the trigger script passes PR metadata and handles auth that native triggers don't support).
+Buildkite's native `trigger` step type runs inside the Buildkite backend and consumes **no agent** (verified: the job records `type=trigger` with no agent assigned). `generate-pipeline.sh` therefore emits a **native trigger step on push (non-PR) builds** and keeps the polling `command` step running `trigger-pipeline.sh` **on PR builds**.
+
+**The PR path cannot use native triggers**, and this is not a style preference — it was adopted and reverted twice (`23c51bab8`, `553784bf3`). A native trigger step creates the child build as the *parent build's author*, inheriting that author's Buildkite permissions. Bot-authored PRs (Dependabot) have no Buildkite permissions, so the step fails **silently** — the child build is never created and nothing turns red. `trigger-pipeline.sh` sidesteps this by authenticating with the pipeline's own API token and passing the PR metadata (`pull_request_id`, base branch, repository) explicitly. Do not "simplify" the hybrid into an unconditional native trigger.
+
+**Two properties cannot be carried onto a native trigger step**, both rejected at config validation with HTTP 422 (they fail the pipeline *upload*, they do not silently no-op):
+
+| Property | Why its loss is acceptable on the native path |
+|---|---|
+| `retry: { automatic: { exit_status: -1 } }` | It guards the **agent** running the polling script against Spot reclamation. A native trigger has no agent to reclaim, so the hazard disappears with it. |
+| `timeout_in_minutes` | Nothing parent-side then bounds the wait for a stuck child. This is why **every agent-run step in the `.buildkite/pipeline-*.yml` files carries its own `timeout_in_minutes`** — a stuck child step is cut short by its own bound. Keep it that way: a new child step without a timeout silently widens the parent's wait, and `check-pipeline-step-timeouts.sh` fails the build when one appears. That guard matches step blocks textually against an explicit list of the keys a step may lead with — deliberately, since matching any `- ` list item would false-positive on plugin entries — so a step leading with some key outside that list would not be seen. Widen the list rather than loosening the match. |
+
+**The native path has no parent-side wall-clock backstop, and two stretches are genuinely unbounded.** The per-step timeouts above cover steps defined in the pipeline YAML; they do not cover the Terraform-defined bootstrap step every child runs (`buildkite-agent pipeline upload`, `terraform/buildkite-pipelines/pipelines.tf`, which carries no timeout), nor the agent's checkout/bootstrap phase, which is not a step and cannot carry one. A child wedged in either leaves the parent waiting indefinitely under `async: false`, where the old command path capped it at two hours. This is accepted as benign rather than fixed: a native trigger step **holds no agent**, so an indefinite wait does not consume the trigger-queue capacity this change exists to free — it is a visible zombie build, not a saturation event. On master, where intermediate builds are never cancelled, it persists until someone cancels it.
+
+Observed native-step behaviour that the hybrid relies on: a child superseded by `skip_intermediate_builds` reports as **`skipped`** (neutral), not `failed`, so a rapid rebase cannot turn the parent red; a genuinely failed child **does** fail the parent under `async: false`; and cancelling the parent cancels the child.
 
 ### Options Investigated
 

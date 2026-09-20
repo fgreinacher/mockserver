@@ -40,6 +40,7 @@ steps:
 
   - label: ":docker: update docker image"
     command: "docker pull mockserver/mockserver:maven"
+    timeout_in_minutes: 10
 
   - label: ":maven: build"
     # Wrapper runs the build, then collects failing-test artefacts + prints an
