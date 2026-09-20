@@ -246,3 +246,73 @@ h2-path warm-up fix, un-amortised first-traffic JVM warm-up inflated it to a spu
 > *marginal* cost beyond a ~100-stream-warm process. Likewise the in-process absolute figures are
 > whole-JVM (client + server) heap. Treat both absolutes as trend/order-of-magnitude signals; treat the
 > cross-version delta as the answer to "did per-connection memory change at 8.0.0?".
+
+## Connection-scaling ceiling (`run-connection-ceiling.sh`) — programme item 21
+
+How many concurrent established connections a MockServer holds before request latency degrades. k6
+allocates a virtual user per connection and is not built to park tens of thousands of idle ones, so
+this is the purpose-built holder the plan called for: it opens N connections, proves them established
+**on the server**, parks them idle, and measures latency on a **separate** connection. The parked
+connections generate no traffic — the axis under test is connection *state*, not offered load.
+
+```bash
+# one-time: install the server under test
+(cd .. && ./mvnw -pl mockserver-netty -am install -DskipTests)
+
+./run-connection-ceiling.sh calibrate   # what THIS box can hold, and which resource stops it
+./run-connection-ceiling.sh             # the ladder (CEILING_MODE=h1 by default, or tls)
+```
+
+### Measure the rig before the server
+
+The recurring failure this programme keeps finding is a number that turns out to describe the client.
+Two different client ceilings exist here and **they are not the same limit**, so `calibrate` reports
+which one it hit rather than just where it stopped:
+
+| Platform | JVM file-descriptor behaviour by default | with `-XX:-MaxFDLimit` |
+|---|---|---|
+| **macOS** | `min(hard, OPEN_MAX)` = **10,240**, however high `ulimit -n` reads (60,000 shell still yields 10,240) | the inherited soft limit, unchanged — so pair it with a raised `ulimit -n` |
+| **Linux** | raises the soft limit to the **hard** limit (measured 1,024 → 1,048,576) | **disables** that, leaving 1,024 |
+
+So the flag is **not** a portable "more descriptors" switch — it helps on macOS and hurts on Linux,
+and `run-connection-ceiling.sh` applies it only on Darwin for that reason. An un-flagged macOS run
+stops at ~9,977 connections and that is the JDK, not MockServer. The flag is needed on the **server**
+JVM too, or the server's own cap is the ceiling the harness "finds".
+
+With the clamp lifted the wall moves to ephemeral source ports: **15,511** connections measured on
+one destination port, **15,609** across four — a ratio of **1.01**, so on macOS the source-port range
+is global and giving the server more ports buys nothing. Closed sockets hold their port in
+`TIME_WAIT` for 2×MSL (30 s), so two adjacent rungs must both fit the range;
+`CEILING_TIMEWAIT_DRAIN_MS` defaults to 45 s. If the rig does run out, the rung is recorded
+`rig_valid:false` with `exhausted_by`, never as a latency.
+
+### Each rung is paired with its own baseline
+
+A rung's latency means nothing in isolation on a laptop, so every rung is preceded by a
+zero-connection sample and reported against **that** partner. One run-start baseline is not enough:
+measured that way the box drifted **35% faster** across a single ladder — larger than the effect
+being looked for, and monotonic, so every higher rung appeared to be an improvement. Pairing cancels
+drift slower than a pair; the first-to-last gap is still printed as a measure of how much the box
+moved.
+
+Both arms carry their own establishment proof. Client side: N distinct local ports. Server side: the
+event log recorded N requests — every parked connection completed a real request before going idle,
+so a socket that only finished a handshake fails the second proof. The TLS arm additionally asserts a
+non-null negotiated cipher, because MockServer detects TLS per connection: a driver that failed to
+install the handler would still get 200s over plaintext and report a full ladder for the wrong
+protocol.
+
+### Result (2026-09-20, Apple M3 Max, Zulu 21.0.3, server and driver in separate JVMs)
+
+**No measurable degradation up to the rig's limit, on either protocol.** Holding 12,000 idle
+keep-alive connections (`h1`) or 8,000 TLS connections, probe latency was indistinguishable from the
+same measurement with nothing held — every ratio inside the run-to-run spread of the baselines
+themselves, with all connections established, zero probe errors and ~97% client CPU headroom.
+
+> **The first run looked like a finding and was not.** It rose steadily across the top four rungs to
+> **1.14×** at 12,000 connections. An independent repeat gave 0.97 / 1.00 / 0.84 / 1.14 / 0.79 / 0.88 — no trend.
+> The apparent curve was noise the size of the effect. Quote a rung only if a repeat reproduces it.
+
+**Not established:** anything above ~15,500 connections, which is this driver's ephemeral-port
+ceiling and not MockServer's. Exceeding it needs more client *source addresses* — loopback aliases or
+more load-generator machines — not more server ports.

@@ -1213,6 +1213,56 @@ keep-alive, HTTP/2 and TLS (session state is the interesting axis). k6 is not su
 holding tens of thousands of idle connections; likely a purpose-built driver. Schedule after
 everything above.
 
+**MEASURED 2026-09-20 — no degradation found, and the whole interest is in what limited the
+measurement.** `ConnectionCeilingBenchmark` + `run-connection-ceiling.sh` (mockserver-benchmark)
+park N idle connections, prove them established on the server, and time requests on a separate
+connection. Apple M3 Max, Zulu 21.0.3, server and driver in separate JVMs.
+
+**Result: flat.** Holding **12,000** idle keep-alive connections (`h1`) or **8,000** TLS
+connections, probe latency was indistinguishable from the same measurement with nothing held —
+every ratio inside the run-to-run spread of the baselines, all connections established and
+server-confirmed, zero probe errors, ~97% client CPU headroom. The TLS figures come from a run with
+the negotiated-cipher assertion active, so that arm is known to have been TLS rather than assumed
+to be: MockServer detects TLS per connection, and a driver that failed to install the handler would
+have got 200s over plaintext and reported a full ladder for the wrong protocol.
+
+**The first ladder produced a finding that a repeat destroyed, and that is the part worth keeping.**
+Run 1 read 0.95 → 0.91 → 0.88 → 1.00 → 1.06 → **1.14** across the ladder — rising steadily across
+the top four rungs, which reads exactly like a gentle degradation curve setting in past ~2,000
+connections. The independent repeat read 0.97 / 1.00 / 0.84 / 1.14 / 0.79 / 0.88 — no trend at all.
+The effect was the same size as the noise: the zero-connection baselines in that same run ranged
+132-171 us, a spread of about ±13%, against a claimed effect of +14%. A four-point rise inside that
+spread is not rare enough to mean anything. Had the repeat not been run this item would have shipped
+a curve.
+
+**Two client ceilings, and the first is invisible — this is the transferable part.**
+
+| Platform | JVM descriptor limit by default | with `-XX:-MaxFDLimit` |
+|---|---|---|
+| macOS | `min(hard, OPEN_MAX)` = **10,240**, however high `ulimit -n` reads (a 60,000 shell still yields 10,240) | the inherited soft limit unchanged, so it must be **paired** with a raised `ulimit -n` |
+| Linux | raises the soft limit to the **hard** limit (measured 1,024 → 1,048,576) | **disables** that raise, leaving 1,024 |
+
+So the flag is not a portable "more descriptors" switch: it helps on macOS and **hurts** on Linux.
+The first ladder run here stopped at **9,977** connections and that was the JDK's cap, not
+MockServer — and it binds the *server* JVM identically, so a harness that flags only the driver
+measures the server's descriptor limit and calls it a connection ceiling.
+
+With the clamp lifted the wall moves to ephemeral source ports: **15,511** on one destination port,
+**15,609** across four — ratio **1.01**, so the source-port range is **global** on macOS and giving
+the server more ports buys nothing. That refuted the design assumption the harness started with.
+Linux defaults are more generous (32768-60999 = 28,232) and `tcp_tw_reuse` lets it recycle
+`TIME_WAIT` sockets, which macOS cannot.
+
+**Not established:** anything above ~15,500 connections, which is the driver's limit and not the
+server's. Exceeding it needs more client *source addresses* (loopback aliases, or more
+load-generator hosts), not more server ports. HTTP/2 is deliberately out of scope here — its
+connection axis is streams-per-connection, which item 11 measures on the memory axis; mixing them
+would confuse "connections held" with "streams held".
+
+**Consumer documentation shipped with this**, since these limits bite any user load-testing
+MockServer and the macOS one is silent: `performance.html` → *Concurrent connection limits are set
+by the OS and the JVM, not by MockServer*.
+
 #### 22. Startup for the instance-per-test pattern — **research, about a week**
 
 Requested 2026-09-20. Users create a MockServer per test method or per test class, sometimes many
