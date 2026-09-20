@@ -834,6 +834,11 @@ regression tests in `HTTP2MockingIntegrationTest`, `H2cMockingMatrixIntegrationT
 `CONNECT` proxy** are the cases that reproduce #2683 from a third-party client; direct h2 (`h2c` and
 TLS+ALPN) is the isolation control that stays green either way.
 
+This HTTP/2 testing convention is the worked example that generalises to every performance change in
+the codebase. The hazard-class table and full evidence standard are in
+[docs/code/optimisation-safety.md](optimisation-safety.md) — including how reference-counting changes
+must be evidenced, which is the hazard class the ByteBuf leak detection above exists to serve.
+
 ## WebSocket Proxy Passthrough
 
 MockServer can **proxy** a WebSocket connection through to a real upstream server, in addition to **mocking** one
