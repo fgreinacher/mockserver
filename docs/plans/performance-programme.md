@@ -2502,12 +2502,62 @@ stays small, so the cycle stays near 3 ms and a 1,000-test suite pays about 3 s 
 the **long-lived shared server**, where expectations accumulate: the same suite pays about 8 s at
 5,000 expectations, and both its cleanup and its mocked requests get slower together.
 
-*A candidate fix, not attempted here:* `clear` by a simple path could consult the candidate index
-instead of scanning, as matching already does. It needs care, because a clear's request definition
-can be a broader matcher than any single indexed key — and all three clears measured here were
-simple path clears, so a broader matcher may well behave differently and is unmeasured. **Fixing
-`clear` alone would not flatten the cycle**: it would remove 59% of the growth and leave the GET's
-37%, which is G1's O(n) matching cost and has to be addressed there.
+**Fixing `clear` alone would not flatten the cycle**: it would remove 59% of the growth and leave
+the GET's 37%, which is G1's O(n) matching cost and has to be addressed there.
+
+##### What a `clear` fast path can and cannot do (analysed 2026-09-20)
+
+Having `clear` consult the candidate index is **sound for some clear shapes and unsound for others**,
+and the boundary is not where it first appears. The failure mode for the unsound shapes is *silent
+under-removal* — expectations that should have been cleared quietly surviving, the same
+silent-state-loss shape as G1 — so the distinction is worth stating precisely.
+
+Current semantics, established by running them rather than read off the matcher code:
+
+| clear request | expectations present | removed |
+|---|---|---|
+| `{path: "/a1"}` | `/a1`, `/a2`, `/b1` (all literal, method GET) | `/a1` |
+| `{path: "/a.*"}` | same | **`/a1` and `/a2`** — a regex clear spans many literal buckets |
+| `{path: "/a2"}`, no method | same | `/a2` — a path-only clear matches method-bearing expectations |
+| `{path: "/a1"}` | `/a.*` (regex) and `/a1` | **both** — a literal clear also removes a regex expectation that covers it |
+
+The index buckets an expectation on `(method, path)` and only when **both** are plain literals
+(`CandidateIndex.bucketKeyFor`); everything else goes to a fallthrough list that is always part of the
+candidate set. Narrowing can therefore only ever *shrink* the set that gets the full
+`clearHttpRequestMatcher.matches(...)` check — so it can under-remove but never over-remove.
+
+**Sound: a clear carrying a literal method AND a literal path.** The candidate set is
+`bucket(method, path) ∪ fallthrough`; anything excluded sits in a *different* literal bucket and so
+fails the clear's own path criterion anyway. **Additional constraints on the clear — headers, query
+parameters, a body matcher — stay sound**, because they are applied by the full match check that
+still runs on each candidate, and they only make the clear more selective. Row 4 is covered too:
+regex expectations live in the fallthrough, which is always included. This shape is *not* rare —
+`clear(request().withMethod("GET").withPath("/api/thing"))` is an ordinary teardown.
+
+**Unsound: a path-only clear, and a regex-path clear.** For a path-only clear there is no usable
+bucket: `requestKeyFor` returns null when the method value is null, and where "no method" is instead
+carried as a blank string it composes a key with an empty method segment, which nothing is stored
+under because `bucketKeyFor` rejects blank components. Either way the candidate set collapses to the
+fallthrough — row 3 would silently stop working. For a regex-path clear, `requestKeyFor` does compose
+a key (it does **not** apply the literal test that `bucketKeyFor` applies, so `"GET\n/a.*"` is a
+perfectly good key) but nothing is ever stored under it, because regex paths are routed to the
+fallthrough — the lookup finds an empty bucket and row 2 breaks the same way.
+
+**The measured cost sits in the unsound half.** The G9 cycle above used path-only clears, so the 59%
+attributable to `clear` is exactly the shape a `(method, path)` fast path would not help. Covering it
+needs a **path-only index dimension** — new structure in the class where G1's silent expectation loss
+happened — and it must respect `matchExactCase`, since a case-insensitive literal clear has to match
+a literal expectation differing only in case.
+
+**Note the per-comparison cost is already low.** `RegexStringMatcher` short-circuits pure-ASCII
+literals in both directions, including the control-plane reverse match, so each of the n comparisons
+in the clear loop is already a string compare rather than a regex. The work to be saved is the
+**number** of comparisons, not their individual cost — which is why narrowing the candidate set, not
+making the check cheaper, is the lever.
+
+*Deliberately not attempted in the same pass as the measurement:* both the `(method, path)` fast path
+and the path-only dimension deserve their own unit with their own tests, rather than a tail-end
+change to a correctness-critical index.
 
 *Limits.* **The parallel-suite case the gap also named is not covered.** This models one suite
 thread, so it bounds the serial per-test pattern only; several suites sharing one server present
