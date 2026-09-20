@@ -10,10 +10,10 @@ import org.mockserver.model.Parameters;
 import org.mockserver.model.RequestDefinition;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
 
 import static org.mockserver.mock.SortableExpectationId.EXPECTATION_SORTABLE_PRIORITY_COMPARATOR;
@@ -54,82 +54,190 @@ import static org.mockserver.mock.SortableExpectationId.EXPECTATION_SORTABLE_PRI
  * global total order, so a higher-priority fallthrough expectation still wins over
  * a lower-priority bucketed one.
  *
- * <p><b>Generation-driven (lazy) maintenance.</b> The index is NOT maintained per
- * mutation site. Instead it is rebuilt lazily from the authoritative sorted snapshot
- * whenever the control plane's monotonic modification counter differs from the
- * generation the index was last built at — exactly mirroring the
- * {@code CircularPriorityQueue.sortedCache} invalidate-on-mutation / rebuild-on-read
- * pattern. This is correct for ALL mutation kinds, including update-in-place where a
- * matcher keeps its identity but its method/path (and therefore its bucket) change.
- * In steady state (no control-plane change between requests) zero rebuilds happen and
- * every request reuses the built buckets.
+ * <p><b>Incremental (per-mutation) maintenance — G1.</b> The index is maintained
+ * INCREMENTALLY: {@link #onAdded}/{@link #onRemoved} update one bucket in O(1) as each
+ * matcher enters or leaves the store. They are driven by a mutation listener the
+ * {@code RequestMatchers} wires onto the backing {@code CircularPriorityQueue}, so every
+ * structural mutation (add, remove, in-place update, priority re-key, overflow eviction,
+ * reset) is reflected without a full rebuild. A read NEVER rebuilds — it reads a small
+ * candidate set directly. This replaces the earlier generation-driven
+ * rebuild-on-read-after-any-mutation design, which under continuous churn (the serving
+ * path itself schedules lazy removal of {@code once()} / limited-{@code Times} matchers)
+ * forced every request to rebuild the whole index AND the full sorted list — O(n) per
+ * request and, being {@code synchronized}, serialising concurrent readers so it worsened
+ * with cores. The incremental index is flat under churn and touches no shared lock on the
+ * read path.
  *
- * <p><b>Correctness depends on every mutation site bumping the counter.</b> The lazy
- * rebuild is correct ONLY because every method that structurally changes
- * {@code httpRequestMatchers} (or a matcher's method/path) bumps the counter — a missed
- * bump on a re-bucketing update WOULD leave the matcher in its old bucket and return a
- * stale result. {@code RequestMatchersCandidateIndexGenerationTest} asserts each
- * CPQ-mutating control-plane operation increments the generation, so a future mutation
- * site that forgets the bump fails the build rather than silently regressing matching.
+ * <p><b>An in-place update that re-buckets is correct.</b> {@code RequestMatchers} performs
+ * an in-place update as {@code removePriorityKey(matcher)} (the matcher still holds its OLD
+ * method/path) then, after {@code matcher.update(newExpectation)}, {@code addPriorityKey(matcher)}
+ * (now the NEW method/path). The listener maps these to {@link #onRemoved} (removes the id from
+ * its OLD placement, looked up via the {@code locator} — never recomputed) then {@link #onAdded}
+ * (places the id into its NEW bucket). The id is invariant across the update, so the move is exact
+ * regardless of whether the bucket key changed.
  *
- * <p><b>Threading contract.</b> Mirrors {@code RequestMatchers}: control-plane
- * mutations are single-writer; reads ({@link #candidatesInGlobalOrder}) run on
- * data-plane threads and are eventually consistent. The rebuild path is
- * {@code synchronized} and publishes a wholly-built snapshot through a single
- * {@code volatile} reference, so a concurrent reader sees either the whole previous
- * index or the whole new one — never a torn view.
+ * <p><b>Case mode.</b> Bucket keys are folded with {@code toLowerCase(ROOT)} when matching is
+ * case-insensitive ({@code matchExactCase} off). The fold in force is fixed for the maintained
+ * index and stored on the published {@link State}. A read that observes a different case mode
+ * (a live {@code matchExactCase} change) triggers a one-off {@link #rebuild} from the
+ * authoritative sorted snapshot under the index monitor — rare, and it never spans the scan.
+ *
+ * <p><b>Threading contract.</b> Mirrors {@code RequestMatchers}: control-plane mutations are
+ * single-writer, and {@link #onAdded}/{@link #onRemoved}/{@link #rebuild} serialise on the index
+ * monitor so a data-plane {@link #rebuild} can never race a writer. Reads
+ * ({@link #candidatesInGlobalOrder}) run lock-free on data-plane threads over the published
+ * {@link State} (a {@code volatile} reference to concurrent maps) and are eventually consistent —
+ * a read concurrent with an in-flight mutation may not yet reflect it, exactly as the CPQ's
+ * {@code toSortedList()} snapshot is.
  */
 class CandidateIndex {
 
     private static final char METHOD_PATH_SEPARATOR = '\n';
 
     /**
-     * Immutable, wholly-built index snapshot. Published through a single volatile
-     * reference so data-plane readers never observe a partially-built index.
+     * Locator sentinel meaning "this id lives in the fallthrough, not a bucket". Contains no
+     * {@link #METHOD_PATH_SEPARATOR}, which every real {@code method\npath} bucket key always
+     * contains, so it can never collide with one.
      */
-    private static final class Snapshot {
-        final Map<String, List<HttpRequestMatcher>> buckets;
-        final List<HttpRequestMatcher> fallthrough;
-        final long generation;
+    // NOTE the escape. This sentinel is a NUL-prefixed string; it MUST be written as
+    // \u0000 and never as a raw NUL byte in the source. A raw NUL is invisible to grep,
+    // diff and code review -- it reads as absent -- so a corrupted or accidentally
+    // duplicated sentinel could not be seen by any of them.
+    private static final String FALLTHROUGH_KEY = "\u0000FALLTHROUGH";
+
+    /**
+     * Published index state. The maps are concurrent so data-plane readers iterate them
+     * lock-free while the single control-plane writer mutates them; the whole object is
+     * swapped atomically (through the {@code volatile snapshot} reference) only on a case-mode
+     * rebuild, so a read sees a wholly-consistent {@code (buckets, fallthrough, caseInsensitive)}
+     * triple.
+     */
+    private static final class State {
+        // bucketKey ("method\npath") -> (expectationId -> matcher). Inner maps are keyed by the
+        // (unique, invariant) expectation id so an in-place update overwrites in place and a
+        // bucket can legitimately hold several distinct expectations sharing one (method,path).
+        final ConcurrentMap<String, ConcurrentMap<String, HttpRequestMatcher>> buckets = new ConcurrentHashMap<>();
+        // expectationId -> matcher for every non-bucketable (fallthrough) expectation.
+        final ConcurrentMap<String, HttpRequestMatcher> fallthrough = new ConcurrentHashMap<>();
+        // expectationId -> where it is placed (a bucket key, or FALLTHROUGH_KEY). Lets onRemoved
+        // find the exact placement in O(1) WITHOUT recomputing the bucket key, so removal is
+        // robust even if the matcher's state changed between add and remove.
+        final ConcurrentMap<String, String> locator = new ConcurrentHashMap<>();
         final boolean caseInsensitive;
 
-        Snapshot(Map<String, List<HttpRequestMatcher>> buckets, List<HttpRequestMatcher> fallthrough, long generation, boolean caseInsensitive) {
-            this.buckets = buckets;
-            this.fallthrough = fallthrough;
-            this.generation = generation;
+        State(boolean caseInsensitive) {
             this.caseInsensitive = caseInsensitive;
         }
     }
 
-    // -1 generation forces a (re)build on first use.
-    private volatile Snapshot snapshot = new Snapshot(new HashMap<>(), new ArrayList<>(), -1L, true);
+    private volatile State snapshot;
+
+    CandidateIndex(boolean caseInsensitive) {
+        this.snapshot = new State(caseInsensitive);
+    }
+
+    // ---- incremental maintenance (control-plane, single-writer; serialised for the rare rebuild) ----
+
+    /**
+     * Records that {@code matcher} has entered the store (or re-entered it after an in-place
+     * update). Idempotent: any prior placement of the same id is removed first, so a re-add or a
+     * missed {@link #onRemoved} can never leave a duplicate.
+     */
+    synchronized void onAdded(HttpRequestMatcher matcher) {
+        String id = idOf(matcher);
+        if (id == null) {
+            return;
+        }
+        State state = snapshot;
+        placeIntoState(state, id, matcher);
+    }
+
+    /**
+     * Records that {@code matcher} has left the store. Uses the {@code locator} to remove the id
+     * from its exact placement in O(1); a no-op if the id was never indexed.
+     */
+    synchronized void onRemoved(HttpRequestMatcher matcher) {
+        String id = idOf(matcher);
+        if (id == null) {
+            return;
+        }
+        removeFromState(snapshot, id);
+    }
+
+    private static void placeIntoState(State state, String id, HttpRequestMatcher matcher) {
+        // Drop any previous placement of this id first (handles re-add / re-bucket robustly).
+        removeFromState(state, id);
+        String key = bucketKeyFor(matcher, state.caseInsensitive);
+        if (key == null) {
+            state.fallthrough.put(id, matcher);
+            state.locator.put(id, FALLTHROUGH_KEY);
+        } else {
+            state.buckets.computeIfAbsent(key, k -> new ConcurrentHashMap<>()).put(id, matcher);
+            state.locator.put(id, key);
+        }
+    }
+
+    private static void removeFromState(State state, String id) {
+        String key = state.locator.remove(id);
+        if (key == null) {
+            return;
+        }
+        if (FALLTHROUGH_KEY.equals(key)) {
+            state.fallthrough.remove(id);
+        } else {
+            ConcurrentMap<String, HttpRequestMatcher> bucket = state.buckets.get(key);
+            if (bucket != null) {
+                bucket.remove(id);
+                // Reclaim an emptied bucket so a long churn of DISTINCT (method,path) keys
+                // (e.g. many one-time expectations) cannot leak empty maps. Single-writer, so
+                // the value-guarded remove only prevents dropping a bucket already replaced.
+                if (bucket.isEmpty()) {
+                    state.buckets.remove(key, bucket);
+                }
+            }
+        }
+    }
+
+    private static String idOf(HttpRequestMatcher matcher) {
+        if (matcher == null || matcher.getExpectation() == null) {
+            return null;
+        }
+        return matcher.getExpectation().getId();
+    }
 
     /**
      * Returns the candidate matchers for the request in GLOBAL sorted order (the same
      * order {@code CircularPriorityQueue.toSortedList()} produces), so the first match
      * among them equals the first match of the full scan.
      *
-     * <p>If the index generation or case mode is stale relative to the supplied current
-     * generation/case mode, the index is rebuilt from the authoritative snapshot first.
+     * <p>The index is maintained incrementally, so a read normally performs NO rebuild and
+     * touches no shared lock. The only exception is a live {@code matchExactCase} change: if the
+     * supplied case mode differs from the maintained one the index is rebuilt once from the
+     * authoritative snapshot (rare — the config is effectively fixed at runtime).
      *
      * @param requestDefinition     the incoming request
-     * @param currentGeneration     the control plane's current modification counter
      * @param caseInsensitiveNow    whether case-folding applies now (matchExactCase off)
-     * @param authoritativeSnapshot supplier of the full sorted snapshot, used only when a
-     *                              rebuild is required (never evaluated when the index is fresh)
+     * @param authoritativeSnapshot supplier of the full sorted snapshot, used only for the
+     *                              non-ASCII case-insensitive fallback and a case-mode rebuild
+     *                              (never for a steady-state read)
      */
     List<HttpRequestMatcher> candidatesInGlobalOrder(
         RequestDefinition requestDefinition,
-        long currentGeneration,
         boolean caseInsensitiveNow,
         Supplier<List<HttpRequestMatcher>> authoritativeSnapshot
     ) {
-        Snapshot current = snapshot;
-        if (current.generation != currentGeneration || current.caseInsensitive != caseInsensitiveNow) {
-            current = rebuild(authoritativeSnapshot.get(), currentGeneration, caseInsensitiveNow);
+        State state = snapshot;
+        if (state.caseInsensitive != caseInsensitiveNow) {
+            // Pass the SUPPLIER, not its result. Evaluating it here would read the
+            // authoritative list on this (unsynchronised) reader thread BEFORE rebuild
+            // takes the monitor, so a concurrent onAdded could place a matcher into the
+            // state we are about to replace and be silently lost — permanently, because
+            // the incremental design has no generation re-check to self-heal it the way
+            // the previous rebuild-on-generation design did.
+            state = rebuild(authoritativeSnapshot, caseInsensitiveNow);
         }
 
-        List<HttpRequestMatcher> candidates = new ArrayList<>(current.fallthrough);
+        ConcurrentMap<String, HttpRequestMatcher> bucket = null;
         if (requestDefinition instanceof HttpRequest) {
             HttpRequest httpRequest = (HttpRequest) requestDefinition;
             // Case-insensitive bucketing folds the key with toLowerCase(ROOT), which is NOT
@@ -142,20 +250,37 @@ class CandidateIndex {
             // identical to the un-indexed path). Case-sensitive mode uses exact equality with no
             // fold, so a non-ASCII request can never exact-match a pure-ASCII bucketed literal and
             // narrowing stays sound.
-            if (current.caseInsensitive && requestHasNonAsciiMethodOrPath(httpRequest)) {
+            if (state.caseInsensitive && requestHasNonAsciiMethodOrPath(httpRequest)) {
                 return authoritativeSnapshot.get();
             }
-            String key = requestKeyFor(httpRequest, current.caseInsensitive);
+            String key = requestKeyFor(httpRequest, state.caseInsensitive);
             if (key != null) {
-                List<HttpRequestMatcher> bucket = current.buckets.get(key);
-                if (bucket != null) {
-                    candidates.addAll(bucket);
-                }
+                bucket = state.buckets.get(key);
             }
         }
         // A non-HTTP request (DNS/binary/OpenAPI) cannot match any bucketed (literal HTTP
         // method+path) expectation, so its candidate set is the fallthrough only — which
         // is correct: all such expectations are themselves in the fallthrough.
+
+        boolean hasFallthrough = !state.fallthrough.isEmpty();
+        boolean hasBucket = bucket != null && !bucket.isEmpty();
+        if (!hasFallthrough && !hasBucket) {
+            // No candidate matches this request — a full miss allocates nothing.
+            return java.util.Collections.emptyList();
+        }
+
+        // Common case (bucketable request, no fallthrough expectations): copy just the one small
+        // bucket. Only when fallthrough expectations exist do we union the two, so the read path
+        // allocates no more than the pre-existing "fallthrough copy + bucket addAll" did.
+        List<HttpRequestMatcher> candidates;
+        if (!hasFallthrough) {
+            candidates = new ArrayList<>(bucket.values());
+        } else {
+            candidates = new ArrayList<>(state.fallthrough.values());
+            if (hasBucket) {
+                candidates.addAll(bucket.values());
+            }
+        }
 
         if (candidates.size() > 1) {
             candidates.sort((a, b) -> EXPECTATION_SORTABLE_PRIORITY_COMPARATOR.compare(
@@ -166,32 +291,36 @@ class CandidateIndex {
     }
 
     /**
-     * Rebuilds the index from the authoritative sorted snapshot and publishes it. The
-     * double-check inside the lock avoids redundant concurrent rebuilds for the same
-     * generation. Returns the snapshot that is in effect after the call.
+     * Rebuilds the whole index from the authoritative sorted snapshot for a new case mode and
+     * publishes it. Serialised on the index monitor against {@link #onAdded}/{@link #onRemoved}
+     * so a data-plane rebuild can never lose a concurrent control-plane mutation. The
+     * double-check avoids a redundant rebuild when two readers race the same mode flip. Holds no
+     * lock that spans the matching scan.
      */
-    private synchronized Snapshot rebuild(List<HttpRequestMatcher> authoritative, long generation, boolean caseInsensitive) {
-        Snapshot current = snapshot;
-        if (current.generation == generation && current.caseInsensitive == caseInsensitive) {
-            // Another writer already rebuilt this exact generation.
+    private synchronized State rebuild(
+        Supplier<List<HttpRequestMatcher>> authoritativeSnapshot,
+        boolean caseInsensitive
+    ) {
+        State current = snapshot;
+        if (current.caseInsensitive == caseInsensitive) {
+            // Another reader already rebuilt for this case mode.
             return current;
         }
-        Map<String, List<HttpRequestMatcher>> buckets = new HashMap<>();
-        List<HttpRequestMatcher> fallthrough = new ArrayList<>();
+        // Read the authoritative list UNDER THIS MONITOR. onAdded/onRemoved serialise on
+        // the same monitor and complete their skipList mutation before their listener
+        // callback, so any mutation whose callback finished before we acquired the lock is
+        // already visible here, and any that has not yet acquired it will apply to the
+        // fresh state after we publish. Capturing outside the lock loses the former.
+        List<HttpRequestMatcher> authoritative = authoritativeSnapshot.get();
+        State fresh = new State(caseInsensitive);
         for (HttpRequestMatcher matcher : authoritative) {
-            if (matcher == null || matcher.getExpectation() == null) {
-                continue;
-            }
-            String key = bucketKeyFor(matcher, caseInsensitive);
-            if (key == null) {
-                fallthrough.add(matcher);
-            } else {
-                buckets.computeIfAbsent(key, k -> new ArrayList<>()).add(matcher);
+            String id = idOf(matcher);
+            if (id != null) {
+                placeIntoState(fresh, id, matcher);
             }
         }
-        Snapshot rebuilt = new Snapshot(buckets, fallthrough, generation, caseInsensitive);
-        this.snapshot = rebuilt;
-        return rebuilt;
+        this.snapshot = fresh;
+        return fresh;
     }
 
     private static SortableExpectationId sortableId(HttpRequestMatcher matcher) {

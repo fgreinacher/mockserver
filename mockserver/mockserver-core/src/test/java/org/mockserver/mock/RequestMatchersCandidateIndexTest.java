@@ -2,14 +2,21 @@ package org.mockserver.mock;
 
 import org.junit.Test;
 import org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry;
+import org.mockserver.configuration.Configuration;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.matchers.HttpRequestMatcher;
+import org.mockserver.matchers.MatcherBuilder;
 import org.mockserver.matchers.Times;
 import org.mockserver.matchers.TimeToLive;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.scheduler.Scheduler;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
@@ -41,8 +48,16 @@ import static org.mockserver.model.HttpResponse.response;
 public class RequestMatchersCandidateIndexTest {
 
     private RequestMatchers newMatchers(int threshold) {
+        return newMatchers(threshold, configuration().maxExpectations());
+    }
+
+    private RequestMatchers newMatchers(int threshold, int maxExpectations) {
+        return newMatchers(threshold, configuration().maxExpectations(maxExpectations));
+    }
+
+    private RequestMatchers newMatchers(int threshold, Configuration configuration) {
         return new RequestMatchers(
-            configuration(),
+            configuration,
             new MockServerLogger(),
             mock(Scheduler.class),
             mock(WebSocketClientRegistry.class)
@@ -207,6 +222,128 @@ public class RequestMatchersCandidateIndexTest {
         assertThat(matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/removable")), is(nullValue()));
         // unrelated bucket still served
         assertThat(matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/exact/path-1")).getHttpResponse().getBodyAsString(), is("e1"));
+    }
+
+    // ---------- mutation paths that had NO coverage (review of the G1 fix) ----------
+    //
+    // The incremental index is only correct if EVERY structural mutation reaches the
+    // listener. Three paths were unexercised, and the live case-mode flip was where a
+    // lost-update race actually hid — a path with no test could not have been caught by
+    // running anything, which is precisely why it needed one.
+
+    @Test
+    public void overflowEvictionLeavesNoStaleIndexEntry() {
+        // No state backend is wired here, so the node-local CircularPriorityQueue carries the
+        // bound and evicts on add -- which is the eviction path this test needs to exercise.
+        RequestMatchers matchers = newMatchers(4, 10);
+        // Overfill: the oldest are evicted by the queue, and the index must drop them too.
+        for (int i = 0; i < 30; i++) {
+            matchers.add(literal("GET", "/overflow/" + i, "e" + i), API);
+        }
+        // The earliest entries are gone from the store, so the index must not serve them.
+        assertThat(matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/overflow/0")), is(nullValue()));
+        // The most recent survive and are served through the index.
+        assertThat(
+            matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/overflow/29")).getHttpResponse().getBodyAsString(),
+            is("e29"));
+    }
+
+    @Test
+    public void resetClearsEveryIndexEntry() {
+        RequestMatchers matchers = newMatchers(4);
+        for (int i = 0; i < 40; i++) {
+            matchers.add(literal("GET", "/reset/" + i, "e" + i), API);
+        }
+        assertThat(matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/reset/7")), is(notNullValue()));
+
+        matchers.reset(API);
+
+        // Every bucket must be empty — a stale index would still serve one of these.
+        for (int i = 0; i < 40; i += 7) {
+            assertThat(matchers.firstMatchingExpectation(request().withMethod("GET").withPath("/reset/" + i)), is(nullValue()));
+        }
+    }
+
+    @Test
+    public void caseModeFlipDoesNotLoseAConcurrentAdd() throws Exception {
+        // THE REGRESSION TEST for the lost-update race: the case-mode rebuild used to read
+        // the authoritative list OUTSIDE its own monitor, so an onAdded landing in that
+        // window was placed into the state being replaced and vanished permanently — the
+        // incremental design has no generation re-check to self-heal it.
+        //
+        // Driven DIRECTLY against CandidateIndex (package-private, same package) so the
+        // authoritative-snapshot Supplier is under test control. That turns the real
+        // thread race — which caught the degraded code only ~2 runs in 3 — into a
+        // controlled interleaving that is deterministic in BOTH directions: the writer's
+        // onAdded and rebuild's authoritative read are ordered by the SHARED index monitor,
+        // and whether the read happens under that monitor is exactly the invariant on trial.
+        MatcherBuilder matcherBuilder = new MatcherBuilder(configuration(), new MockServerLogger());
+
+        // Maintain the index case-INsensitive; the read below flips to case-sensitive so
+        // the case-mode rebuild branch is taken.
+        CandidateIndex index = new CandidateIndex(true);
+        List<HttpRequestMatcher> authoritative = Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < 8; i++) {
+            HttpRequestMatcher seed = matcherBuilder.transformsToMatcher(literal("GET", "/seed/" + i, "s" + i));
+            index.onAdded(seed);
+            authoritative.add(seed);
+        }
+        HttpRequestMatcher raced = matcherBuilder.transformsToMatcher(literal("GET", "/raced", "raced"));
+
+        CountDownLatch writerMayAdd = new CountDownLatch(1);
+        CountDownLatch writerDone = new CountDownLatch(1);
+        Thread writer = new Thread(() -> {
+            try {
+                writerMayAdd.await();
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            // The concurrent control-plane add that must survive the rebuild. onAdded is
+            // synchronized on the index monitor, so under the fix it BLOCKS here until
+            // rebuild (holding that monitor while it reads the snapshot) has published.
+            authoritative.add(raced);
+            index.onAdded(raced);
+            writerDone.countDown();
+        });
+        writer.start();
+
+        Supplier<List<HttpRequestMatcher>> authoritativeSnapshot = () -> {
+            // Snapshot BEFORE releasing the writer, so the returned list is stale by
+            // construction (never contains raced). The correctness of the rebuild rests
+            // entirely on WHEN this runs relative to the monitor.
+            List<HttpRequestMatcher> stale = new ArrayList<>(authoritative);
+            writerMayAdd.countDown();
+            try {
+                // SHORT, bounded wait — this is the PASSING path, so it must not stall the
+                // suite. Fixed code: this supplier runs INSIDE the monitor, the writer's
+                // onAdded is blocked on it, writerDone never fires, so this expires and we
+                // return the stale snapshot; the blocked add then applies to the freshly
+                // published state -> raced PRESENT. Degraded code: this ran OUTSIDE the
+                // monitor, the writer's onAdded already completed into the state about to be
+                // replaced, writerDone fires at once -> rebuild overwrites it -> raced LOST.
+                writerDone.await(300, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+            }
+            return stale;
+        };
+
+        // Flip the case mode (index is case-insensitive) so this read takes the rebuild
+        // branch, passing the Supplier itself so the authoritative read is what races.
+        index.candidatesInGlobalOrder(request().withMethod("GET").withPath("/seed/1"), false, authoritativeSnapshot);
+
+        // Let the (possibly monitor-blocked) writer finish applying its add before asserting.
+        writer.join(5000);
+
+        // The raced add must still be servable from the rebuilt index. Same case mode now
+        // (false), so this read performs no further rebuild and the supplier is unused.
+        List<HttpRequestMatcher> candidates = index.candidatesInGlobalOrder(
+            request().withMethod("GET").withPath("/raced"), false, () -> new ArrayList<>(authoritative));
+        assertThat(
+            "an onAdded racing a case-mode rebuild was lost from the index",
+            candidates.contains(raced),
+            is(true));
     }
 
     // ---------- below-threshold path is the untouched scan ----------

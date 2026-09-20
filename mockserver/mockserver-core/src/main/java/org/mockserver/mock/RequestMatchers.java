@@ -116,14 +116,17 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     // (byte-for-byte, zero added per-request cost); above it the scan is narrowed to
     // the request's (method, exact-path) bucket plus an always-checked fallthrough
     // list, evaluated in the SAME global sorted order. See CandidateIndex.
-    private final CandidateIndex candidateIndex = new CandidateIndex();
-    // Monotonic control-plane modification counter. Incremented on every structural
-    // mutation of httpRequestMatchers (add / remove / update-in-place / reconcile /
-    // eviction / reset). The CandidateIndex is rebuilt lazily whenever its built
-    // generation differs from this counter — the same invalidate-on-mutation /
-    // rebuild-on-read contract CircularPriorityQueue.sortedCache uses, so it is
-    // correct for ALL mutation kinds (including update-in-place, where a matcher
-    // keeps identity but its method/path bucket changes) without per-site hooks.
+    // Assigned in the constructor (needs the configuration's case mode) and maintained
+    // INCREMENTALLY: a mutation listener on httpRequestMatchers forwards every add/remove
+    // (including in-place-update re-keys and overflow eviction) to the index in O(1), so a
+    // request NEVER rebuilds it. See CandidateIndex (G1).
+    private final CandidateIndex candidateIndex;
+    // Monotonic control-plane modification counter. Incremented on every structural mutation of
+    // httpRequestMatchers (add / remove / update-in-place / reconcile / eviction / reset). The
+    // CandidateIndex no longer depends on it (it is maintained incrementally via the CPQ mutation
+    // listener); it is retained as a cheap change signal and is asserted by
+    // RequestMatchersCandidateIndexGenerationTest, which guards that every control-plane mutation
+    // site remains instrumented (a proxy for "the store was structurally changed").
     private final java.util.concurrent.atomic.AtomicLong matchersModificationCount = new java.util.concurrent.atomic.AtomicLong(0);
     // The match fields a plain HTTP request can actually exercise. Used as the
     // denominator of the closest-expectation "matched X/Y fields" diagnostic so
@@ -224,6 +227,21 @@ public class RequestMatchers extends MockServerMatcherNotifier {
             httpRequestMatcher -> httpRequestMatcher.getExpectation() != null ? httpRequestMatcher.getExpectation().getSortableId() : NULL,
             httpRequestMatcher -> httpRequestMatcher.getExpectation() != null ? httpRequestMatcher.getExpectation().getId() : ""
         );
+        // Candidate index maintained incrementally off the CPQ's structural mutations (G1). The
+        // fold used for bucket keys must match the read-time case mode; a live matchExactCase
+        // change is handled by a one-off rebuild inside candidatesInGlobalOrder.
+        this.candidateIndex = new CandidateIndex(!configuration.matchExactCase());
+        httpRequestMatchers.setMutationListener(new CircularPriorityQueue.MutationListener<HttpRequestMatcher>() {
+            @Override
+            public void onAdd(HttpRequestMatcher element) {
+                candidateIndex.onAdded(element);
+            }
+
+            @Override
+            public void onRemove(HttpRequestMatcher element) {
+                candidateIndex.onRemoved(element);
+            }
+        });
         expectationRequestDefinitions = new CircularHashMap<>(configuration.maxExpectations());
         if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
             mockServerLogger.logEvent(
@@ -631,9 +649,12 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     /**
      * Signals that the node-local httpRequestMatchers store changed structurally
      * (an add, remove, update-in-place, reconcile, eviction or reset). Bumps the
-     * monotonic modification counter so the {@link CandidateIndex} rebuilds lazily on
-     * the next above-threshold match. Cheap (a single atomic increment) and only ever
-     * called on the control plane, never on the match hot path.
+     * monotonic modification counter. The {@link CandidateIndex} is now maintained
+     * incrementally via the CPQ mutation listener and does NOT consult this counter;
+     * it is retained as a cheap change signal and as the subject of the
+     * {@code RequestMatchersCandidateIndexGenerationTest} guard, which asserts every
+     * mutation site remains instrumented. Cheap (a single atomic increment) and only
+     * ever called on the control plane, never on the match hot path.
      */
     private void markMatchersModified() {
         matchersModificationCount.incrementAndGet();
@@ -734,7 +755,6 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         final List<HttpRequestMatcher> scanList = useCandidateIndex
             ? candidateIndex.candidatesInGlobalOrder(
                 requestDefinition,
-                matchersModificationCount.get(),
                 !configuration.matchExactCase(),
                 httpRequestMatchers::toSortedList)
             : httpRequestMatchers.toSortedList();

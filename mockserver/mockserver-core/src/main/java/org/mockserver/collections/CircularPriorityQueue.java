@@ -66,6 +66,41 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     // otherwise leak for overflow-evicted keys.
     private volatile Consumer<V> evictionListener = element -> {
     };
+    // Invoked for every structural mutation so a derived index (e.g. RequestMatchers'
+    // CandidateIndex) can be maintained INCREMENTALLY instead of rebuilt on read. Fired
+    // under the single-writer contract from add / remove / addPriorityKey / removePriorityKey /
+    // replaceValue and overflow eviction, so the derived index sees exactly the same element
+    // add/remove events the queue applies. Default is a no-op so existing users are unaffected.
+    private volatile MutationListener<V> mutationListener = noOpMutationListener();
+
+    @SuppressWarnings("unchecked")
+    private static <V> MutationListener<V> noOpMutationListener() {
+        return (MutationListener<V>) NO_OP_MUTATION_LISTENER;
+    }
+
+    /**
+     * Listener notified of every structural add/remove so a derived structure can be maintained
+     * incrementally. {@link #onAdd(Object)} fires when an element enters (or re-enters, on an
+     * {@link #addPriorityKey(Object)} priority re-key or a {@link #replaceValue(Object, Object)});
+     * {@link #onRemove(Object)} fires when it leaves (an explicit remove, a
+     * {@link #removePriorityKey(Object)}, an overflow eviction or the old value of a replace).
+     * Fired under the single-writer contract; implementations must be cheap and non-blocking.
+     */
+    public interface MutationListener<V> {
+        void onAdd(V element);
+
+        void onRemove(V element);
+    }
+
+    private static final MutationListener<Object> NO_OP_MUTATION_LISTENER = new MutationListener<Object>() {
+        @Override
+        public void onAdd(Object element) {
+        }
+
+        @Override
+        public void onRemove(Object element) {
+        }
+    };
 
     public CircularPriorityQueue(int maxSize, Comparator<? super SLK> skipListComparator, Function<V, SLK> skipListKeyFunction, Function<V, K> mapKeyFunction) {
         sortOrderSkipList = new ConcurrentSkipListSet<>(skipListComparator);
@@ -86,6 +121,18 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     public void setEvictionListener(Consumer<V> evictionListener) {
         this.evictionListener = evictionListener != null ? evictionListener : element -> {
         };
+    }
+
+    /**
+     * Registers a listener notified of every structural add/remove so a derived structure (e.g.
+     * a candidate index) can be maintained incrementally rather than rebuilt on read. Fired under
+     * the single-writer contract from every mutating method (including overflow eviction); the
+     * listener must be cheap and non-blocking. Passing {@code null} restores the no-op default.
+     *
+     * @param mutationListener the listener, or {@code null} to restore the no-op default
+     */
+    public void setMutationListener(MutationListener<V> mutationListener) {
+        this.mutationListener = mutationListener != null ? mutationListener : noOpMutationListener();
     }
 
     /**
@@ -130,6 +177,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             V elementToRemove = byKey.remove(keyToRemove);
             if (elementToRemove != null) {
                 sortOrderSkipList.remove(skipListKeyFunction.apply(elementToRemove));
+                mutationListener.onRemove(elementToRemove);
                 evictionListener.accept(elementToRemove);
             }
         }
@@ -137,11 +185,16 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
 
     public void removePriorityKey(V element) {
         sortOrderSkipList.remove(skipListKeyFunction.apply(element));
+        // An in-place update is removePriorityKey(matcher-with-OLD-fields) then, after the
+        // element is mutated, addPriorityKey(matcher-with-NEW-fields). Firing onRemove here lets a
+        // derived index drop the element from its OLD placement before it is re-added below.
+        mutationListener.onRemove(element);
         sortedCache = null;
     }
 
     public void addPriorityKey(V element) {
         sortOrderSkipList.add(skipListKeyFunction.apply(element));
+        mutationListener.onAdd(element);
         sortedCache = null;
     }
 
@@ -155,6 +208,9 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             sortOrderSkipList.add(skipListKeyFunction.apply(element));
             insertionOrderQueue.offer(key);
             queueSize.incrementAndGet();
+            // Notify BEFORE evictExcess so the add is reflected first and any resulting overflow
+            // eviction (which fires its own onRemove) is applied on top, matching real order.
+            mutationListener.onAdd(element);
             evictExcess();
             sortedCache = null;
         }
@@ -182,6 +238,8 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
         // Update priority sort: remove old, add new
         sortOrderSkipList.remove(skipListKeyFunction.apply(existing));
         sortOrderSkipList.add(skipListKeyFunction.apply(newValue));
+        mutationListener.onRemove(existing);
+        mutationListener.onAdd(newValue);
         sortedCache = null;
         return true;
     }
@@ -194,6 +252,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             }
             byKey.remove(key);
             boolean removed = sortOrderSkipList.remove(skipListKeyFunction.apply(element));
+            mutationListener.onRemove(element);
             sortedCache = null;
             return removed;
         } else {

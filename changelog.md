@@ -145,6 +145,12 @@ climbs to 28,533 and still holds 25,488 at the top of the ladder.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- Expectations added, removed or evicted while the server was under load could be silently dropped
+  from (or left stale in) the internal matching index, so a request that should have matched returned
+  no match -- or one that should no longer match still did. This only affected servers holding enough
+  expectations to engage the index, and only around concurrent changes to the expectation set. The
+  index is now rebuilt under the same lock that guards those changes, so a change landing during a
+  rebuild can no longer be lost.
 - A long-lived keep-alive connection no longer leaks a small amount of memory on every request it
   carries. Each request left behind an internal graceful-shutdown tracking object that was only
   released when the **connection** closed, not when the request finished -- so a client that reuses one
