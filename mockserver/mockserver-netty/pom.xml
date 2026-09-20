@@ -471,6 +471,76 @@
                             </arguments>
                         </configuration>
                     </execution>
+
+                    <execution>
+
+                        <!-- Fail the build if a slim jar lost its natives. maven-assembly does NOT fail when an
+
+                             <include> matches nothing, so a future netty rename would silently ship a slim jar
+
+                             with no native libraries: it would build, install and start, while epoll fell back
+
+                             to NIO and tcnative to JDK SSL. docker/Dockerfile's jarprep guards its equivalent
+
+                             trim the same way; this keeps the published artifacts from drifting from it. -->
+
+                        <id>assert-slim-jar-natives-x86_64</id>
+
+                        <phase>verify</phase>
+
+                        <goals>
+
+                            <goal>exec</goal>
+
+                        </goals>
+
+                        <configuration>
+
+                            <workingDirectory>${basedir}</workingDirectory>
+
+                            <executable>../mockserver-netty-no-dependencies/src/packaging/assert-slim-jar-natives.sh</executable>
+
+                            <arguments>
+
+                                <argument>${project.build.directory}/${project.build.finalName}-jar-with-dependencies-linux-x86_64.jar</argument>
+
+                                <argument>x86_64</argument>
+
+                            </arguments>
+
+                        </configuration>
+
+                    </execution>
+
+                    <execution>
+
+                        <id>assert-slim-jar-natives-aarch_64</id>
+
+                        <phase>verify</phase>
+
+                        <goals>
+
+                            <goal>exec</goal>
+
+                        </goals>
+
+                        <configuration>
+
+                            <workingDirectory>${basedir}</workingDirectory>
+
+                            <executable>../mockserver-netty-no-dependencies/src/packaging/assert-slim-jar-natives.sh</executable>
+
+                            <arguments>
+
+                                <argument>${project.build.directory}/${project.build.finalName}-jar-with-dependencies-linux-aarch_64.jar</argument>
+
+                                <argument>aarch_64</argument>
+
+                            </arguments>
+
+                        </configuration>
+
+                    </execution>
                 </executions>
             </plugin>
             <!-- make jar executable -->
@@ -502,6 +572,20 @@
                     </archive>
                     <descriptors>
                         <descriptor>src/main/assembly/jar-with-dependencies/jar-with-dependencies.xml</descriptor>
+                        <!-- Additive, single-platform slim variants of the fat jar. They are
+                             attached ALONGSIDE the default jar-with-dependencies artifact above
+                             (which stays byte-for-byte unchanged); each keeps only one Linux arch's
+                             netty ELF .so, which removes ~13.2 MiB per jar. (The ~18 MiB figure quoted
+                             elsewhere is the foreign-native cost across a consumer's WHOLE
+                             162-jar resolution, not this one artifact.) Scope was narrowed
+                             deliberately to the two Linux arches (the empty-disk case) - macOS and
+                             Windows are not built here because those developers pull into a warm
+                             local ~/.m2 once. Each extra artifact must additionally be GPG-signed,
+                             staged, published and verified every release. See each descriptor's
+                             header for the filter rationale (kept in sync with docker/Dockerfile's
+                             jarprep stage). -->
+                        <descriptor>src/main/assembly/jar-with-dependencies-linux-x86_64/jar-with-dependencies-linux-x86_64.xml</descriptor>
+                        <descriptor>src/main/assembly/jar-with-dependencies-linux-aarch_64/jar-with-dependencies-linux-aarch_64.xml</descriptor>
                         <descriptor>src/main/assembly/brew-tar/brew-tar.xml</descriptor>
                     </descriptors>
                 </configuration>

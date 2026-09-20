@@ -39,6 +39,15 @@ changed and why:
 | Clustered expectations with a bounded `Times` | spurious refusals under concurrent load cut **roughly tenfold** — from ~32% to low single digits — at about a third of the coordination work |
 
 ### Added
+- **Slimmer, optional builds of the standalone JAR for Linux CI and containers.** Alongside the
+  usual `mockserver-netty-<version>-jar-with-dependencies.jar`, two new variants are published:
+  `-jar-with-dependencies-linux-x86_64.jar` and `-jar-with-dependencies-linux-aarch_64.jar`. Each is
+  about 13 MB smaller because it carries only the native libraries its own architecture can load,
+  instead of the macOS, Windows and other-architecture binaries the default must include. Useful on
+  build agents that start with an empty disk or pull through a remote cache. **The default artifact
+  is unchanged** -- if your team shares one Maven or Gradle configuration across macOS laptops and
+  Linux CI, keep using it and nothing changes.
+
 - The default byte budget above was **derived from measurement, not chosen.** Its divisors were first
   set while the weigher still counted only raw body bytes, and were not revisited when the weigher was
   corrected mid-development — so they were re-derived against live-heap measurements before release.

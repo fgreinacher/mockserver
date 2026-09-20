@@ -1,0 +1,79 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<assembly xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xmlns="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2"
+          xsi:schemaLocation="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2 http://maven.apache.org/xsd/assembly-1.1.2.xsd">
+    <!-- Slim, single-platform variant of jar-with-dependencies for linux-x86_64.
+
+         This is ADDITIVE: it is attached alongside (never in place of) the default
+         mockserver-netty-<version>-jar-with-dependencies.jar, which stays byte-for-byte
+         unchanged. Consumers that share one Maven/Gradle configuration across mixed
+         developer laptops (macOS/Windows) and Linux CI must keep using the default all-
+         platforms jar; this classified artifact is opt-in for the empty-disk case
+         (containers, cold CI agents) where ~18 MiB of foreign-platform natives is pure
+         download cost.
+
+         The fat jar bundles netty native binaries for EVERY platform under
+         META-INF/native/: linux, macOS and windows, each in x86_64 + aarch_64. A
+         linux-x86_64 process can only load its own arch's ELF .so - the macOS blobs are
+         Mach-O (.jnilib) and the Windows ones are PE (.dll), object formats an ELF loader
+         physically cannot map, and the wrong-arch linux .so is just as unusable.
+
+         FILTER SHAPE - this matches docker/Dockerfile's `jarprep` stage exactly. The KEEP
+         rule is the "*<arch>.so" SUFFIX, expressed here as: exclude the whole
+         META-INF/native/ tree in the two unpack sets, then add back ONLY this arch's
+         "*x86_64.so" in the third set. The suffix form is deliberate and must not be
+         narrowed to a "linux_<arch>" match: this arch's linux natives are THREE
+         differently-named files -
+             libnetty_tcnative_linux_x86_64.so
+             libnetty_quiche42_linux_x86_64.so
+             libnetty_transport_native_epoll_x86_64.so   <- note: NO "linux_" in the name
+         so a "linux_<arch>" filter would silently drop the epoll .so and degrade epoll to
+         NIO with no error. The "*x86_64.so" suffix keeps all three ELF .so and drops every
+         .jnilib / .dll / wrong-arch entry (the osx "*_x86_64.jnilib" contain the arch
+         string but are Mach-O, and are correctly excluded because the third set only adds
+         back ".so"). NEVER narrow this so it could remove this arch's epoll, tcnative or
+         quiche .so. -->
+    <id>jar-with-dependencies-linux-x86_64</id>
+    <formats>
+        <format>jar</format>
+    </formats>
+    <includeBaseDirectory>false</includeBaseDirectory>
+    <dependencySets>
+        <!-- all non-native content (identical to the default jar), provided scope -->
+        <dependencySet>
+            <outputDirectory>/</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <unpack>true</unpack>
+            <scope>provided</scope>
+            <unpackOptions>
+                <excludes>
+                    <exclude>META-INF/native/**</exclude>
+                </excludes>
+            </unpackOptions>
+        </dependencySet>
+        <!-- all non-native content (identical to the default jar), runtime scope -->
+        <dependencySet>
+            <outputDirectory>/</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <unpack>true</unpack>
+            <scope>runtime</scope>
+            <unpackOptions>
+                <excludes>
+                    <exclude>META-INF/native/**</exclude>
+                </excludes>
+            </unpackOptions>
+        </dependencySet>
+        <!-- add back ONLY this platform's linux ELF natives (suffix keep, see header) -->
+        <dependencySet>
+            <outputDirectory>/</outputDirectory>
+            <useProjectArtifact>true</useProjectArtifact>
+            <unpack>true</unpack>
+            <scope>runtime</scope>
+            <unpackOptions>
+                <includes>
+                    <include>META-INF/native/*x86_64.so</include>
+                </includes>
+            </unpackOptions>
+        </dependencySet>
+    </dependencySets>
+</assembly>
