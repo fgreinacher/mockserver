@@ -74,6 +74,13 @@
 
 <p>If MockServer appears to freeze, hang, or become progressively slower under sustained load, the most likely cause is <strong>memory pressure</strong> from log entry accumulation. This section explains why it happens and how to fix it.</p>
 
+<p><strong>If instead connections are being refused or failing to open, this is not the section you want.</strong> Two errors in particular are operating-system limits rather than MockServer, and neither is fixed by any MockServer setting:</p>
+<ul>
+    <li><span class="inline_code">Too many open files</span>, or Netty's <span class="inline_code">ChannelException: Unable to create Channel</span> &mdash; the process has run out of file descriptors, one of which every connection needs. <strong>On macOS the JVM caps this at 10,240 however high you set <span class="inline_code">ulimit -n</span></strong>, and the fix differs between macOS and Linux.</li>
+    <li><span class="inline_code">Can't assign requested address</span> / <span class="inline_code">BindException</span> &mdash; the <em>client</em> machine has run out of ephemeral source ports. This one is never the server.</li>
+</ul>
+<p>See <a href="/mock_server/performance.html#connection_limits">Concurrent connection limits are set by the OS and the JVM</a> for the cause of each and what to change.</p>
+
 <h3>Why Does MockServer Slow Down?</h3>
 
 <p>Every HTTP request that MockServer processes generates 2-3 log entries that are stored in memory regardless of the configured log level. These entries record the received request, expectation match result, and response &mdash; they are always stored to support request verification. Each log entry consumes approximately 4-10 KB of heap for small request/response bodies, scaling proportionally for larger bodies. Under sustained high-throughput load, log entry allocation drives significant GC pressure:</p>

@@ -222,6 +222,82 @@ schema_faq:
 <h2>Tuning for your workload</h2>
 <p>The defaults are tuned for general use. For sustained high throughput, large payloads, or long-running instances, the most effective levers are memory/log sizing and a few scalability settings &mdash; covered in detail below. The single most common cause of an instance slowing down over time is the in-memory request log filling the heap; see <a href="#troubleshooting_performance">memory &amp; troubleshooting</a>.</p>
 
+<a id="connection_limits" class="anchor" href="#connection_limits">&nbsp;</a>
+<h3>Concurrent connection limits are set by the OS and the JVM, not by MockServer</h3>
+
+<p>If you are load-testing MockServer, or running it in front of many long-lived keep-alive clients, the ceiling you hit first is almost never MockServer's. It is one of two operating-system limits, and on macOS the first of them is <strong>invisible</strong> &mdash; the JVM quietly overrides what you set. Both apply to the <strong>machine running MockServer and the machine driving load at it</strong>, independently: whichever hits its limit first is the one that fails.</p>
+
+<h4>1. File descriptors &mdash; one per connection</h4>
+
+<p>Every established TCP connection consumes a file descriptor. <strong>The JVM does not simply inherit the limit your shell reports</strong>, and what it does instead is the opposite on the two platforms:</p>
+
+<table class="table-standard">
+    <thead>
+    <tr><th>Platform</th><th>What the JVM does by default</th><th>With <span class="inline_code">-XX:-MaxFDLimit</span></th></tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td><strong>macOS</strong></td>
+        <td>Caps the limit at <strong>10,240</strong> (the BSD <span class="inline_code">OPEN_MAX</span>), <em>however high</em> <span class="inline_code">ulimit -n</span> reads. A shell reporting 60,000 still gives a JVM 10,240. It also raises a <em>lower</em> limit up to 10,240.</td>
+        <td>Uses the shell's soft limit unchanged &mdash; 60,000 stays 60,000, and 2,048 stays 2,048.</td>
+    </tr>
+    <tr>
+        <td><strong>Linux</strong></td>
+        <td>Raises the soft limit to the <strong>hard</strong> limit automatically. A service started with a soft limit of 1,024 and a hard limit of 1,048,576 gets 1,048,576 &mdash; no flag needed.</td>
+        <td><strong>Makes things worse.</strong> Disables that automatic raise, leaving the soft limit: 1,024.</td>
+    </tr>
+    </tbody>
+</table>
+
+<p>So the correct action is different on each platform, and the flag is <strong>not</strong> a portable "more file descriptors" switch:</p>
+
+<ul>
+    <li><strong>macOS</strong> &mdash; you need <em>both</em>. Raise the shell limit <span class="inline_code">ulimit -n 65536</span> <em>and</em> start the JVM with <span class="inline_code">-XX:-MaxFDLimit</span>. The flag alone gives you whatever the shell had; the shell alone is ignored above 10,240.</li>
+    <li><strong>Linux</strong> &mdash; do <em>not</em> pass the flag. Make sure the <em>hard</em> limit is high and the JVM will take it: <span class="inline_code">LimitNOFILE=1048576</span> in a systemd unit, <span class="inline_code">--ulimit nofile=1048576:1048576</span> for <span class="inline_code">docker run</span>, or the container runtime's default in Kubernetes (usually already high).</li>
+</ul>
+
+<p><strong>How the limit announces itself:</strong> the JVM cannot create the socket at all, so you see <span class="inline_code">Too many open files</span>, or from Netty <span class="inline_code">ChannelException: Unable to create Channel from class ... NioSocketChannel</span>. That is a resource limit on the machine reporting it &mdash; not MockServer refusing the connection, and not the network.</p>
+
+<h4>2. Ephemeral ports &mdash; a limit on the <em>client</em> side only</h4>
+
+<p>A connection is identified by (source IP, source port, destination IP, destination port). A load generator opening many connections <em>to one MockServer</em> draws a source port from the ephemeral range for each, so the range size caps how many it can hold at once:</p>
+
+<table class="table-standard">
+    <thead>
+    <tr><th>Platform</th><th>Default range</th><th>Usable connections</th><th>How to widen it</th></tr>
+    </thead>
+    <tbody>
+    <tr>
+        <td><strong>macOS</strong></td>
+        <td>49152&ndash;65535</td>
+        <td>~16,000</td>
+        <td><span class="inline_code">sudo sysctl -w net.inet.ip.portrange.first=32768</span> (about 32,700 ports, matching Linux's default start)</td>
+    </tr>
+    <tr>
+        <td><strong>Linux</strong></td>
+        <td>32768&ndash;60999</td>
+        <td>~28,000</td>
+        <td><span class="inline_code">sysctl -w net.ipv4.ip_local_port_range="10000 65535"</span>, or <span class="inline_code">docker run --sysctl net.ipv4.ip_local_port_range="10000 65535"</span></td>
+    </tr>
+    </tbody>
+</table>
+
+<p><strong>Do not lower the start of the range too far.</strong> Ports below it are where fixed services bind, and an ephemeral connection that happens to take one can stop a service binding it later. Starting at 32768 matches Linux's own default and stays clear of the registered-port range.</p>
+
+<p><strong>These <span class="inline_code">sysctl -w</span> changes do not survive a reboot.</strong> To make one permanent, add it to <span class="inline_code">/etc/sysctl.conf</span> on macOS, or a file under <span class="inline_code">/etc/sysctl.d/</span> on Linux. A <span class="inline_code">docker run --sysctl</span> flag applies to that container only, and needs repeating for each run.</p>
+
+<p><strong>Which of these we verified:</strong> the file-descriptor behaviour in the table above was measured on both platforms, as were the default port ranges and the connection counts below. The Linux <span class="inline_code">sysctl</span>/<span class="inline_code">--sysctl</span> change was tested and takes effect. The macOS <span class="inline_code">sysctl</span> change is the documented mechanism but we have not measured it, because it is a system-wide change to a developer machine.</p>
+
+<p><strong>Giving MockServer more ports does not help.</strong> It is tempting to assume that spreading connections over several server ports gives each its own source-port space. On macOS it does not &mdash; the range is global to the client, and measurement confirms it: 15,511 connections to one server port, 15,609 spread over four, a difference of 1%. To exceed the range you need more client <em>source addresses</em> (extra loopback aliases, or more load-generator machines), not more server ports.</p>
+
+<p><strong>Closed connections keep their port for a while.</strong> A socket you close sits in <span class="inline_code">TIME_WAIT</span> holding its source port &mdash; 30 seconds on macOS (twice the 15-second <span class="inline_code">net.inet.tcp.msl</span>), 60 seconds on Linux by default. So a test that opens 10,000 connections, closes them, and immediately opens 10,000 more is asking for 20,000 ports. Linux can reuse those sockets for new outbound connections: <span class="inline_code">net.ipv4.tcp_tw_reuse</span> defaults to <span class="inline_code">2</span>, which enables reuse for <em>loopback traffic only</em> &mdash; set it to <span class="inline_code">1</span> to enable it for all traffic. macOS has no equivalent, so there you simply wait it out between runs.</p>
+
+<p><strong>How this limit announces itself:</strong> <span class="inline_code">Can't assign requested address</span> / <span class="inline_code">BindException</span>. Note that it looks nothing like the file-descriptor error above, and the fix is entirely different &mdash; if you see one and apply the other's remedy, nothing will change.</p>
+
+<h4>What we measured</h4>
+
+<p>On an Apple M3 Max laptop (macOS, Zulu JDK 21), driving a MockServer in a second JVM on the same machine: with the JVM's default file-descriptor behaviour the driver stopped at <strong>9,977</strong> connections &mdash; the 10,240 cap, not MockServer. (The few hundred missing are the descriptors the JVM and the OS already hold for their own use, so the usable ceiling always sits a little below the raw limit.) With <span class="inline_code">-XX:-MaxFDLimit</span> on both JVMs it reached <strong>15,511</strong>, stopping at the ephemeral port range instead. Holding <strong>12,000</strong> idle keep-alive connections, request latency on a separate connection was indistinguishable from the same measurement with no connections held &mdash; run-to-run variation exceeded any effect of the held connections. <strong>MockServer itself was not the limiting factor at any point</strong>; both ceilings belonged to the machine.</p>
+
 {% include_subpage _includes/clustering.html %}
 
 {% include_subpage _includes/performance_configuration.html %}
