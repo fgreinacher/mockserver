@@ -24,6 +24,20 @@ throughput no longer collapses past the knee. Where the server previously peaked
 — 26,020, then 23,463, then 19,517 requests per second at 32,000, 48,000 and 64,000 offered — it now
 climbs to 28,533 and still holds 25,488 at the top of the ladder.
 
+At a glance — each figure below is measured, and the individual entries further down say what
+changed and why:
+
+| What | Measured effect |
+|---|---|
+| Requests actually served when clients push 64,000/sec at it | **19,517 → 25,488 req/sec** — past its limit the server used to serve *less* as load rose; now it holds up |
+| Heap retained by the event log (20,000 logged entries) | **429 MB → 61 MB** — parsed copies of request/response bodies are no longer kept |
+| Generating internal ids under load (32 threads) | **~114x faster** — the shared secure PRNG was the only material lock contention on the request path |
+| Allocation when a JSON body does not match | **−37.9%** at the default log level — a non-match is now proven before a full diff is built |
+| Allocation when recording why a match failed | **3,486 → 86 bytes per comparison** — diffs are built only if something reads them |
+| Matching a regular expression | one internal thread hand-off removed per match, for any pattern provably free of catastrophic backtracking |
+| Memory across 32 JUnit-managed instances | **117 MB → 52 MB** — the JUnit rule and extension now default to dev-mode sizing |
+| Clustered expectations with a bounded `Times` | spurious refusals under concurrent load cut **roughly tenfold** — from ~32% to low single digits — at about a third of the coordination work |
+
 ### Added
 - The default byte budget above was **derived from measurement, not chosen.** Its divisors were first
   set while the weigher still counted only raw body bytes, and were not revisited when the weigher was
