@@ -344,8 +344,14 @@ for C in "${CORES_ARR[@]}"; do
   HC_P95="$(jq -r '.healthy_ceiling_p95_ms // null' <<<"$HEADLINE")"
 
   # --- rig-valid peak + per-rung ladder (spread, tail suppression, residence) ---
-  # rig_valid mirrors perf-test-run.sh's saturation block EXACTLY: k6 CPU headroom
-  # (< 85% of its pin), no dropped iterations, error_rate <= eps. peak_achieved_rps
+  # rig_valid is perf-test-run.sh's saturation block MINUS the no-drops term: k6 CPU
+  # headroom (< 85% of its pin) and error_rate <= eps, but NOT "no dropped iterations".
+  # That difference is deliberate and is explained at the $rig_valid line below -- with
+  # client CPU headroom, drops mean the SERVER could not keep up, which is the signal
+  # this ladder is here to capture rather than a reason to discard the rung. (This
+  # comment previously claimed the two blocks matched EXACTLY, which was false and led a
+  # reader to treat a valid ceiling reading as a false green because it carried drops.)
+  # perf-test-run.sh:1185 does include $no_drops; do not "restore" it here. peak_achieved_rps
   # = max achieved over rig-valid rungs. p95/p99 are SUPPRESSED to null on any rung
   # whose sample_count < MIN_TAIL_SAMPLES (the repo rule) so a low-C, low-rate rung
   # never reports a tail that is really just its max.
