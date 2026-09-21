@@ -111,17 +111,24 @@ if [ "$NEED_BUILD" = true ]; then
   BUILD_LOG="$UI_DIR/mockserver-build.log"
   echo "→ Building MockServer JAR ($BUILD_REASON)"
   echo "  (this can take a few minutes)"
-  echo "  cmd: (cd mockserver && ./mvnw clean install -DskipTests -pl mockserver-netty-no-dependencies -am)"
+  echo "  cmd: (cd mockserver && ./mvnw clean install -DskipTests -DskipITs -pl mockserver-netty-no-dependencies -am)"
   echo "  full log: $BUILD_LOG"
   echo "  progress (Maven reactor — one line per module + result):"
   # Stream the full build to a log, but surface only the reactor "Building <module>
   # [N/M]" progress lines, the BUILD result, and any errors so it is clear the build
   # is advancing rather than hung — without flooding the terminal with full output.
   # PIPESTATUS captures the real Maven exit code (grep/tee would otherwise mask it).
+  #
+  # BOTH -DskipTests and -DskipITs are required. -DskipTests alone skips only surefire
+  # (unit tests); maven-failsafe-plugin keeps running the *IntegrationTest classes, which
+  # for this reactor includes the Testcontainers live-broker suites in mockserver-async and
+  # the large mockserver-netty integration suite. That turns a "few minutes" jar build into
+  # a full verify run that looks hung, so the demo appears to hang before it ever starts.
   set +e
-  ( cd "$REPO_ROOT/mockserver" && ./mvnw clean install -DskipTests -pl mockserver-netty-no-dependencies -am ) 2>&1 \
+  ( cd "$REPO_ROOT/mockserver" && ./mvnw clean install -DskipTests -DskipITs -pl mockserver-netty-no-dependencies -am ) 2>&1 \
     | tee "$BUILD_LOG" \
-    | grep --line-buffered -E '\[INFO\] Building |\[INFO\] BUILD (SUCCESS|FAILURE)|\[ERROR\]'
+    | grep --line-buffered -E '\[INFO\] Building |\[INFO\] BUILD (SUCCESS|FAILURE)|\[ERROR\]' \
+    | grep --line-buffered -vE 'npm warn|npm notice|EBADENGINE|vite-reporter|chunks are larger|dynamic import\(\)|codeSplitting|chunkSizeWarningLimit|PLUGIN_TIMINGS|rolldown\.rs|hooks are listed|Additional hook time|slowest hooks'
   build_rc=${PIPESTATUS[0]}
   set -e
   if [ "$build_rc" -ne 0 ]; then

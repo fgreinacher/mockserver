@@ -127,10 +127,14 @@ if [ "$NEED_BUILD" = true ]; then
   BUILD_LOG="$UI_DIR/mockserver-build.log"
   echo "→ Building MockServer JAR ($BUILD_REASON)"
   echo "  (this can take a few minutes; full log: $BUILD_LOG)"
+  # BOTH -DskipTests and -DskipITs are required — -DskipTests alone leaves maven-failsafe-plugin
+  # running the *IntegrationTest suites (incl. Testcontainers live-broker tests), turning this
+  # jar build into a full verify run that looks hung. See launch-with-demo-data.sh.
   set +e
-  ( cd "$REPO_ROOT/mockserver" && ./mvnw clean install -DskipTests -pl mockserver-netty-no-dependencies -am ) 2>&1 \
+  ( cd "$REPO_ROOT/mockserver" && ./mvnw clean install -DskipTests -DskipITs -pl mockserver-netty-no-dependencies -am ) 2>&1 \
     | tee "$BUILD_LOG" \
-    | grep --line-buffered -E '\[INFO\] Building |\[INFO\] BUILD (SUCCESS|FAILURE)|\[ERROR\]'
+    | grep --line-buffered -E '\[INFO\] Building |\[INFO\] BUILD (SUCCESS|FAILURE)|\[ERROR\]' \
+    | grep --line-buffered -vE 'npm warn|npm notice|EBADENGINE|vite-reporter|chunks are larger|dynamic import\(\)|codeSplitting|chunkSizeWarningLimit|PLUGIN_TIMINGS|rolldown\.rs|hooks are listed|Additional hook time|slowest hooks'
   build_rc=${PIPESTATUS[0]}
   set -e
   if [ "$build_rc" -ne 0 ]; then
