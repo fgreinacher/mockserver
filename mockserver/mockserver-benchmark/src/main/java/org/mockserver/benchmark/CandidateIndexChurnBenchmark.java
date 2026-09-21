@@ -23,6 +23,9 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -108,6 +111,11 @@ public class CandidateIndexChurnBenchmark {
     private volatile boolean churnRunning;
     private Thread churnThread;
     private final AtomicLong writerMutations = new AtomicLong();
+    // Baseline of the STORE-SIDE modification counter, sampled at the end of setup. The delta at
+    // teardown is the number of mutations the STORE itself observed during the trial — a stronger
+    // check than writerMutations (which counts loop iterations, so it would still climb if
+    // clear(id) had silently stopped removing anything).
+    private long storeModificationsAtSetup;
 
     @Setup(Level.Trial)
     public void setup() {
@@ -142,6 +150,8 @@ public class CandidateIndexChurnBenchmark {
             throw new IllegalStateException("probe did not match — benchmark misconfigured");
         }
 
+        storeModificationsAtSetup = storeModifications();
+
         if ("CHURN".equals(mode)) {
             // The churn expectation is a bucketable literal on its OWN (method,path), so in INDEX
             // mode it sits in a bucket the probe never reads — the reader never evaluates it, and
@@ -171,6 +181,18 @@ public class CandidateIndexChurnBenchmark {
 
     @TearDown(Level.Trial)
     public void tearDown() throws InterruptedException {
+        // Sampled BEFORE the writer is stopped, so it observes the live churn the measurement
+        // iterations saw: how many of 1,000 consecutive toSortedList() reads returned a DIFFERENT
+        // instance from the previous read — i.e. how often the sorted-snapshot cache was found
+        // invalidated and had to be rebuilt. STATIC must report 0; a CHURN arm reporting 0 would
+        // mean the arm silently stopped churning and every number in it is worthless.
+        int sortedListRebuildsPer1000Reads = sampleSortedListRebuilds(1000);
+        long storeModificationsDuringTrial = storeModifications() - storeModificationsAtSetup;
+        // Also sampled while the writer is still running: the measured call must still RETURN the
+        // match. An index that silently started returning an empty candidate set would look fast
+        // and allocate little — indistinguishable from "fixed" — so assert the subject is real.
+        boolean stillMatchesUnderChurn = requestMatchers.firstMatchingExpectation(probe) != null;
+
         churnRunning = false;
         if (churnThread != null) {
             churnThread.join(2000);
@@ -178,7 +200,52 @@ public class CandidateIndexChurnBenchmark {
         // Reported so the write-up can state how many invalidations landed during the trial —
         // a CHURN trial with zero writer mutations would be a silent false negative.
         System.out.println("[churn] mode=" + mode + " indexMode=" + indexMode + " n=" + n
-            + " writerMutations=" + writerMutations.get());
+            + " writerMutations=" + writerMutations.get()
+            + " storeModifications=" + storeModificationsDuringTrial
+            + " sortedListRebuildsPer1000Reads=" + sortedListRebuildsPer1000Reads
+            + " stillMatchesUnderChurn=" + stillMatchesUnderChurn);
+    }
+
+    /**
+     * Reads {@code RequestMatchers.matchersModificationCountForTesting()} — the counter the store
+     * bumps on EVERY structural mutation. Package-private in {@code org.mockserver.mock}, so
+     * reached reflectively. Returns -1 if unavailable (reported, never silently treated as 0).
+     */
+    private long storeModifications() {
+        try {
+            Method method = RequestMatchers.class.getDeclaredMethod("matchersModificationCountForTesting");
+            method.setAccessible(true);
+            return (Long) method.invoke(requestMatchers);
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Counts how many of {@code reads} consecutive {@code toSortedList()} calls returned a
+     * different LIST INSTANCE from the previous call — the identity check that proves a rebuild
+     * happened rather than a cache hit. Returns -1 if the backing queue cannot be reached.
+     */
+    @SuppressWarnings("unchecked")
+    private int sampleSortedListRebuilds(int reads) {
+        try {
+            Field field = RequestMatchers.class.getDeclaredField("httpRequestMatchers");
+            field.setAccessible(true);
+            Object queue = field.get(requestMatchers);
+            Method toSortedList = queue.getClass().getMethod("toSortedList");
+            List<?> previous = (List<?>) toSortedList.invoke(queue);
+            int rebuilds = 0;
+            for (int i = 1; i < reads; i++) {
+                List<?> current = (List<?>) toSortedList.invoke(queue);
+                if (current != previous) {
+                    rebuilds++;
+                }
+                previous = current;
+            }
+            return rebuilds;
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     @Benchmark

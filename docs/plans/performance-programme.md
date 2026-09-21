@@ -2396,6 +2396,60 @@ stable and least machine-sensitive signal.
 index per-mutation, rather than full-rebuild-on-read; and deduplicate `toSortedList`'s rebuild
 across concurrent readers.
 
+**RE-MEASURED 2026-09-21 — THE COLLAPSE IS GONE, AND EVERY FIGURE IN THE TABLE ABOVE IS DEAD.**
+Read that table as history, not as the current server. The first half of the fix shipped in
+`0ba706b9d` — the same commit whose RESOLVED note below describes only its review-driven
+correctness half, which is why nobody noticed the performance half had landed too. `git log -S "void
+onAdded"` places the incremental conversion in that commit: `onAdded`/`onRemoved` now update one
+bucket in O(1) per mutation and **a read never rebuilds**.
+
+Same benchmark, same JMH settings, current `4cda4041f`:
+
+| n | t | INDEX static | INDEX churn | churn/static | vs SCAN churn |
+|---:|---:|---|---|---:|---|
+| 15,000 | 1 | 0.244 us / 312 B | 0.252 us / 330 B | **1.03x / 1.06x** | **4,735x faster, 1,581x less** |
+| 15,000 | 8 | 1.087 us / 288 B | 0.967 us / 297 B | **0.89x / 1.03x** | 1,228x faster, 1,483x less |
+
+So **8,168x -> 1.03x** at t=1 and **16,742x -> 0.89x** at t=8; allocation **~13,000x -> 1.06x**. The
+sharpest claim above — that under churn the index is 1.9x SLOWER and 8x more allocating than the
+scan it replaces — is now false in every cell: the index is faster by three orders of magnitude.
+"Worsens with cores" no longer holds either (churn rises 3.8x from t1 to t8 against static's 4.5x).
+The residual allocation excess at low n is the WRITER's own, not the reader's: excess per million
+writer mutations is flat at 47.1 / 45.1 / 43.5 B across n=100 / 1,000 / 15,000, so it tracks
+mutation count rather than store size.
+
+*The churn arm was re-verified rather than trusted, and the pre-existing check turned out to be
+weaker than this section claimed.* The `writerMutations` counter cited above counts **loop
+iterations**, so it would have kept climbing even if `clear(id)` had silently stopped removing
+anything — it cannot distinguish "churning" from "spinning". Three real checks were added and
+sampled before the writer stops: the store's OWN `matchersModificationCount` delta (0 for every
+static arm, 394,221-19,213,399 for every churn arm); a live identity check counting how many of
+1,000 back-to-back `toSortedList()` calls return a different instance (0 static, 23-28 per 1,000
+under churn); and an assertion that the measured call still returns non-null, because an index that
+quietly began returning an empty candidate set would look fast, allocate little, and read exactly
+like "fixed".
+
+**What is actually left.**
+1. *The `toSortedList` deduplication is untouched* — `CircularPriorityQueue.java:299-306` still
+   rebuilds the whole list whenever `sortedCache` is null, with no dedup across concurrent readers,
+   and the cache is still nulled on every structural mutation. But its blast radius collapsed from
+   "every request at any store >= 64" to almost nothing, because the hit path no longer calls it:
+   `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live
+   `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is now a much
+   smaller question than this section poses.
+2. *The successor finding — one un-indexed O(n) scan still reaches real traffic.*
+   `firstMatchingEarlyExpectation` (`RequestMatchers.java:1080`) iterates the full `toSortedList()`
+   and is not indexed at all. `EarlyMatchingHandler` is installed **unconditionally** in every
+   HTTP/1.1 pipeline (`PortUnificationHandler.java:482`), and detaches itself via
+   `passThroughAndDetach` -> `ctx.pipeline().remove(this)` (`EarlyMatchingHandler.java:118-122`)
+   after a non-match — so the cost is **once per connection**, amortised under keep-alive and paid
+   per request without it. No benchmark covers it. That, not the index, is where an O(n) store scan
+   still touches the data plane.
+3. *Gating is now attractive where it was not.* This section suggested gating the static-vs-churn
+   **allocation** ratio at n=15,000/t=1. That ratio is now 1.06x with +/-3.4 B error bars — the most
+   stable number in the matrix — and a regression to rebuild-on-read would move it by three orders
+   of magnitude. Cheap, and it would have caught this section going stale.
+
 **RESOLVED — shipped `0ba706b9d`.** The case-mode rebuild now reads the authoritative list under the same monitor as `onAdded`/`onRemoved`, so a concurrent add can no longer be placed into the state being replaced and lost. Overflow eviction and reset also reach the index now: the queue exposes a mutation listener so an evicted entry is removed rather than left servable. The regression test drives a controlled interleaving through a test-supplied `Supplier` rather than racing threads — reverting the fix fails it 5 runs out of 5, where the earlier timing-based version missed it 1 run in 3.
 
 ### Gaps found by a 2026-09-20 survey, framed by USE CASE rather than by hot path
