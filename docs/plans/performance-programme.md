@@ -2635,9 +2635,44 @@ pre-existing array. The figure is the relay's object/aggregation cost ABOVE the 
 per-byte cost. Also excluded: SSE/streaming relay, HTTP/2 relay, raw CONNECT tunnel byte pumping,
 SOCKS, TLS, and de/recompression.
 
+## Item 9b — the SOCKS handshake, and why it is a benchmark rather than a load arm
+
+**Built and measured 2026-09-21** (`SocksHandshakeBenchmark`). SOCKS had no performance coverage of
+any kind before this.
+
+**Why not the k6 rung the plan asked for.** Two reasons, and the second is the one that decided it.
+k6's HTTP client is Go's `net/http`, which honours only an HTTP proxy — SOCKS needs a dialer k6 does
+not expose, so the rung would have needed a custom `xk6` build or an HTTP-to-SOCKS bridge, and a
+bridge makes the bridge the thing being measured. That is the "awkward" case this plan anticipated.
+But the decisive reason is structural: **`SocksConnectHandler extends RelayConnectHandler`**, so once
+CONNECT completes the SOCKS tunnel is pumped by the very relay handlers item 9c already measures. The
+only genuinely SOCKS-specific, uncovered cost is the **per-connection negotiation** — which is a
+micro-cost, and therefore JMH's shape rather than a load arm's.
+
+**Measured: ~1.1-1.7 us and ~3.4-4.4 kB per handshake**, rising with protocol complexity
+(SOCKS4 < SOCKS5 no-auth < SOCKS5 password, monotonic in both time and allocation). The front-door
+classifier `SocksDetector` is allocation-free at ~2-6 ns, so the cost is not in detection.
+
+**The controls, carried over from 9c's mistake.** A `channelPlumbingOnly` arm builds and closes a
+bare `EmbeddedChannel` with no SOCKS work: it sits **flat at 1,600 B/op across all three scenarios**
+while `handshake` climbs, which is what establishes the climb as codec work rather than harness
+overhead. Asking 9c's question — what ELSE varies across the scenarios? — finds only more SOCKS
+protocol work (an extra round trip, an extra decoder swap, an extra response object), so the sweep
+discriminates rather than merely correlating.
+
+**Read the numbers with these caveats, which are in the javadoc too.** The 1,600 B baseline is a
+LOWER bound for two compounding reasons (the control's channel does not escape so the JIT may elide
+more, and it holds one pipeline handler where the handshake starts with two), so the
+SOCKS-attributed remainder is correspondingly an upper bound — directional evidence, not an exact
+split. The SOCKS5-password figure omits the two `ConstantTimeEquals` credential comparisons
+production performs. And `detect`'s ordering across scenarios reflects how many bytes each input
+makes the scanner walk, not detection difficulty. Not covered at all: sockets, TLS, event-loop
+hand-off, SOCKS4a, GSSAPI, and handshake churn under concurrency — that last one is a load-arm
+question this does not answer.
+
 ## What remains
 
-**Thirteen things are outstanding: seven can be settled from the repo, and six cannot be settled
+**Twelve things are outstanding: six can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2653,7 +2688,6 @@ flowchart TD
   churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> e["9b SOCKS5 rung"]
   left --> l["Low value: toSortedList dedup,
   .laptop block, G11 plaintext arm"]
   right --> f["Item 18: a load generator
@@ -2675,7 +2709,6 @@ flowchart TD
 | **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
 | **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
-| **9b proxy arm** | A SOCKS5 rung | Named when 9a shipped and never built — there is no SOCKS arm anywhere under `mockserver-performance-test/k6/`. k6 supports an HTTP proxy but not SOCKS, so this needs a small driver or a SOCKS-aware sidecar; if that is awkward, downgrade it to a JMH benchmark of the handshake handlers rather than skipping the dimension. **9c is DONE — see below, and note it refuted this row's own premise** |
 | **`toSortedList` dedup** | Deduplicate the rebuild across concurrent readers — **but do not over-invest** | `CircularPriorityQueue.java:299-306` still rebuilds the whole list whenever `sortedCache` is null, with no dedup, and the cache is still nulled on every structural mutation. **Its blast radius collapsed from "every request at any store >= 64" to almost nothing**, because the hit path no longer calls it: `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is a much smaller question than G1 posed |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
 | **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
