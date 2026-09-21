@@ -2850,10 +2850,54 @@ their producer wholesale fails. This profile is opt-in and its absence is the no
 presence gate would add a red path guarding nothing. The accepted cost: opting in while both shapes
 silently produce nothing leaves a green build with only stderr as signal.
 
+## Build 272's SUT crash — a heap OOM, and this plan had three facts wrong
+
+**Settled 2026-09-21 by reading the uploaded `perf-jvm-diagnostics.tgz`.** The artifact answered the
+question, and correcting the record is most of the value.
+
+**It WAS an OutOfMemoryError.** This row previously said `ExitCode 3` was "not OOM". The SUT log is
+explicit: `JAVA_TOOL_OPTIONS: -XX:+ExitOnOutOfMemoryError`, then `java.lang.OutOfMemoryError: Java
+heap space`, then `Terminating due to java.lang.OutOfMemoryError`. Exit 3 IS the JVM self-terminating
+on that flag. The container's `OOMKilled:false` only means the CGROUP killer never fired — the JVM hit
+its own 1.5 GiB ceiling first. "Not OOM" confused "not a cgroup OOM-kill" with "not an OOM".
+
+**It did NOT happen during seeding.** The server died mid-load in the first (HTTP) `regression.js`
+pass — heap climbed 506 MB -> 885 MB -> 1,153 MB -> 1,456 MB exactly as the staggered load arms
+started at 60-70 s, with GC cycles going 162 -> 550 in 25 seconds. The container finished at 04:05:33;
+the `seedRegression ... HTTP 0 null` error is at 04:06:39, **66 seconds later** — that is the SECOND
+(HTTPS+H2) pass failing to connect to an already-dead server, not the cause.
+
+**It was not "build 272 only".** Builds 272 AND 273 both failed identically on the same commit
+`325bc05bc`. Build 271 ran that commit too but its commit guard was `broken`, so `run + sample` never
+executed — and, for the same reason, build 274 passing proves nothing either: its guard was broken
+as well, so it never ran the step. There is NO evidence from 274 that the next commit fixed anything.
+
+**What the new gauges ruled out, which is real value.** Commit `325bc05bc` added diagnostics to catch
+a suspected event-log backlog (the build #249 retention OOM). They exonerate it: `ring_occupancy`,
+`in_flight_bytes` and `dropped_log_events` were **0 throughout** the heap climb, and `threads` was flat
+at 34. So it was neither the log ring nor a thread leak, despite superficially matching #249's "second
+pass cannot seed" signature.
+
+**What could NOT be determined, and why.** WHICH objects filled the heap is unknowable from what was
+uploaded. The heap dump was written — 2,442,323,694 bytes — and then **discarded**, because it exceeds
+`PERF_HEAPDUMP_MAX_UPLOAD_MB=512`. The run was tier-1 `standard`, so there is no GC log, class
+histogram or NMT either. The most likely candidate is per-request allocation in the large-body arms
+(`large_1mb_http` collapsed to 27 samples at 70% error, `large_10mb_http` to 11 at 91%) outpacing G1,
+but that is unproven and should not be recorded as the cause.
+
+**Not currently live.** Of the last 30 pipeline builds, every one where `run + sample` actually
+executed passed (5 passed, 0 failed) — the rest never reached the step. So the specific instance is
+closed as historical.
+
+**The one change worth making** is to the failure path, not to this commit: capture a
+`jcmd GC.class_histogram` (or `-XX:+PrintClassHistogramBeforeFullGC`) into the tarball on the OOM path.
+It is small enough to upload within the existing cap and would have named the culprit here, where a
+2.4 GB heap dump was produced and thrown away.
+
 ## What remains
 
-**Seven things are outstanding: one can be settled from the repo, and six cannot be settled
-here at all** — those six need a run on real hardware, or an external system to report something.
+**Six things are outstanding: one can be settled from the repo, and five need a run, a bigger
+rig, or an external system to report something** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
 hard way.
@@ -2866,7 +2910,6 @@ flowchart TD
   delete its false continuity claim"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
-  right --> g["Build-272 SUT crash post-mortem"]
   right --> h["The 36,000 rps knee,
   clean-tier"]
   right --> i["-Xmx512m sidecar under load"]
@@ -2890,7 +2933,6 @@ that is merely undone.
 | | What it needs | Why it is stuck here |
 |---|---|---|
 | **Item 18's experiment** | A load generator that can saturate the server — several k6 processes, several client hosts, or a different generator | The per-core instrument works and the curve is flat at 6,000 rps for C = 1, 2, 4 and 8 (build #364, 2026-09-20). Neither side is CPU-bound: SUT CPU is ~one core's worth at every C, and k6 used ~2 of its 7-14 disjoint cores. A native re-run refuted the virtualisation half of the explanation (30,704 rps native against 27,651 in Docker — containerisation costs ~10%, not 5x) and killed the event-log hypothesis (disabling logging changed peak throughput not at all). **What is still open is why k6 drops iterations with three quarters of its VU pool unused.** Not another ladder |
-| **Build-272 SUT crash** | Someone to read the `perf-jvm-diagnostics.tgz` post-mortem from that build | The MockServer container exited `ExitCode 3` (not OOM) during k6 `setup()` expectation seeding, on build 272 only. `run + sample` failed while microbench and HTTP/2 both passed, so the compare skip was correct — the measurement genuinely failed. The artifact is uploaded and is where to continue |
 | **The 36,000 rps knee** | A clean-tier run on an image carrying the corrected heap cap | Build 290 ruled out one possibility and recorded a shape — 15,475 achieved at 16,000 offered, **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000, error rate 0 at every rung with the losses all `dropped_iterations`. That is a genuine knee near 32,000 with a collapse beyond it, a server-side congestion signature rather than a client ceiling. It does **not** settle the published 36,000: build 290 was a deep-tier run (JFR + NMT depress throughput by design, `baseline_eligible:false`), so 26,020 is a floor, not a refutation |
 | **The `-Xmx512m` sidecar** | Its own run under sustained load | The general form was answered on 2026-09-18 and the answer was no: peak RSS **2,271 MiB** against a **1,536 MiB** heap plus 133 MiB of metaspace and code cache — ~735 MiB of non-heap and native, dominated by Netty's pooled direct buffers, which scale with concurrency and body size and not with heap at all. A **1.48x** ratio against the 1.33x the old `MaxRAMPercentage=75.0` assumed; default lowered to 60.0 in `ec2373d86`. The specific 512 MiB claim is untested, and the sizing rule says it is the size most likely to be killed: the overhead is **additive and load-driven**, not a fixed multiple, so it gets proportionally worse as the container shrinks |
 | **`alloc_bytes_per_op` agent-independence** | Same commit, five runs on each queue | One cheap experiment, never run. Item 16's per-merge allocation gate rests on the answer |
