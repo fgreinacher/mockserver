@@ -153,6 +153,60 @@ practice.
 real race, not test flakiness. Isolate the failure by bisect to the specific commit before
 theorising about mechanism.
 
+## Is This Number Measuring What You Think? — a pre-registration checklist
+
+**The evidence standard above asks whether a change broke correctness. This asks a different and
+more frequently-failed question: whether the number you are about to trust is a number OF the thing
+you believe it is.** Every failure below was an instrument that RAN, PASSED, and reported an honest
+figure about the wrong subject. None was a lie; each was a measurement of something adjacent.
+
+Answer these four before quoting a performance number. They cost a minute and have a documented hit
+rate.
+
+**1. What is this a number OF?** Name the subject in one sentence, then check the instrument actually
+touches it.
+- `peak_achieved_rps` was documented as tracking the server's ceiling. It is `max(achieved)` over
+  rig-VALID rungs, so it is structurally capped at whichever rung the CLIENT stops being clean — a
+  property of the rig. Build 325: server achieved 28,377 rps; the field read 2,000.1.
+- A dashboard measurement reported zero long tasks and a DOM frozen at exactly 218 elements. It was
+  measuring the WELCOME SCREEN, not the dashboard.
+
+**2. What would make it lie, and can you tell from the output?** Prefer a failure that is loud over
+one that looks like a pass.
+- A churn benchmark's `writerMutations` counter counted LOOP ITERATIONS, so it climbed identically
+  whether or not `clear(id)` still removed anything. It could not distinguish churning from spinning
+  — the one thing it was cited to prove.
+- Every UI bench arm discarded its result, so V8 eliminated the work. The warm arm reported
+  **0.0377 ms** against a real 4.12 ms: a 140x fiction, and it read as the FASTEST number in the
+  table.
+
+**3. Degrade it and confirm red.** Break the thing the number is about and watch the number move. If
+it does not, the instrument is not attached.
+- A `perf-renderCount` test drove a COPY of the store's reconcile function living under `__bench__/`,
+  so it would have stayed green through any regression in the real store.
+- Deleting one `BODY_PARSE_CACHE.remove()` left every test green, because the guard it protected had
+  no test. It was reported as "cannot be degrade-tested"; it could, and now is.
+
+**4. Is the regime the one you care about?** A number taken where the resource is free says nothing
+about the case where it is scarce.
+- "Does an open dashboard cost the server anything?" measured against an IDLE server answers no, by
+  construction — there is spare CPU, so background work is free. Under concurrent load the same
+  question had a visible answer.
+- A per-core ladder's `healthy_ceiling_rps` can only take a RUNG's value, so a doubling ladder
+  carries factor-of-two uncertainty. Build 358 read 4,000 and looked like a flat server curve;
+  a finer ladder measured 6,000.
+
+**Two shapes worth knowing by name.**
+
+*The count that did not move.* Adding tests and seeing the total stay put means they did not run.
+`surefire:test` alone executes STALE classes — it does not bind `test-compile` — and reports a
+confident `BUILD SUCCESS` for code you no longer have. Read the COUNT, not the verdict.
+
+*The loose bound that hid a flake.* A work-reduction assertion of `< 500` passed three runs and
+failed a fourth at 2,211. The code was fine — 2,211 was about 11 x 201, an instance-scoped counter
+summing roughly eleven background scans. An EXACT assertion (201) both fixed the flake and caught a
+degrade the loose one let through. Loose bounds do not make a test robust; they make it blind.
+
 ## Where This Plugs Into the Gate Chain
 
 | Evidence | Where | Why there |
@@ -165,6 +219,7 @@ theorising about mechanism.
 | Adversarial corpus arms | Required in the landing PR | Which dimensions matter depends on what the change touches; no CI step can infer that |
 | Deadlock argument (class 5) | Required in the PR description | An argument, not a test. Writing it down stops the next person undoing it |
 | Hazard-class identification; type assertions; invalidation paths | Review checklist | Judgement, not automation |
+| **Measurement-validity pre-registration** (the four questions above) | **Required in the landing PR, ALONGSIDE the number** | A number is quoted the moment it exists. This has to happen before the figure is believed, not after it is disputed — and it is the cheapest item in this table |
 | Daily perf run confirms the win survives | After merge | The last check, not the first |
 
 **Two rules:**
@@ -176,3 +231,8 @@ theorising about mechanism.
 2. **The benchmark result belongs in the PR body under a heading saying it is motivation, not
    verification.** The failure this prevents is not that people lie about testing; it is that a
    green chart feels like completion.
+
+3. **A quoted performance number carries its four answers.** Not a paragraph — one line each, or a
+   sentence saying why a question does not apply. The documented failure rate here is high enough
+   that "the benchmark said so" is not evidence on its own, and every example in that section was a
+   measurement someone had already believed.
