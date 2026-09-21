@@ -9,6 +9,7 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpMethod;
 import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
 import org.apache.commons.lang3.StringUtils;
 import org.junit.Test;
 import org.mockserver.log.MockServerEventLog;
@@ -51,7 +52,9 @@ import static org.apache.commons.lang3.exception.ExceptionUtils.getStackTrace;
 import static org.hamcrest.CoreMatchers.anyOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.CoreMatchers.nullValue;
+import static org.hamcrest.CoreMatchers.sameInstance;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.mockserver.character.Character.NEW_LINE;
@@ -1966,6 +1969,29 @@ public class DashboardWebSocketHandlerTest {
         if (response != null) {
             assertThat(response.status().code(), not(anyOf(is(401), is(403))));
         }
+    }
+
+    @Test
+    public void shouldHoldHandshakerPerChannelForConcurrentDashboardUpgrades() {
+        // given - ONE @Sharable handler instance serving two dashboard connections, exactly as
+        // production wires it (a single handler added to every dashboard channel's pipeline)
+        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
+        EmbeddedChannel channelOne = new EmbeddedChannel(handler);
+        EmbeddedChannel channelTwo = new EmbeddedChannel(handler);
+
+        // when - both connections upgrade through the SAME handler instance, the second after the first
+        channelOne.writeInbound(webSocketUpgradeRequest());
+        channelTwo.writeInbound(webSocketUpgradeRequest());
+
+        // then - each channel kept its OWN handshaker; the second upgrade did not overwrite the
+        // first's. A shared mutable instance field would have left both channels pointing at the
+        // second channel's handshaker, so a close of the first could run with the wrong one.
+        WebSocketServerHandshaker handshakerOne = DashboardWebSocketHandler.handshakerForChannel(channelOne);
+        WebSocketServerHandshaker handshakerTwo = DashboardWebSocketHandler.handshakerForChannel(channelTwo);
+        assertThat(handshakerOne, is(notNullValue()));
+        assertThat(handshakerTwo, is(notNullValue()));
+        assertThat(handshakerOne, is(not(sameInstance(handshakerTwo))));
     }
 
     // =============================================================================================

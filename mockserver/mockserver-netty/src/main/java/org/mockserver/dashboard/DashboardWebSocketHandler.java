@@ -74,6 +74,12 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private static final Predicate<DashboardLogEntryDTO> proxiedRequestsPredicate = input
         -> input.getType() == FORWARDED_REQUEST;
     private static final AttributeKey<Boolean> CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET = AttributeKey.valueOf("CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET");
+    // The handshaker is created during the HTTP upgrade and read again on a later CloseWebSocketFrame,
+    // so it must span channelRead invocations - but this handler is @Sharable, meaning ONE instance
+    // serves every dashboard channel it is added to. A shared mutable instance field would let
+    // concurrent dashboard connections clobber each other's handshake state and close a channel with
+    // another channel's handshaker, so it lives on the channel instead - as CallbackWebSocketServerHandler does.
+    private static final AttributeKey<WebSocketServerHandshaker> HANDSHAKER = AttributeKey.valueOf("UI_WEB_SOCKET_HANDSHAKER");
     private static final String UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI = "/_mockserver_ui_websocket";
     private static final int UI_UPDATE_ITEM_LIMIT = 100;
     // Test-only instrument (instance-scoped, so concurrent tests / handlers never pollute each
@@ -91,6 +97,11 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     @VisibleForTesting
     void resetLogDtoConstructionCountForTesting() {
         logDtoConstructionCount.set(0);
+    }
+
+    @VisibleForTesting
+    static WebSocketServerHandshaker handshakerForChannel(Channel channel) {
+        return channel.attr(HANDSHAKER).get();
     }
     // Eagerly initialised and safely published via static-final so reads from the off-event-loop
     // scheduler threads see a fully constructed mapper without a data race. The mapper is stateless
@@ -110,7 +121,6 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private final boolean sslEnabledUpstream;
     private final HttpState httpState;
     private HttpRequestSerializer httpRequestSerializer;
-    private WebSocketServerHandshaker handshaker;
     private Map<ChannelOutboundInvoker, HttpRequest> clientRegistry;
     private RequestMatchers requestMatchers;
     private MockServerEventLog mockServerEventLog;
@@ -308,7 +318,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     .setArguments(webSocketURL)
             );
         }
-        handshaker = new WebSocketServerHandshakerFactory(
+        final WebSocketServerHandshaker handshaker = new WebSocketServerHandshakerFactory(
             webSocketURL,
             null,
             true,
@@ -317,6 +327,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         if (handshaker == null) {
             WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
         } else {
+            ctx.channel().attr(HANDSHAKER).set(handshaker);
             handshaker.handshake(
                 ctx.channel(),
                 httpRequest,
@@ -386,12 +397,21 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
 
     private void handleWebSocketFrame(final ChannelHandlerContext ctx, WebSocketFrame frame) {
         if (frame instanceof CloseWebSocketFrame) {
-            handshaker.close(ctx.channel(), (CloseWebSocketFrame) frame.retain()).addListener((ChannelFutureListener) future -> {
+            final WebSocketServerHandshaker handshaker = ctx.channel().attr(HANDSHAKER).get();
+            if (handshaker != null) {
+                handshaker.close(ctx.channel(), (CloseWebSocketFrame) frame.retain()).addListener((ChannelFutureListener) future -> {
+                    Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
+                    synchronized (registry) {
+                        registry.remove(ctx);
+                    }
+                });
+            } else {
                 Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
                 synchronized (registry) {
                     registry.remove(ctx);
                 }
-            });
+                ctx.close();
+            }
         } else if (frame instanceof TextWebSocketFrame) {
             try {
                 HttpRequest httpRequest = httpRequestSerializer.deserialize(((TextWebSocketFrame) frame).text());
