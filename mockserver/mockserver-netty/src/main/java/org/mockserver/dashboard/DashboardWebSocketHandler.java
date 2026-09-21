@@ -10,6 +10,7 @@ import com.google.common.collect.ImmutableMap;
 import io.netty.channel.*;
 import io.netty.handler.codec.http.DefaultHttpHeaders;
 import io.netty.handler.codec.http.FullHttpRequest;
+import io.netty.handler.codec.http.QueryStringDecoder;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.util.AttributeKey;
 import io.netty.util.ReferenceCountUtil;
@@ -81,7 +82,57 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // another channel's handshaker, so it lives on the channel instead - as CallbackWebSocketServerHandler does.
     private static final AttributeKey<WebSocketServerHandshaker> HANDSHAKER = AttributeKey.valueOf("UI_WEB_SOCKET_HANDSHAKER");
     private static final String UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI = "/_mockserver_ui_websocket";
-    private static final int UI_UPDATE_ITEM_LIMIT = 100;
+    // One constant used to cap BOTH log rows and expectations. They have opposite cost profiles, so
+    // they are now split. Log rows are cheap-each and change constantly; a dashboard client whose
+    // traffic list now virtualises (4c1e82e40) can usefully display more history than the default, so
+    // the log-row limit is the ONE knob a client may request - within a server-enforced range (see
+    // resolveLogItemLimit). Expectations are expensive-each and change rarely, and after the option-6
+    // serialisation cache almost all of that expense is already elided, so their cap stays a FIXED
+    // server constant the client cannot influence: adding a second client-tunable knob would only widen
+    // the attack surface (below) for a limit that no longer dominates the update cost.
+    private static final int DEFAULT_LOG_UPDATE_ITEM_LIMIT = 100;
+    // Server-enforced hard maximum for the client-requested log-row limit. THIS number - not the
+    // per-request validation - is the actual data-plane safety property: the dashboard WebSocket is
+    // UNAUTHENTICATED BY DEFAULT (webSocketUpgradeAuthenticated returns true when no control-plane auth
+    // handler is configured), so a client-chosen limit is an ATTACKER-chosen limit on a default
+    // deployment. Per-request validation bounds the PER-CLIENT cost; it does NOT bound the aggregate.
+    // A client asking for exactly the maximum on every connection forever is valid input and still
+    // costs (connections x max x frequency). What keeps that aggregate finite is (a) this maximum and
+    // (b) the pre-existing fan-out cap: getClientRegistry() is a CircularHashMap(100) and the update
+    // paths iterate ONLY registry entries, so a single @Sharable handler fans each update out to at
+    // most 100 connections. Note what that cap is and is not - CircularHashMap EVICTS rather than
+    // refuses (LinkedHashMap.removeEldestEntry, no eviction listener here), so connection 101 is served
+    // and connection 1 silently stops receiving updates; it bounds registry membership, not open
+    // sockets. For this cost that is the right bound, because only registry entries are walked.
+    // 500 is 5x the default - a meaningful history increase for a virtualising client - giving a worst
+    // case of 500 x 100 = 50,000 log-DTO constructions per update, 5x today's already-tolerated
+    // 100 x 100. Per-row log work is O(1), and the one genuinely expensive per-item operation
+    // (DescriptionProcessor's OpenAPI parse) is reachable only from the EXPECTATIONS path, which is
+    // fixed at EXPECTATION_UPDATE_ITEM_LIMIT and NOT client-tunable - so this knob cannot amplify it.
+    //
+    // BE PRECISE ABOUT WHICH THROTTLE APPLIES, because this is the note a future reader will trust when
+    // deciding whether to raise the ceiling again. The Semaphore(1) is a SINGLE GLOBAL permit refilled
+    // ~1/second, and it gates only the JSON serialise-and-write in sendMessage. It does NOT gate the
+    // DTO-construction walk below, which has already run by then. That walk executes on coalesced log
+    // updates at up to ~4/second (MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS = 250) per registry
+    // entry, and UNTHROTTLED on every inbound TextWebSocketFrame, whose rate and filter the client
+    // controls. So the honest statement is: this maximum deepens a client-drivable walk 5x on an
+    // endpoint that is unauthenticated by default. That walk is a PRE-EXISTING surface at depth 100 and
+    // the increase is bounded, which is why 500 is acceptable - but if the pull path is ever to be made
+    // cheap, gate it the way the push path is coalesced rather than raising this number further.
+    // A genuinely tighter aggregate bound, if ever needed, is a separate control (a connection cap or a
+    // shared budget), NOT something per-request validation buys.
+    private static final int MAX_LOG_UPDATE_ITEM_LIMIT = 500;
+    // Expectations stay on the fixed cap - not client-tunable (see the split rationale above).
+    private static final int EXPECTATION_UPDATE_ITEM_LIMIT = 100;
+    // Query-string parameter on the upgrade URI by which a client requests a log-row limit, e.g.
+    // /_mockserver_ui_websocket?logLimit=250. Absent / invalid resolves to the DEFAULT.
+    private static final String LOG_ITEM_LIMIT_PARAM = "logLimit";
+    // Per-channel because the handler is @Sharable (ONE instance serves every dashboard channel): the
+    // limit is chosen at UPGRADE time and read later on each throttled update, so it must live on the
+    // channel, not in an instance field, or concurrent connections would clobber each other's limit -
+    // exactly the defect 16a9686a8 fixed for HANDSHAKER. Absent attribute => DEFAULT.
+    private static final AttributeKey<Integer> LOG_ITEM_LIMIT = AttributeKey.valueOf("UI_WEB_SOCKET_LOG_ITEM_LIMIT");
     // Test-only instrument (instance-scoped, so concurrent tests / handlers never pollute each
     // other's reading): counts every DashboardLogEntryDTO this handler's per-update log stream
     // constructs, i.e. the "expensive" per-entry work (the entry survived the cheap predicate AND
@@ -102,6 +153,23 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     @VisibleForTesting
     static WebSocketServerHandshaker handshakerForChannel(Channel channel) {
         return channel.attr(HANDSHAKER).get();
+    }
+
+    // The per-channel log-row limit chosen at upgrade time, or null if the channel never upgraded
+    // through the resolver. Lets a test prove the upgrade path stores the resolved, clamped value.
+    @VisibleForTesting
+    static Integer logItemLimitForChannel(Channel channel) {
+        return channel.attr(LOG_ITEM_LIMIT).get();
+    }
+
+    @VisibleForTesting
+    static int defaultLogItemLimitForTesting() {
+        return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
+    }
+
+    @VisibleForTesting
+    static int maxLogItemLimitForTesting() {
+        return MAX_LOG_UPDATE_ITEM_LIMIT;
     }
     // Eagerly initialised and safely published via static-final so reads from the off-event-loop
     // scheduler threads see a fully constructed mapper without a data race. The mapper is stateless
@@ -128,7 +196,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private ScheduledExecutorService throttleExecutorService;
     private Semaphore semaphore;
     // Memo of the (expensive) ExpectationDTO -> JsonNode serialisation, keyed by expectation id.
-    // Rebuilding it for up to UI_UPDATE_ITEM_LIMIT expectations on EVERY throttled dashboard update
+    // Rebuilding it for up to EXPECTATION_UPDATE_ITEM_LIMIT expectations on EVERY throttled dashboard update
     // (roughly once a second per connected dashboard) reproduced byte-identical JSON whenever the
     // expectation had not changed, so the tree is cached and reused. INVALIDATION is deliberately a
     // read-only, zero-data-plane-cost signal: an entry is reused only when the CURRENT matcher still
@@ -205,7 +273,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
         boolean release = true;
         try {
-            if (msg instanceof FullHttpRequest && ((FullHttpRequest) msg).uri().equals(UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI)) {
+            if (msg instanceof FullHttpRequest && isDashboardUpgradeUri(((FullHttpRequest) msg).uri())) {
                 if (isHttp2Enabled(ctx.channel())) {
                     if (mockServerLogger.isEnabledForInstance(Level.TRACE)) {
                         mockServerLogger.logEvent(
@@ -227,6 +295,11 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     // response has already been written, so do NOT upgrade — otherwise the
                     // dashboard would push all captured traffic to an unauthenticated client.
                 } else {
+                    // Resolve the client-requested log-row limit at the SINGLE choke point and pin it
+                    // to THIS channel (read later on each throttled update). A bare URI carries no
+                    // parameter, so this resolves to the DEFAULT and costs exactly what it does today.
+                    ctx.channel().attr(LOG_ITEM_LIMIT).set(
+                        resolveLogItemLimit(firstQueryParam(((FullHttpRequest) msg).uri(), LOG_ITEM_LIMIT_PARAM)));
                     upgradeChannel(ctx, (FullHttpRequest) msg);
                     ctx.channel().attr(CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET).set(true);
                 }
@@ -243,6 +316,69 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 ReferenceCountUtil.release(msg);
             }
         }
+    }
+
+    // Match the dashboard upgrade on the PATH component only, so a query string (e.g. the client's
+    // requested log limit) does not break the match - the equality it replaces would have rejected any
+    // /_mockserver_ui_websocket?... entirely. QueryStringDecoder.rawPath() returns the undecoded path
+    // before '?'; a bare URI has rawPath()==uri, so existing clients that send no query string are
+    // unaffected. Deliberately an EXACT equality on the path, not a prefix/startsWith, so this does not
+    // widen what counts as the dashboard upgrade path.
+    private static boolean isDashboardUpgradeUri(String uri) {
+        return UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI.equals(new QueryStringDecoder(uri).rawPath());
+    }
+
+    // First value of the named query-string parameter, or null when absent.
+    private static String firstQueryParam(String uri, String name) {
+        List<String> values = new QueryStringDecoder(uri).parameters().get(name);
+        return (values == null || values.isEmpty()) ? null : values.get(0);
+    }
+
+    /**
+     * The SINGLE choke point that validates AND bounds a client-requested log-row limit. Every
+     * requested value flows through here and this is the ONLY place the maximum is applied, so no two
+     * sites can disagree. It FAILS TOWARD THE DEFAULT, never toward the maximum: an absent, blank,
+     * non-numeric, negative or zero request resolves to {@link #DEFAULT_LOG_UPDATE_ITEM_LIMIT} - an
+     * unparseable value is NOT read as "give me everything". A value above the maximum is clamped down
+     * to {@link #MAX_LOG_UPDATE_ITEM_LIMIT}. A valid value below the default is honoured as-is (the
+     * client asked for less). This bounds the PER-CLIENT cost only; the aggregate is bounded by the
+     * maximum together with the connection cap, not by this check (see MAX_LOG_UPDATE_ITEM_LIMIT).
+     */
+    @VisibleForTesting
+    static int resolveLogItemLimit(String requested) {
+        if (requested == null) {
+            return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
+        }
+        int value;
+        try {
+            value = Integer.parseInt(requested.trim());
+        } catch (NumberFormatException nfe) {
+            return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
+        }
+        if (value <= 0) {
+            return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
+        }
+        return Math.min(value, MAX_LOG_UPDATE_ITEM_LIMIT);
+    }
+
+    // Read the per-channel log-row limit chosen at upgrade time. The update path holds a
+    // ChannelOutboundInvoker (a ChannelHandlerContext in production, an EmbeddedChannel in tests), so
+    // resolve it to a Channel to read the attribute; an absent value (channel never upgraded through
+    // the resolver, or not channel-shaped) uses the DEFAULT.
+    private static int logItemLimitFor(ChannelOutboundInvoker ctx) {
+        Channel channel = null;
+        if (ctx instanceof ChannelHandlerContext) {
+            channel = ((ChannelHandlerContext) ctx).channel();
+        } else if (ctx instanceof Channel) {
+            channel = (Channel) ctx;
+        }
+        if (channel != null) {
+            Integer limit = channel.attr(LOG_ITEM_LIMIT).get();
+            if (limit != null) {
+                return limit;
+            }
+        }
+        return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
     }
 
     @Override
@@ -523,6 +659,9 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     }
 
     private void sendUpdate(ChannelOutboundInvoker ctx, RequestDefinition httpRequest, int retryCount) {
+        // Client-requested log-row limit for THIS connection (DEFAULT when it requested nothing).
+        // Expectations are NOT governed by it - they keep the fixed EXPECTATION_UPDATE_ITEM_LIMIT.
+        final int logItemLimit = logItemLimitFor(ctx);
         DescriptionProcessor activeExpectationsDescriptionProcessor = new DescriptionProcessor();
         DescriptionProcessor logMessagesDescriptionProcessor = new DescriptionProcessor();
         DescriptionProcessor recordedRequestsDescriptionProcessor = new DescriptionProcessor();
@@ -544,7 +683,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     List<ImmutableMap<String, Object>> activeExpectations = requestMatchers
                         .retrieveRequestMatchers(httpRequest)
                         .stream()
-                        .limit(UI_UPDATE_ITEM_LIMIT)
+                        .limit(EXPECTATION_UPDATE_ITEM_LIMIT)
                         .map(requestMatcher -> {
                             // Reuse the cached JSON tree when the expectation is unchanged; the
                             // Description is recomputed every time (it is cheap for the common
@@ -563,7 +702,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     List<Map<String, Object>> recordedRequests = new LinkedList<>();
                     List<Object> logMessages = new LinkedList<>();
                     populateLogSections(
-                        reverseLogEventsStream, true,
+                        reverseLogEventsStream, true, logItemLimit,
                         logMessages, recordedRequests, proxiedRequests,
                         logMessagesDescriptionProcessor, recordedRequestsDescriptionProcessor, proxiedRequestsDescriptionProcessor);
                     sendMessage(ctx, httpRequest, ImmutableMap.of(
@@ -585,6 +724,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     static void populateLogSections(
         Stream<DashboardLogEntryDTO> reverseLogEventsStream,
         boolean shortCircuit,
+        int logItemLimit,
         List<Object> logMessages,
         List<Map<String, Object>> recordedRequests,
         List<Map<String, Object>> proxiedRequests,
@@ -604,21 +744,21 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         // Short-circuit once all three output categories are full. The stream is sequential and
         // ordered and this predicate is evaluated BEFORE each element, so an element only reaches
         // the body while at least one category still has room. Once logMessages, recordedRequests
-        // and proxiedRequests have each hit UI_UPDATE_ITEM_LIMIT no later element could be added to
+        // and proxiedRequests have each hit logItemLimit no later element could be added to
         // ANY of them (every add below is guarded by the same size check, and responsesByCorrelationId
         // is only ever consumed to enrich recordedRequests, which is full), so stopping here drops
         // only entries the old full walk would have discarded -- the emitted frame is byte-identical
         // while the walk becomes O(depth needed) not O(entire log).
         Stream<DashboardLogEntryDTO> boundedStream = shortCircuit
             ? reverseLogEventsStream.takeWhile(logEntryDTO ->
-                logMessages.size() < UI_UPDATE_ITEM_LIMIT
-                    || recordedRequests.size() < UI_UPDATE_ITEM_LIMIT
-                    || proxiedRequests.size() < UI_UPDATE_ITEM_LIMIT)
+                logMessages.size() < logItemLimit
+                    || recordedRequests.size() < logItemLimit
+                    || proxiedRequests.size() < logItemLimit)
             : reverseLogEventsStream;
         boundedStream
             .forEach(logEntryDTO -> {
                 if (logEntryDTO != null) {
-                    if (logMessages.size() < UI_UPDATE_ITEM_LIMIT) {
+                    if (logMessages.size() < logItemLimit) {
                         DashboardLogEntryDTO dashboardLogEntryDTO = logEntryDTO.setDescription(logMessagesDescriptionProcessor.description(logEntryDTO));
                         if (isNotBlank(logEntryDTO.getCorrelationId()) && logEntryDTO.getType() != TRACE) {
                             DashboardLogEntryDTOGroup logEntryGroup = logEntryGroups.get(logEntryDTO.getCorrelationId());
@@ -637,7 +777,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         && logEntryDTO.getHttpResponse() != null) {
                         responsesByCorrelationId.putIfAbsent(logEntryDTO.getCorrelationId(), logEntryDTO.getHttpResponse());
                     }
-                    if (recordedRequestsPredicate.test(logEntryDTO) && recordedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
+                    if (recordedRequestsPredicate.test(logEntryDTO) && recordedRequests.size() < logItemLimit) {
                         for (RequestDefinition request : logEntryDTO.getHttpRequests()) {
                             if (request != null) {
                                 Map<String, Object> value = new LinkedHashMap<>();
@@ -659,7 +799,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                             }
                         }
                     }
-                    if (proxiedRequestsPredicate.test(logEntryDTO) && proxiedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
+                    if (proxiedRequestsPredicate.test(logEntryDTO) && proxiedRequests.size() < logItemLimit) {
                         Map<String, Object> value = new LinkedHashMap<>();
                         if (logEntryDTO.getHttpRequest() != null) {
                             value.put("httpRequest", logEntryDTO.getHttpRequest());

@@ -98,7 +98,19 @@ The dashboard exposes all captured traffic (request/response bodies included), s
 
 The `DashboardWebSocketHandler` implements both `MockServerLogListener` and `MockServerMatcherListener`. When either fires, `sendUpdate()` assembles and pushes the current state to all connected clients.
 
-**Throttling**: A `Semaphore(1)` with a scheduled release every 1 second limits updates to at most one per second per client, preventing UI flooding during high-traffic scenarios.
+**Throttling — be precise about what it bounds.** The `Semaphore(1)` with a scheduled release every second is a **single global permit**, not one per client: `DashboardWebSocketHandler` is `@ChannelHandler.Sharable`, so one instance serves every dashboard. It is acquired inside `sendMessage`, so it gates only the **JSON serialise-and-write** — by the time it is consulted, `sendUpdate` has already walked the event log and built the DTOs. That walk runs on coalesced log updates at up to ~4/second (`MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS` is 250 ms) per registry entry, and unthrottled on every inbound `TextWebSocketFrame`, whose rate the client controls. Read "1/second" as a bound on dashboard **writes**, never on the work behind them.
+
+**How many items an update carries.** By default each update carries up to 100 log messages, 100 recorded requests and 100 proxied requests, plus up to 100 expectations. A client may request a different **log-row** limit on the upgrade URI:
+
+```
+/_mockserver_ui_websocket?logLimit=250
+```
+
+`resolveLogItemLimit` is the single choke point that both validates the value and applies the ceiling. It fails toward the **default**, never the maximum — absent, blank, zero, negative, non-numeric and non-integer values all resolve to 100, so a malformed request can never be read as "send everything". Values above `MAX_LOG_UPDATE_ITEM_LIMIT` (500) are clamped down. The chosen value is pinned to the channel in an `AttributeKey` (the handler is `@Sharable`, so it cannot live in an instance field) and read on each update.
+
+The **expectation** count is deliberately not client-tunable and stays at `EXPECTATION_UPDATE_ITEM_LIMIT`. Expectations are expensive per item and change rarely — and the one genuinely costly per-item operation, `DescriptionProcessor`'s OpenAPI parse, is reachable only from that path. Keeping it off the client-controlled knob means this parameter cannot amplify it.
+
+This matters because **the dashboard WebSocket is unauthenticated by default**, so the requested limit is attacker-controlled on a default deployment. The protection is the maximum combined with the fan-out cap (`clientRegistry` is a `CircularHashMap(100)`, and the update paths iterate only registry entries) — not the per-request validation, which bounds only the per-client cost.
 
 ## Error Resilience
 

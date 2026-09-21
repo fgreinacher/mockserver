@@ -1903,15 +1903,7 @@ public class DashboardWebSocketHandlerTest {
     }
 
     private static DefaultFullHttpRequest webSocketUpgradeRequest() {
-        DefaultFullHttpRequest upgradeRequest = new DefaultFullHttpRequest(
-            HttpVersion.HTTP_1_1, HttpMethod.GET, "/_mockserver_ui_websocket"
-        );
-        upgradeRequest.headers().set(HttpHeaderNames.HOST, "localhost");
-        upgradeRequest.headers().set(HttpHeaderNames.UPGRADE, "websocket");
-        upgradeRequest.headers().set(HttpHeaderNames.CONNECTION, "Upgrade");
-        upgradeRequest.headers().set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==");
-        upgradeRequest.headers().set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
-        return upgradeRequest;
+        return webSocketUpgradeRequest("/_mockserver_ui_websocket");
     }
 
     @Test
@@ -1994,6 +1986,153 @@ public class DashboardWebSocketHandlerTest {
         assertThat(handshakerOne, is(not(sameInstance(handshakerTwo))));
     }
 
+    private static DefaultFullHttpRequest webSocketUpgradeRequest(String uri) {
+        DefaultFullHttpRequest upgradeRequest = new DefaultFullHttpRequest(
+            HttpVersion.HTTP_1_1, HttpMethod.GET, uri
+        );
+        upgradeRequest.headers().set(HttpHeaderNames.HOST, "localhost");
+        upgradeRequest.headers().set(HttpHeaderNames.UPGRADE, "websocket");
+        upgradeRequest.headers().set(HttpHeaderNames.CONNECTION, "Upgrade");
+        upgradeRequest.headers().set(HttpHeaderNames.SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==");
+        upgradeRequest.headers().set(HttpHeaderNames.SEC_WEBSOCKET_VERSION, "13");
+        return upgradeRequest;
+    }
+
+    // -----------------------------------------------------------------------------------------------
+    // Option 7: a dashboard client may request a per-connection LOG-ROW limit within a server-enforced
+    // range, via a query parameter on the upgrade URI. Expectations are NOT client-tunable.
+    // -----------------------------------------------------------------------------------------------
+
+    @Test
+    public void resolveLogItemLimitFailsTowardDefaultAndClampsToMaximum() {
+        int def = DashboardWebSocketHandler.defaultLogItemLimitForTesting();
+        int max = DashboardWebSocketHandler.maxLogItemLimitForTesting();
+
+        // absent -> DEFAULT (a client that asks for nothing costs exactly what it costs today)
+        assertThat("absent", DashboardWebSocketHandler.resolveLogItemLimit(null), is(def));
+        // blank / whitespace -> DEFAULT (never read as "give me everything")
+        assertThat("empty", DashboardWebSocketHandler.resolveLogItemLimit(""), is(def));
+        assertThat("whitespace", DashboardWebSocketHandler.resolveLogItemLimit("   "), is(def));
+        // valid, in range and ABOVE the default -> honoured verbatim
+        assertThat("in-range above default", DashboardWebSocketHandler.resolveLogItemLimit("150"), is(150));
+        // valid but BELOW the default -> honoured (the client asked for less); default never rises
+        assertThat("in-range below default", DashboardWebSocketHandler.resolveLogItemLimit("50"), is(50));
+        assertThat("surrounding whitespace tolerated", DashboardWebSocketHandler.resolveLogItemLimit(" 200 "), is(200));
+        // zero -> DEFAULT, negative -> DEFAULT
+        assertThat("zero", DashboardWebSocketHandler.resolveLogItemLimit("0"), is(def));
+        assertThat("negative", DashboardWebSocketHandler.resolveLogItemLimit("-5"), is(def));
+        // non-numeric (garbage, and a non-integer) -> DEFAULT, NOT the maximum
+        assertThat("non-numeric", DashboardWebSocketHandler.resolveLogItemLimit("abc"), is(def));
+        assertThat("non-integer", DashboardWebSocketHandler.resolveLogItemLimit("12.5"), is(def));
+        // exactly the maximum -> the maximum; above -> clamped DOWN to the maximum
+        assertThat("at max", DashboardWebSocketHandler.resolveLogItemLimit(String.valueOf(max)), is(max));
+        assertThat("above max", DashboardWebSocketHandler.resolveLogItemLimit(String.valueOf(max + 1)), is(max));
+        // a huge value (and overflow-adjacent) -> clamped to the maximum, never allowed through
+        assertThat("huge", DashboardWebSocketHandler.resolveLogItemLimit("100000"), is(max));
+        assertThat("Integer.MAX_VALUE", DashboardWebSocketHandler.resolveLogItemLimit(String.valueOf(Integer.MAX_VALUE)), is(max));
+    }
+
+    @Test
+    public void bareUpgradeUriStillUpgradesAndUsesDefaultLogLimit() {
+        // Regression guard for the equality->path change: a bare URI (no query string), exactly as the
+        // shipped UI sends, must still upgrade and resolve to the DEFAULT limit.
+        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+
+        channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket"));
+
+        assertNotRejected(channel.readOutbound());
+        assertThat("bare upgrade stores the DEFAULT log limit",
+            DashboardWebSocketHandler.logItemLimitForChannel(channel),
+            is(DashboardWebSocketHandler.defaultLogItemLimitForTesting()));
+    }
+
+    @Test
+    public void upgradeUriWithLogLimitQueryUpgradesAndStoresRequestedLimit() {
+        // A query string must NOT break the upgrade (the old exact-equality match would have rejected
+        // it), and the in-range requested limit must be pinned to THIS channel.
+        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+
+        channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket?logLimit=250"));
+
+        assertNotRejected(channel.readOutbound());
+        assertThat("in-range requested limit is stored on the channel",
+            DashboardWebSocketHandler.logItemLimitForChannel(channel), is(250));
+    }
+
+    @Test
+    public void upgradeUriWithExcessiveLogLimitQueryStoresClampedMaximum() {
+        // An attacker-chosen huge value on the (unauthenticated-by-default) upgrade must be clamped at
+        // the single choke point to the server maximum before it reaches the channel.
+        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+
+        channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket?logLimit=100000"));
+
+        assertNotRejected(channel.readOutbound());
+        assertThat("excessive requested limit is clamped to the server maximum",
+            DashboardWebSocketHandler.logItemLimitForChannel(channel),
+            is(DashboardWebSocketHandler.maxLogItemLimitForTesting()));
+    }
+
+    @Test
+    public void foreignPathIsNotTreatedAsDashboardUpgrade() {
+        // The path comparison must NOT widen what counts as the dashboard upgrade path: a different
+        // path is passed through un-upgraded (no limit pinned), even though it shares a prefix.
+        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
+        EmbeddedChannel channel = new EmbeddedChannel(handler);
+
+        DefaultFullHttpRequest foreign = webSocketUpgradeRequest("/_mockserver_ui_websocket_evil");
+        channel.writeInbound(foreign);
+
+        assertThat("foreign path is not upgraded, so no log limit is pinned",
+            DashboardWebSocketHandler.logItemLimitForChannel(channel), is(nullValue()));
+        assertThat("foreign request is passed on down the pipeline", channel.readInbound(), is(sameInstance((Object) foreign)));
+    }
+
+    @Test
+    public void populateLogSectionsHonoursClientLogLimit() {
+        // The split log limit actually caps the log sections at the client-supplied value - and can go
+        // ABOVE the old fixed 100. Drive the extracted consumer directly for an exact assertion.
+        List<DashboardLogEntryDTO> reverse = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            reverse.add(logDto(FORWARDED_REQUEST, "/proxied-" + i));
+        }
+        for (int i = 0; i < 20; i++) {
+            reverse.add(logDto(RECEIVED_REQUEST, "/recorded-" + i));
+        }
+
+        List<Object> logMessages = new LinkedList<>();
+        List<Map<String, Object>> recordedRequests = new LinkedList<>();
+        List<Map<String, Object>> proxiedRequests = new LinkedList<>();
+        DashboardWebSocketHandler.populateLogSections(
+            reverse.stream(), true, 5,
+            logMessages, recordedRequests, proxiedRequests,
+            new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
+
+        assertThat("recorded rows capped at the client limit", recordedRequests.size(), is(5));
+        assertThat("proxied rows capped at the client limit", proxiedRequests.size(), is(5));
+        assertThat("log messages capped at the client limit", logMessages.size(), is(5));
+
+        // A limit above the old fixed 100 admits more than 100 rows (proving the cap is the parameter,
+        // not a residual constant).
+        List<DashboardLogEntryDTO> many = new ArrayList<>();
+        for (int i = 0; i < 150; i++) {
+            many.add(logDto(RECEIVED_REQUEST, "/recorded-" + i));
+        }
+        List<Map<String, Object>> recordedAbove100 = new LinkedList<>();
+        DashboardWebSocketHandler.populateLogSections(
+            many.stream(), true, 130,
+            new LinkedList<>(), recordedAbove100, new LinkedList<>(),
+            new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
+        assertThat("a limit above 100 admits more than 100 rows", recordedAbove100.size(), is(130));
+    }
+
     // =============================================================================================
     // Unit 1: short-circuit the reverse UI log walk once all three output categories (logMessages,
     // recordedRequests, proxiedRequests) have each reached UI_UPDATE_ITEM_LIMIT. The consumer used to
@@ -2028,7 +2167,7 @@ public class DashboardWebSocketHandlerTest {
         List<Map<String, Object>> recordedRequests = new LinkedList<>();
         List<Map<String, Object>> proxiedRequests = new LinkedList<>();
         DashboardWebSocketHandler.populateLogSections(
-            reverseOrdered.stream(), shortCircuit,
+            reverseOrdered.stream(), shortCircuit, 100,
             logMessages, recordedRequests, proxiedRequests,
             new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
         Map<String, Object> sections = new LinkedHashMap<>();
@@ -2175,7 +2314,7 @@ public class DashboardWebSocketHandlerTest {
     private static long countPulls(List<DashboardLogEntryDTO> reverseOrdered, boolean shortCircuit) throws Exception {
         AtomicLong pulled = new AtomicLong();
         DashboardWebSocketHandler.populateLogSections(
-            reverseOrdered.stream().peek(ignored -> pulled.incrementAndGet()), shortCircuit,
+            reverseOrdered.stream().peek(ignored -> pulled.incrementAndGet()), shortCircuit, 100,
             new LinkedList<>(), new LinkedList<>(), new LinkedList<>(),
             new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
         return pulled.get();

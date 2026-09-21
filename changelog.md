@@ -129,6 +129,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   was used up**. Spurious refusals under concurrent load are cut roughly tenfold.
 
 ### Added
+- **The dashboard can now ask for more request history per update.** Connect the dashboard
+  WebSocket with `?logLimit=N` — for example `/_mockserver_ui_websocket?logLimit=250` — and the
+  server sends up to `N` log rows, recorded requests and proxied requests per update instead of the
+  fixed 100. The server enforces a hard maximum of 500, and anything missing, out of range or
+  malformed falls back to the default 100, so a dashboard that asks for nothing costs exactly what
+  it did before. The number of expectations sent is unchanged and cannot be raised this way.
 - **Slimmer, optional builds of the standalone JAR for Linux CI and containers.** Alongside the
   usual `mockserver-netty-<version>-jar-with-dependencies.jar`, two new variants are published:
   `-jar-with-dependencies-linux-x86_64.jar` and `-jar-with-dependencies-linux-aarch_64.jar`. Each is
