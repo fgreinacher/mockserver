@@ -1159,11 +1159,27 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
   # had CPU headroom, dropped no iterations, and the server was not returning fast
   # errors (a rung "achieves" its offered rate even while erroring, so error_rate is
   # part of validity, not just throughput). The BUDGETED metric is peak_achieved_rps
-  # = max achieved over rig-valid rungs — CONTINUOUS (it moves proportionally with
-  # the real ceiling, e.g. 36,324 achieved at 48,000 offered), unlike the ladder-
-  # QUANTISED saturation_rps (only ever a rung's offered value, 16k/32k/... — its
-  # smallest move is a factor of two, so it cannot carry a percentage floor).
-  # saturation_rps is kept as a DESCRIPTIVE figure only (the knee), not budgeted.
+  # = max achieved over rig-valid rungs.
+  #
+  # peak_achieved_rps IS A PROPERTY OF THE RIG, NOT OF THE SERVER. An earlier version of
+  # this comment called it "CONTINUOUS (it moves proportionally with the real ceiling,
+  # e.g. 36,324 achieved at 48,000 offered)". The data falsifies that: in build 325 the
+  # server achieved 28,377.4 at 48,000 offered with zero errors, and this field still read
+  # 2,000.1 — the same value build 306 reported for a different run whose server peak also
+  # differed. It CANNOT track the server ceiling, because the rig-validity filter
+  # structurally caps it at whichever rung the CLIENT stops being clean, and on this rig k6
+  # starts dropping iterations at the 4,000 rung. Two runs agreeing on "peak achieved" while
+  # their servers disagree is the tell. A documented rationale contradicted by shipped
+  # behaviour is worse than none, because it tells the next reader not to check.
+  #
+  # BEWARE: two different quantities share this name. THIS one is the rig-valid peak
+  # (2,000.1). lib/perf-website-figures.jq independently recomputes max achieved over ALL
+  # rungs (28,377.4) and that is what is published to the website. Same name, different
+  # subject, different consumer — do not reconcile one against the other.
+  #
+  # saturation_rps is ladder-QUANTISED (only ever a rung's offered value, 16k/32k/... — its
+  # smallest move is a factor of two, so it cannot carry a percentage floor) and is kept as
+  # a DESCRIPTIVE figure only (the knee), not budgeted.
   jq -n \
     --slurpfile sweep "$sweep_json" \
     --argjson cpu "$cpu_map" \
@@ -1195,7 +1211,9 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
     | . as $rungs
     | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
     | ([ $rungs[] | select(.clean) | .offered_rps ] | max // 0) as $sat
+    | ([ $rungs[] | select(.rig_valid) ] | length) as $rig_valid_rungs
     | { peak_achieved_rps:$peak, saturation_rps:$sat,
+        rig_valid_rungs:$rig_valid_rungs,
         client_pin_pct:$pin, client_cores:$cores,
         ladder:$rungs,
         excluded:[ $rungs[] | select(.rig_valid|not)
@@ -1214,11 +1232,26 @@ echo "--- peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (c
 # drops, low errors). If EVERY rung was excluded the rig was compromised
 # throughout and no server figure is trustworthy. PROVOCATION (observed false):
 # a synthetic ladder with the k6 CPU above 85% of pin at every rung yields
-# peak_achieved_rps=0 and this check false (see the item's can-it-fail evidence).
-if awk -v v="$PEAK_ACHIEVED_RPS" 'BEGIN{exit !(v+0>0)}'; then
-  add_check "sweep_client_had_headroom" true "peak_achieved_rps=${PEAK_ACHIEVED_RPS} measured with client headroom, no dropped iterations, low errors"
+# rig_valid_rungs=0 and this check false (see the item's can-it-fail evidence).
+#
+# KEYED OFF THE RUNG COUNT, NOT off peak_achieved_rps > 0. Those are not the same
+# question. A rung can be rig-valid and still achieve 0 rps (a server that is down
+# rather than a client that is compromised), and the old form reported that as "every
+# rung excluded" — blaming the rig for a server failure. The count asks what the check
+# is actually named for: did ANY rung measure cleanly?
+#
+# The failure message now REPORTS the per-rung exclude_reason rather than asserting a
+# cause. The old text named "client CPU-pinned / VU-starved / erroring" unconditionally,
+# and that mis-diagnosed build #322: its 2,000 rung dropped 133 iterations (~0.4%), the
+# zero-tolerance no_drops clause excluded every rung, and the build failed pointing at
+# client CPU that was in fact 13.6% utilised. Each rung already carries the real reason;
+# print it instead of guessing.
+RIG_VALID_RUNGS="$(jq -r '.rig_valid_rungs // 0' <<<"$SATURATION_JSON")"
+if awk -v v="$RIG_VALID_RUNGS" 'BEGIN{exit !(v+0>0)}'; then
+  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no dropped iterations, low errors (peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
 else
-  add_check "sweep_client_had_headroom" false "every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) — the k6 client, not MockServer, was the bottleneck; no server throughput figure is trustworthy"
+  SWEEP_EXCLUSIONS="$(jq -r '[.ladder[] | "\(.offered_rps): \(.exclude_reason // "?")"] | join("; ")' <<<"$SATURATION_JSON")"
+  add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
 fi
 
 # --- INFO-log-level publication arm (plan open question 5) ---------------------
