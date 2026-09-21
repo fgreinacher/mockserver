@@ -2407,6 +2407,53 @@ the one where the tension is real, and it is flagged there.
 | 9b | **Dashboard responsiveness under a large dataset — the client half.** The server pushes bounded 100-item batches ~1/s, so client slowness is about ACCUMULATED state: unbounded in-memory lists, reconciliation that is O(accumulated) rather than O(new), un-virtualised DOM growth, and derivations recomputed per render rather than memoised per entry | The reported symptom ("the page got heavy when there are lots of logs") has never been measured client-side. `mockserver-ui/src/__bench__/` has three benches, but they are OLD-vs-NEW proofs of a PAST optimisation and **nothing in `.buildkite/` runs them** - they proved a win once and guard nothing now | Medium — vitest bench exists; the work is realistic scale and turning proofs into guards | **Yes** — benches confirmed dark |
 | 9 | **The overload contract.** The programme fixed congestion collapse (it used to serve LESS as load rose). What SHOULD happen at 2x capacity is still unspecified: backpressure, 503s, bounded queues? | "Holds 25,488" is an improvement, not a contract | Low — needs design decisions before measurement | Reasoned |
 
+### Cutting the server-side dashboard cost — options 6 and 7, in that order
+
+**Both approved 2026-09-21.** These attack the cost measured in 9a: with 1 expectation a connected
+dashboard was free; with 150 it moved serving p95 by roughly +40% to +90%. The cost tracked
+EXPECTATION COUNT, not log size, which points at the per-update expectation serialisation rather
+than the event-log scan.
+
+**Option 6 — stop re-serialising expectations that have not changed. Do this FIRST.**
+`DashboardWebSocketHandler:481-488` runs `objectMapper.valueToTree(new ExpectationDTO(...))` for up
+to `UI_UPDATE_ITEM_LIMIT` (100) expectations on EVERY update — roughly once a second, per connected
+dashboard. A grep for cache / memo / last-sent finds nothing: there is no change detection. Since
+expectations change rarely, almost all of that work reproduces JSON identical to the previous
+second's. **This removes waste rather than a feature, so it costs the user nothing** — the dashboard
+shows exactly what it shows today. That is what makes it the first move.
+
+**Option 7 — let the client request how many items it wants, within a server-enforced range. Do this
+SECOND, and the ordering is the point.** It is a sound idea and it pairs naturally with virtualising
+the traffic list: once the client windows its rows it can display far more than it can today, so
+asking for more stops being wasteful. But **tuning a limit before removing the waste means
+calibrating the knob against a cost you are about to delete** — you would pick a number justified by
+option 6's absence and then be stuck with it.
+
+Two constraints on option 7, both load-bearing:
+
+1. **The dashboard WebSocket is UNAUTHENTICATED BY DEFAULT.**
+   `DashboardWebSocketHandler.webSocketUpgradeAuthenticated` returns `true` outright when no
+   control-plane authentication handler is configured, which is the default — the comment there says
+   "preserve the default open dashboard". So a client-chosen limit is an ATTACKER-chosen limit on a
+   default deployment, and N connections each requesting the maximum multiply the per-second scan and
+   serialisation. The server-enforced hard maximum is therefore not a nicety, it is the whole safety
+   property, and it must be chosen so that (max x plausible connection count) is survivable. **The
+   DEFAULT must not rise above today's 100** — a client that asks for nothing must cost no more than
+   it does now.
+2. **One constant currently governs two very different things.** `UI_UPDATE_ITEM_LIMIT` caps log
+   rows AND expectations (`:481, :513, :532, :554`). They have opposite profiles: log rows change
+   constantly and are cheap each; expectations change rarely and are expensive each. A single
+   client-supplied number for both would be the wrong shape — they want separate limits, and after
+   option 6 the expectation limit matters much less anyway.
+
+**Note what option 5 was, and why it is now superseded.** Lowering `UI_UPDATE_ITEM_LIMIT` outright
+would cut the same cost, but by showing every user less history. Option 6 gets most of the saving
+with no user-visible change at all, and option 7 then makes the remaining trade *explicit and
+per-client* instead of imposed globally. Option 4 (a client-side "showing 50 of 200" cap) is
+separately superseded by the virtualisation work below: it delivers a similar rendering win while
+requiring a click to see the rest, and it does nothing for the server because the items have already
+been scanned, serialised and sent by the time the client decides not to draw them.
+
 ### Deferred: virtualising the traffic list — the biggest single UI win, and why it is not taken yet
 
 **Deferred 2026-09-21 by the owner: this is real and wanted, but other plan items outrank it right
