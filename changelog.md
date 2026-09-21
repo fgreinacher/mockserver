@@ -11,6 +11,12 @@ the entries further down say what changed and why. Throughput is the headline, b
 likely to affect a test suite are the **silent failures under load** listed last — cases where
 MockServer could lose data and report nothing.
 
+**One change can stop a server that used to start.** If you set `http3Port`, read the `BREAKING`
+entry under *Changed* before upgrading: HTTP/3's native libraries now ship in a separate artifact,
+so a server configured for HTTP/3 without them refuses to start and tells you which artifact to
+use. This affects Docker images too, which previously served HTTP/3 out of the box. If you do not
+use HTTP/3 — the default — nothing changes except smaller downloads.
+
 **Throughput and latency**
 
 - **19,517 → 25,488 requests/sec** actually served when clients offer 64,000/sec. Past its limit the
@@ -62,8 +68,14 @@ MockServer could lose data and report nothing.
 
 - Stopping a MockServer is **~107 ms → ~0 ms** each time. It is paid per instance, so a suite
   creating one per test method spent roughly three quarters of its time here.
-- Docker image download **~163 MB → ~135 MB (−17%)** — the dominant cost of a first deploy onto a
-  Kubernetes node that has not cached the image.
+- Docker image download **~163 MB → ~125 MB (−23%)** — the dominant cost of a first deploy onto a
+  Kubernetes node that has not cached the image. Two separately measured reductions compose here:
+  trimming Netty's native libraries and storing the jar uncompressed (163.25 → 135.47 MiB), then
+  trimming four more libraries that ship per-platform binaries the same way (a further 10.4 MiB).
+  Dropping the QUIC native from the image takes a little more off again, not counted above.
+- The standalone JAR everyone downloads is **104 MB → 93 MB**, because HTTP/3's native libraries
+  now ship as a separate artifact. This one changes behaviour if you use HTTP/3 — see the BREAKING
+  entry below.
 - Optional Linux-only builds of the standalone JAR, **~13 MB smaller** than the default, for CI
   agents that start with an empty disk. The default artifact is unchanged.
 - Kubernetes pod marked ready **~4 s → ~2.8 s** — the readiness probe's cadence, not the server,
@@ -151,8 +163,16 @@ MockServer could lose data and report nothing.
   `netty-codec-native-quic-<version>-linux-<arch>.jar` (~3 MB) is mounted into `/libs`, which is
   already on the classpath in every image variant. **If you do not use HTTP/3 — which is the default
   — nothing changes except a smaller download.**
-- **The Docker image is smaller again — another ~10 MB off the download.** The image already
-  trimmed Netty's native libraries to the architecture the container actually runs on. Four more
+- **The Docker image is about 17% smaller to download** (~163 MB to ~135 MB, measured on
+  linux/arm64; linux/amd64 is trimmed the same way). This matters most on a Kubernetes node that
+  does not already have the image cached, where pulling it is the overwhelming majority of the time
+  before MockServer is serving. Two changes: the bundled Netty native libraries are trimmed to the
+  architecture the container actually runs on, and the JAR is stored uncompressed inside the image
+  so the image layer can compress it properly. Nothing is lost -- the removed files are macOS and
+  Windows binaries that a Linux container could never load. Native TLS (BoringSSL), HTTP/2, the
+  native epoll transport and the AppCDS startup archive were all verified unchanged.
+- **The Docker image is smaller again — another ~10 MB off the download, on top of the reduction
+  above.** The image already trimmed Netty's native libraries to the architecture the container actually runs on. Four more
   libraries ship native binaries the same way and were not covered: zstd-jni, snappy, JNA and
   lz4-java. Between them they carried binaries for AIX, FreeBSD, Solaris, macOS, Windows and a
   dozen Linux architectures, none of which a Linux container can load — zstd-jni alone ships 18
@@ -170,14 +190,7 @@ MockServer could lose data and report nothing.
   jar into `/libs` covers a build that does not). The same text is used by the `501 Not Implemented`
   responses from all four `/mockserver/asyncapi` routes, by the equivalent Java API, and by the
   dashboard, which now shows the server's message instead of a shorter one of its own.
-- **The Docker image is about 17% smaller to download** (~163 MB to ~135 MB, measured on
-  linux/arm64; linux/amd64 is trimmed the same way). This matters most on a Kubernetes node that
-  does not already have the image cached, where pulling it is the overwhelming majority of the time
-  before MockServer is serving. Two changes: the bundled Netty native libraries are trimmed to the
-  architecture the container actually runs on, and the JAR is stored uncompressed inside the image
-  so the image layer can compress it properly. Nothing is lost -- the removed files are macOS and
-  Windows binaries that a Linux container could never load. Native TLS (BoringSSL), HTTP/2, the
-  native epoll transport and the AppCDS startup archive were all verified unchanged.
+
 
 - **Stopping a MockServer is now effectively instant** (about 107ms faster each time). Shutdown
   asked Netty for a "quiet period" before closing its event loops, and any non-zero quiet period
