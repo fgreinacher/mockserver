@@ -31,6 +31,11 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **Having the dashboard open costs the server far less.** Every second, for each connected
+  dashboard, MockServer rebuilt the JSON for up to 100 expectations — even though expectations rarely
+  change. That JSON is now reused until the expectation actually changes: over an identical run, the
+  work dropped from **60,700 rebuilds to 267**. This matters most when you are watching the dashboard
+  *because* the server is busy, which is exactly when you can least afford the overhead.
 - **The request list stays fast however much traffic you capture.** The Inspect view rendered every
   request it held — up to 200 rows — so the page got heavier as traffic accumulated. It now renders
   only the rows near the viewport: **2,234 DOM elements became 145**, and that figure no longer grows

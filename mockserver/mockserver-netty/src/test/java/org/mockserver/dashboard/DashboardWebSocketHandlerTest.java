@@ -14,6 +14,8 @@ import org.junit.Test;
 import org.mockserver.log.MockServerEventLog;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.matchers.TimeToLive;
+import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.RequestMatchers;
@@ -1617,6 +1619,214 @@ public class DashboardWebSocketHandlerTest {
 
         // then
         shouldRenderFilteredLogEntriesCorrectly(true, request(), Collections.emptyList(), expectations, renderedList);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Option 6: the dashboard caches the (expensive) ExpectationDTO -> JSON serialisation and reuses
+    // it while the expectation is unchanged. Two properties are proved:
+    //   (1) THE WIN, race-immune: once the cache is warm, repeatedly updating an UNCHANGED set
+    //       re-serialises nothing (serialisation-count delta == 0), and the emitted JSON is identical.
+    //   (2) THE SAFETY, conservativeness: an added / edited / removed / Times-consumed expectation is
+    //       reflected in the emitted JSON — the cache never shows a stale expectation. It is backed by
+    //       a count assertion that the change DID cause a re-serialisation.
+    // The observable signal is activeExpectationSerialisationCountForTesting(): it counts only genuine
+    // (cache-miss) serialisations. Absolute totals are NOT asserted because, on a COLD cache, two
+    // concurrent initial update passes can each populate it once (a harmless, bounded startup race);
+    // the tests therefore quiesce first, then assert DELTAS, which are unaffected by that race because
+    // a warm cache yields hits on every thread.
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldNotReserialiseUnchangedActiveExpectations() throws InterruptedException {
+        Fixture fixture = newFixture(Arrays.asList(
+            new Expectation(request("one")).withId("id-one").thenRespond(response("one")),
+            new Expectation(request("two")).withId("id-two").thenRespond(response("two")),
+            new Expectation(request("three")).withId("id-three").thenRespond(response("three"))
+        ));
+        long warm = quiesce(fixture.handler);
+
+        // when the dashboard is updated repeatedly with nothing changed
+        String first = awaitFrame(fixture, request());
+        String second = awaitFrame(fixture, request());
+        String third = awaitFrame(fixture, request());
+
+        // then nothing is re-serialised and every frame is byte-identical
+        assertThat("no re-serialisation for an unchanged set", fixture.handler.activeExpectationSerialisationCountForTesting(), is(warm));
+        assertThat(second, is(first));
+        assertThat(third, is(first));
+    }
+
+    @Test
+    public void shouldReserialiseOnlyTheAddedExpectation() throws InterruptedException {
+        Fixture fixture = newFixture(Arrays.asList(
+            new Expectation(request("one")).withId("id-one").thenRespond(response("one")),
+            new Expectation(request("two")).withId("id-two").thenRespond(response("two")),
+            new Expectation(request("three")).withId("id-three").thenRespond(response("three"))
+        ));
+        long warm = quiesce(fixture.handler);
+
+        // when a fourth expectation is added
+        fixture.requestMatchers.add(new Expectation(request("four")).withId("id-four").thenRespond(response("four")), MockServerMatcherNotifier.Cause.API);
+        long afterAdd = quiesce(fixture.handler);
+
+        // then the new expectation appears, and exactly one further serialisation occurred (the three
+        // pre-existing expectations were reused)
+        String frame = awaitFrame(fixture, request());
+        assertThat(frame, containsString("id-four"));
+        assertThat("only the added expectation is serialised", afterAdd - warm, is(1L));
+    }
+
+    @Test
+    public void shouldReserialiseEditedExpectationAndReflectNewContent() throws InterruptedException {
+        Fixture fixture = newFixture(Arrays.asList(
+            new Expectation(request("one")).withId("id-one").thenRespond(response("one")),
+            new Expectation(request("two")).withId("id-two").thenRespond(response("original-two")),
+            new Expectation(request("three")).withId("id-three").thenRespond(response("three"))
+        ));
+        long warm = quiesce(fixture.handler);
+
+        // when the middle expectation is edited in place (same id, changed response body)
+        fixture.requestMatchers.add(new Expectation(request("two")).withId("id-two").thenRespond(response("edited-two")), MockServerMatcherNotifier.Cause.API);
+        long afterEdit = quiesce(fixture.handler);
+
+        // then the NEW body is shown (never the stale cached one) and exactly one re-serialisation
+        // occurred
+        String frame = awaitFrame(fixture, request());
+        assertThat(frame, containsString("edited-two"));
+        assertThat(frame, not(containsString("original-two")));
+        assertThat("only the edited expectation is re-serialised", afterEdit - warm, is(1L));
+    }
+
+    @Test
+    public void shouldNotReserialiseWhenExpectationRemoved() throws InterruptedException {
+        Fixture fixture = newFixture(Arrays.asList(
+            new Expectation(request("one")).withId("id-one").thenRespond(response("one")),
+            new Expectation(request("two")).withId("id-two").thenRespond(response("two")),
+            new Expectation(request("three")).withId("id-three").thenRespond(response("three"))
+        ));
+        long warm = quiesce(fixture.handler);
+
+        // when one expectation is removed
+        fixture.requestMatchers.clear(request("two"));
+        long afterRemove = quiesce(fixture.handler);
+
+        // then the removed expectation is gone, the survivors remain, and nothing was re-serialised
+        String frame = awaitFrame(fixture, request());
+        assertThat(frame, containsString("id-one"));
+        assertThat(frame, containsString("id-three"));
+        assertThat(frame, not(containsString("id-two")));
+        assertThat("removal re-serialises nothing", afterRemove - warm, is(0L));
+    }
+
+    @Test
+    public void shouldReserialiseWhenTimesConsumedOnServingPath() throws InterruptedException {
+        // given one limited-Times expectation, warm in the cache with remainingTimes == 2
+        Fixture fixture = newFixture(Collections.singletonList(
+            new Expectation(request("once"), Times.exactly(2), TimeToLive.unlimited(), 0).withId("id-once").thenRespond(response("body"))
+        ));
+        long warm = quiesce(fixture.handler);
+        assertThat(awaitFrame(fixture, request()), containsString("\"remainingTimes\" : 2"));
+
+        // when the SERVING path consumes one match (remainingTimes 2 -> 1). This is the trap: the
+        // control-plane modification counter does not move, but the serialised form did.
+        fixture.requestMatchers.firstMatchingExpectation(request("once"));
+        long afterConsume = quiesce(fixture.handler);
+
+        // then the dashboard shows the NEW remaining count, not the stale cached "2", and the
+        // expectation was re-serialised
+        String frame = awaitFrame(fixture, request());
+        assertThat(frame, containsString("\"remainingTimes\" : 1"));
+        assertThat(frame, not(containsString("\"remainingTimes\" : 2")));
+        assertThat("consuming Times re-serialises the expectation", afterConsume - warm, is(1L));
+    }
+
+    @Test
+    public void shouldCapActiveExpectationsAtLimitAndCacheThem() throws InterruptedException {
+        // given 150 expectations (above the 100 UI_UPDATE_ITEM_LIMIT)
+        List<Expectation> many = new java.util.ArrayList<>();
+        for (int i = 0; i < 150; i++) {
+            many.add(new Expectation(request("/path" + i)).withId(String.format("id-%03d", i)).thenRespond(response("body" + i)));
+        }
+        Fixture fixture = newFixture(many);
+        long warm = quiesce(fixture.handler);
+
+        // then only the capped number of expectations is emitted, and a second unchanged update
+        // re-serialises none of them (the cap is applied before serialisation, and the cached trees
+        // are reused across updates)
+        String frame = awaitFrame(fixture, request());
+        assertThat("activeExpectations capped at UI_UPDATE_ITEM_LIMIT", countOccurrences(frame, "\"key\" : \"id-"), is(100));
+        awaitFrame(fixture, request());
+        assertThat("a warm capped set re-serialises nothing", fixture.handler.activeExpectationSerialisationCountForTesting(), is(warm));
+    }
+
+    private static int countOccurrences(String haystack, String needle) {
+        int count = 0;
+        int from = 0;
+        while ((from = haystack.indexOf(needle, from)) >= 0) {
+            count++;
+            from += needle.length();
+        }
+        return count;
+    }
+
+    // Minimal fixture: seed expectations BEFORE the handler is registered (so seeding does not itself
+    // serialise), then register a single live-view connection.
+    private static final class Fixture {
+        private final RequestMatchers requestMatchers;
+        private final DashboardWebSocketHandler handler;
+        private final MockChannelHandlerContext ctx;
+
+        private Fixture(RequestMatchers requestMatchers, DashboardWebSocketHandler handler, MockChannelHandlerContext ctx) {
+            this.requestMatchers = requestMatchers;
+            this.handler = handler;
+            this.ctx = ctx;
+        }
+    }
+
+    private Fixture newFixture(List<Expectation> initial) {
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Scheduler scheduler = new Scheduler(configuration(), mockServerLogger, true);
+        HttpState httpState = new HttpState(configuration(), mockServerLogger, scheduler);
+        RequestMatchers requestMatchers = httpState.getRequestMatchers();
+        if (!initial.isEmpty()) {
+            requestMatchers.update(initial.toArray(new Expectation[0]), MockServerMatcherNotifier.Cause.API);
+        }
+        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, true).registerListeners();
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        handler.getClientRegistry().put(ctx, request());
+        return new Fixture(requestMatchers, handler, ctx);
+    }
+
+    // Drive updates until the serialisation counter stops moving for a settle window, then return the
+    // settled value. This warms the cache and absorbs the cold-start double-fire race, so that a
+    // subsequent DELTA measures only what the operation under test caused.
+    private long quiesce(DashboardWebSocketHandler handler) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 30000;
+        long previous = -1;
+        while (System.currentTimeMillis() < deadline) {
+            long current = handler.activeExpectationSerialisationCountForTesting();
+            if (current == previous) {
+                return current;
+            }
+            previous = current;
+            Thread.sleep(700);
+        }
+        throw new AssertionError("serialisation count did not settle");
+    }
+
+    // Drive one update and return the resulting frame text. The dashboard throttles sends to roughly
+    // one per second, so retry until a fresh frame is produced.
+    private String awaitFrame(Fixture fixture, RequestDefinition filter) throws InterruptedException {
+        fixture.ctx.textWebSocketFrame = null;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline) {
+            fixture.handler.sendUpdate(fixture.ctx, filter);
+            Thread.sleep(400);
+            if (fixture.ctx.textWebSocketFrame != null) {
+                return fixture.ctx.textWebSocketFrame.text();
+            }
+        }
+        throw new AssertionError("no dashboard frame produced within timeout");
     }
 
     private void shouldRenderFilteredLogEntriesCorrectly(boolean contains, RequestDefinition requestFilter, List<LogEntry> logEntries, List<Expectation> expectations, String... renderListSections) throws InterruptedException {

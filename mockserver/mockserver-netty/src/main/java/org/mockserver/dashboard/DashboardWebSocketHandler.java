@@ -27,6 +27,9 @@ import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mappers.FullHttpRequestToMockServerHttpRequest;
 import org.mockserver.mappers.Http2StreamIds;
+import org.mockserver.matchers.HttpRequestMatcher;
+import org.mockserver.matchers.Times;
+import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.RequestMatchers;
 import org.mockserver.mock.listeners.MockServerLogListener;
@@ -43,6 +46,7 @@ import org.slf4j.event.Level;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -96,6 +100,28 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private ThreadPoolExecutor scheduler;
     private ScheduledExecutorService throttleExecutorService;
     private Semaphore semaphore;
+    // Memo of the (expensive) ExpectationDTO -> JsonNode serialisation, keyed by expectation id.
+    // Rebuilding it for up to UI_UPDATE_ITEM_LIMIT expectations on EVERY throttled dashboard update
+    // (roughly once a second per connected dashboard) reproduced byte-identical JSON whenever the
+    // expectation had not changed, so the tree is cached and reused. INVALIDATION is deliberately a
+    // read-only, zero-data-plane-cost signal: an entry is reused only when the CURRENT matcher still
+    // holds the SAME Expectation object reference AND the same remaining Times as when it was
+    // serialised. A control-plane edit swaps the reference (AbstractHttpRequestMatcher.update assigns
+    // a new Expectation), and the one serving-path mutation that changes the serialised form —
+    // Times consumption — changes remainingTimes; every other serialised field is fixed at
+    // construction. Both checks are plain reads of state the data plane already maintains, so the
+    // cache adds NOTHING to the request path (it maintains no per-mutation structure of its own). The
+    // signal can only ever be conservative: any reference swap or Times change forces a re-serialise,
+    // so the dashboard can never show a stale expectation. Bounded like expectationRequestDefinitions
+    // (one entry per live expectation); a removed expectation is simply never looked up again and its
+    // stale entry ages out of the bounded map. Guarded by its own lock — the heavyweight serialise
+    // runs OUTSIDE the lock, only the get/put touch it. @Sharable: a single instance serves every
+    // dashboard, so the cache is shared across connections and the reuse compounds.
+    private Map<String, ActiveExpectationJson> activeExpectationJsonCache;
+    private final Object activeExpectationJsonCacheLock = new Object();
+    // Counts genuine (cache-miss) expectation serialisations, so a test can prove an unchanged set is
+    // not re-serialised and that exactly one changed expectation is. Never read on any hot path.
+    private final AtomicLong activeExpectationSerialisationCount = new AtomicLong(0);
 
     public DashboardWebSocketHandler(HttpState httpState, boolean sslEnabledUpstream, boolean prettyPrint) {
         this.httpState = httpState;
@@ -480,13 +506,11 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         .stream()
                         .limit(UI_UPDATE_ITEM_LIMIT)
                         .map(requestMatcher -> {
-                            JsonNode expectationJsonNode = objectMapper.valueToTree(new ExpectationDTO(requestMatcher.getExpectation()));
-                            if (requestMatcher.getExpectation().getHttpRequest() instanceof OpenAPIDefinition) {
-                                JsonNode httpRequestJsonNode = expectationJsonNode.get("httpRequest");
-                                if (httpRequestJsonNode instanceof ObjectNode) {
-                                    ((ObjectNode) httpRequestJsonNode).set("requestMatchers", objectMapper.valueToTree(requestMatcher.getHttpRequests()));
-                                }
-                            }
+                            // Reuse the cached JSON tree when the expectation is unchanged; the
+                            // Description is recomputed every time (it is cheap for the common
+                            // HttpRequest case and its padding depends on the batch's max length,
+                            // so it must be derived from the CURRENT set, not memoised per item).
+                            JsonNode expectationJsonNode = activeExpectationValue(requestMatcher);
                             Description description = activeExpectationsDescriptionProcessor.description(requestMatcher.getExpectation().getHttpRequest(), requestMatcher.getExpectation().getId());
                             return ImmutableMap.of(
                                 "key", requestMatcher.getExpectation().getId(),
@@ -580,6 +604,91 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     ), retryCount);
                 }
             );
+    }
+
+    // Lazily created, bounded like expectationRequestDefinitions (one entry per live expectation).
+    // CircularHashMap is not thread-safe, so every access is under activeExpectationJsonCacheLock.
+    private Map<String, ActiveExpectationJson> activeExpectationJsonCache() {
+        if (activeExpectationJsonCache == null) {
+            activeExpectationJsonCache = new CircularHashMap<>(httpState.getConfiguration().maxExpectations());
+        }
+        return activeExpectationJsonCache;
+    }
+
+    /**
+     * Returns the serialised JSON tree for the given matcher's expectation, reusing the cached tree
+     * when the expectation is unchanged. "Unchanged" is judged conservatively against the CURRENT
+     * matcher state: the same Expectation object reference AND the same remaining Times as when the
+     * tree was built. A control-plane edit swaps the reference; the serving path only ever changes
+     * remaining Times among the serialised fields — so any change forces a re-serialise and the tree
+     * can never be stale. The heavyweight serialisation runs OUTSIDE the lock; only the lookup and
+     * store are inside it. Concurrent callers may both serialise the same id — harmless, the trees are
+     * byte-identical for the same (reference, remainingTimes) — and the cached tree is thereafter only
+     * ever read (Jackson serialisation does not mutate it), so sharing it across connections is safe.
+     */
+    private JsonNode activeExpectationValue(HttpRequestMatcher requestMatcher) {
+        Expectation expectation = requestMatcher.getExpectation();
+        String id = expectation.getId();
+        int remainingTimes = remainingTimesOf(expectation);
+        synchronized (activeExpectationJsonCacheLock) {
+            ActiveExpectationJson cached = activeExpectationJsonCache().get(id);
+            if (cached != null && cached.expectation == expectation && cached.remainingTimes == remainingTimes) {
+                return cached.value;
+            }
+        }
+        JsonNode value = serialiseActiveExpectation(requestMatcher);
+        synchronized (activeExpectationJsonCacheLock) {
+            activeExpectationJsonCache().put(id, new ActiveExpectationJson(expectation, remainingTimes, value));
+        }
+        return value;
+    }
+
+    // Remaining Times is the ONLY serialised field a live Expectation mutates on the serving path
+    // (matchCount / rotation / chaos anchor are all @JsonIgnore). Unlimited Times reports a stable -1.
+    private static int remainingTimesOf(Expectation expectation) {
+        Times times = expectation.getTimes();
+        return times != null ? times.getRemainingTimes() : Integer.MIN_VALUE;
+    }
+
+    // The expensive step this whole cache exists to avoid: build the ExpectationDTO tree (and, for an
+    // OpenAPI-defined request, splice in the expanded requestMatchers). Kept byte-identical to the
+    // previous inline logic. The returned tree is not mutated after this point.
+    private JsonNode serialiseActiveExpectation(HttpRequestMatcher requestMatcher) {
+        activeExpectationSerialisationCount.incrementAndGet();
+        Expectation expectation = requestMatcher.getExpectation();
+        JsonNode expectationJsonNode = objectMapper.valueToTree(new ExpectationDTO(expectation));
+        if (expectation.getHttpRequest() instanceof OpenAPIDefinition) {
+            JsonNode httpRequestJsonNode = expectationJsonNode.get("httpRequest");
+            if (httpRequestJsonNode instanceof ObjectNode) {
+                ((ObjectNode) httpRequestJsonNode).set("requestMatchers", objectMapper.valueToTree(requestMatcher.getHttpRequests()));
+            }
+        }
+        return expectationJsonNode;
+    }
+
+    /**
+     * Number of genuine expectation serialisations performed (cache misses). Reused cached trees do
+     * not increment it. Test-only: proves an unchanged expectation set is not re-serialised and that
+     * an added / edited / Times-consumed expectation is re-serialised exactly once.
+     */
+    @VisibleForTesting
+    long activeExpectationSerialisationCountForTesting() {
+        return activeExpectationSerialisationCount.get();
+    }
+
+    // Immutable memo entry: the Expectation reference it was built from, the remaining Times at that
+    // moment, and the resulting JSON tree. Identity + remainingTimes together are the conservative
+    // "still current?" signal (see activeExpectationValue).
+    private static final class ActiveExpectationJson {
+        private final Expectation expectation;
+        private final int remainingTimes;
+        private final JsonNode value;
+
+        private ActiveExpectationJson(Expectation expectation, int remainingTimes, JsonNode value) {
+            this.expectation = expectation;
+            this.remainingTimes = remainingTimes;
+            this.value = value;
+        }
     }
 
 }
