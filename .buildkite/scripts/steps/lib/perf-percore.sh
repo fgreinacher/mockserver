@@ -101,9 +101,24 @@ K6_MAX_CORES="${PERF_PERCORE_K6_MAX_CORES:-$HOST_CORES}"
 # sampler, so neither the SUT nor k6 contends with the box's own overhead.
 K6_RESERVE="${PERF_PERCORE_RESERVE_CORES:-1}"
 
-# Sweep ladder + timing per C. Kept overridable; the CI default climbs past the
-# per-core knee at high C while staying short enough for 4-5 SUTs in one step.
-SWEEP_RATES="${PERF_PERCORE_SWEEP_RATES:-250,500,1000,2000,4000,8000,16000,32000}"
+# Sweep ladder + timing per C. Kept overridable.
+#
+# The default is DELIBERATELY NOT a doubling ladder. healthy_ceiling_rps is defined as the highest
+# RUNG whose achieved rate held at or above keep x offered (see the derivation below), so the
+# ceiling can only ever take a rung's value and its resolution IS the rung spacing. On the old
+# doubling ladder (250,500,1000,2000,4000,8000,16000,32000) that meant a factor-of-two uncertainty:
+# a server whose true ceiling is 7,900 rps reported 4,000.
+#
+# That is not hypothetical. Build #358 reported 4000 / 8000 / 4000 / 4000 across C=1/2/4/8 and the
+# non-monotonicity read like a server curve; it was quantisation noise. Build #364 re-ran with the
+# ladder below and measured 6000 flat at every core count - and 6000 IS NOT A RUNG of the doubling
+# ladder, so the old default would have reported 4000 again: a 50% understatement of the same
+# server. The refinement paid for itself on its first run.
+#
+# Cost is one rung x (step + gap) each, so the sweep grows from ~8.5 to ~15 minutes across the four
+# feasible core counts - cheap for the first curve this item can actually interpret. The extra
+# resolution is concentrated in the 2k-8k region where the ceilings actually cluster.
+SWEEP_RATES="${PERF_PERCORE_SWEEP_RATES:-500,1000,1500,2000,3000,4000,5000,6000,7000,8000,10000,12000,16000,32000}"
 SWEEP_STEP="${PERF_PERCORE_SWEEP_STEP:-12s}"
 SWEEP_GAP="${PERF_PERCORE_SWEEP_GAP:-4s}"
 SWEEP_PRE_VUS="${PERF_PERCORE_SWEEP_PRE_VUS:-200}"
