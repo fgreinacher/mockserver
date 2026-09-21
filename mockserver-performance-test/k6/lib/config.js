@@ -297,8 +297,78 @@ export const SWEEP = {
     .filter((r) => Number.isFinite(r) && r > 0),
   step: env('K6_SWEEP_STEP', '20s'), // duration each rate step holds
   gap: env('K6_SWEEP_GAP', '5s'), // quiet gap between steps (no requests)
-  preAllocatedVUs: num('K6_SWEEP_PRE_VUS', 200),
-  maxVUs: num('K6_SWEEP_MAX_VUS', 4000),
+  // Finding-3 no-mid-run-allocation invariant, applied PER RUNG (sizing helper in
+  // sweep.js: poolForRate). Each ladder rung gets its OWN fixed pool where
+  // preAllocatedVUs == maxVUs, so no executor can allocate a VU (open a fresh
+  // connection) mid-run — the old 200 -> 4,000 ramp (a 20x storm) is gone, and a
+  // transient that exceeds a rung's pool is DROPPED (counted) rather than
+  // compounding into a connection storm.
+  //
+  // WHY PER RUNG, NOT ONE FLAT POOL — the trap a single number falls into on a
+  // 500 -> 64,000 CI ladder (see docs/plans/performance-programme.md -> "Why
+  // sweep.js still ramps", build #347; the CI ladder tops at 64k via
+  // perf-test-run.sh, not the 32k local default above):
+  //   * rig_valid (perf-test-run.sh) requires dropped_iterations == 0. A pool
+  //     sized for the LOW rungs (e.g. a flat 512) would undersize a near-knee rung
+  //     the server can still serve CLEANLY, making it drop -> flip from rig-valid
+  //     to rig-invalid -> silently lower rig_valid_peak_achieved_rps and the
+  //     published knee. A pool sized for the TOP rung (e.g. a flat 4,000) would
+  //     open thousands of connections on the trusted low rungs — the storm the
+  //     invariant exists to prevent, corrupting their latency.
+  //   * So the pool SCALES with the rung's offered rate, floored and capped:
+  //       pool = clamp(ceil(rate * vuPerRps), vuFloor, vuCeiling)
+  //     The factor is DERIVED from the measured ramped peaks, not guessed. Their
+  //     peak/rate ratios FALL as rate rises (build #347): 34/500=0.068,
+  //     128/2000=0.064, 216/4000=0.054, 301/8000=0.038, 1283/32000=0.040. A single
+  //     linear factor is therefore dominated by the low rungs, so vuPerRps is taken
+  //     from the WORST (highest) ratio 0.068 plus ~18% margin => 0.08. That makes
+  //     the factor alone clear every measured peak; the floor and ceiling are then
+  //     pure safety. A fixed pool cannot exceed the ramped peak (no storm to
+  //     compound), so the measured peaks are an UPPER bound on real fixed-pool
+  //     demand and the margins below are conservative.
+  //   * vuFloor 96 covers the low rungs the factor would otherwise leave marginal.
+  //     500 (measured peak 34) and 1,000 (UNMEASURED; interpolated 65-81 between
+  //     the 500 and 2,000 rows) both floor to 96 — above 81 with margin. 64 was too
+  //     low for 1k, so it was raised.
+  //   * vuCeiling 2048 caps k6 pre-initialisation (k6 pre-inits EVERY staggered
+  //     scenario's pool up front) on the high rungs, where the falling ratio makes
+  //     a flat 0.08 over-provision (32k -> 2560, 48k -> 3840, 64k -> 5120). 2048
+  //     still exceeds the 32,000 rung's measured peak (1,283) with ~60% margin, and
+  //     48k/64k sit above the ~36k knee so they saturate and are EXCLUDED from
+  //     rig_valid regardless of pool.
+  //   * PER-RUNG MARGIN (pool vs measured[M]/interpolated[I] ramped peak):
+  //       500 -> 96  vs 34[M]        (+182%)
+  //       1,000 -> 96 vs ~65-81[I]   (+18-48%; interpolated, no #347 row)
+  //       2,000 -> 160 vs 128[M]     (+25%)
+  //       4,000 -> 320 vs 216[M]     (+48%)
+  //       8,000 -> 640 vs 301[M]     (+113%)
+  //       16,000 -> 1280 vs ~628[I]  (+104%; interpolated 8k<->32k, spans the knee)
+  //       32,000 -> 2048(cap) vs 1283[M] (+60%)
+  //       48,000 -> 2048(cap) — above knee, saturated, excluded from rig_valid
+  //       64,000 -> 2048(cap) — above knee, saturated, excluded from rig_valid
+  //     Every MEASURED rung is covered with >=25% margin; the two interpolated
+  //     rungs (1k, 16k) are flagged as such with their basis.
+  //   * SAFETY CLAIM (narrow and correct): every rung's pool EXCEEDS that rung's
+  //     measured (or interpolated) peak demand, so no measured rung is under-served;
+  //     and a FIXED pool cannot compound a storm the way the old ramp did, so it
+  //     removes the storm-induced drops. (It is NOT claimed that 2048 <= old 4,000
+  //     makes this "less rig-limiting" — a lower ceiling could in principle give a
+  //     rung fewer VUs than the old ramp could allocate; the coverage-with-margin
+  //     above is what makes it safe, not the ceiling comparison.)
+  //   * HONEST RESIDUAL: the recorded per-rung demand at 32k-64k is
+  //     storm-contaminated (it came from the very ramp being removed), so the CLEAN
+  //     fixed-pool residence at those rungs is unmeasured. The reasoning shows the
+  //     budgeted metric is protected under any plausible clean residence, but a real
+  //     run should confirm the boundary rung stays rig_valid (0 drops,
+  //     vus_active_max < its pool) and 48k/64k still show the knee.
+  vuPerRps: num('K6_SWEEP_VUS_PER_KRPS', 80) / 1000, // VUs per offered rps (0.08)
+  vuFloor: num('K6_SWEEP_VU_FLOOR', 96),
+  vuCeiling: num('K6_SWEEP_VU_CEILING', 2048),
+  // Optional FLAT override: set BOTH equal to force a single pool on every rung
+  // (bypasses per-rung sizing — e.g. for a controlled experiment). Left unset by
+  // default so per-rung sizing applies; sweep.js throws if they are set unequal.
+  preAllocatedVUs: num('K6_SWEEP_PRE_VUS', undefined),
+  maxVUs: num('K6_SWEEP_MAX_VUS', undefined),
   // Transport label recorded in the result; HTTPS to MockServer negotiates HTTP/2
   // via ALPN, but the sweep is HTTP by default (the headline knee curve).
   proto: env('PROTO', baseUrl.startsWith('https') ? (bool('K6_HTTP2', true) ? 'https_h2' : 'https') : 'http'),

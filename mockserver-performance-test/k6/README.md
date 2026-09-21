@@ -229,7 +229,8 @@ All tunables are env-driven (see `lib/config.js`). Connection target resolves as
 | `K6_SWEEP_RATES` | `500,1000,2000,4000,8000,16000,32000` | Comma-separated ascending ladder of offered arrival rates (req/s); one staggered `constant-arrival-rate` step per rung |
 | `K6_SWEEP_STEP` | `20s` | Duration each rate step holds |
 | `K6_SWEEP_GAP` | `5s` | Quiet gap between steps (no requests) so percentiles do not bleed across steps |
-| `K6_SWEEP_PRE_VUS` / `K6_SWEEP_MAX_VUS` | `200` / `4000` | VU pool for the sweep arrival-rate executors (pre-allocate enough so high rungs are not VU-starved) |
+| `K6_SWEEP_VUS_PER_KRPS` / `K6_SWEEP_VU_FLOOR` / `K6_SWEEP_VU_CEILING` | `80` / `96` / `2048` | Per-rung fixed-pool sizing: each rung's pool `= clamp(ceil(rate × K6_SWEEP_VUS_PER_KRPS/1000), floor, ceiling)`, with `preAllocatedVUs == maxVUs` within the rung (Finding-3 no-mid-run-allocation invariant). Scaling by rate stops the low rungs storming while giving the high rungs enough VUs to show the *server* ceiling, not a client one. `80` (=0.08 VUs/rps) is taken from the worst measured peak/rate ratio (34/500 = 0.068) plus margin, so it clears **every** measured ramped peak (build #347: 128 @2k→160, 216 @4k→320, 301 @8k→640); floor `96` covers the low rungs (incl. the interpolated 1k peak); ceiling `2048` caps k6 pre-init on the saturated high rungs while still exceeding the 32k peak (1,283). Full per-rung margin table in `lib/config.js`. See `docs/plans/performance-programme.md` → "Why sweep.js still ramps" |
+| `K6_SWEEP_PRE_VUS` / `K6_SWEEP_MAX_VUS` | unset | Optional FLAT override — forces one pool on every rung (both must be set and equal, else sweep.js throws). Left unset by default so per-rung sizing applies |
 | `PROTO` | `http` | Protocol tag recorded in the result (`https_h2` for an HTTPS+H2 run) |
 | `K6_SWEEP_RESULT_PATH` | `sweep-result.json` | File path where `handleSummary()` writes the knee-curve result JSON |
 

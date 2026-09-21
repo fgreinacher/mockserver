@@ -2706,9 +2706,47 @@ paths, serialising readers that are lock-free today. The same probe shows those 
 heavily when they do arrive — so the lock would bite exactly when it is worst. A regression risk on
 the data plane bought for a ~0 gain fails the data-plane-first rule outright.
 
+## `sweep.js` VU pool — sized per rung, because no single number can serve a 500-to-64,000 ladder
+
+**Settled 2026-09-21.** `sweep.js` was the last arrival-rate script still ramping
+`preAllocatedVUs: 200 -> maxVUs: 4000`. It now gives **each rung its own fixed pool**, equal within
+the rung, which is what Finding 3 actually cares about — no mid-run allocation:
+
+`pool(rate) = clamp(ceil(rate x 0.08), 96, 2048)`
+
+| rung | 500 | 1,000 | 2,000 | 4,000 | 8,000 | 16,000 | 32,000 | 48,000 | 64,000 |
+|---|---|---|---|---|---|---|---|---|---|
+| pool | 96 | 96 | 160 | 320 | 640 | 1,280 | 2,048 | 2,048 | 2,048 |
+
+**Why a flat number could not work, which took two rejected attempts to see.** `rig_valid`
+(`perf-test-run.sh:1201`) requires `dropped_iterations == 0`, and `rig_valid_peak_achieved_rps` is the
+max achieved over rig-valid rungs — a BUDGETED metric. So a pool sized for the low rungs undersizes a
+near-knee rung the server can still serve cleanly, which drops, flips rig-invalid, and **silently
+lowers a budgeted metric and the published knee curve**. A pool sized for the top rung opens thousands
+of connections on the low rungs whose latency we trust — the storm the invariant exists to prevent. A
+first attempt at a flat 512 would have done the former; a second at `rate x 0.06` gave the 2,000 rung
+120 against its measured peak of 128.
+
+**How the constant was chosen.** The measured peak/rate ratios FALL across the ladder — 0.068, 0.064,
+0.054, 0.038, 0.040 — so any single linear factor is dominated by the low rungs. Taking the WORST
+ratio plus margin gives 0.08, which clears every measured peak on the factor alone; the floor of 96
+covers the 1,000 rung, which has no measurement and interpolates to ~65-81.
+
+**Why the measured peaks are a sound upper bound**, which is subtler than it looks: the low rungs
+(peak < 200) were measured while `preAllocatedVUs=200` never allocated, so those are already
+storm-free clean high-water marks. The high rungs (peak > 200) were measured WITH the allocation storm
+this change removes, so those peaks overestimate real demand and the pools are doubly safe.
+
+**Honest residual.** The clean fixed-pool residence at 32,000-64,000 is unmeasured, because every
+recorded figure came from the very ramp being removed. The rungs above the ~36k knee are excluded from
+`rig_valid` regardless of pool, so the budgeted metric is protected either way — but the confirming
+experiment is the first real run, and the script's own diagnostics (`pool_per_rung`, `vus_active_max`,
+`vus_pool_grew`) make it self-checking: the boundary rung must stay rig-valid with `vus_active_max`
+below its pool, and 48k/64k must still show the knee.
+
 ## What remains
 
-**Eleven things are outstanding: five can be settled from the repo, and six cannot be settled
+**Ten things are outstanding: four can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2718,8 +2756,6 @@ hard way.
 flowchart TD
   left["Settleable from the repo"]
   right["Needs a run, or an external system"]
-  left --> a["sweep.js fixed-VU-pool invariant
-  (the value needs measuring)"]
   left --> b["Gate the candidate-index
   churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
@@ -2742,7 +2778,6 @@ flowchart TD
 
 | | What is owed | Detail |
 |---|---|---|
-| **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
 | **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |

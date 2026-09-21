@@ -44,9 +44,10 @@
 //                           concurrency did the whole ladder ever demand? Pool
 //                           growth is a whole-test property here because k6
 //                           pre-initializes EVERY staggered arrival-rate scenario's
-//                           preAllocatedVUs up front, so the global initialized
-//                           count is (rung count x preAllocatedVUs) from the start;
-//                           growth is any excess above that baseline.
+//                           pool up front, so the global initialized count is the
+//                           SUM of the per-rung pools from the start; growth is any
+//                           excess above that baseline (impossible with a fixed
+//                           per-rung pool, so it now reads as a fix-verification).
 //   * stalls / stall_*    — count of deep-tail requests (> K6_SWEEP_STALL_MS) and
 //                           the VU concurrency at those moments — the stall
 //                           hypothesis's own signature.
@@ -56,11 +57,16 @@
 //                           iteration (a drop never runs VU code, by definition),
 //                           but if drops are stall-driven they cluster when stalls
 //                           cluster, and stalls DO run VU code.
-// DELIBERATELY NOT CHANGED: preAllocatedVUs / maxVUs. Measure before changing — if
-// the pool never actually grows, equalising it would "fix" a mechanism that is not
-// firing. (regression.js / clustered_crossing.js keep preAllocatedVUs==maxVUs on
-// Finding-3 grounds; that equalisation is a SEPARATE unit, justified on invariant
-// grounds, not on anything this harness has yet shown.)
+// POOL NOW MEASURED AND SIZED PER RUNG (was: "DELIBERATELY NOT CHANGED — measure
+// first"). Build #347 supplied the measurement the earlier note waited for: the
+// ramp DID fire and the per-rung peaks (216 VUs at 4,000 rps, 301 at 8,000, 1,283
+// at the 32,000 saturation rung) sized it. Each rung now gets a FIXED pool
+// (preAllocatedVUs == maxVUs) scaled to its offered rate — see poolForRate and the
+// lib/config.js rationale for why a single flat pool cannot serve the 500 -> 64,000
+// CI ladder without either storming the low rungs or client-capping (and silently
+// invalidating) the high ones. The diagnostics below stay: they now VERIFY the fix
+// (expect vus_pool_grew=false always, and vus_active_max < the rung's own pool on
+// every sub-knee rung).
 // ---------------------------------------------------------------------------
 import { Trend, Counter } from 'k6/metrics';
 import exec from 'k6/execution';
@@ -97,6 +103,43 @@ const RATES = SWEEP.rates;
 const STEP_SECONDS = toSeconds(SWEEP.step);
 const GAP_SECONDS = toSeconds(SWEEP.gap);
 
+// Finding-3 invariant made unbreakable: within every rung preAllocatedVUs ==
+// maxVUs, so no rung's executor can allocate a VU (a fresh connection) mid-run —
+// the 200 -> 4,000 ramp that made this the LAST arrival-rate script to be
+// equalised. The pool is sized PER RUNG (see poolForRate): a single flat pool
+// cannot serve a 500 -> 64,000 CI ladder without either storming the low rungs or
+// capping the high rungs' throughput (which would silently move rig_valid — see
+// lib/config.js for the full argument).
+
+// Optional FLAT override: K6_SWEEP_PRE_VUS / K6_SWEEP_MAX_VUS force one pool on
+// every rung. If EITHER is set, BOTH must be set and equal (a ramp is forbidden);
+// if NEITHER is set, per-rung sizing applies.
+const FLAT_PRE = SWEEP.preAllocatedVUs;
+const FLAT_MAX = SWEEP.maxVUs;
+const FLAT_SET = FLAT_PRE !== undefined || FLAT_MAX !== undefined;
+if (FLAT_SET && FLAT_PRE !== FLAT_MAX) {
+  throw new Error(`sweep.js: K6_SWEEP_PRE_VUS (${FLAT_PRE}) must equal K6_SWEEP_MAX_VUS (${FLAT_MAX}) — the Finding-3 no-mid-run-allocation invariant forbids a VU ramp. Set them equal or leave both unset (per-rung sizing).`);
+}
+
+// Per-rung fixed pool: clamp(ceil(rate * vuPerRps), vuFloor, vuCeiling). Scales
+// the pool with the rung's offered rate so low rungs stay light (no connection
+// storm) while high rungs get the VUs they need to demonstrate the server ceiling
+// rather than a client one. A flat override, when set, wins for every rung.
+function poolForRate(rate) {
+  if (FLAT_SET) {
+    return FLAT_PRE;
+  }
+  const sized = Math.ceil(rate * SWEEP.vuPerRps);
+  return Math.min(SWEEP.vuCeiling, Math.max(SWEEP.vuFloor, sized));
+}
+// rate -> fixed pool, computed once and reused by buildScenarios AND the
+// vus_diagnostics baseline so the two never disagree.
+const POOLS = new Map(RATES.map((r) => [r, poolForRate(r)]));
+// Sum of every rung's pool: k6 pre-initializes EVERY staggered scenario's pool up
+// front, so this is the run's total pre-initialized VU baseline (the no-growth
+// expectation — a fixed per-rung pool can never grow past it).
+const INIT_BASELINE = RATES.reduce((sum, r) => sum + POOLS.get(r), 0);
+
 // --- VU-pool diagnostics tunables --------------------------------------------
 // A request slower than STALL_MS is counted as a "stall" — deep-tail latency well
 // above the ~0.18 ms p50, the observable signature of the hypothesised transient
@@ -126,6 +169,10 @@ function buildScenarios() {
   const scenarios = {};
   RATES.forEach((rate, i) => {
     const startTime = i * (STEP_SECONDS + GAP_SECONDS);
+    // Per-rung FIXED pool (preAllocatedVUs == maxVUs): no mid-run allocation, and
+    // sized to this rung's offered rate so the low rungs do not storm and the high
+    // rungs are not client-capped.
+    const pool = POOLS.get(rate);
     scenarios[`rate_${rate}`] = {
       executor: 'constant-arrival-rate',
       exec: 'matchAt',
@@ -133,8 +180,8 @@ function buildScenarios() {
       timeUnit: '1s',
       duration: `${STEP_SECONDS}s`,
       startTime: `${startTime}s`,
-      preAllocatedVUs: SWEEP.preAllocatedVUs,
-      maxVUs: SWEEP.maxVUs,
+      preAllocatedVUs: pool,
+      maxVUs: pool,
       // Pass the offered rate to the exec fn via env-free scenario tag is not
       // possible, so each scenario gets its own exec wrapper via the tag below.
       tags: { rate: String(rate) },
@@ -293,10 +340,12 @@ export function handleSummary(data) {
       // --- VU-pool diagnostics (item 18). All additive; see the header block. ---
       // vus_active_* : the CONCURRENCY this rung actually used, sampled at the
       //   start of every iteration in this rung. `max` is the peak number of VUs
-      //   simultaneously in flight; if it stays ~1-2 while preAllocatedVUs is 200,
-      //   the other ~198 VUs were genuinely idle and a pool shortage CANNOT explain
-      //   the rung's drops. Conversely, a max ABOVE preAllocatedVUs is the only
-      //   per-rung proof that THIS rung's executor grew its pool. (Possible off-by-one:
+      //   simultaneously in flight; if it stays well below this rung's fixed pool
+      //   (pool_per_rung), the spare VUs were genuinely idle and a pool shortage
+      //   CANNOT explain the rung's drops. With the fixed per-rung pool a max ABOVE
+      //   the pool is impossible (the executor cannot grow) — so a sub-knee rung
+      //   that still drops means its pool needs re-sizing, not that the ramp
+      //   returned. (Possible off-by-one:
       //   whether vusActive counts the sampling VU itself has NOT been verified
       //   here. It does not matter for the question this field exists to answer —
       //   1-2 against a pool of 200 reads the same either way — so it is recorded
@@ -327,11 +376,12 @@ export function handleSummary(data) {
   const vusMaxG = data.metrics.vus_max;
   const vusG = data.metrics.vus;
   const vusInitGlobalMax = vusMaxG && vusMaxG.values ? round(vusMaxG.values.max, 0) : null;
-  // k6 pre-initializes EVERY staggered arrival-rate scenario's preAllocatedVUs at
-  // test start, so with no growth the global initialized count sits at exactly
-  // (rung count x preAllocatedVUs). Anything above that baseline is real pool
-  // growth (some rung's executor allocated past preAllocatedVUs mid-run).
-  const initBaseline = points.length * SWEEP.preAllocatedVUs;
+  // k6 pre-initializes EVERY staggered arrival-rate scenario's pool at test start,
+  // so with no growth the global initialized count sits at exactly the SUM of the
+  // per-rung pools (INIT_BASELINE). Anything above that is real pool growth — which
+  // a fixed per-rung pool (preAllocatedVUs == maxVUs) can never produce, so
+  // vus_pool_grew must read false.
+  const initBaseline = INIT_BASELINE;
   const out = {
     proto: SWEEP.proto,
     points,
@@ -341,18 +391,20 @@ export function handleSummary(data) {
     // much concurrency the whole ladder demanded, before drilling into per-rung
     // vus_active_* and stall_time_buckets.
     vus_diagnostics: {
-      preallocated_vus: SWEEP.preAllocatedVUs,
-      max_vus: SWEEP.maxVUs,
+      // Per-rung FIXED pool (preAllocatedVUs == maxVUs within each rung), keyed by
+      // offered rate. flat_override is the K6_SWEEP_PRE_VUS/MAX_VUS value when set,
+      // else null (per-rung sizing active).
+      pool_per_rung: Object.fromEntries(RATES.map((r) => [String(r), POOLS.get(r)])),
+      flat_override: FLAT_SET ? FLAT_PRE : null,
       rung_count: points.length,
       // The no-growth expectation for the global initialized count.
       vus_initialized_baseline: initBaseline,
       // The actual global initialized high-water for the whole run.
       vus_initialized_global_max: vusInitGlobalMax,
       // The bottom-line answer to "did the pool ever grow?": true iff the global
-      // initialized count exceeded (rung count x preAllocatedVUs). When false, no
-      // executor ever allocated beyond preAllocatedVUs, so the preAllocatedVUs <
-      // maxVUs ramp the config permits NEVER fired, and equalising the two would
-      // fix a mechanism that is not the cause of the drops.
+      // initialized count exceeded the sum of the per-rung pools. With the fixed
+      // per-rung pool (preAllocatedVUs == maxVUs) this MUST read false — it is now a
+      // regression guard: a true here means the invariant was somehow bypassed.
       vus_pool_grew: vusInitGlobalMax === null ? null : vusInitGlobalMax > initBaseline,
       // Coarse (1 Hz) whole-run peak active VUs; per-rung vus_active_max is the
       // sensitive figure — expect this to be LOWER when stalls are brief.
@@ -362,7 +414,7 @@ export function handleSummary(data) {
       step_seconds: STEP_SECONDS,
       bucket_width_ms: round(BUCKET_WIDTH_MS, 0),
       note:
-        'Item 18 open question. Per rung: is vus_active_max below preAllocatedVUs (VUs idle -> pool shortage cannot explain the drops) and do stall_time_buckets cluster (transient stall) or spread evenly (steady limit)? Whole-run: vus_pool_grew says whether the pool ever grew past rung_count x preAllocatedVUs. preAllocatedVUs/maxVUs deliberately unchanged so this run measures before any fix.',
+        'Item 18. Per rung: is vus_active_max below that rung pool_per_rung (VUs idle -> pool shortage cannot explain the drops) and do stall_time_buckets cluster (transient stall) or spread evenly (steady limit)? Whole-run: vus_pool_grew says whether the initialized count ever exceeded the sum of the per-rung pools. Each rung now has a FIXED pool (preAllocatedVUs == maxVUs) sized to its offered rate from the build #347 peaks, so the ramp can no longer fire: expect vus_pool_grew=false and vus_active_max < the rung pool on every sub-knee rung; a sub-knee rung that still drops means that rung pool needs re-sizing, not that the ramp returned.',
     },
   };
   const json = JSON.stringify(out, null, 2);
