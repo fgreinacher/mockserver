@@ -1,17 +1,11 @@
 # Performance Programme
 
-**Status: every acceptance row executed EXCEPT item 10's.** Items 0-8, 7b, 11, 13, 15a-d and
-both halves of 16 are proven; 9a and 14 are recorded as REFUTED on measurement; 12 is delivered
-and its calibration residual is now **closed** by a CI bisect (build 322). **Item 10 is the one
-row with no evidence** — its harness and weekly schedule are wired, and build **#324** on
-2026-09-19 is the first soak ever executed. It ran the full 2 h and **failed**, but on a bug in
-the harness rather than in the server: the soak's own `create` arm evicts the expectation its
-`match` arm depends on. So item 10 still has no baseline, and needs re-running once the harness
-fix lands. Item **18** also ran for the first time on CI (build #325) and is valid, but its curve
-is flat at 4,000 rps for every core count because the rung that decides the ceiling is
-client-limited — the measurement is of the load generator, not the server. Both are written up
-under "What remains". Items 17, 18 and 19 have no acceptance row at all and are further along than a reader
-would guess; see "What remains".
+**Status: the programme is essentially complete, and this file is now its residue.** Every
+acceptance row has been executed, the G1-G11 gap sweep is closed, and the four things
+[What survives this plan](#what-survives-this-plan) names have all reached their destinations.
+What is left is listed in ["What remains"](#what-remains): a short list of small pieces, six of
+which cannot be settled from the repo at all because they need a run on real hardware or an
+external system to report something. **Delete this file when that list is empty.**
 
 Originally written 2026-09-16 against `master`
 at `b98d18f0c`. **Revised 2026-09-16 against `master` at `a984a8c3a`** after a second
@@ -19,12 +13,9 @@ read-only audit that checked the first audit's load-bearing claims against the c
 against the repo's own stored results. Two of those claims were wrong; see
 [Corrections to the first audit](#corrections-to-the-first-audit).
 
-**This paragraph used to say "Tier 1 items 2-7 are being implemented now ... everything else
-is unstarted."** That was true on 2026-09-16 and is long obsolete; it is replaced rather than
-kept, because a stale progress note next to a current status header is worse than none — a
-reader cannot tell which one to believe. The current position is the status header above and
-the ["What remains"](#what-remains) table at the end; those two are the only places in this
-document that claim progress, and they are kept in agreement.
+**The only two places in this document that claim progress are the status header above and the
+["What remains"](#what-remains) table at the end, and they are kept in agreement.** A stale
+progress note beside a current one is worse than none — a reader cannot tell which to believe.
 
 Per repo convention, the change that finishes this work **deletes this file in the same
 commit** — it is written to be consumed and removed, not to persist. The parts that deserve
@@ -782,84 +773,36 @@ while catching a total AppCDS loss, so it is a backstop, not the signal.
 *load generator's* outbound render path. Do not assume proxying is covered because that file
 exists.
 
-#### 10. Turn on the soak — weekly, not daily
+#### 10. Turn on the soak — weekly, not daily — **[landed; baseline established build #340]**
 
-*Serves: D4 / profile C. Cost: 1-2 days to wire.*
+*Serves: D4 / profile C.*
 
-`soak.js` exists with p99-drift and error-rate thresholds and has never run. Add a weekly
-schedule on the `perf` queue at 2 hours with a bounded `--memory`.
+`soak.js` runs weekly on the `perf` queue, scheduled out of the daily's slot — the queue is
+`max_size = 1`, so a 2 h soak starting at 04:00 UTC would block that day's regression run. It is
+what finally **demonstrates** the ring-buffer bound under load rather than asserting it.
 
-- **Schedule it out of the daily's slot.** The queue is `max_size = 1`; a 2-hour soak
-  starting at 04:00 UTC blocks that day's regression run entirely.
-- **10b — event-log verification cost as the log fills.** Issue `verify` and
-  `retrieveRecordedRequests` at a low fixed rate throughout and record latency against log
-  occupancy. This is the central-deployment pattern — pipelines assert — and a query against
-  a full 100k ring is where an O(n) regression bites hardest. One extra scenario inside a run
-  that is already happening.
+**10b — event-log verification cost as the log fills. CLOSED 2026-09-20, and the decision it
+produced is the part worth keeping: gate the query LEVEL against occupancy, and report drift
+without thresholding it.** Two arms differing only in `maxLogEntries` (2,000 against 5,000,000),
+the byte budget held identical at 4 GiB so byte eviction could never be what differed, and
+occupancy **measured** from the server's own `mock_server_event_log_retained_entries` gauge rather
+than inferred. Run twice, independently. The level reproduces in direction and size: verify p50
+**3.25x and 2.30x**, retrieve p50 **6.15x and 5.20x** higher on the filling arm than the pinned
+one. The early/late **drift ratio does not** — the pinned arm's occupancy is constant by
+construction, yet its four drift readings span **1.04, 1.60, 1.70 and 2.00**, a noise floor as
+large as the filling arm's own take-1 drift (2.47 / 2.61), so a drift threshold set anywhere
+useful would flag a quiet server.
 
-  **CLOSED 2026-09-20 — the owed control ran on a dedicated local SUT, and it changes what this
-  item should gate on.** The blocker was never the measurement, it was the shared CI SUT:
-  `growth.js` needs the default 100k ring to reproduce #2329, so the ring could not be resized
-  there. Run locally against a MockServer nothing else shares, that conflict disappears —
-  `soak.js` is unchanged and already env-driven, so no new harness was needed:
+**Why CI reads flat is explained rather than excused.** The filling arm reached 59,862 entries
+from ~33,600 requests — **1.78 log entries per request**, measured here rather than taken from the
+"2-3 entries" the consumer docs quote. CI's soak offers 212 rps across its four arms, so it
+inserts ~378 entries/s and fills the 100k ring in **~265 s**, under 4% into a 2 h run; both the
+early and late windows therefore sample a ring pinned at the same occupancy.
 
-  ```
-  MOCKSERVER_HOST=localhost:1080 K6_SOAK_RATE=100 K6_SOAK_DURATION=5m \
-    K6_SOAK_LEAD=60s K6_SOAK_WINDOW=30s k6 run soak.js
-  ```
-
-  Two arms, identical in every respect but one — the count cap. The **byte** budget was held at
-  4 GiB in both so byte eviction could never be what differed, and occupancy was **measured**, not
-  inferred, by sampling the server's own `mock_server_event_log_retained_entries` gauge every 5 s
-  (reading `/mockserver/metrics` does not scan the log, so the probe cannot perturb what it
-  measures). Run twice, independently:
-
-  | arm | `maxLogEntries` | occupancy early -> late | verify p50 | retrieve p50 | verify drift | retrieve drift |
-  |---|---:|---:|---:|---:|---:|---:|
-  | pinned, take 1 | 2,000 | 2,000 -> 2,000 (**1.00x**) | 2.89 ms | 7.56 ms | 1.04 | 1.60 |
-  | pinned, take 2 | 2,000 | 2,000 -> 2,000 (**1.00x**) | 3.93 ms | 9.33 ms | 2.00 | 1.70 |
-  | filling, take 1 | 5,000,000 | — | 9.41 ms | 46.51 ms | 2.47 | 2.61 |
-  | filling, take 2 | 5,000,000 | 14,506 -> 57,339 (**3.95x**) | 9.04 ms | 48.54 ms | 4.30 | 4.38 |
-
-  **The metric is occupancy-sensitive, and the sensitivity is in the LEVEL, not the drift ratio.**
-  The level reproduces in direction and size across both takes — verify p50 **3.25x** and **2.30x**,
-  retrieve p50 **6.15x** and **5.20x** higher on the filling arm than the pinned one. Only take 2
-  carries an occupancy series (57,339 against 2,000 in the late window); take 1 predates the sampler,
-  so its ratios stand on identical run conditions rather than on a measured occupancy of its own. The
-  early/late **drift ratio does not**: the pinned arm's occupancy is constant by construction at
-  2,000, yet its four drift readings across the two takes span **1.04, 1.60, 1.70 and 2.00**. So
-  drift carries a noise floor of **up to 2.0x at constant occupancy** on this box — which happens to
-  be about the size of the filling arm's take-1 readings (2.47 / 2.61), so a drift threshold set
-  anywhere useful would flag a quiet server. *Gate the level against occupancy; report drift, do not
-  threshold it.*
-
-  **Why CI reads flat is now explained rather than assumed, and the arithmetic is from this run's
-  own data.** The filling arm reached 59,862 entries from ~33,600 issued requests, i.e. **1.78 log
-  entries per request** — measured here rather than taken from the "2-3 entries" the consumer docs
-  quote. (That 59,862 is the final 5 s sample; the table's 57,339 is the median across the late
-  window, which is why the two differ slightly.) CI's soak offers 212 rps across its four arms (200 match + 10 create + 1 verify + 1
-  retrieve), so it inserts ~378 entries/s and the 100k ring fills in **~265 s** — under 4% into a 2 h
-  run. Both the early and late windows therefore sample a ring pinned at the same occupancy: exactly
-  the pinned arm above, which is flat by construction. Nothing was wrong with the metric.
-
-  **Two honest limits on the above.** `retrieve` does strictly more than `verify`, not something
-  different: both take an O(n) snapshot of the whole log and filter it, and `retrieve` then collects
-  every matching entry, serialises it to JSON and ships the response body — cost that scales with the
-  number of *matching* records on top of the scan. That extra term, not a different complexity class,
-  is why it moves about twice as far as `verify`. And the filling arm changes more than occupancy: it holds far
-  more heap. Data-plane `match` p99 rose consistently with it (1.22 -> 6.80 ms take 1, 1.71 -> 6.54 ms
-  take 2), though the match *drift ratio* difference did **not** reproduce — take 1 read 1.15 vs 2.47
-  and looked like the large log degrading the hot path, take 2 read 2.17 vs 2.04 and refuted it.
-  Consistent with G2's fix having moved queries off the append thread, and with what remains being
-  heap and GC cost rather than serialisation against the serving path — though a single
-  non-reproducing result cannot separate that from scheduling or JIT variation between takes.
-
-  **`growth.js` and the CI soak are untouched** — this ran on a separate local server, which is
-  precisely the "dedicated SUT" the blocked note called for.
-- Notify-only until about 8 weekly runs of variance exist. That is **two months** to a usable
-  budget; plan for it.
-- This is what finally **demonstrates** the ring-buffer bound under load rather than
-  asserting it.
+**It had to run on a dedicated SUT, and that constraint is reusable.** The CI soak shares its
+server with `growth.js`, which needs the default 100k ring to reproduce issue #2329's
+O(n)-eviction slope — so shrinking the ring there would silently disable the control `growth.js`
+exists to be. Do not "just shrink the ring" on the shared SUT.
 
 #### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis
 
@@ -1594,69 +1537,25 @@ once (29.4 s, independently consistent with the Docker figure), and a single-nod
 robust result is the ratio — pull ≫ JVM — not the 28 s**, which any registry mirror or pull-through
 cache would change substantially.
 
-#### 25. AsyncAPI as an opt-in extra — **mostly already built**
+#### 25. AsyncAPI as an opt-in extra — **DECIDED 2026-09-21: NOT DOING IT**
 
-Requested 2026-09-20, as the cheaper alternative to removing the async stack outright. The
-async-exclusive libraries are **~11.0 MiB** (kafka-clients 8.54, lz4 0.83, rabbitmq/amqp 0.59, avro
-0.60, mqtt-paho 0.39, zstd 0.04) — worth removing from the default only if users who want it can get
-it back trivially.
+AsyncAPI stays in the standard release. This was always a product decision rather than an
+engineering one, and the decision is to keep broker mocking working out of the box. **Do not
+re-raise it as outstanding work.** Two reasons, even though the ~11.0 MiB of async-exclusive
+libraries is real:
 
-**The decoupling already exists and works.** `MockServer.java:225-241` registers the control plane
-reflectively — `Class.forName("org.mockserver.async.controlplane.AsyncApiControlPlaneImpl")` — and
-swallows `ClassNotFoundException`, so there is **no compile-time dependency** on the module. Core
-holds the seam: `AsyncApiControlPlane` (interface) plus `AsyncApiControlPlaneRegistry`, whose javadoc
-already says "the module is not on the classpath" and whose methods return a not-available response
-when nothing is registered. The endpoints answer **501 Not Implemented** rather than failing.
+- Unlike HTTP/3 — experimental, inert unless `http3Port` is set, and therefore removed from the
+  default in `e5b076c4f` — **async broker mocking is a headline feature a user may reasonably
+  expect a default install to have.**
+- **The ~11.0 MiB is measured against the JAR.** The Docker saving would be smaller and is
+  unmeasured, exactly as HTTP/3's turned out to be (the image only ever carried ~2.4 MiB of
+  quiche, because the arch trim had already discarded four of the five platforms).
 
-**So the remaining work is packaging, not architecture:**
-
-1. Exclude `mockserver-async` and its exclusive transitives from the fat-jar assembly. The existing
-   classified slim descriptors are the template.
-2. `mockserver-async` is already a published module (it is in `mockserver-bom`), so a Maven user adds
-   one dependency and it works — nothing else to build.
-3. For containers, the drop-in path already exists: the image ENTRYPOINT runs
-   `-cp /mockserver-netty-jar-with-dependencies.jar:/libs/*`, so **mounting the async jar into
-   `/libs` is already sufficient**. An `-async` image tag, following the existing `graaljs` /
-   `clustered` variant pattern, would make it a tag change instead.
-4. **Make the 501 actionable.** This is the whole user experience of an opt-in feature: the response
-   should name the artifact to add and the image tag to use, not merely report "not available".
-   **DONE 2026-09-20 — and it did not wait on the packaging decision**, because the 501 is already
-   reachable today: a build that depends on `mockserver-netty` or `mockserver-core` directly does not
-   pull in the optional module (the fat jars and images do bundle it — verified, 55 async classes and
-   4,167 kafka classes in all three `jar-with-dependencies` classifiers). One
-   `AsyncApiControlPlaneRegistry.NOT_AVAILABLE` constant now names `org.mock-server:mockserver-async`,
-   says `mockserver-bom` manages the version, and gives `/libs` as the container path. It replaced
-   **seven** separate copies of the old text: three in the registry and **four hand-written JSON
-   literals in `HttpState`** — the four that users actually hit over HTTP, which the first pass at this
-   missed entirely by fixing only the in-process API. The dashboard was an eighth surface: it discarded
-   the server's 501 body and rendered its own shorter sentence, so it now shows the server's message.
-   Pinned by tests at both boundaries, each degrade-proven red.
-
-**Done when:** the default fat jar is ~11 MiB smaller, a Maven user gets async mocking by adding one
-dependency, a container user by changing a tag or mounting a jar, and someone who does neither gets a
-501 that tells them exactly what to do.
-
-**DECIDED 2026-09-21 — NOT DOING IT. AsyncAPI stays in the standard release.** This was always a
-product decision rather than an engineering one, and the decision is to keep broker mocking working
-out of the box. Do not re-raise it as outstanding work: the packaging steps above are the design
-that WOULD be used, not a plan of record.
-
-Two things make this the right call even though the ~11 MiB is real. Unlike HTTP/3 - which is
-experimental, inert unless `http3Port` is set, and was therefore removed from the default in
-`e5b076c4f` - async broker mocking is a headline feature a user may reasonably expect a default
-install to have. And the ~11.0 MiB figure above is measured against the JAR; the Docker saving would
-be smaller and is unmeasured, exactly as HTTP/3's turned out to be (the image only ever carried
-~2.4 MiB of quiche because the arch trim had already discarded four of the five platforms).
-
-If it is revisited, the preferred shape is an additional LIGHTWEIGHT artifact without async rather
-than removing async from the default - the same additive pattern as the `-linux-x86_64` /
-`-linux-aarch_64` slim jars, where the default stays byte-for-byte unchanged and nobody is broken by
-an upgrade. That inverts the risk: the burden falls on whoever opts into the smaller artifact rather
-than on every existing user. Re-measure the saving against the CURRENT trimmed image before quoting
-any figure for it.
-
-**What already shipped from this item regardless, and should not be re-done:** point 4, the
-actionable 501 (`636f14fc9`). That never depended on the packaging decision.
+**If it is ever revisited, the preferred shape is an ADDITIONAL lightweight artifact without
+async rather than removing async from the default** — the same additive pattern as the
+`-linux-x86_64` / `-linux-aarch_64` slim jars, where the default stays byte-for-byte unchanged
+and nobody is broken by an upgrade. That inverts the risk onto whoever opts into the smaller
+artifact. Re-measure the saving against the CURRENT trimmed image before quoting any figure.
 
 #### 24. Published-artifact size for CI pipelines — **research + a shippable change**
 
@@ -2083,9 +1982,9 @@ inference, and this programme has been burned by exactly that inference once.
 | 7b. leak detection | **Done** — 50 deliberately leaked buffers fail the build; the same leak is invisible on unmodified master |
 | 8. startup | **Done** (2026-09-18, arm64 laptop) — an AppCDS-disabled image (baked `/mockserver.jsa` overwritten with 4 KB of garbage; runtime `-Xlog:cds` confirms `bad magic number` → `Unable to use shared archive`, and `-Xshare:auto` still serves 200) raised the `laptop.docker_ready.ready_ms` median-of-9 (1 warm-up discarded, `bench_laptop.py ready`, readiness = `PUT /mockserver/status` 200) from **394.9 ms** AppCDS-on (min 380/max 404, tight) to **680–726 ms** AppCDS-off (+64–83%; every off launch ≥ 641 ms exceeded every on launch ≤ 433 ms). Feeding perf-test-compare.sh's verbatim compare jq the 9 real on-launches as baseline (median 395 → notify-only threshold **493.75 ms** = median×1.25, since `laptop.*.ready_ms` is floor:null / min_pct:0.25) flags the 680 and 726 ms off heads `regression:true` and the 394.9 ms on control `regression:false`; a synthetic 707/708 ms boundary confirms the threshold governs exactly. NOTIFY-ONLY: it flags loudly (`nongating_count` 1) but does NOT fail the build until the metric earns ≥10 runs of history and a MAD floor — so "red" here is the flagged-regression annotation, not a non-zero exit. What is proven is ENVIRONMENT-INDEPENDENT — the check logic firing when a >25% relative degrade crosses a floor:null threshold that rides only the relative move, not any box-calibrated absolute; NOT proven from here is that the perf box's own numbers cross (its threshold is likewise relative, so the ~34% distroless-JDK25 loss the startup doc records also clears the 25% band). Local absolutes (395/680 ms) differ from the shipped image's ~566/855 ms because these are full `eclipse-temurin:21-jdk` images built from the `8.0.1-SNAPSHOT` fat jar, not the jlink-trimmed distroless JDK25 artifact. One OFF median of 1705 ms during a load-6.1 spike was discarded as noise; clean passes ran at load ~4.2–5.0 |
 | 9a. proxy | **REFUTED — the control text describes something that cannot happen** (2026-09-18, x86_64 laptop, pre-built `8.0.1-SNAPSHOT` fat jar; two local MockServer JVMs — SUT forward proxy :1080, upstream :1090 — driven by curl; Docker up but not needed). Disabling forward pooling does **not** move the CONNECT behaviour, because the CONNECT tunnel is **architecturally unreachable from the forward pool**: `RelayConnectHandler.channelRead0` builds its own `new Bootstrap().connect(remoteSocket)` per tunnel and never touches `NettyHttpClient`/`HttpForwardConnectionPool`; `mockserver.forwardConnectionPoolEnabled` governs only the absolute-URI/HTTP-forward path. Measured (distinct SUT→upstream TCP connections — a **pool-reuse count**, load-independent per this plan's own anti-flake note; timing deliberately NOT quoted, the box was under a concurrent Maven `verify`): absolute-URI arm N=150 → pool ON **1** connection (TIME_WAIT-exact), pool OFF **150**; CONNECT arm same continuous both-column sampler → pool ON **~30** vs pool OFF **~49** (both sampler lower bounds, same order — **unmoved**), while under that SAME pool-ON run the absolute-URI arm was **1–2**. A future reader must NOT re-attempt this control and conclude the proxy is broken on seeing the same non-movement. **(2) The pooling lever IS guarded — just on the other arm.** The "disable forward pooling" degrade is covered by **item 3** (`forward.js`, absolute-URI path) with a genuinely **gating** metric: `forward.error_rate` **0.997**, k6 **exit 99**, at 1500 rps. So the lever is not unguarded; 9a was pointing at the wrong arm. My 1→150 connection count reproduces item 3's mechanism load-independently. **(3) The proxy.js arms ARE capable of failing (criterion 3), recorded load-independent:** with the upstream killed, BOTH arms' `error_rate` → **1.000** (0/20 got 200) — the check catches a genuine broken-proxy fault. These arms land in `.behaviours` (`forward_absolute_proxy` / `forward_connect_proxy`) under the **notify-only** `behaviours.*` budgets (`error_rate` floor 0.005, `p95_ms`/`p99_ms` floor null, all `gating:false`), so that red is a compare `regression:true` **annotation at exit 0, NOT a build failure**, and is **NOT** the gating `forward.error_rate` (that is item 3's key, not a `.behaviours` key). At proxy.js's own 200 rps the gateable signal does not even move: a pool-OFF CONNECT burst of 3000 at conc 120 (~97 rps) gave `error_rate` **0.0000** (3000/3000 → 200) — only item 3's port-exhaustion regime reddens `error_rate`. **Uncovered residual:** the CONNECT-tunnel forward path has no forward-pool coupling and only notify-only observability; a CONNECT-specific gating guard (relay/upstream-connect failure) remains unbuilt — 9b/9c are the follow-ups |
-| 10. soak | Reduce `maxLogEntries` so the ring never fills; the verification-query metric flattens, proving it is sensitive to occupancy |
+| 10. soak | **Done** (2026-09-20, dedicated local SUT) — the occupancy control ran with `maxLogEntries` pinned at 2,000 against a filling 5,000,000, byte budget held identical, occupancy measured from the server's own gauge. The query metric IS occupancy-sensitive in the LEVEL (verify p50 3.25x/2.30x, retrieve p50 6.15x/5.20x across two takes) and is NOT in the early/late drift ratio, whose noise floor at constant occupancy reaches 2.0x. See item 10b |
 | 11. h2 memory | **Done** (2026-09-18, arm64 laptop, load avg ~12–34 during the run). This is a **memory** control — per-connection **retained heap** — not a timing one, so a saturated box does not corrupt it (the property the timing controls lacked); relied on explicitly. Independent of the shipped **RSS** comparison and by a **different metric (on-heap, not RSS)**: last **pre-multiplex 7.6.0** vs **first-multiplex 8.0.0** standalone `mockserver-netty` fat jars from Maven Central, run as servers under the **same** JDK (Zulu 21.0.3), **same** `-Xmx512m -Xms512m`, driven by the **same** external h2c client (`Http2ConnectionMemoryBenchmark hold` mode — version-portable raw control-plane HTTP + raw Netty multiplex client, so an identical client hits both versions), log **cleared before each sample** so the delta is connection/channel state not logged bodies, metric = `jmap -histo:live` **Total** (a full-GC on-heap live-set total), `per_conn = (H1_loaded − H0_idle-warm) / C`, **fresh server JVM per rep, 5 reps/shape**. **The per-connection figure DIFFERS — decisively and outside noise.** At the low-noise **100×10** shape (1000 in-flight streams over 100 distinct connections, per-side spread **0.1%**, the 5-rep ranges **disjoint**): **7.6.0 = 179,537 → 8.0.0 = 196,932 bytes/conn, = +17,395 (+9.7%)**. Corroborating shapes: **10×10** 195,705 → 212,376 (**+8.5%**, disjoint); **100×1** (1 stream/conn) 133,638 → 135,316 (**+1.3%**, disjoint but small); **1×1** 280,104 → 273,688 (**−2.3%**, ranges **overlap** → no resolvable difference — expected at C=1, where fixed per-connection-independent cost is charged to one connection, matching the plan's own 1×1 caveat). **Attribution (why this is the multiplex change, not just a two-version diff):** the excess **scales with concurrent streams per connection** — the connection-fixed cost (100×1) barely moves (+1.3%) while the 10-stream cost (100×10) rises +9.7%; decomposed, **~+1,746 bytes per extra concurrent stream** on 8.0.0 vs 7.6.0 (×10 ≈ 17,463 ≈ the observed +17,395/conn), i.e. the cost tracks the **child-channel-per-stream** structure the 8.0.0 migration introduced. **Honest limits:** on-heap **only** — this is why these figures (~135–197 KB/conn) are **lower** than the shipped **RSS** figures (271k → 339k, +24.7% at 100×10), which also count off-heap Netty direct buffers; the two **corroborate direction, not magnitude**. Two versions differ in more than the codec, so "8.0.0 retains ~17 KB/conn more **on-heap** at 100×10" is directly supportable; the per-stream scaling makes the multiplex attribution **strong but not exclusive** (another per-stream 8.0.0 change could contribute). Raw data `.tmp/item11/results.tsv` (40 rows), harness `.tmp/item11/measure.sh`, analysis `.tmp/item11/analyse.py` |
-| 12. streaming | **Control was calibrated against a slower server; recalibrated, CI confirmation owed** (2026-09-18). Build 290 read a match-A/B p95 ratio of **1.056** at the committed concurrency 300 — no movement, proving nothing — where the step's own comment recorded 8.0× and 3.9× at that exact setting. Both were true: `3d7a2f9c8` (stop keeping a parsed copy of every logged JSON body) cut retained heap per entry ~7× (429 MB → 61 MB over 20,000 entries; 1,840,013 Jackson nodes → 0), so far less GC competes with the two action-handler threads on one CPU and the knee moved well past 300. **The control was not broken — the product got faster.** Recalibrated by measurement, not guess: on a post-fix image against the same constrained SUT the ratio climbs monotonically (~2.0 at 300, ~2.6 at 600, ~4.5 at 900, **min 6.08** across repeats at 1200) with zero stream errors, zero match errors and full delivery throughout. Default raised 300 → **1200** (`4fbce6d5b`). **The knee is box-dependent** and the figure is deliberately margin-carrying, not exact: the same concurrency 300 read ~2.0 on a laptop against CI's 1.056 on identical code, because a 1-CPU quota buys more real throughput on a dedicated CI core than a contended laptop vCPU — so CI needs MORE concurrency than a laptop for the same ratio, and laptop figures are a lower bound. 1200 survives the worst observed box sensitivity (~3× on CI); 900 would not. **DELIVERED (build 306, 2026-09-19) — and it refutes the extrapolation that set the number.** At concurrency 1200 CI read `match_p95_ratio` **93.8** (match p95 25.514 ms against an idle baseline of ~0.27 ms, matching build 290's 0.263 ms), with inter-token error p99 39.0 ms. The control therefore FIRES decisively and the owed evidence exists. But the prediction was ~3×, derived from the laptop reading ~2.0 where CI read 1.056 at concurrency 300 — i.e. CI was assumed to need MORE concurrency for the same ratio, making laptop figures a lower bound. Wrong: CI has a far **sharper** knee than the laptop, whose own contention flattened its curve, so the same step from 300 → 1200 that moved a laptop 2.0 → 6.08 moved CI 1.056 → 93.8. **Residual CLOSED by bisect (build 322, 2026-09-19).** A third point settles the curve on CI: **300 -> 1.056** (below the knee), **600 -> 2.536** (just past it), **1200 -> 93.8** (deep in collapse, ~40x past). The design wants "reliably past the knee" and above the ~1.6 near-knee variance band — 600 meets that, 1200 overshoots it by a factor of forty, and a saturated server leaves little headroom for a future regression to register in. Default corrected 1200 -> **600**, and the comment now records the CI curve rather than the laptop one, because the laptop-to-CI extrapolation was wrong in SHAPE, not just in magnitude: CI has a far sharper knee, where the laptop's own contention had flattened its curve |
+| 12. streaming | **Done** (build #322 bisect, 2026-09-19, `72bc3dafd`). Three CI points settle the curve: concurrency **300 -> 1.056x** (below the knee), **600 -> 2.536x** (just past it), **1200 -> 93.8x** (~40x past, a control that fires so hard it proves nothing about the margin). Default is **600**, where the control fires by 2.5x with headroom either side. The laptop-to-CI extrapolation that first set 1200 was wrong in SHAPE, not merely in magnitude — CI has a far sharper knee, where the laptop's own contention had flattened its curve |
 | 13. clustered state | **Done** (2026-09-18, arm64 laptop, in-JVM two-node JGroups REPL_SYNC cluster — no Docker). **The check** is the module's in-JVM cluster suite in `mockserver-state-infinispan`, which the java pipeline runs under `clean install`, so a failed assertion is a **red build (surefire exit 1, not retried)** — a real gate, NOT the notify-only k6 clustered A/B in `perf-test-run.sh` (that arm captures `member_count` BEFORE the run, never re-checks mid-run, needs the clustered Docker image, and is notify-only; it is untouched here). New `ClusteredMemberDeathTest` seeds an expectation, a scenario state, a CRUD entity and a bounded-`Times` counter (the `9642abe8e` dedicated replicated cache, consumed once to N-1=4) on node A, confirms REPL_SYNC put a copy on node B, then **stops node A mid-run** (`nodeA.close()`). Recorded on survivor B (verbatim passing asserts, exit 0): JGroups view drops **2→1** (`getMembers().size()==1` — the death is observed); B still serves the expectation, the scenario state, the CRUD entity, and the counter **at 4, NOT resurrected to 5**; a never-seeded id stays absent (anti-vacuity); B still accepts a fresh write/CAS after the peer died. Survival is **ownership-independent by construction** — every cache is REPL_SYNC so each node holds a full replica, the opposite of node-local `evict()` (the `9642abe8e` coin-flip trap); the counter surviving at 4 is the direct proof. NEGATIVE CONTROL (degrade-and-confirm-red): `-Dmemberdeath.degrade=evict-survivor` evicts the survivor's replicas just before the kill so the fleet holds the value nowhere → `survivor must still serve the expectation seeded on the dead peer` fails `expected: <true> but was: <false>`, **surefire exit 1**; without the flag **exit 0**. Full module **118→119** green (`./mvnw -o verify -pl mockserver-state-infinispan`, BUILD SUCCESS). CAVEAT recorded, not a defect: a CRUD namespace cache the survivor never materialised while a source was live comes up EMPTY after the peer dies (REPL_SYNC state transfer needs a live member); the realistic central-deployment model is that both nodes already serve the namespace, so the test materialises it on B pre-kill, matching `ClusteredTwoNodeTest`'s CRUD-visibility test. NOT covered: the perf harness's per-request ratio under member death, and multi-node (>2) or unclean-crash (kill -9 / partition) failure modes — this is a clean-leave, two-node, state-layer control |
 | 14. TLS | **Control REFUTED as worded, and replaced** (2026-09-18, build 290). The rate did not move: `handshakes_per_s` read 51.40 (tls13), 51.42 (mtls), 51.40 (jdk/native-absent). It **cannot** move — `proxy.js` drives the handshake arms from a constant-arrival-rate executor at a fixed offered rate (`K6_HS_RATE`, default 50/s), so the column reports what k6 OFFERED, not server capacity, and falls only if the server drops below a modest fixed load. The budget entry behind it (a 25% `dir:down` band) was a gate on a quantity with nothing to say — the same shape as 9a. **What is provider-sensitive is per-handshake COST**: `handshake_p50_ms` 3.992 → 6.02 (**+51%**) and `cpu_ms_per_handshake` 7.133 → 8.951 (**+25%**), both budgeted `dir:up`/0.25 and both shown to flag against a native baseline in a replayed `perf-test-compare.sh`. The +25% CPU move only just clears its band, so 0.25 is the **loosest defensible** figure there until ≥10 runs allow a MAD-derived bound. **Keep-up** moved to the scale-free `delivery_ratio` (throughput ÷ offered, `dir:down`, floor 0.90), which `proxy.js` already computed and compare never extracted: proven at a *different* offered rate (200/s) to flag a 20%-short server the old absolute floor of 45 passed blind. `handshakes_per_s` is demoted to a liveness floor of 1. Landed `6fbd2eb7e` | **Confirmed on a second, clean-tier run (build 306, 2026-09-19):** tls13 p50 **4.234 ms** vs jdk **6.516 ms** (+54%) and cpu_ms_per_handshake 5.396 → 8.333 (+54%), while `handshakes_per_s` read 52.12 vs 52.14 — identical to two decimal places, exactly as the refutation predicts. Two independent runs now agree that the rate column cannot move and the cost columns do |
 | 16. allocation gate (master path) | **Done** — executed by accident on 2026-09-17, not staged, which makes it a stronger control than a rehearsed one. Build **2262** of `mockserver-java` (branch `master`, `pull_request: None`, commit `0d1d4f4db`): the `:scales: per-merge allocation gate (item 16)` job **failed exit 1** with `ERROR: allocation gate measured 4 benchmark row(s), expected 3`. Real cause, not contrived: `0d1d4f4db` added a `declareBodyCharset` `@Param` to `ResponseWriteBenchmark` **without pinning it in the gate's `-p` list**, so JMH expanded the axis and the class emitted **2 rows instead of 1** (`declareBodyCharset=false` → 36409 B/op, `=true` → 20121 B/op), giving 4 rows against the pinned expectation of 3. Build **2263** (repair, commit `4cab2a47d`) shows the same job passing **exit 0**. What it demonstrates: the **exact-row-count** assertion fired on a **real surface change, on master** — and **both** offending rows were individually *within* their floor (36409 and 20121 both < `floor=46000`, logged `:white_check_mark:`), so a gate checking only "is each row within its floor" would have passed **green while measuring a different workload than its floor describes**. It also demonstrates the master-path framing above: the gate reddened the master build **after** the offending commit had already merged — a post-merge detector, not a blocker, on the direct-to-main path |
@@ -2337,379 +2236,61 @@ weighed with that caveat regardless of the instance-type field.
 
 The plan's items were chosen in 2026-09-16 from a read of the harness and the hot path. This
 section is the result of deliberately asking the opposite question — **what is absent?** — across
-CPU, memory and scalability, with each finding required to cite code and to name the measurement
-that would confirm it. Findings are recorded here rather than promoted to numbered items because
-none has been measured yet; the measurement is the work.
+CPU, memory and scalability. All of G1-G11 have since been measured; what survives below is the
+residue each one left behind.
 
-### G1. The candidate index is silently given back under expectation churn — the largest gap
+### G1. The candidate index was given back under expectation churn — **RESOLVED**
 
-`CircularPriorityQueue.toSortedList()` caches a sorted snapshot and nulls it on every structural
-mutation (`CircularPriorityQueue.java:243` rebuild; nulled at `:103,:140,:145,:159,:185,:197`).
-In parallel `matchersModificationCount` bumps on every mutation (`RequestMatchers.java:639`) and
-the `CandidateIndex` rebuilds whenever its generation differs (`:732-739`). So **one mutation
-forces the next request to rebuild both the full sorted list and the index.**
+Shipped `0ba706b9d` (`onAdded`/`onRemoved` now update one bucket in O(1) per mutation, so a read
+never rebuilds) and re-measured in `28a14fe6c`. Kept only because the measured outcome is quoted
+elsewhere and because the check that was supposed to prove it is a reusable trap.
 
-The critical part: **churn is produced by the serving path itself, not only the control plane.**
-`firstMatchingExpectation` schedules lazy removal of inactive matchers *during its own scan*
-(`RequestMatchers.java:867`), and the clustered Times-exhaustion path schedules removal (`:803`).
-So any workload using `once()` or limited-`Times` expectations — overwhelmingly common in tests
-and stateful scenarios — mutates the store continuously. At 15,000 expectations that is an O(n)
-rebuild per request on the request thread, and because the cache is a benign race, several
-concurrent threads can each rebuild the 15k list at once, so it **worsens with more cores.**
+**The collapse is gone.** Same benchmark, same JMH settings, at n=15,000 expectations:
+churn/static went **8,168x -> 1.03x** at one thread and **16,742x -> 0.89x** at eight; allocation
+**~13,000x -> 1.06x**. The sharpest pre-fix claim — that under churn the index was 1.9x *slower*
+and 8x more allocating than the linear scan it replaces — is now false in every cell: the index is
+faster by three orders of magnitude. "Worsens with cores" no longer holds either. Read any older
+figure in this area as history, not as the current server.
 
-This directly contradicts the documented scaling story: the index is described and benchmarked as
-a large speedup at scale (`RequestMatchers.java:168-180`), and that is true only for a *static*
-store. `CandidateIndexBenchmark` uses a `@Setup(Level.Trial)` fixed set, no `@Threads`, and no
-mutation — so it measures warm single-threaded matching over an unchanging store, and the churn
-case is **entirely unmeasured**. A user hits this with no signal at all.
-
-**MEASURED 2026-09-19 — confirmed, and larger than this finding assumed.** `CandidateIndexChurnBenchmark`
-(JMH, `-f 1 -wi 3 -i 5 -prof gc`, thread counts 1/4/8, contended laptop so read the ratios).
-
-Held static, the index does exactly what it was built for: `firstMatchingExpectation` is flat at
-**~0.27 us/op and 248 B/op regardless of store size**. Under continuous churn that collapses.
-
-| n | threads | INDEX static | INDEX churn | **ratio** |
-|---:|---:|---:|---:|---:|
-| 100 | 1 | 0.277 us | 13.0 us | **47x** |
-| 1,000 | 1 | 0.268 us | 132 us | **493x** |
-| 15,000 | 1 | 0.281 us | 2,295 us | **8,168x** |
-| 15,000 | 8 | 1.14 us | 19,019 us | **16,742x** |
-
-Allocation tells the same story and is the steadier signal: 248 B/op static against **4 MB/op**
-churned at n=15,000 — a ~13,000x ratio, and essentially thread-count-invariant, which is itself
-the tell that the extra *time* at higher thread counts is contention rather than extra work.
-
-**The sharpest result: under churn the index is WORSE than the linear scan it replaces.** At
-n=15,000 single-threaded, index-churn (2,295 us) is **1.9x slower** than scan-churn (1,183 us) and
-allocates **8x more** (4 MB against 498 KB), because it rebuilds the sorted list *and* a
-15,000-bucket map. At 8 threads the allocation gap is 16x. The index engages at
-`DEFAULT_CANDIDATE_INDEX_THRESHOLD = 64` (`RequestMatchers.java:180`), so **any store past 64
-expectations is on this path by default** — it is not a corner case.
-
-**The "worsens with cores" claim holds** for the index path: per-op time rises 8-11x from 1 to 8
-threads while allocation/op stays flat. Two mechanisms, same disease: `CandidateIndex.rebuild()`
-is `synchronized` (`CandidateIndex.java:173`), so concurrent readers serialise behind an O(n)
-rebuild each doing the full work in turn; and `toSortedList()` is an unsynchronised benign race,
-so every thread allocates its own complete list even though only one wins the index lock.
-
-**How the churn arm was proved to actually rebuild** — the thing I asked for before trusting any
-number. Three independent ways: `toSortedList()` returns the *same instance* across calls with no
-mutation and a *different* instance after one clear+add (observed by identity, not assumed); the
-writer-mutation counter reads 0 for every static arm and 406K-25M for churn arms; and the
-allocation gap is orders of magnitude, which only a full-store rebuild explains.
-
-*Caveats, stated because they bound the claim:* absolute microseconds are soft on a contended
-laptop (some wide JMH error bars). The scan-only path's concurrency behaviour could **not** be
-cleanly isolated — its churn time stayed flat across threads and its allocation *fell* with more
-threads, a writer-starvation artefact — so "worsens with cores" is confirmed for the
-index-engaged path that matters at scale, not for the bare `toSortedList` race. The arm measures
-HIT only and worst-case continuous churn; a rate-limited writer interpolates between static and
-this. It drives mutation through `clear`+`add` rather than literal lazy-removal-during-scan
-(which depletes the store and cannot reach steady state under JMH), after verifying the
-invalidation it produces is identical to the serving path's.
-
-*Not wired to any gate* — this is research, and the multi-thread numbers are laptop-noisy. If it
-ever becomes gated, gate the static-vs-churn **allocation** ratio at n=15,000, t1: the most
-stable and least machine-sensitive signal.
-
-*The fix this points at:* make the sorted-list and index rebuilds incremental, or maintain the
-index per-mutation, rather than full-rebuild-on-read; and deduplicate `toSortedList`'s rebuild
-across concurrent readers.
-
-**RE-MEASURED 2026-09-21 — THE COLLAPSE IS GONE, AND EVERY FIGURE IN THE TABLE ABOVE IS DEAD.**
-Read that table as history, not as the current server. The first half of the fix shipped in
-`0ba706b9d` — the same commit whose RESOLVED note below describes only its review-driven
-correctness half, which is why nobody noticed the performance half had landed too. `git log -S "void
-onAdded"` places the incremental conversion in that commit: `onAdded`/`onRemoved` now update one
-bucket in O(1) per mutation and **a read never rebuilds**.
-
-Same benchmark, same JMH settings, current `4cda4041f`:
-
-| n | t | INDEX static | INDEX churn | churn/static | vs SCAN churn |
-|---:|---:|---|---|---:|---|
-| 15,000 | 1 | 0.244 us / 312 B | 0.252 us / 330 B | **1.03x / 1.06x** | **4,735x faster, 1,581x less** |
-| 15,000 | 8 | 1.087 us / 288 B | 0.967 us / 297 B | **0.89x / 1.03x** | 1,228x faster, 1,483x less |
-
-So **8,168x -> 1.03x** at t=1 and **16,742x -> 0.89x** at t=8; allocation **~13,000x -> 1.06x**. The
-sharpest claim above — that under churn the index is 1.9x SLOWER and 8x more allocating than the
-scan it replaces — is now false in every cell: the index is faster by three orders of magnitude.
-"Worsens with cores" no longer holds either (churn rises 3.8x from t1 to t8 against static's 4.5x).
-The residual allocation excess at low n is the WRITER's own, not the reader's: excess per million
-writer mutations is flat at 47.1 / 45.1 / 43.5 B across n=100 / 1,000 / 15,000, so it tracks
-mutation count rather than store size.
-
-*The churn arm was re-verified rather than trusted, and the pre-existing check turned out to be
-weaker than this section claimed.* The `writerMutations` counter cited above counts **loop
-iterations**, so it would have kept climbing even if `clear(id)` had silently stopped removing
-anything — it cannot distinguish "churning" from "spinning". Three real checks were added and
-sampled before the writer stops: the store's OWN `matchersModificationCount` delta (0 for every
-static arm, 394,221-19,213,399 for every churn arm); a live identity check counting how many of
-1,000 back-to-back `toSortedList()` calls return a different instance (0 static, 23-28 per 1,000
-under churn); and an assertion that the measured call still returns non-null, because an index that
+**The trap, which is the reusable part: the churn check counted loop iterations, not store
+mutations.** The `writerMutations` counter cited as proof that the churn arm really churned would
+have kept climbing even if `clear(id)` had silently stopped removing anything — it cannot
+distinguish "churning" from "spinning". Three real checks replaced it, each sampled before the
+writer stops: the store's OWN `matchersModificationCount` delta (0 for every static arm,
+394,221-19,213,399 for every churn arm); a live identity check counting how many of 1,000
+back-to-back `toSortedList()` calls return a different instance (0 static, 23-28 per 1,000 under
+churn); and an assertion that the measured call still returns non-null, because an index that
 quietly began returning an empty candidate set would look fast, allocate little, and read exactly
 like "fixed".
 
-**What is actually left.**
-1. *The `toSortedList` deduplication is untouched* — `CircularPriorityQueue.java:299-306` still
-   rebuilds the whole list whenever `sortedCache` is null, with no dedup across concurrent readers,
-   and the cache is still nulled on every structural mutation. But its blast radius collapsed from
-   "every request at any store >= 64" to almost nothing, because the hit path no longer calls it:
-   `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live
-   `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is now a much
-   smaller question than this section poses.
-2. *The successor finding — **SHIPPED 2026-09-21 (`bd1c59f6c`)**, so this is history, not work.*
-   `firstMatchingEarlyExpectation` iterated the full `toSortedList()` and was not indexed at all,
-   while `EarlyMatchingHandler` is installed **unconditionally** in every HTTP/1.1 pipeline
-   (`PortUnificationHandler.java:482`) and detaches via `passThroughAndDetach` after a non-match, so
-   the cost was once per connection — amortised under keep-alive, paid per request without it.
-   **The fix was not to index it but to SKIP it:** every iteration of that loop hits `continue`
-   unless the expectation carries `respondBeforeBody == TRUE`, a niche opt-in, so for almost every
-   deployment the scan could only ever find nothing. An id-keyed set of the expectations that carry
-   the flag (deliberately not a counter — set operations are idempotent and cannot drift, and the
-   dangerous direction is a wrong-EMPTY set silently disabling the feature) gates an early return.
-   Maintained off the same CPQ mutation listener as the candidate index. Measured: **73.5 us ->
-   0.003 us/op at 15,000 expectations**, and allocation-free, with the one-present case unchanged.
-3. *Gating is now attractive where it was not.* This section suggested gating the static-vs-churn
-   **allocation** ratio at n=15,000/t=1. That ratio is now 1.06x with +/-3.4 B error bars — the most
-   stable number in the matrix — and a regression to rebuild-on-read would move it by three orders
-   of magnitude. Cheap, and it would have caught this section going stale.
-
-**RESOLVED — shipped `0ba706b9d`.** The case-mode rebuild now reads the authoritative list under the same monitor as `onAdded`/`onRemoved`, so a concurrent add can no longer be placed into the state being replaced and lost. Overflow eviction and reset also reach the index now: the queue exposes a mutation listener so an evicted entry is removed rather than left servable. The regression test drives a controlled interleaving through a test-supplied `Supplier` rather than racing threads — reverting the fix fails it 5 runs out of 5, where the earlier timing-based version missed it 1 run in 3.
+Two residues are outstanding and are listed in [What remains](#what-remains): the un-deduplicated
+`toSortedList` rebuild, and gating the churn/static allocation ratio that would have caught this
+section going stale.
 
 ### Gaps found by a 2026-09-20 survey, framed by USE CASE rather than by hot path
 
 The G1-G7 sweep asked "what is absent?" across CPU, memory and scalability. This one asked a
 different question — *which way of using MockServer has nobody measured?* — because the programme has
 overwhelmingly optimised one profile: a long-lived central deployment under sustained HTTP load.
-Findings are unmeasured; each names the measurement that would settle it.
+All of G8-G11 have since been measured; G11 is the only one still open, and it is a note rather
+than a finding.
 
-#### G8. The init-file watcher re-reads and re-hashes the WHOLE file every poll, forever
+#### G9. Control-plane HTTP throughput — **RESOLVED**
 
-`FileWatcher.getFileHash` is `Arrays.hashCode(Files.readAllBytes(path))`
-(`FileWatcher.java:96-102`) — a full file read and a whole-file `byte[]` allocation **every poll,
-whether or not the file changed**. The poll runs at a fixed rate
-(`watchInitializationJsonPollPeriodMillis`, default **5000 ms**,
-`ConfigurationProperties.java:4438-4439`) on a shared JVM-wide pool, and one watcher is created **per
-expanded path** (`ExpectationFileWatcher.java:39-74`), so a glob multiplies it.
-
-`watchInitializationJson` defaults to **false** (`ConfigurationProperties.java:4421-4422`), so this
-only bites users who opt in — but opting in *is* the central/Kubernetes pattern, where the init file
-comes from a ConfigMap and is expected to be watched. A supposedly idle server does continuous disk
-IO and allocation proportional to file size.
-
-*Nothing covers it:* there is no coverage-map row for the watcher, and no perf step enables watching
-— the growth and soak SUTs boot from init files but never watch them.
-
-**MEASURED AND FIXED 2026-09-20.** The measurement was the one proposed: a 10.1 MB initialization
-file, a 256 MB heap, `-Xlog:gc`, and a server left idle for 180 s with **zero traffic**, so anything
-that moves is the poll loop and nothing else. One variable — the watch flag.
-
-| arm | young GCs during idle | what the GC log shows |
-|---|---:|---|
-| `watch=false` | **0** | last collection at t=0.9 s; silent thereafter |
-| `watch=true` (before) | **2** | both `G1 Humongous Allocation`, heap 239M->50M and 231M->48M |
-| `watch=true` (after the fix) | **0** | silent, like `watch=false` |
-
-The shape matters more than the count. At the default 5 s period a 10.1 MB file is re-read ~36 times
-in 180 s — about **364 MB of garbage** — and because each read allocates a `byte[]` the size of the
-file, in G1 **every one of those is a humongous allocation**, which bypasses the young generation and
-is collected differently. An idle server went from never collecting at all to repeatedly filling
-~230 MB of a 256 MB heap with garbage from a file that never changed. It scales linearly with file
-size and with glob breadth (one watcher per expanded path) and inversely with the poll period.
-
-**Fixed by streaming the fingerprint through a fixed 64 KB buffer** instead of materialising the
-file. The arithmetic is unchanged — `Arrays.hashCode`'s, computed incrementally — so the fingerprint
-is identical, though nothing depends on that since the value is only ever compared with another
-reading of the same file. Post-fix the idle server is silent again: **0 GCs, 0 humongous
-allocations**. Three tests pin the hazards a chunked loop introduces that a whole-file hash could not
-have: a change in the final byte of a multi-buffer file, a change confined to bytes above 0x7F, and
-silence across many polls of an unchanged multi-buffer file. Each was degrade-proven — dropping the
-final partial read fails the first, decoding the stream as text instead of reading bytes fails the
-second.
-
-*Not claimed:* the CPU difference. It measured 0.73 s per 180 s before and 0.40 s after, but that is
-a single pair on a laptop and too small to distinguish from noise; the GC and allocation result is
-the reproducible one.
-
-#### G9. Control-plane HTTP throughput — create/clear/reset/verify as real round trips
-
-The in-process halves are measured (`ExpectationLoadingBenchmark` for registration,
-`CandidateIndexChurnBenchmark` for add/clear churn, `EventLogQueryLatencyBenchmark` for
-verify/retrieve), but **nothing measures the full HTTP round trip**: JSON DTO deserialization plus
-the control-plane handler for `PUT /expectation`, `/reset`, `/clear`, `/verify` and
-`/verifySequence`. In the k6
-scripts these appear only in `setup`/`teardown`, never as a measured arm; every measured arm is data
-plane.
-
-That round trip is the **per-test cost** for the instance-per-test-method and parallel-suite
-patterns, which are a large share of real usage and the profile items 17 and 22 already say the
-programme under-serves.
-
-**MEASURED 2026-09-20 — CONFIRMED, and it splits about 60/40 between `clear` and the request match
-itself.** The cycle was modelled the way a suite pays it: **serially, one VU**, because a suite does
-create -> exercise -> verify -> clean up one test at a time, so what a user feels is a sum of
-latencies and not a throughput figure. One cycle = 3x `expectation` + one data-plane GET + `verify`
-+ 3x targeted `clear`, 200 cycles per arm, native server on localhost. Every call is timed, so the
-cycle is accounted for rather than attributed:
-
-| expectations registered | cycle | 3x clear | data-plane GET | 3x create | verify | unexplained |
-|---:|---:|---:|---:|---:|---:|---:|
-| 0 | 3.0 ms | 1.17 ms | 0.30 ms | 1.08 ms | 0.44 ms | 0.00 ms |
-| 1,000 | 4.0 ms | 1.88 ms | 0.78 ms | 0.93 ms | 0.45 ms | −0.04 ms |
-| 5,000 | 8.0 ms | 3.97 ms | 2.08 ms | 0.89 ms | 0.47 ms | 0.60 ms |
-| 15,000 (at the cap) | 20.5 ms | 11.56 ms | 6.76 ms | 1.01 ms | 0.55 ms | 0.61 ms |
-
-**The per-test cycle grows with store size, and two things cause it.** Between the empty store and
-the 15,000 row it is **~6.8x**, though that row is the cap-affected one — on the clean 5,000 row it
-is **~2.7x**, so the effect is well established before the cap is anywhere near. Of the +17.5 ms at
-15,000, `clear` contributes **+10.4 ms (59%)** and the single data-plane GET **+6.5 ms (37%)**. `create` is flat (1.08 -> 1.01 ms for three) and `verify` barely moves (0.44 -> 0.55 ms).
-The residual never exceeds 0.61 ms, so the decomposition is essentially complete — this is not an
-attribution, it is an accounting.
-
-**Only the first half is a control-plane finding.** `RequestMatchers.clear(RequestDefinition)`
-(`RequestMatchers.java:1165-1180`) runs a full match against **every** registered expectation, so it
-is O(n) in store size, and the cycle performs three of them. Note the helper it iterates through,
-`getHttpRequestMatchersCopy` (`:1999-2001`), takes **no copy** despite its name — it returns
-`httpRequestMatchers.stream()`, a lazy stream over the skip-list-backed queue
-(`CircularPriorityQueue.java:269-271`). The O(n) traversal is the cost; there is no snapshot. The GET's
-growth is the matching path and belongs to G1, which already measured it far more precisely — its
-presence here simply shows that a caller feels both costs together.
-
-**Which use case this hits is not the one the gap named.** For instance-per-test-method the store
-stays small, so the cycle stays near 3 ms and a 1,000-test suite pays about 3 s in total. It bites
-the **long-lived shared server**, where expectations accumulate: the same suite pays about 8 s at
-5,000 expectations, and both its cleanup and its mocked requests get slower together.
-
-**Fixing `clear` alone would not flatten the cycle**: it would remove 59% of the growth and leave
-the GET's 37%, which is G1's O(n) matching cost and has to be addressed there.
-
-##### What a `clear` fast path can and cannot do (analysed 2026-09-20)
-
-Having `clear` consult the candidate index is **sound for some clear shapes and unsound for others**,
-and the boundary is not where it first appears. The failure mode for the unsound shapes is *silent
-under-removal* — expectations that should have been cleared quietly surviving, the same
-silent-state-loss shape as G1 — so the distinction is worth stating precisely.
-
-Current semantics, established by running them rather than read off the matcher code:
-
-| clear request | expectations present | removed |
-|---|---|---|
-| `{path: "/a1"}` | `/a1`, `/a2`, `/b1` (all literal, method GET) | `/a1` |
-| `{path: "/a.*"}` | same | **`/a1` and `/a2`** — a regex clear spans many literal buckets |
-| `{path: "/a2"}`, no method | same | `/a2` — a path-only clear matches method-bearing expectations |
-| `{path: "/a1"}` | `/a.*` (regex) and `/a1` | **both** — a literal clear also removes a regex expectation that covers it |
-
-The index buckets an expectation on `(method, path)` and only when **both** are plain literals
-(`CandidateIndex.bucketKeyFor`); everything else goes to a fallthrough list that is always part of the
-candidate set. Narrowing can therefore only ever *shrink* the set that gets the full
-`clearHttpRequestMatcher.matches(...)` check — so it can under-remove but never over-remove.
-
-**Sound: a clear carrying a literal method AND a literal path.** The candidate set is
-`bucket(method, path) ∪ fallthrough`; anything excluded sits in a *different* literal bucket and so
-fails the clear's own path criterion anyway. **Additional constraints on the clear — headers, query
-parameters, a body matcher — stay sound**, because they are applied by the full match check that
-still runs on each candidate, and they only make the clear more selective. Row 4 is covered too:
-regex expectations live in the fallthrough, which is always included. This shape is *not* rare —
-`clear(request().withMethod("GET").withPath("/api/thing"))` is an ordinary teardown.
-
-**Unsound: a path-only clear, and a regex-path clear.** For a path-only clear there is no usable
-bucket: `requestKeyFor` returns null when the method value is null, and where "no method" is instead
-carried as a blank string it composes a key with an empty method segment, which nothing is stored
-under because `bucketKeyFor` rejects blank components. Either way the candidate set collapses to the
-fallthrough — row 3 would silently stop working. For a regex-path clear, `requestKeyFor` does compose
-a key (it does **not** apply the literal test that `bucketKeyFor` applies, so `"GET\n/a.*"` is a
-perfectly good key) but nothing is ever stored under it, because regex paths are routed to the
-fallthrough — the lookup finds an empty bucket and row 2 breaks the same way.
-
-**The measured cost sits in the unsound half.** The G9 cycle above used path-only clears, so the 59%
-attributable to `clear` is exactly the shape a `(method, path)` fast path would not help. Covering it
-needs a **path-only index dimension** — new structure in the class where G1's silent expectation loss
-happened — and it must respect `matchExactCase`, since a case-insensitive literal clear has to match
-a literal expectation differing only in case.
-
-**Note the per-comparison cost is already low.** `RegexStringMatcher` short-circuits pure-ASCII
-literals in both directions, including the control-plane reverse match, so each of the n comparisons
-in the clear loop is already a string compare rather than a regex. The work to be saved is the
-**number** of comparisons, not their individual cost — which is why narrowing the candidate set, not
-making the check cheaper, is the lever.
-
-*Deliberately not attempted in the same pass as the measurement:* both the `(method, path)` fast path
-and the path-only dimension deserve their own unit with their own tests, rather than a tail-end
-change to a correctness-critical index.
-
-**SHIPPED 2026-09-21 (`4cda4041f`) — BOTH dimensions, including the path-only one this section
-analysed as needing new structure.** `RequestMatchers.clear(RequestDefinition)` now asks
-`CandidateIndex.clearCandidates(...)` for a candidate set and falls back to the untouched full scan
-whenever narrowing would be unsound. Measured candidate enumeration at 15,000 expectations:
+The per-test create/exercise/verify/clear cycle grew with store size, and ~59% of that growth was
+`clear`'s O(n) scan over every registered expectation. `4cda4041f` now serves a clear from the
+candidate index for both the `(method, path)` and path-only shapes, falling back to the untouched
+full scan whenever narrowing would be unsound: candidate enumeration at 15,000 expectations went
 **1,585 us -> 0.2 us**, flat across store size instead of linear.
 
-**So the cycle table above is STALE** — it was measured before the index served `clear`, and roughly
-the 59% of growth it attributes to `clear` is now indexed. Read it as the measurement that motivated
-the fix, not as the current server.
-
-One correction this section needs, because the implementation proved it backwards: the analysis
-above says a path-only fast path "must respect `matchExactCase`". **The opposite is true.**
-`HttpRequestPropertiesMatcher:215` computes `caseSensitive = !controlPlaneMatcher &&
-configuration.matchExactCase()`, and a clear IS a control-plane matcher, so a clear is **always
-case-insensitive whatever `matchExactCase` says**. Narrowing is therefore only sound from a
-case-insensitively folded index - which exists exactly when `matchExactCase` is OFF (the default,
-and where the measured win sits); with it ON the full scan runs. A differential test caught this,
-not review.
-
-*Limits.* **The parallel-suite case the gap also named is not covered.** This models one suite
-thread, so it bounds the serial per-test pattern only; several suites sharing one server present
-concurrent control-plane calls, where a throughput ceiling and contention matter rather than a sum of
-latencies, and the serial figure does not bound that. One VU against a native server on localhost; a
-remote server adds its round-trip time to each of the cycle's seven calls. Expectations were small. The 15,000 row sits exactly at the default
-`maxExpectations`, which is `min(heapKB/10, 15000)` and so is **15,000 for any heap at or above
-150 MB** — the store was therefore full, and adding the cycle's three expectations evicted three
-seeded ones (the run ended at 14,997 of 15,000). Read that row as a full store rather than as a
-clean store-size point; the 0 / 1,000 / 5,000 rows are clean, with the seed fully intact.
-
-**The first attempt at this measurement was invalid, and how it failed is worth keeping.** The cycle
-originally began with `PUT /mockserver/reset`, which wipes every expectation — so the seeded store
-was destroyed on iteration 1 of 200 and all four arms silently became the empty arm. It produced a
-perfectly flat curve across 0 to 15,000 expectations and a confident conclusion that the control
-plane does not scale with store size: the exact opposite of the truth. Nothing in the output looked
-wrong — the numbers were plausible, consistent and reproducible. What caught it was asking what the
-harness left behind; the runner now asserts the seed survived, and that same assertion is what
-flagged the 15,000 arm as sitting at the cap. A second version then claimed the growth was entirely
-`clear`, which timing the GET disproved.
-
-#### G10. Reload-under-traffic when the watched file changes
-
-`ExpectationFileWatcher.addExpectationsFromInitializer` is `synchronized`
-(`ExpectationFileWatcher.java:99`) and runs a full JSON re-parse plus `requestMatchers.update(...)`
-on a watcher thread *while the server serves*. G1 established that any store mutation forces the next
-request to rebuild the sorted list and candidate index, so a bulk reload is that rebuild plus a parse.
-*Partly reconstructable* from `ExpectationLoadingBenchmark` + G1, which is why it ranks below G8/G9.
-
-**MEASURED 2026-09-21 — no detectable data-plane impact.** 200 rps of steady traffic against one
-unchanging path for 60 s, with the watched file rewritten three times mid-run (poll period 1 s), and
-the reload verified to have actually happened by checking the final file version's expectations were
-live on the server — a run where the file changed but nothing reloaded would measure nothing and look
-exactly like the control.
-
-| arm | p50 | p95 | max | requests > 25 ms | > 100 ms |
-|---|---:|---:|---:|---:|---:|
-| control, 2,000 expectations, no reload | 0.80 ms | 1.72 ms | 17.76 ms | 0 | 0 |
-| control, repeat | 0.73 ms | 1.66 ms | 43.09 ms | 4 | 0 |
-| 3 reloads, 2,000 expectations | 0.77 ms | 1.67 ms | 68.33 ms | 8 | 0 |
-| 3 reloads, repeat | 0.71 ms | 1.70 ms | 17.31 ms | 0 | 0 |
-| 3 reloads, 5,000 expectations | 1.55 ms | 2.60 ms | 32.04 ms | 4 | 0 |
-
-**Percentiles do not move at all** — p50 and p95 are identical across reload and control, and no
-request anywhere exceeded 100 ms in 12,000 per arm. The tail counts looked like a signal in take 1
-(control 0 slow requests against the reload arm's 8) and **inverted in the repeat** (control 4,
-reload 0), so they are box noise rather than a reload effect. That is the third time in this
-programme a single run produced a trend a repeat destroyed.
-
-The higher p50 in the 5,000 arm is store size, not reload — the same effect G9 and G1 measure.
-
-*Limits.* 2,000-5,000 expectations and a file of that size; a far larger file would pay a longer
-parse, and the parse is the part this did not isolate. Three reloads per run is a small sample for a
-tail statistic, which is exactly why the tail counts are reported as noise rather than as a result.
+**One corrected fact is worth keeping, because the analysis that preceded the fix had it exactly
+backwards.** That analysis said a path-only fast path "must respect `matchExactCase`". **The
+opposite is true.** `HttpRequestPropertiesMatcher:215` computes
+`caseSensitive = !controlPlaneMatcher && configuration.matchExactCase()`, and **a clear IS a
+control-plane matcher — so a clear is ALWAYS case-insensitive, whatever `matchExactCase` says.**
+Narrowing is therefore only sound from a case-insensitively folded index, which exists exactly
+when `matchExactCase` is OFF (the default, and where the measured win sits); with it ON the full
+scan runs. A differential test caught this, not review.
 
 #### G11. Connection churn on the plaintext serving path — note only
 
@@ -2721,646 +2302,62 @@ is plaintext accept churn. **Low-to-medium and somewhat theoretical** (most clie
 arm only if it is near-free.
 
 **Checked and found genuinely covered** (recorded so they are not re-investigated): proxy recording
-retrieval shares the event-log query machinery G2 characterises; large and file-backed bodies and all
-three template engines are covered by `regression.js` arms; matching across 1-1000 expectations for
+retrieval shares the event-log query machinery the G2 fix moved off the append path; large and
+file-backed bodies and all three template engines are covered by `regression.js` arms; matching across 1-1000 expectations for
 every matcher shape is covered by `MatchingBenchmark`; ongoing expectation-persistence write cost is
 a deliberate documented exclusion, not an oversight.
 
-### G2. One event-log thread serializes every verify/retrieve/clear WITH log ingestion
-
-The disruptor has a single handler (`MockServerEventLog.java:475`) that both appends entries and
-runs every query, because `retrieveLogEntries`/`verify`/`clear` are dispatched as `RUNNABLE`
-events onto that same thread (`:1027,:1055,:1081,:749`). A query is an O(n) scan over up to
-`maxLogEntries` entries, each running a full cloned request-match (`:1044`).
-
-Good news first, and it is a real non-result worth recording: **a verify does NOT block the
-serving path.** Matching never reads the event log, and serving-path log writes are non-blocking
-(`tryPublishEvent`, `:269`). What a long query *does* block is every other query — so retrieval
-throughput does not scale with cores at all — and ring drainage.
-
-That second consequence is the dangerous one. While a scan runs, incoming log writes back up, and
-once the 16,384-slot ring fills they are **dropped with only a WARN-once** (`:277-278`). So a
-burst of retrievals against a large log can silently discard the `RECEIVED_REQUEST` entries that
-a later `verify` needs to prove a request happened. **A user can lose verification evidence with
-no error.** This is adjacent to the plan's existing "verification query cost at high occupancy"
-row, but that row frames it as single-query cost; the serialization-with-ingestion and the
-drop-under-verify consequence are not in the plan.
-
-**MEASURED 2026-09-19 — CONFIRMED with a counterfactual, and honestly bounded.**
-
-**The correctness risk is real.** An identical paced writer dropped **0** entries with no query
-running and **183,617** with one real scan running concurrently — same writer, same rate, same
-occupancy, the query the only difference. A second deterministic control isolates the drop path
-itself: an identical flood of 3x the ring gives 32,769 drops against a *held* consumer and 0
-against a free one. So the degrade-to-red exists in both directions.
-
-**But the trigger is bounded, and this is the part that keeps it in proportion.** Scan latency is
-linear in occupancy, and the ring is 16,384 slots:
-
-| occupancy | scan latency | write rate needed to overflow the ring during ONE scan |
-|---:|---:|---:|
-| 10,000 | 1.3 ms | ~13.0M entries/s |
-| 50,000 | 6.7 ms | ~2.45M entries/s |
-| **100,000 (default ceiling)** | **12.7 ms** | **~1.29M entries/s** |
-| 250,000 | 32.6 ms | ~0.50M entries/s |
-| 500,000 | 63.4 ms | ~0.26M entries/s |
-
-(Arithmetic checked independently: 16,384 / 0.0127 s = 1.29M/s.) At the default `maxLogEntries`
-of 100,000 that is roughly **430-650k req/s to a single node** — above realistic single-node
-throughput. So on default settings this is not reachable; it becomes practical with a raised log
-limit, expensive matchers (a regex or JSON-schema filter makes every entry-match dearer than the
-empty-matcher clone measured here, lengthening the scan), or **stacked queries**.
-
-**Stacking is the mechanism that makes it reachable, and it follows from the second result:**
-14 concurrent queries take **14.0x** a single scan on 14 cores. Retrieval does not scale with
-cores *at all* — every query serialises on the one consumer. So dashboard polling or several
-concurrent verifies do not overlap; they queue head-to-tail and the consumer stays frozen for
-their **cumulative** duration. The single-query threshold above is therefore the optimistic case.
-
-**The non-result is verified, not assumed.** A long query does NOT block the serving path. Max
-single-write latency during a scan was **14.6 us**, against 78.6 us idle — a dropped write
-actually returns *faster*. Writes are non-blocking (`tryPublishEvent`): they are dropped, never
-stalled. And matching never reads the event log, so the serving path is decoupled by
-construction.
-
-*Not measured:* end-to-end req/s to drop on a live Netty server under k6 (the log component was
-measured directly; the write-rate column is the bridge to a load figure, not a load figure);
-expensive-matcher scans; and `verify` specifically, which calls `drainDisruptor()` first and so
-adds a second consumer round-trip — `retrieveRequests` was measured as the cleaner O(n) scan.
-
-*Not a gate.* The trigger depends on load, config and query frequency together, so any
-wall-clock or drop-count threshold would be machine-tuned and flaky. The value is the
-architectural signal, which wants a fix rather than a gate: **run queries off the append path**
-(snapshot or copy-on-read, or a separate reader) so a scan cannot starve ingestion. The existing
-WARN-once and `mock_server_dropped_log_events` counter only *report* the loss.
-
-*The proof is deliberately not promoted to a committed core test*, for the same reason as G4's:
-its PASS asserts the **current buggy behaviour** (drops happen), so committing it would lock in
-the bug. The right committed test arrives *with* a fix and asserts the invariant "a query causes
-no drops" — which fails today, and whose degrade is already built: it is exactly the control arm.
-Note the held-consumer half of the mechanism is already pinned by the committed
-`MockServerEventLogDroppedEventsTest`; what is new here is that a **real query scan** is what
-holds the consumer.
-
-#### Status (2026-09-20) — shipped `8185b2bfb`, and it exposed a latent defect on the way
-
-The fix landed: an identical paced writer that lost **~90,000** entries with a concurrent query now
-loses **0**, ordering and visibility unchanged, with a degrade-proven regression test. Concurrent
-query throughput did **not** improve (~1.0x -> ~0.55x at six threads, memory-bandwidth bound), which
-was never the goal and is recorded rather than glossed.
-
-**But the commit regressed observable behaviour, and the programme found it rather than a user.**
-Isolating by commit with one identical test and one variable:
-
-| commit | `largeDelayedResponseInFlightAcrossStopArrivesIntact` |
-|---|---|
-| `a3f0f0750` (parent) | 15/15 pass |
-| `8185b2bfb` (this fix) | **1 failure — response truncated** |
-
-A large response in flight when the server stops could arrive truncated
-(`PrematureChannelClosureException`) or not at all. **The defect is long-standing, not new:**
-`NettyResponseWriter.sendResponse` calls `inFlightRequest.complete()` at method *entry*, before
-`writeAndFlush`, so `drainInFlightRequests()` waits for response **dispatch** and not for bytes on
-the wire — the code comment states that trade-off deliberately ("the close-future net backstops
-dropped exchanges"), but that net only decrements the counter *after* the channel closes; it does
-not hold the channel open. Moving query work off the consumer thread made `stop()` faster and
-removed the incidental slack that had been winning the race.
-
-**Two wrong turns before the right one, both worth remembering.** First the truncation was
-attributed to the neighbouring `stop()` quiet-period change (5 ms -> 0); running both arms showed
-*identical* failure, so that change was innocent — a plausible adjacent culprit is not evidence.
-Second, a fix agent was dispatched with a brief asserting a tree state nobody had verified: its
-isolated worktree was branched from the session's starting commit rather than master, so it wrote
-its own rendition of the test, could not reproduce, and correctly **refused to fix what it could not
-see**. The decisive experiment — a detached worktree at the parent commit, the *real* test copied
-in, one run — was cheap and should have come first.
-
-*The lesson for this plan specifically:* **a performance change that removes waiting is a
-concurrency change.** Fixed sleeps, poll granularity and quiet periods routinely pay for races
-nobody has written down, and the bill arrives when they are optimised away.
-
-### G3. Clustering puts a grid CAS on the matching thread per limited-Times match
-
-Inside `firstMatchingExpectation`, a clustered limited-`Times` match calls
-`consumeTimesViaBackendCas` synchronously (`RequestMatchers.java:796-797`), and a scenario
-transition calls `scenarioManager.matchesAndTransition(...)` (`:845`) — both on the request
-thread. Unlimited-Times and no-scenario requests take a node-local fast path (`:810-818`). So
-under clustering, any bounded-`Times` or scenario expectation turns each match into a network
-round-trip on the serving path, making latency a function of grid RTT rather than local matching.
-The plan lists clustered state generically; this specific hot-path placement is not named.
-
-**MEASURED 2026-09-19 — CONFIRMED and large, and it surfaced a correctness finding that matters
-more than the latency.**
-
-**The latency.** A bounded-`Times` match pays a synchronous distributed CAS on the request
-thread: **p50 175.8 us against 1.0 us** for the node-local fast path — a **169x** blow-up on the
-matching step, the instant a second node exists.
-
-| topology | p50 | vs 1-node |
-|---|---:|---:|
-| 1 node (no peer) | 9.5 us | 1.00x |
-| 2 nodes | 132.7 us | **13.9x** |
-| 3 nodes | 134.8 us | 14.1x |
-
-It is a **step function on "clustered with peers"**, not linear in node count: the jump is
-entirely 1->2 (no-network to one RTT), and 2->3 is flat because REPL_SYNC broadcasts and waits on
-the slowest ack in parallel. Note even the single-node CAS (~10 us) is ~10x the pure in-memory
-match — the Infinispan `cache.replace` machinery costs before any network. And 176 us is a
-**floor**: loopback RTT is ~120 us, where a real LAN is hundreds of microseconds to milliseconds.
-
-**The correctness finding, which is the more surprising half.** Under same-key contention (8
-threads, 2 nodes, `Times.exactly(50_000_000)` — a budget nowhere near exhausted) the CAS
-**refused 33.5% of matches**: 2,127 served, 1,073 dropped, at **7.43 CAS attempts per served
-match**. The bounded `MAX_CAS_RETRIES` (10) loop falls through to "not served" when a request
-loses the optimistic-version race more than ten times. So a `Times.exactly(N)` far from N can
-refuse to serve **purely from contention**.
-
-This contradicts an assumption written as fact in the code. The javadoc above
-`isClusteredLimitedTimes` states that "limited-Times expectations are low-count and **contention
-is rare**, so the common case is a single CAS write". Measured, the common case under concurrent
-load on one expectation is 7.43 writes. The fail-closed direction is the right choice — better to
-under-serve than over-serve a bounded `Times` — but the frequency was assumed, not measured.
-
-**The mechanism was proved before any ratio was trusted**, with a counting backend wrapping the
-SPI: the control arm (unlimited `Times`) recorded **0** shared-times CAS operations and 0 counter
-reads, the treatment arm recorded **exactly N** — one replicated write per match — and *both*
-arms recorded 0 expectation-store operations, confirming the CAS is the only backend I/O on the
-serving path. Two arms taking the same route would have shown identical counts. The test asserts
-mechanism **counts**, never latency magnitudes, so it is robust on a contended machine.
-
-**There is already an escape hatch**, which bounds how much this matters:
-`clusterSharedTimesEnabled(false)` (or `-Dmockserver.clusterSharedTimesEnabled=false`) restores
-the node-local fast path with no backend round-trip, at the cost of approximate per-node `Times`.
-
-*Topology:* in-JVM JGroups `SHARED_LOOPBACK` REPL_SYNC at 1, 2 and 3 members — the same fixture
-`ClusteredTwoNodeTest` uses. Docker was available but a multi-container cluster adds no fidelity
-over loopback for measuring a request-thread CAS and is far flakier. *Not measured:* real
-inter-host RTT.
-
-*Originally not committed* — and for a different reason than the G2/G4 proofs. Those asserted
-current BUGGY behaviour and would have locked bugs in. This one asserted **correct** current
-behaviour, so committing it would have locked nothing in; it was a pure suite-weight call on an
-~11 s clustered research test with no regression-protection role, the exactly-N correctness being
-already covered by the committed G10 tests.
-
-**That call is reversed as of 2026-09-20, because the fix gave it a role it did not have.** With
-the backoff landed, nothing else in the suite fails if someone deletes it — the file's other
-assertions are all mechanism counts (CAS >= served, a read per attempt, contention actually
-occurring), every one of which stays green with the backoff removed. It now carries a single
-deliberate magnitude assertion, `dropRate < 0.10`, which is degrade-proven in both directions:
-green at 0.1% with the fix, red at 34.8% with it reverted. The threshold sits ~5x above the
-observed post-fix noise (0.1-2.1% across runs) and ~3x below the defect, so it can neither flake
-on a loaded machine nor miss a removal. *Still not a latency gate:* it asserts no magnitude about
-time, deliberately — only that contention may not refuse matches the budget allows.
-
-#### Status (2026-09-20) — fixed, and the fix costs fewer round-trips than the bug
-
-The correctness half is addressed. The CAS retry loop had **no backoff at all**: every loser
-re-read and re-CASed at essentially the same instant, so at most one thread made progress per
-generation and the rest each burned a full replicated round-trip. That is what turned contention
-into refusals.
-
-Both retry loops (the dedicated-counter path and the legacy on-entry path) now park for a bounded
-randomised interval between attempts — exponential with full jitter, base 150us, capped at 1ms —
-and `MAX_CAS_RETRIES` rises 10 -> 20, which only helps *because* backoff makes the extra attempts
-productive rather than merely re-colliding.
-
-Measured on this machine, same harness, before and after:
-
-| | before (retries=10, no backoff) | after (retries=20, jittered backoff) |
-|---|---:|---:|
-| served | 2173 | 3183 |
-| dropped despite a non-exhausted budget | 1027 | 17 |
-| drop rate | **32.1%** | **0.5%** |
-| CAS attempts per served match | 7.28 | 3.74 |
-
-The before-figure independently reproduces the 33.5% previously recorded here, so the defect is
-real and repeatable rather than an artefact of one run. **The after-figure is noisy** — a second
-run of the restored build measured 2.1% / 2.42 — so the honest claim is an order-of-magnitude
-reduction, not a specific number.
-
-The counter-intuitive part is that the fix is **cheaper**, not a latency-for-correctness trade:
-attempts per served match roughly halve. Avoiding a collision saves an entire ~176us replicated
-write, which costs far more than the park that prevented it.
-
-Fail-closed is unchanged — true exhaustion still refuses, and nothing can over-serve a bounded
-`Times`. The worst case is now bounded at 20 replicated writes plus at most 19 parks, about 17ms,
-reached only if every attempt loses and every jittered draw lands at its maximum.
-
-*Two things were removed from the in-flight change before it went anywhere near a commit:* three
-`public static` diagnostic counters and a `static` block installing a JVM **shutdown hook** that
-wrote a scratch file into the temp directory — debugging instrumentation that had also been wired
-into the proof test, so deleting it broke the test's compile and proved it was load-bearing only
-for the experiment. And the constants had been retuned without their descriptions following: four
-javadoc sites plus two rows of `docs/code/clustered-state.md` still described a 25us base and a
-500us cap that the code no longer used. Both were found by sweeping the *identifiers*
-(`MAX_CAS_RETRIES`, `CAS_BACKOFF_*`) rather than the old values.
-
-**RESOLVED — shipped `2deb13cea`.** Both CAS retry loops now park for a bounded randomised interval between attempts. Spurious refusals on a non-exhausted budget fell from **32.1% to 0.1-2.5%**, and the work per served match fell with them (7.28 -> ~2.4 attempts) — the fix is cheaper, not a latency-for-correctness trade, because avoiding a collision saves a whole replicated round-trip. The javadoc claiming contention is rare now states what was measured.
-
-### G4. `Expectation` holds a per-instance `ThreadLocal` that is set and never removed
-
-`Expectation.java:109` declares `private final ThreadLocal<Integer> lastRotationSnapshot` as an
-**instance field**, `set()` on every match from `recordMatch` (`:1444-1450`) on the long-lived
-request and action-handler threads, and **never `remove()`d** — only get and set exist anywhere.
-
-This is the same shape as the connection-listener leak fixed earlier in this programme — a
-per-request write into a longer-lived scope — but on the `ThreadLocalMap` of pooled server
-threads rather than a channel future. While an expectation is live the cost is bounded. **Under
-expectation churn nothing bounds it promptly:** each cleared `Expectation`'s `ThreadLocal`
-becomes a stale weak key, and the value slot is reclaimed only by an incremental expunge on a
-later set/get on that thread. The `Entry[]` never shrinks. Retained bytes are small; the real
-cost is map bloat and linear-probe CPU **on the hot matching path**.
-
-It is driven by control-plane churn, not request data, so it is a slow-leak and efficiency
-concern rather than a denial-of-service vector. **This plan examines no `ThreadLocal` retention
-on server threads at all.**
-
-**MEASURED 2026-09-19 — largely REFUTED, and downgraded to tidiness.** A deterministic
-weak-reference reproducer against the real `Expectation` settles it:
-
-- **It is not a retention leak.** The `ThreadLocalMap` key is a `WeakReference`, so an
-  instance-field `ThreadLocal` does **not** pin its owner — the cleared `Expectation` is collected
-  normally. The finding above implied otherwise; that part is wrong.
-- What lingers is only the stale entry's **value slot**, a boxed `Integer` usually inside the
-  `-128..127` cache, reachable through the live pooled thread's map until its next map operation.
-- **And the hot path is its own cleaner.** `recordMatch` calls `lastRotationSnapshot.set(...)` on
-  **every** match (`Expectation.java:1447,1449` — both branches), and a `set` performs
-  `ThreadLocalMap`'s incremental expunge. So the very traffic that creates stale slots reclaims
-  them. Demonstrated: after unrelated `ThreadLocal` churn on the same live thread, the leaked
-  value is reclaimed.
-
-The reproducer was degrade-tested and is genuinely mechanism-sensitive: two methods assert
-**opposite** outcomes of the identical probe, differing only by whether `remove()` ran, and both
-pass — so the leaky-case assertion would fail against a fixed implementation.
-
-*The test was deliberately NOT committed*, and the reasoning is worth keeping: it encodes the
-current leaky behaviour as an invariant, so it would become a **fix-blocker** the day someone adds
-the one-line `remove()`. Guarding a negligible, self-healing cost with a GC-and-reflection test is
-poor value, and a test that must be fought to fix the thing it describes is worse than no test.
-
-*Disposition:* close G4 as a low-priority tidiness item. If ever actioned, the cleaner fix is to
-stop using a `ThreadLocal` for the rotation snapshot at all — thread the snapshot through the
-`selectFromResponses` call path — rather than adding a `remove()`.
-
-### G5. The daily perf run is skipped by any master commit that lands while it queues
-
-Found 2026-09-19 by asking why `mockserver-infra`'s "assert perf baseline is fresh" step reds
-**every** master build. It is not a flake and it is not caused by any code change — it fails on
-docs-only commits too. It is correct, and it is reporting a real outage.
-
-The chain:
-
-1. `terraform/buildkite-pipelines/pipelines.tf:283` sets `skip_intermediate_builds = true` with
-   **no branch filter**, for every pipeline via a shared `for_each`.
-2. The daily perf build is created at 04:00 and then **queues** — the perf queue is
-   scale-to-zero with `max_size=1`, so it waits for an agent to boot, and longer still if any
-   other perf build is running.
-3. Any push to master during that wait creates a newer build, and the queued daily is skipped.
-4. `perf-baseline-freshness.sh` then reports the last completed **scheduled** run as `skipped`,
-   not passed, and fails — which is exactly what it exists to do.
-
-**Proven by controlled test, 2026-09-19, not merely inferred.** On the throwaway `mockserver-infra`
-branch, build **#1937** was created and left queued; build **#1938** was then created on the same
-branch seconds later. #1937 flipped to `skipped` **immediately and never started**. That is the
-mechanism reproduced on demand, independent of the perf pipeline.
-
-Note what the controlled test does and does not show. It used API-source builds on a feature
-branch; the daily is a schedule-source build on master. Both of those are covered by real
-observations rather than by assumption: **#312 was schedule-source, on master, and was skipped**,
-and the empty filter means the setting applies to every branch. The `!master` filter two lines
-above in the Terraform protects only *running* master builds from cancellation — it does not
-protect *queued* ones from being skipped.
-
-The supporting correlation between the gap to the next build and the daily's fate:
-
-| daily | created | next build | outcome |
-|---|---|---|---|
-| #272 | 2026-09-18 04:00 | +5,437 s (~90 min) | **ran** (then failed on its own merits — the SUT crash) |
-| #312 | 2026-09-19 04:00 | **+272 s (~4.5 min)** | **skipped before it started** |
-
-**The rationale for leaving the filter off is recorded in the Terraform, and it is sound for
-every pipeline except this one.** The comment at `pipelines.tf:278-280` says skipping "still
-applies to queued (not-yet-started) builds on all branches — those report as `skipped`
-(neutral), not red, so they are left unfiltered." That reasoning treats a build as a *commit
-validation*, where skipping an obsolete one is free because a newer commit supersedes it. **For
-a scheduled perf run the build IS the measurement**, and nothing supersedes it — a skipped daily
-means no measurement happened that day. The setting was chosen against the wrong model of what
-the build is for.
-
-This is a third, independent cause of item 19 never firing: even with the notify-only gating bug
-fixed and the Maven ordering already fixed, **the daily cannot persist a baseline on any day
-master is busy** — and master is busy most days. It also explains why only two scheduled builds
-appear in the last hundred: the rest were skipped or crowded out.
-
-*Fix (needs approval — Terraform/infra):* give `skip_intermediate_builds` a
-`!master` branch filter mirroring the `cancel_intermediate_builds_branch_filter` two lines
-above, or scope the exemption to the perf pipeline alone. Prefer the narrower change: the
-existing behaviour is deliberate and correct for the commit-validation pipelines that share the
-`for_each`.
-
-*Verification after the change:* a daily that starts despite a master push landing during its
-queue wait, and `perf-baseline-freshness.sh` going green on the next master build.
-
-**RESOLVED — shipped `cd7c8f8af`, then narrowed by `0ce6f1a17`.** The skip exemption is scoped to the perf pipeline alone (`skip_intermediate_builds_branch_filter` set only for `perf-test`), rather than applied uniformly. That narrowing was deliberate and is explained under G7: the `trigger` queue is hard-capped, so keeping every pipeline's queued master builds alive would have made a commit burst materially worse.
-
-### G6. Every non-literal matcher parks a Netty event-loop thread on a shared pool
-
-Found 2026-09-19. The highest-value CPU gap left, and the one most likely to be invisible to
-every instrument currently pointed at matching.
-
-`MatchingTimeoutExecutor.callWithTimeout` submits the real match to a **single JVM-wide**
-`ThreadPoolExecutor` and then blocks the calling thread on `future.get(timeoutMillis, ...)`
-(`MatchingTimeoutExecutor.java:137`). The calling thread is a **Netty event-loop thread**:
-`HttpRequestHandler` is added to the pipeline with no `EventExecutorGroup`
-(`PortUnificationHandler.java:519`), so `channelRead0` and the matching it drives run on the
-loop. `nioEventLoopThreadCount` is a fixed 5, so parking one stalls every connection
-multiplexed on it — not just the request being matched.
-
-Verified rather than assumed:
-
-| claim | evidence |
-|---|---|
-| The caller blocks | `future.get(timeoutMillis, TimeUnit.MILLISECONDS)` at `:137` |
-| It is on by default | `regexMatchingTimeoutMillis()` returns a **5000L** default (`ConfigurationProperties.java:3846`) |
-| The handler is on the event loop | added via `addLastIfNotPresent(pipeline, new HttpRequestHandler(...))`, no executor group (`PortUnificationHandler.java:519`) |
-| The pool is shared and global | `static final ExecutorService EXECUTOR`, `SynchronousQueue`, `MAX_POOL_SIZE = max(64, cores*16)` (`:59-70`) |
-| It is measured single-threaded only | `MatchingBenchmark` is `@Fork(1)` with **no `@Threads`** |
-
-The affected matchers are not a corner: regex (path, method, header, query, string body), XPath
-(`XPathEvaluator.java:87`), GraphQL `operationName` (`GraphQLMatcher.java:164`), JSON-RPC
-`method` (`JsonRpcMatcher.java:133`), and the LLM conversation matcher.
-
-**The existing literal short-circuit does not help here.** It skips only *pure-ASCII-literal*
-matcher values, so a genuine regex — the entire reason a user writes one — always takes the
-pool. And for a benign pattern completing in microseconds, the 5-second budget is never
-realised: all that is paid is the hand-off. That is a `FutureTask` allocation, a
-`SynchronousQueue` hand-off, a park/unpark across two threads, and a CAS on a shared
-`AtomicLong` whose javadoc says it is "exposed for tests" — contending on the production hot
-path for test observability.
-
-**Why no current instrument can see it.** `MatchingBenchmark` already drives this path and is
-gated daily for time and allocation per op — but single-threaded. Contention on a shared pool
-and blocking of a 5-thread event loop are *concurrency* phenomena; a single-threaded benchmark
-is structurally incapable of showing either. This is the programme's recurring shape again: an
-instrument that runs, passes honestly, and is about the wrong subject — here the wrong
-*dimension* rather than the wrong quantity.
-
-**MEASURED 2026-09-19 — CONFIRMED, and it is a performance problem rather than a code smell.**
-`MatchingTimeoutHandoffBenchmark` (JMH, `-f 1 -wi 5 -i 5 -prof gc`, 14-core laptop):
-
-| threads | pool (us/op) | inline (us/op) | **ratio** |
-|---:|---:|---:|---:|
-| 1 | 6.124 | 0.044 | **~139x** |
-| 4 | 18.677 | 0.045 | **~415x** |
-| 8 | 51.577 | 0.120 | ~430x (noisy) |
-
-The regex evaluation itself is the 0.044 us inline figure. **Everything above it is hand-off
-tax** — about 6 us to wrap 44 ns of work — plus a fixed **+104 B/op** for the task wrapper and
-`FutureTask`, independent of thread count. Pool-path time scales 3.0x then 8.4x with thread count
-while the inline path stays flat: the contention-plus-blocking signature the finding predicted.
-
-**The arms were proved to take different paths** before any ratio was believed, using the
-executor's own submitted-task counter: `timeout=5000` gives a submission delta of **1**,
-`timeout=0` gives **0**. So `regexMatchingTimeoutMillis=0` genuinely means inline — the `<= 0`
-disable branch, verified in code and at runtime, not an assumed sentinel. Per-trial teardown
-confirmed it every run: pool trials 1.6-2.1M submissions, inline trials 0.
-
-**The saturation comment is now quantified rather than asserted.** The pool caps at exactly
-**224 = cores x 16**, and the `AbortPolicy` inline fallback IS reachable above it (288 submitters
--> 224 accepted, 64 inline). With a fixed 5 event loops feeding it, production cannot drive more
-than ~5 concurrent matches in, so "effectively unreachable under realistic concurrency" holds
-empirically — but it would stop holding for any future caller that escapes the 5-loop
-bottleneck, virtual threads being the obvious one.
-
-*Caveats:* the `-t 8` figure carries +/-42 us, over 80% of its mean — directional only. The
-trustworthy results are the single-thread ~6 us overhead (+/-1) and the ratios. This measures the
-hand-off primitive in isolation, not end-to-end throughput, and `-t 8` drives more concurrent
-pool pressure than a 5-loop server ever would — but each of those 5 loops still pays the ~6 us
-tax per non-literal match, which is the production-relevant number.
-
-*Not wired to a gate:* research, laptop-noisy at thread counts above 1, and there is no active
-change to guard against regressing.
-
-*One assumption in the code worth testing at the same time:* the saturation fallback runs the
-match inline with a WARN, and its comment calls that path "effectively unreachable under
-realistic concurrency given the generous cap". `MAX_POOL_SIZE` is `max(64, cores*16)`, so on a
-16-core box that is 256 threads against 5 event loops — probably true, but it is an assumption
-written as a fact, and the same benchmark can check it.
-
-**Three smaller findings from the same sweep**, recorded without ceremony because each is real
-but narrower: `MediaType.parse` re-parses and re-allocates the same `Content-Type` per request
-with no cache (`MediaType.java:85-133`, called from `BodyDecoderEncoder.java:68,105`); the full
-request body is eagerly decoded to a `String` even when no matcher reads it
-(`BodyDecoderEncoder.java:106-124` — though it is retained for the event-log entry anyway, and
-`InboundDecodeBenchmark` already targets it but has never been run in CI); and XPath re-parses
-the XML DOM per candidate expectation **outside** the timeout wrapper, on the event-loop thread
-(`XPathEvaluator.java:81`), so that cost scales with body size x candidate count.
-
-*Confirmed non-gap from this sweep:* **regex `Pattern` compilation is cached**, not per-request
-— lazily compiled into volatile fields and reused (`NottableString.java:34-35,261-289`).
-
-#### Status (2026-09-20) — the mitigation was built, and its first three defects were all the same defect
-
-The fix for G6 is `RegexComplexityClassifier`: a static analysis that proves a user-supplied regex
-cannot backtrack super-linearly, letting it run inline on the event-loop thread and skip the pool
-hand-off entirely. **Shipped `e838244b7`** — see the RESOLVED note at the end of this section. (An earlier draft of this line read "Not yet committed", which contradicted that note fifteen lines below it.)
-
-**The analysis was sound in shape and wrong in its alphabet three separate ways**, each one
-turning the mitigation into the vulnerability it was built to prevent. The classifier proves
-safety by extracting each quantified atom's character set and showing adjacent quantifiers are
-disjoint, so *any under-approximation of an alphabet makes an unsafe pattern look safe* — and a
-false "safe" means unbounded backtracking inline on a Netty event loop with **no timeout at all**,
-which is strictly worse than the pool hand-off it replaces. The regexes arrive in expectation JSON
-over the control plane, so they are attacker-supplied.
-
-| defect | pattern | pre-fix | post-fix |
-|---|---|---|---|
-| single-char escapes modelled as the following letter (`\t` as `'t'`, not TAB) | `\t+<TAB>+$` and the LF/CR/FF/BEL/ESC equivalents | `safe` | `unsafe` |
-| nested `[` terminated the class scan at the inner `]`, returning an end offset mid-class | `[a[b]c]+X+$` | `safe` | `unsafe` |
-| an escaped low range endpoint was modelled as its two ends alone | `[\t-z]+X+$` | `safe` | `unsafe` |
-
-Measured runtime of `\t+<TAB>+$`, confirming these are genuinely quadratic rather than
-theoretically so: N=2000 → 4 ms, 5000 → 24 ms, 10000 → 99 ms, 20000 → 397 ms.
-
-Every row above was proved by compiling the pre-fix and post-fix classifier side by side and
-diffing the verdicts, not by reading the code. All three now route through one
-`decodeSingleCharEscape` helper that **fails closed**: an escape it cannot decode returns "not
-analysable" and the pattern keeps the pool, so the next missed escape costs the optimisation
-rather than the event loop.
-
-**Two lessons worth carrying, both about the instrument rather than the code.**
-
-The empirical backstop test could not have caught any of this, for two compounding reasons. It
-iterated a *hand-curated* list of patterns someone had already decided were safe — so it could
-only ever re-confirm existing beliefs — and it stressed them with a *fixed* input alphabet of
-`'a'` and digits, so even had the tab pattern been listed, the input would never have exercised
-it. It is now driven by an **unlabelled** corpus that the classifier itself sorts, with the
-adversarial input derived from each pattern's own alphabet, plus an assertion that it actually
-timed something (a loop whose body never runs also passes). Degrading the fix turns it red, and
-it caught the tab defect without being told that pattern was dangerous — which is the property
-the old test lacked.
-
-The second: an adversarial review found the escape defect and reported it as one finding. Sweeping
-the *class* of defect rather than fixing the reported line found two more in the same file, one of
-them in the sibling scanner (`scanCharClass`) that the review had not looked at. A review's finding
-list is a sample, not the set.
-
-**RESOLVED — shipped `e838244b7`.** `RegexComplexityClassifier` proves a pattern cannot backtrack super-linearly and lets it skip the pool hand-off; everything unproven, and all `find()`-style matching, keeps the timeout isolation unchanged. Three alphabet under-approximations found while building it are recorded in the status note above — each would have made a quadratic pattern classify as safe.
-
-### G7. Trigger-queue capacity is oversubscribed by design under a commit burst
-
-Found 2026-09-19 while item 18's re-run (build #347) sat `scheduled` for **58 minutes**. The
-perf queue was not the problem — the perf guard step runs on the **`trigger`** queue, and all
-**16 of 16** trigger agents were busy, with none idle for the whole period.
-
-**The mechanism.** Each master commit creates one `mockserver` dispatcher build.
-`generate-pipeline.sh:58-70` emits one step per affected child pipeline, each running
-`trigger-pipeline.sh` on `queue: trigger` with `timeout_in_minutes: 120`. That script **blocks**
-— a `while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do sleep ...` poll loop
-(`trigger-pipeline.sh:153-154`) — so **a trigger step holds its agent for the entire duration of
-the child build it is waiting on.** Observed holds at the time: 87, 61, 41, 40, 12, 9, 7 and 3
-minutes.
-
-So demand is `concurrent dispatcher builds x affected child pipelines`. There are 19 child
-pipelines and six dispatcher builds were running concurrently (#7243-#7249), against a hard cap
-of **16 agents** (4 instances x 4). That is up to ~100 blocking waits competing for 16 slots —
-roughly 6x oversubscribed. The cap is fine at a normal commit cadence and cannot absorb a burst,
-which is what this session's ~15 master commits produced.
-
-**This is not a perf-programme bug, but it gates the perf programme** — though not by the
-mechanism this section originally claimed. **Corrected 2026-09-20.** It is NOT that perf dispatch
-traverses the queue. The daily regression run is a Buildkite schedule attached **directly** to
-`mockserver-performance-test` and never touches the dispatcher at all; a commit touching
-`mockserver-performance-test/` does dispatch it (`generate-pipeline.sh:117`), but that is not the
-binding path either. The actual coupling is that the perf pipeline's **own** commit-guard/dispatch
-step declares `queue: "trigger"` (`pipeline-perf-test.yml:46`), so **every perf build contends for
-those same 16 hard-capped agents however it was started** — scheduled, dispatched or API-triggered.
-That is what left item 18's re-run `scheduled` for 58 minutes, and it blocks item 10's remaining
-arms the same way.
-
-**It also changes the risk assessment of the G5 fix, and that is the part worth acting on.** The
-review of the `skip_intermediate_builds_branch_filter` change concluded the blast radius was safe
-because "on autoscaling queues this drains in parallel — a bounded cost increase". That reasoning
-considered the `default` queue (max 10, autoscaling) and `perf` (max 1). **It did not consider
-the `trigger` queue, which is hard-capped and is the binding constraint here.** The G5 fix keeps
-master builds alive that would previously have been skipped while queued — and each surviving
-dispatcher build spawns up to 19 more blocking trigger steps. Applied uniformly, it would make
-this saturation materially worse under exactly the commit bursts that cause it.
-
-**Recommendation: narrow the G5 fix to the perf pipeline alone** — the scoping the review
-considered and rejected for want of this evidence. The daily perf run still gets its protection;
-the other 19 pipelines keep skipping queued master builds, which is what currently relieves
-trigger-queue pressure during a burst.
-
-**Options, re-assessed 2026-09-20 against the repo's own history — and two of the three
-"obvious" ones have already been tried and reverted.** This is why the blocking script exists; it
-is the survivor of that loop, not an oversight:
-
-- **Native Buildkite `trigger` steps** (which occupy no agent) were adopted and reverted **twice**
-  — `23c51bab8` replaced them with the API script because bot-authored PRs have no Buildkite
-  permissions, so an author-inherited trigger step **fails silently**; `c6653fe2a` tried again and
-  `553784bf3` reverted again for the same reason. `docs/infrastructure/ci-cd.md` states it
-  outright. Dependabot still authors in-repo PR branches, so the reason is **not stale** — but it
-  is specific to PR builds and does not apply to master commits.
-- **Fire-and-forget async** was tried (`eaee7774f`) to fix this exact agent starvation and reverted
-  (`16928ddcd`) because the parent then "always passed regardless of child build outcome" — it
-  defeats the gate entirely.
-
-That leaves a **conditional hybrid** as the only option that solves the master-burst case without
-reintroducing a known defect: emit native `trigger` steps when `BUILDKITE_PULL_REQUEST` is false
-and keep the script for PRs, a change confined to `generate-pipeline.sh`. It needs no Terraform
-apply, leaves `min_size` at 0, and takes master dispatch demand from ~100 concurrent agent-holds
-to zero. **Two Buildkite semantics must be proven on a throwaway build first**, because neither is
-verifiable from the repo and one of them is load-bearing: how a `skip_intermediate_builds`-
-superseded child is reported (it must map to neutral/pass, matching `trigger-pipeline.sh:207-215`,
-or rebased builds go falsely red), and whether `timeout_in_minutes` bounds an `async: false` wait.
-
-A risk-free fallback that needs no semantics check: add `concurrency: 1` +
-`concurrency_group: "trigger/<slug>"` to the emitted steps, capping holds at ~19 (one per child
-pipeline) rather than ~100. It bounds the burst instead of eliminating it, and layers under the
-hybrid.
-
-**Empirical status (2026-09-20), partial.** One of the three premises is now VERIFIED and the two
-load-bearing ones are NOT. On throwaway pipelines, a native trigger step records `type=trigger`
-with **no agent assigned** — so the central claim, that native triggers consume no agent, holds
-and the fix would genuinely take master dispatch from ~100 concurrent holds to zero. The two
-Buildkite semantics remain **inconclusive**: both scratch runs failed with `triggered_build: null`,
-i.e. the trigger never created a child, so neither the superseded-child mapping nor the timeout
-question was exercised at all. That failure looks like scratch misconfiguration rather than a real
-semantic — the two scratch child pipelines were created with different default branches (`main`
-and `master`) — but it was not diagnosed, so nothing should be concluded from it in either
-direction. **Do not adopt the hybrid until the superseded-child mapping is actually observed**: if
-a skipped child reports as failed rather than neutral, every rebase turns master falsely red,
-which is worse than the saturation being fixed. Four `zz-scratch-trigger-semantics-*` pipelines
-were deleted once the re-run completed.
-
-**Resolved empirically 2026-09-20 — one gate cleared, one failed, and the failure reshapes the
-fix.** The earlier `triggered_build: null` was scratch misconfiguration, but not the suspected
-default-branch mismatch: the scratch child routed to a non-existent queue, and in a clustered
-Buildkite org that makes **build creation itself** fail with `422 Queue ... does not exist`. Once
-the child used a real queue, native triggers created children normally.
-
-- **Q1 (superseded child) — SAFE, directly observed.** A child skipped by
-  `skip_intermediate_builds` reports on the parent's native trigger step as `skipped` with
-  `soft_failed = false`, NOT as `failed`. A rapid rebase or push therefore cannot turn master
-  falsely red, which was the dangerous outcome. This was the load-bearing gate and it clears.
-- **Q2 (bounded wait) — FAILED, and worse than "unbounded".** `timeout_in_minutes` is not merely
-  ignored on a `trigger` step, it is **rejected at config validation** (`422 ... is not a valid
-  property on the 'trigger' step`). The emitted steps currently carry `timeout_in_minutes: 120`,
-  so copying them verbatim onto native trigger steps would **fail the pipeline upload outright**.
-  The same is true of the `retry: { automatic: { exit_status: -1, limit: 2 } }` block they also
-  carry. Both must be dropped, not translated.
-
-Two further observations from the same run: a genuinely failed child **does** fail the parent under
-`async: false`, and cancelling a parent cancels its child.
-
-**CONFIRMED IN PRODUCTION by the very commit that shipped it** (dispatcher build 7256, master,
-`a3f0f0750`). The push emitted **15 native trigger steps, every one recording `agent=NO`**, and all
-15 created their child builds. Under the previous script that same commit would have held **15
-trigger agents** for the full duration of their children, against a hard cap of 16 — one ordinary
-commit was enough to saturate the queue by itself, which is exactly how item 18's re-run came to
-sit `scheduled` for 58 minutes. Master dispatch now demands **zero** agents from that queue. The
-new `:hourglass: guard every child step declares a timeout` step ran and passed on the same build.
-Still unobserved, and only visible over time: how a child reaching `canceled` or `not_run`
-independently of the parent is reported.
-
-**What the two rejections actually cost is asymmetric.** Dropping `retry` is harmless and arguably
-correct — that block exists to survive **Spot reclamation of the agent running the script**, and a
-native trigger step has no agent to reclaim, so the hazard it guards against disappears with it.
-Dropping `timeout_in_minutes` is a real change to the failure contract: nothing on the parent side
-bounds the wait for a stuck child.
-
-**That risk is smaller than it first appears, and it is enumerable rather than a judgement call.**
-Child pipelines almost all bound their own steps, so a stuck child is normally cut short by its own
-timeouts and the parent's wait is transitively bounded. The exceptions are a short list of steps
-carrying no `timeout_in_minutes` of their own — in `pipeline-java.yml` (21 timeouts across ~22
-steps), `pipeline-maven-plugin.yml` (3/5), `pipeline-python.yml` (6/7), `pipeline-ruby.yml` (5/6)
-and `pipeline-ui.yml` (11/12). **Closing those gaps is a cheap prerequisite that makes the hybrid
-safe**, and is good hygiene regardless of whether the hybrid is ever adopted.
-
-**Prerequisite DONE 2026-09-20** (user approved the close-gaps-then-hybrid path). The gap was
-smaller than the file-level counts implied: only **six** agent-run steps across the whole
-`.buildkite/` tree carried no bound of their own — one `docker pull` in `pipeline-java.yml`, a
-`docker pull` plus a `junit-annotate` in `pipeline-maven-plugin.yml`, and a `junit-annotate` in
-each of `pipeline-python.yml`, `pipeline-ruby.yml` and `pipeline-ui.yml`. The rest of the apparent
-shortfall was `wait`/`block`/`group` entries, which take no timeout. All six now carry
-`timeout_in_minutes: 10`, every changed file still parses under a real YAML parser, and a re-scan
-finds no untimed agent-run step **in the pipeline YAML files**.
-
-**That is NOT full transitive bounding, and the first draft of this note overstated it.** Review
-found two agent-run stretches the scan could not see: the Terraform-defined bootstrap step every
-child pipeline runs (`buildkite-agent pipeline upload`, `pipelines.tf`) carries no timeout, and the
-agent's checkout/bootstrap phase is not a step and cannot carry one. There is also no agent-level
-`command_timeout` default. So a child wedged in either leaves the parent waiting indefinitely,
-where the command path capped it at two hours. Accepted rather than fixed, because a native trigger
-step holds no agent: the wait is a visible zombie build, not the queue saturation this change
-exists to remove. The per-step convention is now enforced by
-`check-pipeline-step-timeouts.sh` rather than left as a comment asking people to keep it.
-
-Raising `trigger_max_size` remains available and is genuinely cheap in dollars (the queue runs
-`t3.small`/`t3.micro`), but it needs a `terraform apply` the user must run, and it treats the
-symptom — the agents still block on `sleep`+`curl`.
+### G6. Every non-literal matcher parks a Netty event-loop thread on a shared pool — **mostly RESOLVED**
+
+`MatchingTimeoutExecutor.callWithTimeout` submitted each non-literal match to a single JVM-wide
+pool and blocked the calling Netty event-loop thread on it. Measured: **~6 us of hand-off tax to
+wrap 44 ns of regex work** (~139x at one thread, ~415x at four), plus a fixed +104 B/op for the
+task wrapper and `FutureTask`. `e838244b7` fixed the main case — `RegexComplexityClassifier` proves
+a pattern cannot backtrack super-linearly and lets it run inline, while everything unproven, and
+all `find()`-style matching, keeps the timeout isolation unchanged.
+
+**Two smaller findings from the same sweep are still open** and are listed in
+[What remains](#what-remains): `MediaType.parse` re-parses and re-allocates the same
+`Content-Type` per request with no cache (`MediaType.java:85`, called from
+`BodyDecoderEncoder.java:68,105`), and the full request body is eagerly decoded to a `String` even
+when no matcher reads it (`BodyDecoderEncoder.java:106-124`). A third — XPath re-parsing the XML
+DOM per candidate expectation outside the timeout wrapper, so that cost scales with body size x
+candidate count — **is being fixed now** (`XPathEvaluator.java`, in flight).
+
+*One lesson from building the classifier, kept because it generalises:* an adversarial review
+reported ONE alphabet under-approximation in it. Sweeping the *class* of defect rather than fixing
+the reported line found two more in the same file, one of them in a sibling scanner the review had
+never looked at. **A review's finding list is a sample, not the set.**
+
+*Confirmed non-gap from the same sweep:* **regex `Pattern` compilation is cached**, not
+per-request — lazily compiled into volatile fields and reused
+(`NottableString.java:34-35,261-289`).
+
+### G7. Trigger-queue capacity was oversubscribed under a commit burst — **RESOLVED**
+
+Each master commit used to spawn up to 19 blocking `sleep`+`curl` trigger steps, each holding one
+of a hard-capped 16 `trigger` agents for the whole duration of the child build it waited on — ~6x
+oversubscribed under a burst, which is what left item 18's re-run `scheduled` for 58 minutes.
+Master dispatch now emits native Buildkite `trigger` steps, which hold no agent at all, and demands
+**zero** agents from that queue.
+
+**Two Buildkite semantics had to be proven on throwaway builds first, because neither is verifiable
+from the repo:** a child skipped by `skip_intermediate_builds` reports on the parent's native
+trigger step as `skipped` with `soft_failed = false`, **not** as `failed` — so a rapid rebase
+cannot turn master falsely red, which was the dangerous outcome; and `timeout_in_minutes` and
+`retry` are **rejected at config validation** on a `trigger` step rather than ignored, so copying
+the emitted steps verbatim would have failed the pipeline upload outright. Both had to be dropped,
+not translated.
+
+**One residual, and it can only be observed over time:** how a child reaching `canceled` or
+`not_run` *independently of the parent* is reported on the parent's trigger step. Listed in
+[What remains](#what-remains).
+
+*Accepted rather than fixed:* a child wedged in its Terraform-defined bootstrap step, or in the
+agent's checkout phase, leaves the parent waiting indefinitely where the command path capped it at
+two hours. A native trigger step holds no agent, so that wait is a visible zombie build rather than
+the queue saturation this change exists to remove. The per-step timeout convention is now enforced
+by `check-pipeline-step-timeouts.sh` rather than left as a comment asking people to keep it.
 
 ### Confirmed non-gaps — checked and found already sound
 
@@ -3382,21 +2379,92 @@ re-treading them:
   parsed document is not held per matcher.
 - **Forward connection pooling is on by default** and its saturation case is already a CI signal.
 
+## Scopes this programme never covered
+
+Added 2026-09-21, after a sweep asking what has NOT been considered across every scope rather than
+what is left on the existing list. These are NEW work, not residue, and each names the measurement
+that would settle it. **Ordered by value x ease**, most-worth-doing first.
+
+**The data plane is the priority.** Where any of these trades data-plane cost for control-plane
+gain, the data plane wins unless the case for the reverse is very compelling. The full rule, with a
+worked example that judges this programme's own `clear` fast path, is in
+[optimisation-safety.md -> The Data Plane Wins Ties](../code/optimisation-safety.md). Item 3 below is
+the one where the tension is real, and it is flagged there.
+
+| # | Gap | Why it matters | Ease | Verified? |
+|---|---|---|---|---|
+| 1 | **Incremental image download.** The fat jar ships as ONE ~100 MB layer (`docker/Dockerfile:241`), so a version bump re-pulls all of it even though nearly all is unchanged third-party dependencies. Split stable deps from MockServer classes. | Every size win so far cut the ABSOLUTE bytes; none considered layer REUSE. For a CI agent pulling each release, or a k8s rollout, the delta is what costs — and the delta is currently 100% | Medium — Dockerfile restructure; check the AppCDS archive, which is classpath-derived and also changes per version | **Yes** — layer measured at 99.8 MB via `docker history` |
+| 2 | **A measurement-validity checklist.** `optimisation-safety.md` codifies "did this change break correctness". Nothing codifies "does this number measure what it claims". | The recurring failure of this programme. In one day: a churn counter that counted loop iterations not store mutations; an INFO arm measured and discarded; `peak_achieved_rps` documented as tracking a ceiling it structurally cannot; a ladder's rung spacing read as a server curve. Each was honest, passing, and about the wrong subject | **Easiest thing here** — a short pre-registration: what is this a number OF, what would make it lie, degrade it and confirm red | n/a — process |
+| 3 | **Concurrent control plane.** G9 measured a SERIAL per-test cycle and says so explicitly; several suites sharing one server present concurrent control-plane calls, where contention and a throughput ceiling matter and the serial figure does not bound them | The shared-CI-server shape. **This is the item where the data-plane-priority rule bites**: the obvious fixes are shared structures the data plane must maintain | Medium — extend the existing G9 harness to N threads | Gap is stated in G9's own text |
+| 4 | **Load spikes.** Every harness is constant-arrival-rate or a stepped ladder WITH SETTLE WINDOWS THAT DISCARD THE START TRANSIENT. Correct for steady state, and it means the spike case is the one thing none of them can see | 0 -> N instantly is a rollout, or a CI suite starting 200 threads: accept backlog, pool growth, TLS handshake storm, GC on a sudden allocation burst | Medium — new k6 scenario; `regression.js` is the pattern to copy | **Yes** — settle-window exclusion confirmed in the harnesses |
+| 5 | **Time-to-steady-state, not time-to-ready.** Startup is measured to 566 ms ready and the readiness probe is fixed, but a ready JVM is not yet a fast one: AppCDS and AOT help class loading, not JIT | Nobody measures "requests until p99 stabilises". Hits the per-test-method and autoscaling profiles this plan already says it under-serves | Medium — measurement only at first, no product change | Reasoned from what the startup work measured |
+| 6 | **Native / direct memory.** All memory work here is heap — event log, weigher, retention, container percentage. Netty pools DIRECT buffers off-heap and nothing watches them outside JFR diagnostics | A direct-buffer leak presents as a container OOM-kill with no `OutOfMemoryError` — precisely the failure the 75% -> 60% heap default already hit once | Medium — NMT and JFR are already wired; needs a gauge and a gate | Reasoned; not yet probed |
+| 7 | **Dynamic certificate generation under proxy load.** The TLS work measured HANDSHAKE cost against three fixed SUTs. For CONNECT tunnels MockServer generates a leaf per host, so a proxy workload touching many distinct SNI hosts pays keygen and signing per host — a different cost curve | Proxy mode is a first-class use, and this is the one proxy cost nothing has looked at | Medium | **NOT VERIFIED** — check the code before planning work |
+| 8 | **Mixed-protocol load.** Every arm is single-protocol. Real servers carry h1 keep-alive, h2 multiplexed streams and WebSocket callbacks on the same event loops and the same matching path at once | Contention profile differs from any single-protocol arm | Medium-low — harness complexity | **Yes** — every k6 arm is single-protocol |
+| 9 | **The overload contract.** The programme fixed congestion collapse (it used to serve LESS as load rose). What SHOULD happen at 2x capacity is still unspecified: backpressure, 503s, bounded queues? | "Holds 25,488" is an improvement, not a contract | Low — needs design decisions before measurement | Reasoned |
+
 ## What remains
 
-Everything in the acceptance table is executed. What is outstanding is either research-sized,
-needs a resource, or is a decision rather than a task.
+**Fourteen things are outstanding: eight can be settled from the repo, and six cannot be settled
+here at all** — those six need a run on real hardware, or an external system to report something.
+Everything else in this document is history, kept only where it records a measured figure that is
+quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
+hard way.
 
-| | Owed | True state |
+```mermaid
+flowchart TD
+  left["Settleable from the repo"]
+  right["Needs a run, or an external system"]
+  left --> a["sweep.js fixed-VU-pool invariant
+  (the value needs measuring)"]
+  left --> b["Gate the candidate-index
+  churn/static allocation ratio"]
+  left --> c["Rename peak_achieved_rps,
+  delete its false continuity claim"]
+  left --> d["G6 residue: MediaType.parse cache,
+  eager body decode"]
+  left --> e["9b SOCKS5 rung,
+  9c JMH relay benchmark"]
+  left --> l["Low value: toSortedList dedup,
+  .laptop block, G11 plaintext arm"]
+  right --> f["Item 18: a load generator
+  that can saturate the server"]
+  right --> g["Build-272 SUT crash post-mortem"]
+  right --> h["The 36,000 rps knee,
+  clean-tier"]
+  right --> i["-Xmx512m sidecar under load"]
+  right --> j["alloc_bytes_per_op
+  agent-independence"]
+  right --> k["Canceled-child reporting on a
+  native trigger step"]
+```
+
+### Settleable from the repo
+
+| | What is owed | Detail |
 |---|---|---|
-| **10. soak** | Its occupancy control: reduce `maxLogEntries` so the ring never fills, and show the verification-query metric flattens | **BASELINE ESTABLISHED (build #340, 2026-09-19) — and the harness fix is vindicated.** The second soak ever run, on `cdac3b0bb` with the fixed harness. The self-inflicted failure is gone: **match error rate 54.17% -> 0**, and **drift 3.809 -> 1.0632**. That drift collapse is the headline — the apparent degradation-over-time in build #324 was an artefact of the harness evicting its own match seed and pinning the expectation store at 15,000, not real. p50 is **0.148 ms** and the tail does not move across two hours. Retention fell with it: heap end 902 MB -> **362 MB**, live-set floor 484 MB -> **282 MB**. **Item 10b now has its numbers**: verify p50 **98.2 ms** (drift 0.9665), retrieve p50 **271.8 ms** (drift 1.0485), both carrying the new early/late sub-percentiles, and `samples.csv` uploaded — build #324 lost it by exiting 99 before the upload path. **The run still fails its gate, but not for the stated reason.** The annotation says "data-plane p99 drift or error-rate gate tripped"; p99 was 96.051 ms against a 100 ms threshold and **passed**. What crossed is **p95: 62.644 ms against 25 ms**. `LIMITS` is a shared block documented as "standard thresholds shared by the load/stress/soak scenarios", so 25 ms was never calibrated for a 2 h soak against a full event log — a threshold inherited from a different subject. **Owed to close the item:** the reduced-`maxLogEntries` arm. Expect verify/retrieve well below 98/272 ms; at the default the log fills early and stays pinned at the cap, so there is no occupancy gradient for the metric to track, which is why both drifts are flat here. Also owed: correct the soak annotation to name the threshold that actually crossed. **BLOCKED as written, found 2026-09-20 — the owed arm conflicts with an existing control.** This row asks for a reduced-`maxLogEntries` arm, but `perf-test-run.sh:97-105` documents why that must NOT be done on this SUT: **`growth.js` runs on the SAME server and has to fill the DEFAULT 100k ring** to reproduce issue #2329's O(n)-eviction slope — "a smaller ring would never fill and would hide the bug". So shrinking the count bound to create an occupancy gradient for verify/retrieve would silently disable the control growth.js exists to be, which is a strictly worse trade than leaving item 10b open. Note the existing run already bounds RETENTION rather than rate, via `PERF_MAX_EVENT_LOG_BYTES` (256 MiB) — deliberately chosen because the byte budget never fires for growth (its `/simple` bodies total tens of MB across 100k entries) while still capping the MB arms. **Any attempt at this arm therefore needs a dedicated SUT or a separate run that growth.js does not share**, not a config tweak to the existing soak. Recorded here so the next person does not "just shrink the ring" and quietly invalidate #2329's regression cover. **UNBLOCKED AND CLOSED 2026-09-20 by doing exactly that** — the arm ran locally against a MockServer nothing else shares, so `growth.js` and the CI soak were never touched. `soak.js` needed no change (it is already env-driven); the only variable was `maxLogEntries` 2,000 vs 5,000,000, with the byte budget held identical at 4 GiB and occupancy MEASURED from `mock_server_event_log_retained_entries` rather than inferred. Result across two independent takes: the query metric IS occupancy-sensitive, but in the LEVEL (verify p50 3.25x and 2.30x, retrieve p50 6.15x and 5.20x higher at ~57k entries than at 2k) and NOT in the early/late drift ratio, whose four readings on the constant-occupancy pinned arm span 1.04 to 2.00 — a noise floor up to 2.0x, close enough to the filling arm's own take-1 drift (2.47 / 2.61) that any useful threshold would sit inside the noise — which makes drift the wrong statistic to threshold. CI's flat drift is explained rather than excused: at a measured 1.78 log entries per request the soak's 212 rps fills the 100k ring in ~265s of a 2h run, so both windows sample the same occupancy. Full method, caveats and the data-plane cross-check are under item 10b above |
-| **17. N instances** | Not the measurement — that is done | **Research DONE (2026-09-17, local).** Results are recorded in item 17's own body: 222 live threads at N=32 (not the 480 previously assumed), store-sizing capacity frozen at first read JVM-wide via `readPropertyHierarchically` and reproduced with `--preconsumeHeapMb`, `devMode` saving ~2 MB/instance and removing the freeze lottery, ports and startup non-issues. Harnesses (`scripts/perf/InJvmParallelBench.java`, `parallel_instances.py`) are deliberately unwired — this is a laptop profile. **Outstanding: only (a).** Re-audited against the code 2026-09-19; the two "product follow-ups" this row used to list were both stale. (a) The optional notify-only `.laptop` parallel block for `perf-test-compare.sh`, whose wildcard budgets are already enumerated below — still owed. (b) *Stop caching derived defaults* is **DONE**, by a better mechanism than this plan proposed (`e2e69a0ae`): rather than change the shared reader, the affected getters were moved OFF it. `maxLogEntries()` and `maxExpectations()` now resolve an explicit override through `explicitIntegerProperty` and otherwise recompute the derived default on every read via `devModeDefaultOrHeapBased`; `maxEventLogSizeInBytes()` does the same through the analogous Long variant `explicitMaxEventLogSizeInBytes()` -> `explicitProperty`, against a default derived from the **log level** rather than from `devMode`. What the three share is the property that matters: none of them injects or caches a default. The freeze is pinned by a live sequential test (`ConfigurationTest.shouldApplyDevModeDefaultToMaxLogEntriesAndMaxExpectationsEvenAfterHeapBasedDefaultWasRead`), which reads at the heap-based default FIRST — the read that used to freeze it — before enabling dev mode. `readPropertyHierarchically` itself still caches injected defaults, and that is deliberate: the only genuinely derived default left on that path is `actionHandlerThreadCount()`'s `max(5, availableProcessors())`. That cannot produce the order-dependent lottery this row is about, because the lottery needed a default that varied with `devMode()` and this one does not. (The JDK documents `availableProcessors()` as a value that "may change during a particular invocation of the virtual machine", so "stable" is loose wording in general — but it is read once at startup under container support on the JDKs MockServer ships against, and it is a thread-pool floor rather than a store capacity, so a change would not be silent the way an evicted `verify` is.) Recorded here as a known-benign residual so it is not rediscovered as "the bug". (c) *Default the JUnit rule/extension to `devMode`* is **not a task but a decision**, and has been moved to its own row below |
-| **18. req/s per core** | A trustworthy curve | **RAN ON CI (build #325, 2026-09-19) — valid run, and the curve is still not measured.** The flag was set at last and the run passed every validity check on the 16 vCPU native Linux box the local attempt lacked. The result: the healthy ceiling is **exactly 4,000 rps at 1, 2, 4 and 8 cores**. That flatness is the *rig*, not the server — see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). C=16 is correctly recorded infeasible (16 SUT cores + >=2 disjoint client cores + 1 reserved does not fit a 16-core host), so `curve_complete_to_16` stays false. **Owed: a ladder and a load generator that can resolve the knee** — not another run of the same shape. **Re-run attempted 2026-09-19 as build #347 and it measured nothing — root-caused 2026-09-20.** The ladder died at bash PARSE time before a single core-count ran: `7ee0470b8` (the VU/stall diagnostics this very row asked for) added comment prose containing `k6's` and `pool's` INSIDE the single-quoted `jq` program at `lib/perf-percore.sh:490,492`. `#` does not start a comment inside a single-quoted string but `'` closes it, so bash re-tokenised the remainder as shell and choked on `$sweep[0].vus_diagnostics`. The two apostrophes BALANCE, which is why `bash -n` passed it — the same defect class, and the same file, as the earlier shipped syntax error. Ancestry settles it: `7ee0470b8` (bug) IS an ancestor of `abdc5a020` (what #347 ran); `a4303f5ee` (the reword plus the `shellcheck -S error` guard that catches what `bash -n` cannot) is NOT. **#347 ran one commit too early; master is already fixed.** Action is a re-run at or after `a4303f5ee`, not a code change. Two things worth keeping from it: the compare gate fired correctly (`serving_percore_attempted: true` with an empty block = RED) and stopped exactly the silent green it was built for, though its annotation's candidate-cause list omitted the actual one, a parse-time crash of the producer; and `serving_percore_attempted` is set unconditionally at `perf-test-run.sh:2259` BEFORE the producer is invoked, so it records intent to launch, not work performed. *Advisory, not done:* the jq program is embedded as a single-quoted string full of prose, so any future apostrophe re-breaks it — loading it from a `.jq` file with `-f` (as `perf-website-figures.jq` already does) would make the class structurally impossible. **Re-run as build #358 on `a4303f5ee` (2026-09-20) and THE LADDER FINALLY EMITTED** — the root cause was exactly the one commit of ancestry. Four core-counts measured (1c/2c/4c/8c); C=16 correctly recorded infeasible, so `curve_complete_to_16` stays false. Per-core `healthy_ceiling_rps` 4000 / 8000 / 4000 / 4000, `rps_per_core` 4000 / 4000 / 1000 / 500, `healthy_ceiling_p50_ms` 0.219 / 0.126 / 0.151 / 0.157, `peak_achieved_rps` 7463 / 13849 / 13933 / 13818. **What this does NOT establish, and the row's original debt therefore stands:** `healthy_ceiling_rps` is quantised to the ladder's own rungs (4000, 8000, ...), which is why it reads non-monotonically across 1->2->4->8 — that is rung spacing, not a server curve; and `peak_achieved_rps`, where the apparent 2c->4c flattening at ~13.9k lives, is the metric this plan already establishes measures the CLIENT (see the section of that name). So item 18 now has a working instrument and still lacks a ladder that can resolve the knee — the owed work is unchanged, but it is no longer blocked on a producer that cannot run. *Build #358's overall state is FAILED for an unrelated reason:* `MultiplePortMockingIntegrationTest` hit `Runtime Exception while binding MockServer to port 44569` in the h2-multiplex step (1 error across 2208 tests) — the known find-then-bind port race, and #358 ran a commit predating the G1/G6 work, so neither is implicated. **Root cause of the unresolvable curve found 2026-09-20, and it is the LADDER, not the server.** `healthy_ceiling_rps` is defined as the highest RUNG whose achieved rate held at or above keep x offered (`lib/perf-percore.sh:21`), so the ceiling can only ever take a rung's value and its resolution IS the rung spacing. The sweep ladder was `250,500,1000,2000,4000,8000,16000,32000` — a doubling ladder — which means a factor-of-two uncertainty: a server whose true ceiling is 7,900 rps reports 4,000. So build #358's 4000 / 8000 / 4000 / 4000 across 1/2/4/8 cores was never a server curve, it was quantisation noise, and the apparent non-monotonicity is an artefact of reading a rung index as a measurement. **No code change is needed:** the ladder is already env-tunable via `PERF_PERCORE_SWEEP_RATES`. Build **#364** re-runs it with `500,1000,1500,2000,3000,4000,5000,6000,7000,8000,10000,12000,16000,32000` — 14 rungs against 8, giving **1,000 rps resolution through the 2k-8k region where the ceilings clustered** instead of a factor of two. Cost is one rung x (12s step + 4s gap) each, so the sweep grows from ~8.5 to ~15 minutes across the four feasible core-counts — cheap for the first curve this item can actually interpret. **RESULT (build #364, 2026-09-20) — the ladder now resolves the ceiling, and the curve is FLAT.** #364 is also the first per-core run to pass END TO END, gate included: #347 failed the `serving_percore` presence gate because the producer died at parse time, and #358 emitted but the build failed on an unrelated port-bind race. #364 passed lint, run+sample, microbench, h2-multiplex, persist+compare and publish. C=1 6000 / C=2 6000 / C=4 6000 / C=8 6000 rps, so `rps_per_core` falls 6000 -> 3000 -> 1500 -> 750 purely because the denominator grows. **The refined ladder paid for itself immediately: 6000 is not a rung in the old doubling ladder, which would have reported 4000 — a 50% understatement of the same server.** C=16 remains correctly skipped as infeasible. **What the numbers say about WHY is not what this item assumed.** SUT CPU at peak was 88.8% of 100% at C=1, then 93.9% of 200%, 107.6% of 400% and 99.8% of 800% — the server draws roughly ONE core's worth however many it is given. The k6 client used 168-206% (about two cores) of the 7-14 disjoint cores it held, so **the client had ample headroom and is not the constraint either**. The harness's own attribution agrees and is worth quoting rather than paraphrasing: `peak_limited_by=server` at C=1, but `load_path_or_virtualization` at C=2, 4 and 8 — it explicitly declines to blame the server once cores are added. **So this does NOT establish that MockServer cannot scale with cores.** It establishes that on this rig something serialises before either CPU saturates, and the instrument points at the load path or the virtualisation boundary rather than at the server. Separating a real single-threaded limit from a containerised-loopback one is the next question and needs a different experiment, not another ladder. *Flagged, unexplained:* every arm dropped ~2,000-2,400 iterations at its ceiling rung while still reporting `rig_valid: true`, which should be checked against the Finding-3 VU-pool shape before these figures are quoted anywhere. **Resolved 2026-09-20 — not a false green, and the confusion was a stale comment.** Two different `rig_valid` definitions exist and they differ ON PURPOSE. `perf-test-run.sh:1185` is `$headroom and $no_drops and $low_err`; the per-core ladder's `perf-percore.sh:393` is `$headroom and $low_err`, with drops deliberately excluded because **drops WITH client CPU headroom mean the server could not keep up** — which is precisely the signal this ladder exists to capture, not a reason to discard the rung (the same file computes `server_saturated` from exactly that condition). So #364's 2,366 drops at a ceiling marked `rig_valid: true` are consistent and meaningful. **What misled both me and this plan was `perf-percore.sh:347`, which claimed the block mirrored `perf-test-run.sh` EXACTLY, including 'no dropped iterations' — false, and contradicted by its own code thirty lines below.** Corrected there. Note the earlier statement elsewhere in this plan that '`rig_valid` requires `dropped_iterations <= 0` with no tolerance' is true of the SWEEP in `perf-test-run.sh` and must not be applied to the per-core ladder |
-| **19. S3 -> website** | **CLOSED 2026-09-19** | **Closed by the second half of its own acceptance wording — "a PR, *or a reasoned decision not to open one*".** Every stage of the logic is proven: build **#325** read the newest self-describing S3 object, judged the candidate (`healthy_ceiling_rps=16000`, `peak_achieved_rps=28377.4`, 18 arms), fired its movement trigger, regenerated the chart data, branched and committed 3 files / 2,235 insertions — then died at `git push` on `could not read Username`. The reason is structural, not a missing config: the perf stack's IAM role grants only S3 on `mockserver-ci-perf-results`; the GitHub token is named solely by `read_release_secrets`, attached to the release stack. **The obvious fix was rejected on privilege grounds** — that token can push any branch and cut GitHub Releases, and the perf queue builds master and runs k6 on a public-IP box, so a poisoned dependency would inherit both, for a cosmetic docs refresh. The step now emits the refresh as a `git format-patch --binary` artifact plus the regenerated files, and annotates with what moved and the exact apply-then-PR commands. A human was always required in the loop anyway — the step's own text says "A human must reconcile the hand-authored numbers this refresh does NOT touch". `format-patch` over `git diff` is not a style choice: a plain diff emits `Binary files ... differ` for the chart PNGs, which `git am` rejects; the binary round-trip was proven to reproduce an identical SHA. The refuse path (build #290) is untouched and still fails closed. If auto-PR is ever wanted, the fallback is a fine-grained token scoped to this repo with `Contents`+`Pull requests` write only — **never** the release token |
-| **12 calibration** | Bisect the CI streaming knee between 300 and 1200 | **CLOSED (2026-09-19, `72bc3dafd`).** Build **#322** ran the ladder and the knee is far sharper on CI than the laptop curve predicted. **Provenance, because this matters and a reader would otherwise be misled: build 322's overall state is FAILED and its run is flagged `validity.valid=false`.** That flag is not about this measurement. Of the six validity checks exactly one failed — `sweep_client_had_headroom` — and its own detail scopes itself: *"every sweep rung was excluded (client CPU-pinned / VU-starved / erroring) ... no server **throughput** figure is trustworthy"*. It fired because the bisect deliberately ran a **short 3-rung ladder** (2,000 / 16,000 / 32,000 offered), none of whose rungs survived the headroom filter, so `peak_achieved_rps` was recorded as 0. **Mechanism corrected 2026-09-19:** this row first said those rungs sat "at or above the k6 client's own capability". Client CPU was never the constraint — build 325 measured it at 13.6% utilisation on the equivalent rung. The real binding constraint is that `sweep.js` never received this plan's own Finding-3 fix and still ramps `preAllocatedVUs` 200 -> `maxVUs` 4,000 mid-run; see [Why the per-core curve is still flat](#why-the-per-core-curve-is-still-flat). **Corrected again, same day:** I then said the VU ramp was the cause. It is not — that rung needed under one VU from a pool of 200, so no ramp was possible. The exact chain is: the 2,000 rung dropped 133 iterations (~0.4%), `rig_valid` requires `dropped_iterations <= 0` with no tolerance, so every rung was rig-invalid, `peak_achieved_rps` became `max over []` = 0, and the check keys off `peak > 0`. See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server). The streaming arm is a different scenario and its own check **passed** (`streaming_metrics_present`, ratio 2.5357), with the direct client-starvation signals all clean: `stream_dropped_iterations: 0`, `stream_error_rate: 0`, `match_under_stream_error_rate: 0`, 13,200 streams completed, and delivery ratios **above** 1.0 on both arms (1.0606 under stream, 1.1386 baseline) — a starved client under-delivers, it does not over-deliver. The harness behaved correctly throughout: it refused to baseline a run it could not fully vouch for (`valid=false` -> not persisted) and failed the build loudly rather than showing a green square. The numbers below come from the passing `perf regression — run + sample` job (exit 0), not from the failed compare step. Three CI data points: concurrency **300 -> 1.056x**, **600 -> 2.536x**, **1200 -> 93.8x**. The knee therefore sits between 300 and 600, and 1200 was an order of magnitude past it — a control that fires so hard it proves nothing about the margin. Item 12 now runs at **600**, where the control fires by 2.5x with headroom either side. This also corrects an extrapolation error of mine: I predicted ~3x at 1200 from the laptop curve, whose own contention had flattened it |
-| **JUnit `devMode` default** | **DONE 2026-09-19 (`c4252ea97`)** | The machinery is **built, wired and deliberately off** (`ada0619c2`), behind one line — `ENABLE_DEV_MODE_BY_DEFAULT = false` in both `MockServerExtension:31` and `MockServerRule:33` — and the discoverability precondition this plan set for flipping it is already met: a store-construction log line fires on every start, warning that a `verify` past the cap is being silently evicted. Flipping buys the recorded **117 MB -> 52 MB at N=32** (~2 MB/instance, 56%) and removes the freeze lottery by making capacity deterministic. It costs correctness-in-silence: stores fix at 1000/1000, and a suite logging more than 1000 entries gets a `verify` that quietly stops matching. **The user approved the flip on 2026-09-19 knowing that trade-off, and THE FLIP HAS HAPPENED** — `ENABLE_DEV_MODE_BY_DEFAULT` is `true` in both `MockServerExtension:31` and `MockServerRule:33` as of `c4252ea97`. Everything from here to the end of this cell describes the work as though it were still pending; it is not. Read it as the rationale, not as a task list. Scope of the change that was made: flip the constant in both modules; update `MockServerExtensionDevModeDefaultTest` and `MockServerRuleDevModeDefaultTest`, which were written to pin opt-in; decide whether Spring test support (which has no devMode hook at all) gets one for consistency; and update the consumer docs, since this changes behaviour for every JUnit-integration suite in the wild. **This is a user-visible default change and needs a changelog entry** |
-| **Byte-budget divisor** | **DONE 2026-09-19 (`e03e48833`)** — measured, not guessed | The divisor was tuned against the OLD under-counting weigher (which counted body bytes only), so an honest weigher means the default config retains **less real heap than before** — the bound did not change, the accounting did, and the effective capacity fell with it. Restoring prior capacity is a sizing choice about shipped defaults, which is why it waited on the user; **approved 2026-09-19**. Done-when (ALL MET by `e03e48833` — stated in the past tense would be clearer, but the conditions are recorded here as they were set): the new divisor is derived from a MEASURED ratio between weighed and actual retained bytes (the honest weigher makes that measurable for the first time), not guessed; the default retains approximately what it did before the weigher was corrected, or the change in capacity is stated deliberately; and the figure is justified at both log levels, since retention per entry differs sharply between them. **User-visible default change -> changelog entry** |
-| **JSON diff cost** | **CLOSED** — shipped and measured | **Landed 2026-09-19 (`79d91c09e`), and now measured on the shipped code rather than on a prototype.** The JFR profile put `Diff.compareObjectNodes` / `ComparisonMatrix.isSimilar` at 67% of samples during JSON matching. Parsing is NOT the bottleneck — the mapper is shared and the parsed body is cached per thread. The shipped filter is a pure-negative `canMatch(...)` in `JsonStringMatcher`, gated on `useJacksonNodes && !detailedMatchFailures()` so it never changes what a user is told about a failure. **The prototype's -99.9% headline is real but is a WARN-level number; at the shipped default of INFO the win is -37.9%.** Full measured table and what it revises in [What the JSON pre-filter actually buys](#what-the-json-pre-filter-actually-buys) below |
+| **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
+| **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
+| **`peak_achieved_rps`** | Rename the top-level field to `rig_valid_peak_achieved_rps`, delete the false continuity claim, and give the two same-named quantities distinct names | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case. Also key `sweep_client_had_headroom` off a **count** of rig-valid rungs rather than off a throughput value, and reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run |
+| **G6 residue** | Cache `MediaType.parse`; stop eagerly decoding the body to a `String` when no matcher reads it | `MediaType.java:85`, called per request from `BodyDecoderEncoder.java:68,105`; the eager decode is `BodyDecoderEncoder.java:106-124` (note the body is retained for the event-log entry anyway, so the saving is narrower than it first looks). `InboundDecodeBenchmark` already targets the decode path. **The third finding from that sweep — XPath re-parsing the DOM per candidate expectation — is IN PROGRESS**, not outstanding |
+| **9b / 9c proxy arms** | A SOCKS5 rung, and a JMH relay benchmark | Both were named when 9a shipped and neither has been built — there is no SOCKS arm anywhere under `mockserver-performance-test/k6/`, and no relay benchmark in `mockserver-benchmark`. **9b:** k6 supports an HTTP proxy but not SOCKS, so this needs a small driver or a SOCKS-aware sidecar; if that is awkward, downgrade it to a JMH benchmark of the handshake handlers rather than skipping the dimension. **9c:** the relay is byte-copy dominated and nothing like matching, so the matcher backstop says nothing about it — measure bytes/s and allocation per relayed KB |
+| **`toSortedList` dedup** | Deduplicate the rebuild across concurrent readers — **but do not over-invest** | `CircularPriorityQueue.java:299-306` still rebuilds the whole list whenever `sortedCache` is null, with no dedup, and the cache is still nulled on every structural mutation. **Its blast radius collapsed from "every request at any store >= 64" to almost nothing**, because the hit path no longer calls it: `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is a much smaller question than G1 posed |
+| **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
+| **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
+
+### Needs a run, or an external system
+
+None of these can be closed by editing this repo. Grouped so they are not mistaken for work
+that is merely undone.
+
+| | What it needs | Why it is stuck here |
+|---|---|---|
+| **Item 18's experiment** | A load generator that can saturate the server — several k6 processes, several client hosts, or a different generator | The per-core instrument works and the curve is flat at 6,000 rps for C = 1, 2, 4 and 8 (build #364, 2026-09-20). Neither side is CPU-bound: SUT CPU is ~one core's worth at every C, and k6 used ~2 of its 7-14 disjoint cores. A native re-run refuted the virtualisation half of the explanation (30,704 rps native against 27,651 in Docker — containerisation costs ~10%, not 5x) and killed the event-log hypothesis (disabling logging changed peak throughput not at all). **What is still open is why k6 drops iterations with three quarters of its VU pool unused.** Not another ladder |
+| **Build-272 SUT crash** | Someone to read the `perf-jvm-diagnostics.tgz` post-mortem from that build | The MockServer container exited `ExitCode 3` (not OOM) during k6 `setup()` expectation seeding, on build 272 only. `run + sample` failed while microbench and HTTP/2 both passed, so the compare skip was correct — the measurement genuinely failed. The artifact is uploaded and is where to continue |
+| **The 36,000 rps knee** | A clean-tier run on an image carrying the corrected heap cap | Build 290 ruled out one possibility and recorded a shape — 15,475 achieved at 16,000 offered, **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000, error rate 0 at every rung with the losses all `dropped_iterations`. That is a genuine knee near 32,000 with a collapse beyond it, a server-side congestion signature rather than a client ceiling. It does **not** settle the published 36,000: build 290 was a deep-tier run (JFR + NMT depress throughput by design, `baseline_eligible:false`), so 26,020 is a floor, not a refutation |
+| **The `-Xmx512m` sidecar** | Its own run under sustained load | The general form was answered on 2026-09-18 and the answer was no: peak RSS **2,271 MiB** against a **1,536 MiB** heap plus 133 MiB of metaspace and code cache — ~735 MiB of non-heap and native, dominated by Netty's pooled direct buffers, which scale with concurrency and body size and not with heap at all. A **1.48x** ratio against the 1.33x the old `MaxRAMPercentage=75.0` assumed; default lowered to 60.0 in `ec2373d86`. The specific 512 MiB claim is untested, and the sizing rule says it is the size most likely to be killed: the overhead is **additive and load-driven**, not a fixed multiple, so it gets proportionally worse as the container shrinks |
+| **`alloc_bytes_per_op` agent-independence** | Same commit, five runs on each queue | One cheap experiment, never run. Item 16's per-merge allocation gate rests on the answer |
+| **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 ### `peak_achieved_rps` measures the client, not the server
 
@@ -3453,53 +2521,21 @@ give the two same-named quantities distinct names; and reconsider the absolute z
 threshold, since a fractional tolerance would still catch a genuinely starved rig without
 letting 0.4% void a run. Fixing the `sweep.js` VU ramp removes most of the drops at source.
 
-### Why the per-core curve is still flat
+### Why `sweep.js` still ramps
 
-Build 325 is a valid run that answers the wrong question, and it reproduces the local
-result for a reason the plan had mis-attributed. The local run was explained away as a
-Docker-Desktop-for-Mac client cap. CI is native Linux with 16 vCPU and shows the same
-flatness, so that explanation was wrong — or at least incomplete.
+The evidence behind the `sweep.js` row above, kept because the fix needs a *measured* pool size
+and this is the data to size it against.
 
-The ceiling rule is "highest rung where achieved >= 0.95 x offered, zero errors, p50 within
-3x the flat region". The ladder is 250 / 500 / 1,000 / 2,000 / 4,000 / 8,000 / 16,000 /
-32,000. At 4,000 the server delivers ~0.98 of offered and passes. At 8,000 it delivers:
+`sweep.js` is the only one of the arrival-rate scripts that never received Finding 3's fixed-pool
+invariant. `lib/config.js` states the mechanism in its own words: mid-run allocation is a feedback
+loop where "a cold/contended request piles up iterations, k6 ramps preAllocatedVUs -> maxVUs, EACH
+new VU opens a fresh connection, the connection storm slows the core-limited server further, which
+piles up more iterations — a ~1 s (to multi-second) tail that MORE VUs only worsen." That fix was
+applied to `regression.js` (50 == 50) and `clustered_crossing.js`; `sweep.js` still runs
+`preAllocatedVUs: 200, maxVUs: 4000` — a 20x ramp.
 
-| SUT cores | achieved at 8,000 offered | ratio | k6 CPU | dropped iterations |
-|---:|---:|---:|---:|---:|
-| 1 | 7,475.6 | 0.9345 | 190.5% | 6,294 |
-| 2 | 7,485.8 | 0.9357 | 197.5% | 6,172 |
-| 4 | 7,527.6 | 0.9410 | 193.8% | 5,670 |
-| 8 | 7,539.3 | 0.9424 | 146.2% | 5,530 |
-
-Every one falls just under 0.95, so 8,000 is disqualified at every core count and the ceiling
-pins to 4,000 everywhere. The curve is flat **by construction**.
-
-**And the shortfall is client-side.** Those are `dropped_iterations` — k6 constant-arrival-rate
-iterations that never started because no VU was free. The server did not fail to answer; the
-client failed to ask. So the 0.95 delivery-ratio criterion, at the rung that decides the
-ceiling, is measuring **the load generator's ability to offer, not the server's ability to
-serve** — the exact error recorded as instance 1 of this programme's recurring failure
-(`handshakes_per_s` reporting k6's offered rate as capacity).
-
-The giveaway is in the numbers themselves: **8x the cores buys 0.85% more throughput** at that
-rung. No real server scales that way. A quantity that ignores an 8x change in the resource it
-is supposed to be a function of is not measuring that resource.
-
-**`client_limited_at_ceiling: false` is true and useless.** It reports on the 4,000 rung — the
-one called the ceiling, where k6 sat at 73-99% — not on the 8,000 rung that *disqualified* the
-step up. The load-bearing question is not "was the client limited where we stopped?" but "was
-the client limited at the rung that made us stop?". The flag answers the first.
-
-**There is real scaling in the data, just not where the rule looks.** At 16,000 offered the
-achieved rate goes 3,120 (1 core) -> 9,170 (2) -> 9,003 (4) -> 9,767 (8). One core to two
-nearly triples it, then it flattens — which hints the server ceiling is somewhere near
-9-10k rps and that two cores already reach it. But those rungs are excluded for latency
-(p95 ~1,000 ms), so nothing downstream sees them.
-
-**ANSWERED 2026-09-19 by build #347, the instrumented run — and it corrects me again.**
-
-The diagnostics settle it, and the answer is that **both** of my earlier explanations were
-partly right and both were stated too absolutely.
+**The ramp is real but it is not the whole story, and the difference is what makes sizing a
+measurement rather than a guess.** Instrumented rung data from build #347:
 
 | offered | drops | vus_avg | **vus_max** | stalls | stall_time_buckets |
 |---:|---:|---:|---:|---:|---|
@@ -3509,173 +2545,23 @@ partly right and both were stated too absolutely.
 | 8,000 | 2,198 | 5.3 | 301 | 2,005 | [217, 411, 262, 277, 325, 513] |
 | 32,000 | 153,428 | 460.4 | 1,283 | 203,051 | [8776, 21779, 30938, 46375, 45789, 49394] |
 
-**At the 4,000 rung — the one where I argued a pool shortage was "arithmetically impossible" —
-average concurrency is 4.6 VUs but the PEAK is 216, which exceeds the 200-VU pool.** Little's
-law was right about the average and I wrongly treated the average as the whole story. A pool
-shortage is not impossible there; it is impossible *in steady state* and entirely possible in a
-transient.
+At the 4,000 rung average concurrency is 4.6 VUs but the **peak is 216**, which exceeds the 200-VU
+pool — so a pool shortage is impossible *in steady state* and entirely possible in a transient.
+`stall_concurrency_max` equals `vus_active_max` there (216 = 216), and `stall_time_buckets` shows
+two sharp bursts rather than a spread: **a transient stall blocks VUs, iterations pile up behind
+it, concurrency spikes past the pool, and the executor drops the overflow.** The high rungs are a
+different regime — from 32,000 upward the stalls spread across all six windows and `vus_avg` is
+460-727, which is genuine saturation.
 
-**The transient is a stall, and the two coincide exactly.** `stall_concurrency_max` equals
-`vus_active_max` at that rung (216 = 216): the concurrency spike happens *at* the stalls, not
-independently of them. And `stall_time_buckets` is `[0, 253, 0, 0, 216, 0]` — two sharp bursts
-in six windows, not a spread. That is the clustered signature the instrumentation was built to
-discriminate, and it is clustered at every low rung (500: all 30 in the first window; 2,000:
-front-loaded).
+**Client CPU is not the cause and never was.** At the 8,000 rung k6 used 190.5% of a 1,400% pin —
+**13.6% utilisation, 86% idle**. A 176x p95 explosion between two rungs while the load generator
+sits 86% idle is a connection storm, not saturation.
 
-So the mechanism is: **a transient stall blocks VUs, iterations pile up behind it, concurrency
-spikes past the pool, and the executor drops the overflow.** `vus_pool_grew` is **true** —
-global max 4,683 against a 1,800 baseline — so the ramp does fire, but it is *driven by the
-stall*, not by steady demand. My "the VU ramp is the cause" claim had the right mechanism and
-the wrong trigger; my "unexplained" correction was right to retract the trigger and wrong to
-call the mechanism impossible.
-
-The high rungs are a different regime and read as such: from 32,000 upward the stalls spread
-across all six windows and `vus_avg` is 460-727, which is genuine saturation rather than a
-transient.
-
-**What this licenses:** equalising `preAllocatedVUs` and `maxVUs` per Finding 3 is now justified
-by evidence rather than by invariant alone — a fixed pool cannot ramp, so the storm cannot
-compound. But it will NOT eliminate the drops: a fixed pool still overflows on a transient spike,
-and k6 counts that as a dropped iteration. Sizing the pool for the *peak* rather than the
-average is the change that matters, and the peaks are now measured.
-
-*Still owed:* the per-core ladder itself produced nothing on this run —
-`serving_percore_attempted: true` with an empty `serving_percore: {}`. The diagnostics above are
-from the main sweep, which is the same `sweep.js` the ladder drives, so the mechanism finding
-holds; but item 18's actual curve still needs a run where the ladder emits.
-
-**The cause is not client CPU.** My first write-up of this said the fix was "more k6 cores, a
-second generator host". That was wrong, and the run's own numbers refute it: at the 8,000 rung
-k6 used **190.5% of a 1,400% pin — 13.6% utilisation, 86% idle**. The client had CPU to spare at
-every rung.
-
-**Second correction, to my own first correction.** Having ruled out CPU I then asserted that
-`sweep.js` violating Finding 3 was *the* cause of the drops. That is right for the rung that
-sets the per-core ceiling and wrong as a general claim, and the difference matters. Little's law
-against the measured latency gives the VU demand per rung:
-
-| ladder | rung | VUs needed at p95 | pool (preallocated) | drops | ramp possible? |
-|---|---:|---:|---:|---:|---|
-| per-core, C=1 | 4,000 | 16.0 | 200 | 902 | **no** |
-| per-core, C=1 | **8,000** | **425.5** | 200 | 6,294 | **yes** |
-| main sweep | 4,000 | 1.2 | 200 | 138 | **no** |
-| main sweep | 16,000 | 58.2 | 200 | 8,502 | **no** |
-| main sweep | 32,000 | 1,007.9 | 200 | 70,462 | **yes** |
-
-So at the 8,000 rung that disqualifies the per-core step up, demand (425) does exceed the pool
-(200) and the Finding-3 ramp can fire — that part of the diagnosis stands. But drops begin much
-earlier, at rungs needing **one or two VUs out of two hundred**, where a pool shortage is
-arithmetically impossible. Those early drops are **unexplained**; the plausible candidate is a
-transient stall (the same rungs show p999 of 66-90 ms against a 0.18 ms p50) blocking VUs while
-the arrival rate keeps producing iterations, but I have not established that and it should not
-be written down as though I had.
-
-What it did not have is a fixed VU pool. Finding 3 established the invariant
-`preAllocatedVUs == maxVUs`, and config.js states the mechanism in its own words: mid-run
-allocation is a feedback loop where "a cold/contended request piles up iterations, k6 ramps
-preAllocatedVUs -> maxVUs, EACH new VU opens a fresh connection, the connection storm slows the
-core-limited server further, which piles up more iterations — a ~1 s (to multi-second) tail that
-MORE VUs only worsen."
-
-That fix was applied to `regression.js` (50 == 50) and to `clustered_crossing.js` (which
-annotates the invariant by name at line 112). **It was never applied to `sweep.js`**, which
-still runs `preAllocatedVUs: 200, maxVUs: 4000` — a 20x ramp — at `lib/config.js:300-301`.
-
-The build-325 ladder shows the described loop precisely, with CPU idle throughout:
-
-| offered | p95 | dropped iterations | k6 CPU (of 1,400% pin) |
-|---:|---:|---:|---:|
-| 4,000 | 0.3 ms | 1,023 | 5.2% |
-| 8,000 | 53.2 ms | 6,294 | 13.6% |
-| 16,000 | 4,816.7 ms | 151,751 | 13.9% |
-
-A 176x p95 explosion between two rungs while the load generator sits 86% idle is a connection
-storm, not saturation.
-
-**This reaches further than item 18.** `sweep.js` also produces `peak_achieved_rps` and feeds
-`sweep_client_had_headroom` — the validity check that failed build 322. But note the same
-correction applies there: build 322's 2,000 rung needed well under one VU and still dropped 133
-iterations, so **the ramp cannot be what voided that run either**. What voided it is the
-zero-tolerance `dropped_iterations <= 0` rule turning a 0.4% blip into a whole-run
-invalidation — see
-[`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server).
-The published knee figures derive from this sweep and deserve re-examination regardless, because
-the sweep's own drop behaviour is not yet understood at the rungs that matter.
-
-**What would actually resolve it,** in order, and note the first step is now a measurement
-rather than a fix:
-
-1. **Find out what drops an iteration when 199 of 200 VUs are idle.** Until that is known, any
-   pool change is a guess. k6 emits `vus` and `vus_max` time series; capturing them per rung
-   would settle in one run whether the pool ever grows, and when the drops occur within a step.
-2. **Equalise `K6_SWEEP_PRE_VUS` and `K6_SWEEP_MAX_VUS`** per Finding 3, sized by Little's law
-   for the target rung. This is justified on invariant grounds regardless of (1) — `sweep.js` is
-   the only one of the three arrival-rate scripts that does not carry the invariant.
-3. **Add finer ladder rungs between 4,000 and 16,000** — the current octave steps jump straight
-   past the knee, which is why the per-core ceiling can only ever report 4,000 or 8,000.
-
-Re-running the present shape on a bigger box will reproduce 4,000 again.
-
-### What the first soak actually measured
-
-Build 324 failed loudly, which is the right outcome, but not for the reason the numbers
-suggest. The 54.2% is `http_req_failed{op:match}` — responses outside 200-399 — and across
-1.44 M requests there were **zero** transport errors and zero interrupted iterations. The SUT
-stayed up, took 2,317,706 requests and ended with 46 threads. So those are HTTP statuses, and
-the server was answering.
-
-The mechanism, confirmed against the code:
-
-1. The `match` arm depends on a seeded `/simple` expectation with `times: {unlimited: true}`.
-2. The `create` arm PUTs a **new** `/simple` expectation at 10/s with `times:
-   {remainingTimes: 5}` and **no id**, so each one is a distinct live entry — ~72,000 over 2 h.
-3. Matching runs priority-desc then `created`-asc, so the older seed **shadows** every one of
-   them. They are never matched, never consumed, and just accumulate.
-4. `maxExpectations` is capped at 15,000 and the soak step passes no override. Eviction is
-   **oldest-first by insertion**. At 10/s the store hits the cap at ~1,500 s — and the very
-   next creates evict the four seeds, including the `/simple` the match arm needs.
-5. From then on `/simple` falls through to `remainingTimes: 5` entries consumed at 200/s but
-   replenished at 50/s, so most requests find no live matcher and MockServer correctly
-   returns 404.
-
-The arithmetic reconciles: ~0% errors for the first ~25 min, ~75% for the remaining ~87 min,
-averaging 0.54 over 1,440,001 samples — against the reported 0.54168. It also explains WHICH
-thresholds tripped: `checks` and `http_req_failed{op:match}` fell over, while
-`http_req_failed{op:create}` did not — the control plane kept returning 201 throughout. A
-server that was actually failing would not be so selective.
-
-The p99 drift has the same root: once the seed is gone the expectation list is pinned at
-15,000 and every unmatched `/simple` scans all of it. That is expectation-store scan cost, not
-the event-log occupancy item 10 exists to measure. Note the early window (120-420 s) already
-showed p99 102 ms against a 0.346 ms median, *before* any eviction — unexplained, plausibly GC
-or lock contention, and not attributable from this log.
-
-**One honest gap:** the 404 status is *inferred*. `handleSummary` replaces k6's default
-summary, so no status histogram or per-time failure series was emitted. The attribution rests
-on the code path, the absence of any transport error, and the timing arithmetic — strong, but
-not a printed 404 count.
-
-**Why this is worth recording rather than just fixing.** Every presence assertion the soak
-makes passed: match/verify/retrieve all had samples, received exceeded its floor. The run was
-green on "did it measure?" while the match arm was three-quarters 404. That is this
-programme's signature failure — an instrument that runs, reports honestly, and is about the
-wrong subject — this time inside the soak harness itself.
-
-**What the fix is.** Give the `create` arm a stable `id` (an in-place replace still churns the
-event log, which is its actual purpose) and/or a distinct path such as `/churn` so it can
-never shadow or evict the match seed. Raising `maxExpectations` is NOT the fix — it only
-delays the same eviction. Both soak arms must carry the fix before the `maxLogEntries`
-comparison means anything, and `maxExpectations` must be held identical across arms so a
-smaller heap chosen to shrink the ring does not silently move the expectation cap too.
-
-**Also owed, so the re-run can answer the question:** emit early/late sub-percentiles for
-verify and retrieve (they exist only as 2 h aggregates — `verify` p50 151.5 ms, `retrieve` p50
-425.3 ms, both zero errors), and upload `samples.csv` on every outcome rather than only on the
-`fail_soak` path. Without a trajectory there is no way to see occupancy-sensitivity, which is
-the entire point of the control. `dropped_log_events: 0` says the ingestion ring never
-overflowed; it says nothing about whether verify latency tracks occupancy. Heap ran 27 MB ->
-902 MB with a 484 MB live-set floor under a ~1.5 GB ceiling, no OOM, stable threads — no sign
-of a leak, but with no trajectory a plateau is not demonstrated either.
+**So a fixed pool will not eliminate the drops.** A fixed pool cannot ramp, so the storm cannot
+compound — that much is now justified by evidence rather than by invariant alone. But a fixed pool
+still overflows on a transient spike, and k6 counts that as a dropped iteration. **Sizing the pool
+for the PEAK rather than the average is the change that matters, and the peaks above are the data
+to size it from.**
 
 ### What the JSON pre-filter actually buys
 
@@ -3713,78 +2599,6 @@ discarded — the first compared against a parent commit where these benchmark a
 yet exist (so its "before" was some other parameter combination, and it concluded the filter
 was broken), and the second reported the REJECT saving as "61%" by inverting the ratio. The
 numbers above are recomputed from the raw JMH output.
-
-### Why item 19 never reached the baseline
-
-Diagnosed 2026-09-19 against the pipeline and the last three weeks of daily builds. The
-short version: item 19 is not blocked by a measurement being judged invalid. It is blocked by
-the step that would do the judging never executing.
-
-1. **A notify-only step gates the gating step.** `run + sample`, `microbench` and
-   `HTTP/2 multiplex` run in parallel followed by a plain `- wait: ~`, and a plain wait fails
-   closed on ANY prior failure. Two of those steps declare themselves NOTIFY-ONLY in their own
-   comments — or rather ONE of them does. The HTTP/2 step says so literally: *"NOTIFY-ONLY,
-   no threshold (recorded only)"*. `microbench` carried no such annotation at all, yet its red
-   blocked the wait exactly the same way — which is the sharper version of the point: the
-   blocking behaviour never depended on how a step described itself.
-   So a notify-only failure skips persist. **Build 306 is both the proof and the cost**:
-   `run + sample` passed, `microbench` passed, `HTTP/2 multiplex` failed, and a fully valid
-   `schema_version: 3` result — `validity.valid: true`, no failed checks, `peak_achieved_rps`
-   2000.1 — was discarded. The run this plan elsewhere celebrates as the validating one never
-   reached the baseline.
-2. **A Maven build-ordering bug in the microbench step — HISTORICAL, already fixed.**
-   `mockserver-benchmark` was built without `mockserver-netty:<version>-SNAPSHOT` installed
-   first, so resolution failed identically every run: 4 of the 6 daily failures (builds 208,
-   209, 211, 224). Fixed by `b98d18f0c8` on 2026-09-16 at 06:56, which changed both
-   container invocations to `-pl mockserver-netty -am install`. The daily schedule is
-   `0 4 * * *` — 04:00 UTC, confirmed from the Buildkite cronline and from every build's
-   `created_at` — so all four failing dailies ran hours before the fix landed. Build 272 (2026-09-18) is the proof it worked: its
-   microbench step **passed**. Recorded here only so the four historical failures are
-   explained — there is nothing left to fix. This correction exists because the first pass at
-   this diagnosis listed it as a live remediation without checking whether it had already been
-   done; the investigating agent explained four real past failures and its "fix this" was read
-   as present tense.
-3. **One SUT crash, on build 272 only.** The MockServer container exits `ExitCode 3` (not
-   OOM) during k6 `setup()` expectation seeding. This is the one live measurement defect
-   besides (1). On that build `run + sample` failed while microbench and HTTP/2 both passed,
-   so the compare skip was *correct*: the measurement genuinely failed. A
-   `perf-jvm-diagnostics.tgz` post-mortem was uploaded and is where to continue.
-4. **Build 232 was something else entirely — and was the harness behaving correctly.** It did
-   not crash. `run + sample` aborted on its own provenance self-check: *"run configuration is
-   not fully recordable — refusing to emit a result that misrepresents what it measured:
-   image digest not resolvable via `docker inspect`"*. That is the attribution discipline
-   working as designed, declining to emit a result it could not key to a binary. It appears in
-   build 232 and nowhere else among the five later runs checked (272, 290, 306, 322, 324),
-   which is a small sample spanning a few days — enough to say no recurrence has been
-   observed, not enough to call it impossible. A digest that resolves on every other run
-   points at something transient around image creation rather than a standing
-   misconfiguration, but that mechanism is inferred, not established. An earlier draft of this section folded 232 and 272
-   together as "a recurring SUT crash". They are different classes, and only one is a bug.
-
-Note what this says about the *belief* rather than the bug. `sweep_client_had_headroom` — the
-check this plan had pointed at — appears in **zero** dailies, and for a sharper reason than
-"it passed": every daily whose `run + sample` succeeded emitted `schema_version: 1`, which
-carries no `validity` structure at all, so the check was never *evaluated* on a scheduled run
-rather than evaluated and passed. It fired only in the targeted bisect 322, whose short ladder
-explains it. The plan had generalised one targeted run's flag
-into a chronic daily condition, which is the same error as reading a number without asking what
-it is *of*. So the live list is short: defect (1), which has a fix drafted and pending approval, and
-defect (3), which needs the 272 post-mortem read. (2) is already fixed; (4) is the harness
-doing its job once. A single baseline-eligible `[perf-run]`
-that reaches compare would also unblock item 19 without either fix.
-
-**A correction worth recording, because it is this programme's own failure mode.** An earlier
-version of this section listed 17, 18 and 19 as "not started" research with day estimates
-attached. All three were substantially built; item 17's measured results were sitting in its own
-section of this very document. That text was written from the plan's prose rather than from the
-code and the stored build output — the same stale-fact defect the programme keeps finding in its
-instruments, committed in the document that catalogues it. **A plan asserting the state of work
-must be checked against build evidence, not against its own earlier paragraphs.**
-
-Two open questions from the original list also remain genuinely open: whether the published
-36,000 req/s knee is real (build 306 gives a clean-tier shape but the figure is still
-unconfirmed), and whether the documented `-Xmx512m` sidecar configuration survives load — the
-general form of that one was answered by the heap-cap work, the specific claim was not.
 
 ## Who does what
 
@@ -4010,114 +2824,18 @@ answer is "nothing happened", the controls are theatre.
 
 ## Open questions and risks
 
-**Why no baseline has been written since 2026-09-11 — two sequential causes, not one (established
-2026-09-18 from the Buildkite API).** It is tempting to attribute the whole gap to the SUT dying under
-load, and that is wrong for most of it:
+Every question that could be answered has been; the four that are genuinely still open are
+listed under ["Needs a run, or an external system"](#needs-a-run-or-an-external-system) — the
+36,000 rps knee, the `-Xmx512m` sidecar, `alloc_bytes_per_op` agent-independence, and item 18's
+load generator. What is left here is standing risk rather than an unanswered question.
 
-- **2026-09-12 to 2026-09-16** — the `run + sample` load step PASSED every time (builds 208, 209, 211,
-  224, all exit 0). What failed was the **micro-benchmark** step, on dependency resolution:
-  `Could not find artifact org.mock-server:mockserver-netty:jar:8.0.1-SNAPSHOT`. The benchmark module
-  sits outside the Maven reactor, so its in-reactor dependencies must be installed via a named module
-  plus `-am`. Fixed by `b98d18f0c` (2026-09-16), and because no full chain ran between that commit and
-  2026-09-18, the fix went unexercised for two days. It passes on all five runs of 2026-09-18.
-- **2026-09-18 onward** — the micro-benchmark passes and the **load step** fails instead, the SUT dying
-  of JVM heap exhaustion at ~37k iterations. This is a NEW failure, not a continuation: the MB-scale
-  body arms that trigger it landed the same day (`764731d10`). Root-caused to parsed JSON bodies
-  retained on every log entry and invisible to the byte budget, fixed in `3d7a2f9c8`, and awaiting a
-  run to confirm.
-
-The lesson worth keeping: a pipeline that has been red for a week is not necessarily red for one
-reason, and the duration signature said so before the logs did — the 2026-09-12 failures ran ~31
-minutes, the 2026-09-18 ones ~69-110, against ~44 for a healthy chain. Three different shapes, and
-only the middle one was the same bug.
-
-
-1. ~~**Why is `regression.js`'s p95 a thousand times the sweep's, in the same run?**~~
-   **ANSWERED and FIXED (2026-09-16).** A client-side VU-allocation connection storm: four
-   `constant-arrival-rate` scenarios starting simultaneously with a `preAllocatedVUs`→`maxVUs`
-   ramp, each new VU opening a connection, on a core-limited SUT — a feedback loop that
-   overshoots then settles. Fixed with staggered starts, an equal (fixed) VU pool, warming
-   every path (the `/large` path had been left cold), and a settle-window exclusion; verified
-   to still move with a real +25 ms server delay. See Finding 3. This unblocked every D2
-   latency budget and item 9a's design.
-2. **Is the published 36,000 req/s knee real, or is it k6's ceiling?** The client is pinned to
-   six cores — the same count as the server. Item 2 now asserts client headroom; until a run
-   with it lands, treat the published figure as unverified.
-   **PARTIAL (2026-09-18, build 290) — a third possibility was ruled out, and a shape recorded.**
-   The first sweep to survive its own top rungs gives: 15,475 achieved at 16,000 offered,
-   **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000 — error rate 0 at every
-   rung, the losses all `dropped_iterations`. So the curve has a genuine knee around 32,000
-   offered and **collapses beyond it**, which is a server-side congestion signature, not a
-   client ceiling. It does **not** settle the 36,000 claim: build 290 was a deep-tier run
-   (JFR + NMT instrumentation depresses throughput by design, which is why it sets
-   `baseline_eligible:false`), so 26,020 is a **floor**, not a refutation. A clean-tier run on
-   an image carrying the corrected heap cap is what closes this.
-   Worth separating from the headline: the same sweep reports `peak_achieved_rps` of **2,000**,
-   because that metric counts only rungs with ZERO dropped iterations. The published 36,000 and
-   that 2,000 measure very different things, and item 19 must not put them on the same page
-   without saying so.
-3. **What did the 8.0.0 multiplex change cost per connection? ANSWERED (2026-09-18) — item 11's
-   negative control was executed.** Pre-multiplex **7.6.0** vs first-multiplex **8.0.0** (Maven
-   Central fat jars, same JDK/heap, same external h2c client, on-heap retained heap via
-   `jmap -histo:live`, 5 reps/shape): 8.0.0 retains **+17,395 bytes/conn (+9.7%)** more at the
-   low-noise **100×10** shape (5-rep ranges disjoint, 0.1% spread), and the excess **scales with
-   concurrent streams per connection** (100×1 only +1.3%), consistent with the child-channel-per-
-   stream design the migration named. Corroborates the shipped RSS comparison's **direction**
-   (+24.7% RSS at 100×10; RSS is larger because it also counts off-heap direct buffers). **No
-   longer an open risk** — the per-connection cost is modest and quantified. See item 11's
-   acceptance-criteria row for method, honest limits, and raw data.
-4. **Does the documented `-Xmx512m` sidecar configuration actually work under load?** Never
-   tested. If it does not, the website recommends a configuration that OOMs.
-   **The general form of this question is now ANSWERED, and the answer was no (2026-09-18).**
-   The shipped images capped the heap at `MaxRAMPercentage=75.0`, which implicitly assumes the
-   whole process fits in heap ÷ 0.75. Measured under sustained load with the heap pinned to what
-   a 2 GiB container yields: peak RSS **2,271 MiB** against a **1,536 MiB** heap and **133 MiB**
-   of metaspace + code cache — so **~735 MiB** of non-heap and native, dominated by Netty's
-   pooled direct buffers, which scale with concurrency and body size and not with heap at all.
-   That is a ratio of **1.48×**, against the 1.33× the 75% cap assumed: in a 2 GiB container the
-   JVM wanted 2,271 MiB and had 2,048, a 223 MiB shortfall. Builds 284 and 294 were both
-   OOM-killed by the kernel (`OOMKilled:true`, exit 137) mid-sweep, exactly as that arithmetic
-   predicts. Default lowered to **60.0** across every image that runs `Main`, with the guard that
-   enforces it updated in the same change (`ec2373d86`) — which also surfaced that
-   `docker/aot/Dockerfile` had never been in that guard's coverage at all.
-   The specific `-Xmx512m` sidecar claim still needs its own run, but note the sizing rule now
-   published: the overhead is **additive and load-driven**, not a fixed multiple, so it gets
-   proportionally worse as the container shrinks — a 512 MiB container is the size most likely
-   to be killed, not the safest.
-5. **`logLevel=INFO` (shipped default) or `ERROR` (what CI uses)?** Measuring the default makes
-   the numbers representative but breaks comparability with the entire stored baseline.
-   Recommendation: keep `ERROR` for the tracked baseline, **add** an `INFO` rung for the
-   published figure, label both. Decide before item 19 refreshes the site.
-   **DECIDED + measurement capability landed (2026-09-18).** The tracked, gated baseline stays
-   `ERROR` and is unchanged. `perf-test-run.sh` now adds a second SUT at the shipped-default
-   `INFO` level and re-measures ONLY the two published families — the knee curve (`sweep.js`)
-   and per-behaviour percentiles (`regression.js` http+https) — emitting them under a DISTINCT
-   result key (`.info_log_level_arm.*`, self-describing via `.config.log_level`), never under
-   `.behaviours` / `.sweep` / `peak_achieved_rps`, so an `INFO` number can never be confused
-   with or diffed against the `ERROR` series. Non-gating and excluded from `validity` (open
-   question 9); `PERF_INFO_ARM=false` disables it; estimated ~10 min added wall-clock (open
-   question 6 — verify against a real run). `perf-budgets.json` carries staged, notify-only
-   `provisional` `info_*` budgets. **Still pending:** `perf-test-compare.sh` does not yet
-   surface these keys and item 19 does not yet publish the `INFO` figure — sequence that after
-   a run emits both series (a number is not published until it is measured).
-6. ~~**Cost is not the constraint; the serialised box is.** One estimate unverified: nobody has
-   measured how long the daily chain occupies it.~~ **MEASURED (2026-09-18): ~44 minutes.** From the
-   Buildkite API, the last seven chains that ran to completion — builds 197, 198, 199, 200, 201, 204,
-   205, 206, 207, spanning 2026-09-01 to 2026-09-11 — took 44.0, 44.3, 44.3, 44.0, 44.3, 44.2, 44.2,
-   43.3 and 44.3 minutes. A spread of one minute across nine runs, so the figure is stable enough to
-   plan against. A guard-skipped build (the per-commit case, where the run does not dispatch) costs
-   ~0.5 min and two jobs, which is what most builds on the pipeline are. The cost table can now be
-   read against a measured occupancy rather than an estimate.
-7. **Is `alloc_bytes_per_op` really agent-independent?** One cheap experiment: same commit,
-   five runs on each queue. Item 16 depends on the answer.
-8. **Are the heap-derived store defaults order-dependent in a shared JVM?** Item 17 answers it.
-   If true, it is both a performance finding and a flakiness finding.
-9. **Flakiness risk remains real.** Items 8, 9, 10, 12, 13, 14, 17 and 18 are all wall-clock.
-   **Land each notify-only first, observe 10 runs, and only then attach a budget.** Never ship
-   a new wall-clock gate with a threshold on day one.
-10. **The programme is larger than one person can land in a quarter.** Stated plainly rather
-    than hidden in the ordering. The first fortnight and quarter are scoped to be achievable;
-    Tier 3 explicitly is not.
+1. **Never ship a new wall-clock gate with a threshold on day one.** Every wall-clock measurement
+   lands notify-only, observes 10 runs, and only then gets a budget derived from that history.
+2. **A pipeline that has been red for a week is not necessarily red for one reason.** The
+   2026-09-12 to 2026-09-18 outage was two sequential causes — a Maven reactor-ordering failure in
+   the microbench step, then a genuine SUT heap exhaustion in the load step — and the *duration
+   signature* said so before the logs did: ~31 minutes for the first shape, ~69-110 for the
+   second, against ~44 for a healthy chain. Read the durations before reading the logs.
 
 ## What to publish versus what to gate internally
 
@@ -4148,28 +2866,14 @@ than defensibility; publishing them invites arguments about numbers that exist o
 
 ## What survives this plan
 
-This file is deleted by the change that completes the work. Four pieces deserve to persist;
-move them before deleting.
+**All four destinations already exist, so nothing is owed here — this section is a checklist that
+has been completed, kept only so the next reader does not re-do it before deleting the file.**
 
-1. **A corrected account of what each harness measures, and which ones run.** *Destination: a
-   new `docs/code/performance-measurement.md`.* Must state plainly: which k6 scripts CI
-   executes and which it only lints; that `ForwardPathBenchmark` measures the load generator's
-   render path and **not** proxying; which JMH benchmarks run daily and which are dark; that
-   the inject harness answers "how much load can MockServer generate", not "how fast does it
-   serve"; and that `throughput_rps` is a delivery ratio against a fixed offered rate, not a
-   throughput ceiling.
-2. **The dating and provenance rule.** *Destination: `docs/code/startup-performance.md`*, which
-   already half-states it. Every performance figure carries its date, version, hardware and
-   configuration, or it is not a figure. **Add the corollary this audit learned the hard way:
-   a populated field is not a correct one.**
-3. **The corrections to the harness READMEs.** The k6 README described `forward.js` as a
-   regression guard in the present tense while it never ran. Item 3 fixed the code; the README
-   must not keep claiming guards the pipeline does not execute.
-4. **The hazard-class table and the evidence standard** from
-   [Proving a performance change is still correct](#proving-a-performance-change-is-still-correct).
-   *Destination: alongside (1), or its own `docs/code/optimisation-safety.md` cross-linked from
-   `docs/code/netty-pipeline.md`*, whose HTTP/2 testing convention is the worked example the
-   whole section generalises.
+| | What was moved | Destination |
+|---|---|---|
+| 1 | A corrected account of what each harness measures and which ones run — which k6 scripts CI executes and which it only lints, that `ForwardPathBenchmark` measures the load generator's render path and **not** proxying, which JMH benchmarks run daily and which are dark, that the inject harness answers "how much load can MockServer generate" rather than "how fast does it serve", and that `throughput_rps` is a delivery ratio against a fixed offered rate rather than a throughput ceiling | [docs/code/performance-measurement.md](../code/performance-measurement.md) |
+| 2 | The dating and provenance rule, with the corollary this audit learned the hard way: **a populated field is not a correct one** | [docs/code/startup-performance.md](../code/startup-performance.md) |
+| 3 | The harness README corrections — the k6 README described `forward.js` as a regression guard in the present tense while it never ran | `mockserver-performance-test/k6/README.md` |
+| 4 | The hazard-class table and the evidence standard | [docs/code/optimisation-safety.md](../code/optimisation-safety.md) |
 
-Everything else here — the programme, the sequencing, the budgets — is scaffolding for the
-work and goes when the work is done.
+Everything else here is scaffolding for the work and goes when the work is done.

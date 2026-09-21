@@ -10,6 +10,46 @@ until it earns one. The asymmetry is structural, and the repo has paid for it:
 #2669, #2683 — all shipped while every HTTP/2 test was green**, because every test used a body
 smaller than the 65,535-byte flow-control window. The failure mode was a silent hang.
 
+## The Data Plane Wins Ties
+
+**When a change trades data-plane cost for control-plane gain, the data plane wins unless the case
+for the reverse is very compelling.** Serving a mocked response is what MockServer is for and what
+it does millions of times; the control plane is what a suite touches between tests. A millisecond
+added to every request to save ten from a teardown is a bad trade even though both numbers moved in
+a direction a benchmark would applaud.
+
+This is a tie-breaker, not a veto. A control-plane change that costs the data plane nothing needs no
+argument. One that costs it something needs the cost stated in the PR, measured rather than
+asserted, and a reason the exchange rate is favourable — and "the control plane got much faster" is
+not that reason on its own.
+
+**Where the trade hides.** It is rarely a line that says "slow down the data plane". It is usually a
+SHARED STRUCTURE that the control plane wants indexed and the data plane has to maintain. Ask: what
+does this add to the per-request path, and what does it add to every mutation? Then ask the question
+that catches the subtle case — **is that mutation path actually control-plane-only?** In this
+codebase it is not: `firstMatchingExpectation` schedules lazy removal of `once()` and
+limited-`Times` matchers during its own scan, so the SERVING path mutates the store. Anything
+maintained per-mutation is therefore partly paid by the data plane, however control-plane the
+feature sounds.
+
+*Worked example, applied to this repo's own change.* The `clear` fast path (`4cda4041f`) is a
+control-plane optimisation: it made `clear` O(1)-ish instead of O(n), worth 1,585 us -> 0.2 us at
+15,000 expectations. It paid for that with a SECOND index dimension maintained on every structural
+mutation. Under this principle that is exactly the shape to scrutinise, and the verdict is that it
+passes — but the reasoning, not the conclusion, is the point:
+
+- data-plane READS are untouched: the matching path reads the `(method, path)` buckets and the
+  fallthrough, never the path-only dimension;
+- the added maintenance is O(1) per mutation, not O(n);
+- but it is NOT free to the data plane, because of the lazy-removal path above — a workload using
+  `once()` expectations mutates the store from the serving thread and now does marginally more work
+  there.
+
+So the honest statement is "a small constant added to data-plane-triggered mutations, buying three
+orders of magnitude on a control-plane operation" — not "free". It was shipped before this principle
+was written down; it is recorded here because a worked example that judges our own change is worth
+more than an invented one.
+
 ## The Evidence Standard
 
 Three checks, in order. The second is the one that gets skipped.
