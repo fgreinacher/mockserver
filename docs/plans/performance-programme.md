@@ -2670,9 +2670,45 @@ makes the scanner walk, not detection difficulty. Not covered at all: sockets, T
 hand-off, SOCKS4a, GSSAPI, and handshake churn under concurrency — that last one is a load-arm
 question this does not answer.
 
+## `toSortedList` dedup — MEASURED NEGATIVE, do not build it
+
+**Settled 2026-09-21 by measurement, with no production change.** The plan proposed deduplicating
+`CircularPriorityQueue`'s sorted-list rebuild across concurrent readers, while warning "do not
+over-invest". The measurement says do not invest at all.
+
+**The hot path no longer rebuilds.** At a store of 64 or more, `RequestMatchers:817-823` passes
+`httpRequestMatchers::toSortedList` to `candidateIndex.candidatesInGlobalOrder` as a **Supplier**, and
+`CandidateIndex` evaluates it in exactly two places: a live `matchExactCase` flip (config is fixed at
+runtime, so at most once) and a non-ASCII method/path in case-insensitive mode. Below 64 it is called
+directly, but over fewer than 64 elements and cached between mutations. Every remaining large-N caller
+is cold, niche or control-plane: closest-match diagnostics on a MISS, the guarded respondBeforeBody
+scan, `clear(...)`, and `peekFirstMatchingExpectation` which only gRPC-bidi and HTTP/3 reach. **No
+normal HTTP request on a store of 64 or more triggers a rebuild.**
+
+**What a rebuild costs:** ~10 ns per element, linear and internally consistent — 0.5-0.7 us at n=64,
+8-12 us at n=1,000, 48-63 us at n=5,000.
+
+**What a dedup could actually remove: essentially nothing.** A per-invalidation dedup collapses only
+rebuilds that **overlap in time**. Under 5,000 invalidations/sec, tight-loop readers that do nothing
+else overlap heavily (2.0 readers inside the call at 4 threads, 3.9 at 8). Give each reader a
+realistic 30 us of other work between calls — a thread actually running the request pipeline — and
+overlap collapses to **0.02 readers**. The removable waste is ~0.
+
+**The metric trap, recorded because it nearly inverted the conclusion.** The first duplication metric,
+rebuilds divided by invalidations, ROSE to 8x in the realistic run while true overlap was falling to
+0.02. It counts *sequential* rebuilds serving *different* invalidations as duplicates — but a dedup
+cannot merge those, only simultaneous ones. The ratio looked like a bigger opportunity precisely as
+the real opportunity vanished. Measure the quantity the fix can actually act on, not a plausible proxy.
+
+**And the fix would cost something real.** The only mechanism that dedups is a lock or CAS around the
+rebuild, which would sit on the sub-64 direct-call path taken by every request and on the cold miss
+paths, serialising readers that are lock-free today. The same probe shows those readers overlap
+heavily when they do arrive — so the lock would bite exactly when it is worst. A regression risk on
+the data plane bought for a ~0 gain fails the data-plane-first rule outright.
+
 ## What remains
 
-**Twelve things are outstanding: six can be settled from the repo, and six cannot be settled
+**Eleven things are outstanding: five can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2688,8 +2724,8 @@ flowchart TD
   churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> l["Low value: toSortedList dedup,
-  .laptop block, G11 plaintext arm"]
+  left --> l["Low value: .laptop block,
+  G11 plaintext arm"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
   right --> g["Build-272 SUT crash post-mortem"]
@@ -2709,7 +2745,6 @@ flowchart TD
 | **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
 | **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
-| **`toSortedList` dedup** | Deduplicate the rebuild across concurrent readers — **but do not over-invest** | `CircularPriorityQueue.java:299-306` still rebuilds the whole list whenever `sortedCache` is null, with no dedup, and the cache is still nulled on every structural mutation. **Its blast radius collapsed from "every request at any store >= 64" to almost nothing**, because the hit path no longer calls it: `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is a much smaller question than G1 posed |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
 | **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
 
