@@ -95,7 +95,13 @@ SO_PATH="${DOCKER_VERIFY_SO_OVERRIDE:-$SO_PATH}"
 CLEANUP=()
 cleanup() {
   local item
-  for item in "${CLEANUP[@]}"; do
+  # ${CLEANUP[@]+"${CLEANUP[@]}"}, not "${CLEANUP[@]}": under `set -u` bash 3.2 (which is what macOS
+  # ships, and this script is explicitly meant to run identically locally and in CI) treats expanding
+  # an EMPTY array as an unbound variable and aborts. This trap runs on EXIT, so it fires with CLEANUP
+  # still empty whenever the script exits before staging anything - which is exactly the inner-gate
+  # failure path a developer hits first. The abort then replaced the real error with
+  # "CLEANUP[@]: unbound variable". Linux bash 4.4+ does not have the quirk, so CI never saw it.
+  for item in ${CLEANUP[@]+"${CLEANUP[@]}"}; do
     case "$item" in
       container:*)  docker rm -f "${item#container:}"        >/dev/null 2>&1 || true ;;
       file:*)       rm -f "${item#file:}"                    || true ;;
