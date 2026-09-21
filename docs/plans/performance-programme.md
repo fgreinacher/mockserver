@@ -2407,6 +2407,51 @@ the one where the tension is real, and it is flagged there.
 | 9b | **Dashboard responsiveness under a large dataset — the client half.** The server pushes bounded 100-item batches ~1/s, so client slowness is about ACCUMULATED state: unbounded in-memory lists, reconciliation that is O(accumulated) rather than O(new), un-virtualised DOM growth, and derivations recomputed per render rather than memoised per entry | The reported symptom ("the page got heavy when there are lots of logs") has never been measured client-side. `mockserver-ui/src/__bench__/` has three benches, but they are OLD-vs-NEW proofs of a PAST optimisation and **nothing in `.buildkite/` runs them** - they proved a win once and guard nothing now | Medium — vitest bench exists; the work is realistic scale and turning proofs into guards | **Yes** — benches confirmed dark |
 | 9 | **The overload contract.** The programme fixed congestion collapse (it used to serve LESS as load rose). What SHOULD happen at 2x capacity is still unspecified: backpressure, 503s, bounded queues? | "Holds 25,488" is an improvement, not a contract | Low — needs design decisions before measurement | Reasoned |
 
+### Deferred: virtualising the traffic list — the biggest single UI win, and why it is not taken yet
+
+**Deferred 2026-09-21 by the owner: this is real and wanted, but other plan items outrank it right
+now.** Recorded in full so it can be picked up cold. A guard is already in place meanwhile
+(`perf-domWeight.test.tsx` pins the per-row element cost at <= 13, measured 10.9) so the list cannot
+get quietly heavier while this waits.
+
+**The problem, measured.** `TrafficInspector.tsx:2699` renders `filtered.map(...)` — one `TrafficRow`
+per request, up to 200 — and is the ONLY store-array consumer that skips `ProgressiveList`. Same
+component, same data, windowed versus not:
+
+| | rows | DOM elements | 1 row new | all rows new |
+|---|---:|---:|---:|---:|
+| unwindowed | 100 | 2,220 | 59.0 ms | 190.8 ms |
+| windowed | 100 | **220** | **16.1 ms** | **41.0 ms** |
+
+So roughly **10x the DOM and ~4x the per-push render cost**. Cost is row-count-bound, not
+payload-bound: at 8 kB bodies versus 400 B the push cost is unchanged (108 ms both), so this does not
+go away by shrinking what the server sends.
+
+**The fact that decides between the options, and it is easy to get backwards.** Those numbers are
+jsdom, which has NO LAYOUT ENGINE. What they measure is therefore React reconciliation plus DOM
+element construction — not browser layout or paint. An option only addresses the measured cost if it
+reduces the NUMBER OF REACT ELEMENTS RENDERED. An option that merely lets the browser skip laying out
+off-screen content does not touch it. (Whether such an option helps a REAL browser is a separate,
+currently unmeasured question — the Chrome profiling done on 2026-09-21 found no long tasks, but it
+never mounted this panel at 200 rows, so it did not exercise this path at all.)
+
+| Option | Impact on the measured cost | Behaviour delta | Effort | Verdict |
+|---|---|---|---|---|
+| **1. Virtualise via the existing `ProgressiveList`** | **Full — 10x DOM, ~4x render.** The component already exists, is used by `LogPanel` for exactly this, needs no new dependency (`@tanstack/react-virtual` is already in the tree), and the list already sits inside an `overflowY: auto` ancestor for it to discover | **The real cost.** Off-screen rows LEAVE the DOM: browser Ctrl-F stops finding them, any selector that counts rows changes, the screenshot suite changes, and bulk-select "all visible" and keyboard navigation need re-thinking against unmounted rows | Medium-high — a 2,969-line component where selection, compare mode and bulk-select interact with row identity | **Recommended, as its own unit.** Everything needed is already in place; the work is the behaviour audit, not the rendering |
+| **2. `content-visibility: auto` + `contain-intrinsic-size`** | **None on the measured cost.** React still creates and diffs all 200 rows; the elements still exist in the DOM. It skips browser LAYOUT and PAINT only | **Near zero** — the DOM is intact, so selectors and screenshots are unaffected, and Chrome's find-in-page can still reach skipped subtrees | Low | **Complementary, not a substitute.** Attractive because it is nearly free of behaviour risk, but it does not address what was measured. Worth trying ONLY alongside a real-browser measurement that can see layout/paint, which does not exist yet |
+| **3. Slim the row** (10.9 elements/row today; MUI `Chip`/`Typography` each add wrappers) | **Linear and partial** — 10.9 -> ~6 would be ~45% fewer elements and proportionally less render cost. Not 4x | **None** | Low-medium | **Good first step.** No behaviour risk at all, banks roughly half the win, and makes option 1 cheaper afterwards because every mounted row is lighter |
+| **4. Cap rendered rows with "showing 50 of 200"** | **Most of it** — 4x fewer elements at a 50-row cap | Rows past the cap are not in the DOM either, so it has option 1's Ctrl-F problem — but it is HONEST about it, since the user is told | Low | Reasonable fallback if option 1's audit proves too costly; strictly worse UX than windowing |
+| **5. Lower the server's `UI_UPDATE_ITEM_LIMIT` (100/category)** | Proportional, and it also cuts the SERVER cost measured in 9a | Changes how much history every dashboard shows, for every user | Low | A product decision about the dashboard's purpose, not a rendering fix. Note it is the one option that helps both sides |
+
+**Recommended sequence: 3 then 1.** Slimming the row is free of behaviour risk, banks about half the
+win immediately, and leaves every row cheaper for whatever comes after. Then virtualise, treating the
+behaviour audit — Ctrl-F, selectors, screenshots, bulk-select, keyboard navigation — as the actual
+deliverable rather than the rendering change, which is close to a one-line swap to a component that
+already works.
+
+**Do not reach for option 2 first** on the grounds that it is the safest. It is the safest, and on
+the evidence available it does not fix the thing that was measured.
+
 ## What remains
 
 **Fourteen things are outstanding: eight can be settled from the repo, and six cannot be settled
