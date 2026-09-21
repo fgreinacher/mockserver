@@ -1,89 +1,134 @@
 /**
- * Item 1 (L1 array-identity) real-world effect — a RENDER-COUNT measurement,
- * not a microbench.
+ * REGRESSION GUARD: a byte-identical re-push must not re-render the panels.
  *
- * The reconcile microbench shows OLD and NEW do equal CPU work on an idle push;
- * the actual value of Item 1 is that returning the PREVIOUS array identity lets
- * a Zustand selector on that array short-circuit, so subscribed panels do not
- * re-render on a byte-identical re-push. This test proves that: it subscribes a
- * component to `store(s => s.items)` and counts how many times it renders when
- * an identical push arrives, under OLD vs NEW reconcile semantics.
+ * The server sends the FULL state of all four panels roughly once a second even
+ * when nothing changed. `reconcileByKey` in `src/store/index.ts` detects that
+ * case and returns the PREVIOUS array identity (the "L1 array-identity"
+ * short-circuit), so a Zustand selector on the array short-circuits and the
+ * whole subtree is skipped. Without it, an idle dashboard re-renders every
+ * panel once a second forever.
  *
- * Expectation: NEW → 0 extra renders per identical push; OLD → 1 per push.
+ * TWO ARMS, and the difference between them matters:
+ *
+ *   PRODUCT arm — drives the REAL `useDashboardStore.applyMessage` and asserts
+ *                 on the real store's behaviour. This is the arm that guards
+ *                 the shipped code. The previous version of this file had no
+ *                 such arm: it drove a COPY of the reconcile function that
+ *                 lived in `__bench__/legacy/reconcile.new.ts`, so it would
+ *                 have stayed green through any regression in the store.
+ *
+ *   CONTROL arm — drives `legacy/reconcile.old.ts`, the frozen pre-optimisation
+ *                 implementation, and asserts it DOES re-render. This is kept
+ *                 deliberately: it is the built-in falsification evidence that
+ *                 the PRODUCT assertion can fail. A guard whose assertion
+ *                 cannot be made to fail proves nothing, and this arm makes the
+ *                 failing case executable rather than a claim in a comment.
+ *
+ * MEASURED (2026-09-21): identical re-push → product 0 re-renders per push;
+ * control 1 re-render per push.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { render, act, cleanup } from '@testing-library/react';
 import { create, type StoreApi, type UseBoundStore } from 'zustand';
 import { reconcileByKeyOld, type ReconcileCache } from '../__bench__/legacy/reconcile.old';
-import { reconcileByKeyNew } from '../__bench__/legacy/reconcile.new';
-import { makeItems, deepCloneItems, type BenchItem, PANEL_SIZE, SMALL_BODY_BYTES } from '../__bench__/fixtures';
+import { useDashboardStore } from '../store';
+import type { WebSocketMessage } from '../types';
+import {
+  makeItems,
+  deepCloneItems,
+  makeFrame,
+  REST_BODY_BYTES,
+  type BenchItem,
+  PANEL_SIZE,
+  SMALL_BODY_BYTES,
+} from '../__bench__/fixtures';
 
-type Reconcile = (prev: BenchItem[], next: BenchItem[], cache: ReconcileCache) => BenchItem[];
+afterEach(() => cleanup());
+
+// ---------------------------------------------------------------------------
+// PRODUCT arm — the real store
+// ---------------------------------------------------------------------------
+
+/**
+ * Mount a component subscribed to one real store array, apply `frames` in
+ * order, and return how many times it rendered per frame after the first.
+ */
+function productReRenders(frames: WebSocketMessage[]): number[] {
+  let renders = 0;
+  function Panel(): React.ReactElement {
+    const items = useDashboardStore((s) => s.recordedRequests);
+    renders++;
+    return <div data-testid="count">{items.length}</div>;
+  }
+  render(<Panel />);
+  const counts: number[] = [];
+  let previous = renders;
+  for (const frame of frames) {
+    act(() => useDashboardStore.getState().applyMessage(frame));
+    counts.push(renders - previous);
+    previous = renders;
+  }
+  return counts;
+}
+
+describe('store reconcile — panel re-renders per WebSocket push (PRODUCT)', () => {
+  beforeEach(() => {
+    useDashboardStore.getState().clearUI();
+  });
+
+  it('an identical re-push causes 0 panel re-renders', () => {
+    // Three pushes of the same generation: the first delivers the data, the
+    // next two are byte-identical re-sends with fresh object references, which
+    // is exactly what a real socket delivers on an idle server.
+    const frames = [0, 0, 0].map(
+      (g) => makeFrame(g, 'idle', REST_BODY_BYTES) as unknown as WebSocketMessage,
+    );
+    const [first, second, third] = productReRenders(frames);
+
+    expect(first).toBe(1); // data arrived — one render is required
+    expect(second).toBe(0);
+    expect(third).toBe(0);
+  });
+
+  it('a push in which one row changed causes exactly 1 panel re-render', () => {
+    const base = makeFrame(0, 'one', REST_BODY_BYTES) as unknown as WebSocketMessage;
+    const oneNew = makeFrame(1, 'one', REST_BODY_BYTES) as unknown as WebSocketMessage;
+    const [, changed] = productReRenders([base, oneNew]);
+    expect(changed).toBe(1);
+  });
+
+  it('a push in which every row changed still causes exactly 1 panel re-render', () => {
+    // The panel subscribes to the array, so N changed rows cost one render of
+    // the panel (and N of the memoized rows) — never N panel renders.
+    const base = makeFrame(0, 'all', REST_BODY_BYTES) as unknown as WebSocketMessage;
+    const allNew = makeFrame(1, 'all', REST_BODY_BYTES) as unknown as WebSocketMessage;
+    const [, changed] = productReRenders([base, allNew]);
+    expect(changed).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CONTROL arm — falsification evidence
+// ---------------------------------------------------------------------------
 
 interface PanelStore {
   items: BenchItem[];
   push: (next: BenchItem[]) => void;
 }
 
-function makeStore(reconcile: Reconcile): UseBoundStore<StoreApi<PanelStore>> {
+function makeLegacyStore(): UseBoundStore<StoreApi<PanelStore>> {
   const cache: ReconcileCache = new Map();
   return create<PanelStore>((set) => ({
     items: [],
-    push: (next) => set((s) => ({ items: reconcile(s.items, next, cache) })),
+    push: (next) => set((s) => ({ items: reconcileByKeyOld(s.items, next, cache) })),
   }));
 }
 
-/**
- * Mount a panel subscribed to `store(s => s.items)`, feed it three pushes of the
- * SAME content (fresh references each time, as a real WebSocket push produces),
- * and return the number of extra panel renders caused by pushes 2 and 3.
- */
-function measureIdenticalPushReRenders(reconcile: Reconcile): { push2: number; push3: number } {
-  const useStore = makeStore(reconcile);
-  let renders = 0;
-  function Panel() {
-    const items = useStore((s) => s.items);
-    renders++;
-    return <div data-testid="count">{items.length}</div>;
-  }
-  render(<Panel />);
-
-  const base = makeItems(PANEL_SIZE, SMALL_BODY_BYTES);
-  act(() => useStore.getState().push(deepCloneItems(base))); // first data arrives
-  const afterFirst = renders;
-  act(() => useStore.getState().push(deepCloneItems(base))); // identical re-push #2
-  const afterSecond = renders;
-  act(() => useStore.getState().push(deepCloneItems(base))); // identical re-push #3
-  const afterThird = renders;
-
-  return { push2: afterSecond - afterFirst, push3: afterThird - afterSecond };
-}
-
-afterEach(() => cleanup());
-
-describe('reconcile L1 array-identity — panel re-renders on an identical push', () => {
-  it('NEW causes 0 re-renders per identical push; OLD causes 1', () => {
-    const oldCounts = measureIdenticalPushReRenders(reconcileByKeyOld);
-    cleanup();
-    const newCounts = measureIdenticalPushReRenders(reconcileByKeyNew);
-
-    // Surface the measured numbers in the test output for the report.
-    // eslint-disable-next-line no-console
-    console.log(
-      `[render-count] identical push → OLD re-renders per push: ${oldCounts.push2}, ${oldCounts.push3}` +
-        ` | NEW re-renders per push: ${newCounts.push2}, ${newCounts.push3}`,
-    );
-
-    expect(oldCounts.push2).toBe(1);
-    expect(oldCounts.push3).toBe(1);
-    expect(newCounts.push2).toBe(0);
-    expect(newCounts.push3).toBe(0);
-  });
-
-  it('NEW still re-renders exactly once when one row actually changes', () => {
-    const useStore = makeStore(reconcileByKeyNew);
+describe('store reconcile — CONTROL: the pre-optimisation implementation re-renders', () => {
+  it('without the array-identity short-circuit, every identical push re-renders', () => {
+    const useStore = makeLegacyStore();
     let renders = 0;
-    function Panel() {
+    function Panel(): React.ReactElement {
       const items = useStore((s) => s.items);
       renders++;
       return <div>{items.length}</div>;
@@ -93,10 +138,15 @@ describe('reconcile L1 array-identity — panel re-renders on an identical push'
     const base = makeItems(PANEL_SIZE, SMALL_BODY_BYTES);
     act(() => useStore.getState().push(deepCloneItems(base)));
     const afterFirst = renders;
-    // Change one row's content, keep its key.
-    const changed = deepCloneItems(base);
-    changed[0] = { key: base[0]!.key, value: { ...changed[0]!.value, marker: 'CHANGED' } };
-    act(() => useStore.getState().push(changed));
-    expect(renders - afterFirst).toBe(1); // a real change must still render
+    act(() => useStore.getState().push(deepCloneItems(base)));
+    const second = renders - afterFirst;
+    act(() => useStore.getState().push(deepCloneItems(base)));
+    const third = renders - afterFirst - second;
+
+    // This is the behaviour the PRODUCT assertions above exist to prevent. If
+    // this arm ever reports 0, the control has stopped being a control and the
+    // product assertions above have lost their falsifier.
+    expect(second).toBe(1);
+    expect(third).toBe(1);
   });
 });

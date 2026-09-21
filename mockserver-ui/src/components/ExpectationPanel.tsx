@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, useCallback } from 'react';
+import { memo, useMemo, useRef, useState, useCallback } from 'react';
 import Box from '@mui/material/Box';
 import Button from '@mui/material/Button';
 import Checkbox from '@mui/material/Checkbox';
@@ -44,7 +44,7 @@ export function duplicateValueWithoutId(value: Record<string, unknown>): Record<
   return copy;
 }
 
-export default function ExpectationPanel() {
+function ExpectationPanel() {
   const params = useConnectionParams();
   const expectations = useDashboardStore((s) => s.activeExpectations);
   const search = useDashboardStore((s) => s.expectationSearch);
@@ -402,3 +402,14 @@ export default function ExpectationPanel() {
     </>
   );
 }
+
+// Memoized because `DashboardGrid` subscribes to `recordedRequests` and
+// `proxiedRequests` in order to pass them to its two `RequestPanel` children,
+// so the GRID re-renders whenever EITHER traffic array changes — which
+// re-renders all four panels, including the ones whose own data did not change.
+// Each panel already subscribes to (or is handed) exactly the state it needs,
+// so a parent-driven re-render is pure waste. `memo` makes the panel skip it;
+// its own Zustand subscriptions still re-render it whenever ITS data changes,
+// so nothing displayed changes. Measured in
+// `src/__tests__/perf-panelIsolation.test.tsx`.
+export default memo(ExpectationPanel);

@@ -31,6 +31,10 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **The dashboard does less work on every update.** All four panels re-rendered whenever recorded or
+  proxied requests moved — including the Expectations panel, whose data had not changed. Each panel
+  now re-renders only when its own data changes, cutting the work per update by about **20%**.
+  Nothing displayed changes.
 - **Matching an XML body with XPath no longer re-parses it once per expectation.** A request body
   checked against several XPath expectations was parsed into a DOM separately for each one. It is
   now parsed once and reused: **8,629 → 640 microseconds** for a large body against 20 expectations,

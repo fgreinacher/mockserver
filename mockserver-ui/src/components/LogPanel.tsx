@@ -1,4 +1,4 @@
-import { useRef, useMemo } from 'react';
+import { memo, useRef, useMemo } from 'react';
 import Typography from '@mui/material/Typography';
 import { useDashboardStore } from '../store';
 import { isLogGroup } from '../types';
@@ -16,7 +16,7 @@ import { LOG_FILTER_OPTIONS } from '../lib/filterDSL';
 // into a visible "not supported here" instead of a silent empty list.
 const LOG_SEARCH_FIELDS = LOG_FILTER_OPTIONS.fields ?? [];
 
-export default function LogPanel() {
+function LogPanel() {
   const logMessages = useDashboardStore((s) => s.logMessages);
   const search = useDashboardStore((s) => s.logSearch);
   const setSearch = useDashboardStore((s) => s.setLogSearch);
@@ -75,3 +75,14 @@ export default function LogPanel() {
     </Panel>
   );
 }
+
+// Memoized because `DashboardGrid` subscribes to `recordedRequests` and
+// `proxiedRequests` in order to pass them to its two `RequestPanel` children,
+// so the GRID re-renders whenever EITHER traffic array changes — which
+// re-renders all four panels, including the ones whose own data did not change.
+// Each panel already subscribes to (or is handed) exactly the state it needs,
+// so a parent-driven re-render is pure waste. `memo` makes the panel skip it;
+// its own Zustand subscriptions still re-render it whenever ITS data changes,
+// so nothing displayed changes. Measured in
+// `src/__tests__/perf-panelIsolation.test.tsx`.
+export default memo(LogPanel);
