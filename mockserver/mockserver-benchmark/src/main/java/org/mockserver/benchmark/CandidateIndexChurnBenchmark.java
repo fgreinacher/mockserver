@@ -182,11 +182,15 @@ public class CandidateIndexChurnBenchmark {
     @TearDown(Level.Trial)
     public void tearDown() throws InterruptedException {
         // Sampled BEFORE the writer is stopped, so it observes the live churn the measurement
-        // iterations saw: how many of 1,000 consecutive toSortedList() reads returned a DIFFERENT
-        // instance from the previous read — i.e. how often the sorted-snapshot cache was found
-        // invalidated and had to be rebuilt. STATIC must report 0; a CHURN arm reporting 0 would
-        // mean the arm silently stopped churning and every number in it is worthless.
-        int sortedListRebuildsPer1000Reads = sampleSortedListRebuilds(1000);
+        // iterations saw: whether the sorted-snapshot cache was found invalidated (rebuilt) under
+        // the live writer, sampled ROBUSTLY (yielding to the writer, up to a deadline; see
+        // sampleSortedListRebuilds) so a busy CI agent starving the writer cannot spuriously read
+        // zero. STATIC must report 0 (no writer); a CHURN arm reporting 0 would mean the cache
+        // stopped being invalidated (dead writer, or the G1 regression shape) and every number in
+        // it is worthless. 500 ms is negligible for a once-per-trial teardown, and a healthy arm
+        // exits on the FIRST observed rebuild (microseconds); only a genuinely non-churning arm
+        // waits out the full deadline before correctly returning 0.
+        int sortedListRebuildsObserved = sampleSortedListRebuilds(TimeUnit.MILLISECONDS.toNanos(500));
         long storeModificationsDuringTrial = storeModifications() - storeModificationsAtSetup;
         // Also sampled while the writer is still running: the measured call must still RETURN the
         // match. An index that silently started returning an empty candidate set would look fast
@@ -202,8 +206,39 @@ public class CandidateIndexChurnBenchmark {
         System.out.println("[churn] mode=" + mode + " indexMode=" + indexMode + " n=" + n
             + " writerMutations=" + writerMutations.get()
             + " storeModifications=" + storeModificationsDuringTrial
-            + " sortedListRebuildsPer1000Reads=" + sortedListRebuildsPer1000Reads
+            + " sortedListRebuildsObserved=" + sortedListRebuildsObserved
             + " stillMatchesUnderChurn=" + stillMatchesUnderChurn);
+
+        // FAIL-CLOSED at the SOURCE (the CI gate's headline safety property). The three signals
+        // above are the ONLY place that can observe whether the CHURN arm actually churned — the
+        // daemon writer thread is what drives it, and a daemon thread that dies of an uncaught
+        // exception does so with NO signal, silently degrading CHURN to STATIC. That lands the
+        // churn/static allocation ratio at ~1.0, comfortably UNDER the gate's 1.5 floor, so the
+        // build goes GREEN having measured nothing — the exact false green the gate exists to
+        // prevent. Nothing outside this method can catch it: CandidateIndexChurnRebuildProof is a
+        // synchronous, main-thread proof that never touches churnThread, and a ~1.0 ratio is a
+        // perfectly numeric, positive value that the reshape's numeric check waves through. So the
+        // check MUST live here. A @TearDown(Level.Trial) exception fails the JMH run, which exits
+        // org.openjdk.jmh.Main non-zero, which reds the CI step under `set -e`. STATIC arms are
+        // exempt (they must report all-zero by design). The store-modification and rebuild samples
+        // return -1 when their reflective hooks are unavailable; `<= 0` fails closed on that too.
+        // The three checks are OR-combined ON PURPOSE: storeModifications catches a dead/absent
+        // writer, and sortedListRebuildsObserved independently catches the PARTIAL failure where
+        // mutations keep counting but the cache is no longer invalidated (allocation collapses to
+        // static, ratio ~1.0) — the exact G1 regression shape, which storeModifications alone
+        // cannot see. The rebuild sample is made robust against writer starvation in
+        // sampleSortedListRebuilds (yield + deadline), so this OR does not spuriously RED.
+        if ("CHURN".equals(mode)
+            && (storeModificationsDuringTrial <= 0 || sortedListRebuildsObserved <= 0 || !stillMatchesUnderChurn)) {
+            throw new IllegalStateException("CHURN arm did not actually churn (n=" + n
+                + " indexMode=" + indexMode + "): storeModifications=" + storeModificationsDuringTrial
+                + " sortedListRebuildsObserved=" + sortedListRebuildsObserved
+                + " stillMatchesUnderChurn=" + stillMatchesUnderChurn
+                + " — the background writer thread died OR the sorted-snapshot cache stopped being"
+                + " invalidated on mutation (the G1 regression shape), silently degrading CHURN to a"
+                + " STATIC measurement. Refusing to emit a green-looking ratio from a run that did"
+                + " not churn.");
+        }
     }
 
     /**
@@ -222,12 +257,30 @@ public class CandidateIndexChurnBenchmark {
     }
 
     /**
-     * Counts how many of {@code reads} consecutive {@code toSortedList()} calls returned a
-     * different LIST INSTANCE from the previous call — the identity check that proves a rebuild
-     * happened rather than a cache hit. Returns -1 if the backing queue cannot be reached.
+     * Samples whether the sorted-snapshot cache is being invalidated (rebuilt) under the live
+     * writer, ROBUSTLY against CI scheduling noise. Repeatedly reads {@code toSortedList()} and
+     * counts how many reads returned a different LIST INSTANCE from the previous one — the
+     * identity check that proves a rebuild happened rather than a cache hit — {@code Thread.yield()}ing
+     * between reads so the SINGLE daemon writer is actually scheduled, and stopping at the FIRST
+     * observed rebuild or when {@code maxNanos} expires.
+     *
+     * <p>WHY not a tight fixed-count loop: a back-to-back read loop with no yield can starve the
+     * writer on a busy CI agent and observe ZERO invalidations even while the arm is churning
+     * heavily — a false RED (the teardown assertion below OR-combines this signal, so a spurious
+     * zero fails the build on a scheduling artifact). Yielding hands the CPU to the writer, and the
+     * deadline bounds the wait. The property this preserves: a genuinely churning arm crosses
+     * {@code rebuilds>0} almost immediately (so it essentially never reads zero, even contended),
+     * while an arm whose cache is NO LONGER being invalidated — a dead writer, OR mutations that no
+     * longer null the cache (the G1 regression shape this benchmark exists to catch) — never
+     * observes one and returns 0. Weakening the assertion to ignore a zero here whenever mutations
+     * are counting would delete the ONLY detector for that partial-failure shape, so the fix is a
+     * robust SAMPLE, not a weaker condition.
+     *
+     * <p>Returns 0 if no rebuild was observed within the deadline, the observed rebuild count
+     * (>=1) otherwise, or -1 if the backing queue cannot be reached (reported, never silently 0).
      */
     @SuppressWarnings("unchecked")
-    private int sampleSortedListRebuilds(int reads) {
+    private int sampleSortedListRebuilds(long maxNanos) {
         try {
             Field field = RequestMatchers.class.getDeclaredField("httpRequestMatchers");
             field.setAccessible(true);
@@ -235,7 +288,11 @@ public class CandidateIndexChurnBenchmark {
             Method toSortedList = queue.getClass().getMethod("toSortedList");
             List<?> previous = (List<?>) toSortedList.invoke(queue);
             int rebuilds = 0;
-            for (int i = 1; i < reads; i++) {
+            long deadline = System.nanoTime() + maxNanos;
+            while (rebuilds == 0 && System.nanoTime() < deadline) {
+                // Hand the CPU to the single daemon writer so it can invalidate the cache between
+                // our reads — a starved writer is the false-RED race this sampler exists to remove.
+                Thread.yield();
                 List<?> current = (List<?>) toSortedList.invoke(queue);
                 if (current != previous) {
                     rebuilds++;

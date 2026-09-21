@@ -273,3 +273,50 @@ cat "$REPO_ROOT/perf-scaling.json"
 if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact upload "perf-scaling.json" || true
 fi
+
+# --- G1 churn gate ------------------------------------------------------------
+# Third JMH backstop: run-g1-churn.sh runs CandidateIndexChurnBenchmark's ONE gated arm
+# (n=15,000 expectations, candidate index engaged, STATIC vs CHURN readers, -t 1) and emits
+# perf-churn.json {churn:{alloc_ratio_index_n15000, ...}}. Unlike the scaling sweep (recorded
+# but never compared — notify-only-by-omission), THIS ratio is enumerated AND budgeted in
+# perf-test-compare.sh / perf-budgets.json, so it GATES: a regression that reintroduced
+# rebuild-on-read would move the churn/static allocation ratio ~1.06x -> ~1000x+ (three orders
+# of magnitude), which the absolute floor catches. The FAIL-CLOSED guard that a CHURN arm
+# actually churned — rather than silently degrading to a static measurement when its daemon
+# writer thread dies, which would land the ratio at ~1.0 and pass the 1.5 floor GREEN — is the
+# benchmark's OWN @TearDown assertion (it throws on unhealthy churn signals), enforced by JMH
+# -foe true so the error exits non-zero and reds THIS step. (run-g1-churn.sh also runs the
+# rebuild PROOF as a supplementary main-thread MECHANISM check — but the proof is synchronous
+# and never exercises the writer thread, so it is NOT what catches a dead writer.) It rebuilds
+# mockserver-netty + upstream (same self-contained prep as run-scaling.sh) and uploads its own
+# artifact when buildkite-agent is present. This is the control that would have caught G1 going
+# stale — see docs/plans/performance-programme.md.
+CHURN_RAW="mockserver/mockserver-benchmark/perf-churn.json"
+JMH_ARGS_CHURN="${JMH_ARGS_CHURN:--f 1 -wi 3 -i 5 -r 1 -w 1 -t 1}"
+
+echo "--- running G1 churn gate (run-g1-churn.sh ci)"
+# shellcheck disable=SC2016
+"$SCRIPT_DIR/../run-in-docker.sh" \
+  -i "$MAVEN_IMAGE" \
+  -m "${MAVEN_MEMORY:-7g}" \
+  --entrypoint bash \
+  -w /build \
+  -e "JMH_ARGS_CHURN=$JMH_ARGS_CHURN" \
+  -- -c '
+    set -euo pipefail
+    cd /build/mockserver/mockserver-benchmark        # run-g1-churn.sh resolves the reactor root from here
+    CHURN_RESULT_PATH="$(pwd)/perf-churn.json" ./run-g1-churn.sh ci
+  '
+
+if [ ! -f "$REPO_ROOT/$CHURN_RAW" ]; then
+  echo "ERROR: G1 churn gate did not produce $CHURN_RAW" >&2
+  exit 1
+fi
+cp "$REPO_ROOT/$CHURN_RAW" "$REPO_ROOT/perf-churn.json"
+
+echo "--- perf-churn.json"
+cat "$REPO_ROOT/perf-churn.json"
+
+if command -v buildkite-agent >/dev/null 2>&1; then
+  buildkite-agent artifact upload "perf-churn.json" || true
+fi

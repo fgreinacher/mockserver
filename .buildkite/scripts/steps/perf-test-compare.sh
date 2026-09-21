@@ -152,6 +152,7 @@ The measurement step produced nothing, so there is no run to gate, baseline or p
   buildkite-agent artifact download perf-microbench-extra.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-sweep.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-scaling.json "$WORK/" 2>/dev/null || true
+  buildkite-agent artifact download perf-churn.json "$WORK/" 2>/dev/null || true
   buildkite-agent artifact download perf-h2-multiplex.json "$WORK/" 2>/dev/null || true
 else
   cp "${PERF_RESULT_FILE:-$REPO_ROOT/perf-result.json}" "$RESULT"
@@ -159,6 +160,7 @@ else
   [ -f "$REPO_ROOT/perf-microbench-extra.json" ] && cp "$REPO_ROOT/perf-microbench-extra.json" "$WORK/perf-microbench-extra.json" || true
   [ -f "$REPO_ROOT/perf-sweep.json" ] && cp "$REPO_ROOT/perf-sweep.json" "$WORK/perf-sweep.json" || true
   [ -f "$REPO_ROOT/perf-scaling.json" ] && cp "$REPO_ROOT/perf-scaling.json" "$WORK/perf-scaling.json" || true
+  [ -f "$REPO_ROOT/perf-churn.json" ] && cp "$REPO_ROOT/perf-churn.json" "$WORK/perf-churn.json" || true
   [ -f "$REPO_ROOT/perf-h2-multiplex.json" ] && cp "$REPO_ROOT/perf-h2-multiplex.json" "$WORK/perf-h2-multiplex.json" || true
 fi
 # Merge micro-benchmark results into the run object if present.
@@ -182,6 +184,16 @@ if [ -f "$WORK/perf-sweep.json" ]; then
 fi
 if [ -f "$WORK/perf-scaling.json" ]; then
   jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-scaling.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
+fi
+# G1 churn gate (docs/plans/performance-programme.md -> "G1 churn gate"). Merges
+# {churn:{alloc_ratio_index_n15000, ...}} into the run. UNLIKE .scaling above, this block IS
+# enumerated and budgeted below, so churn.alloc_ratio_index_n15000 GATES (a rebuild-on-read
+# regression moves the churn/static allocation ratio by ~3 orders of magnitude). Best-effort
+# download like the others; if the microbench step failed to produce it, that step reds on its
+# own (run-g1-churn.sh / the microbench artifact check) — the value is simply absent here and
+# drops out of $headmetrics rather than tripping the fail-closed missing-budget rule.
+if [ -f "$WORK/perf-churn.json" ]; then
+  jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-churn.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
 fi
 # HTTP/2 multiplex benchmark (issue #2669). Persisted into the S3 run history for
 # trend visibility only — NOTIFY-ONLY, NO baseline comparison or pass/fail gate
@@ -679,6 +691,21 @@ def metrics:
   # continuously with the server ceiling. Non-gating (perf-budgets.json gating:false).
   # saturation_rps (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
   ( {name:"rig_valid_peak_achieved_rps", value:(.rig_valid_peak_achieved_rps), bkey:"rig_valid_peak_achieved_rps"} ),
+  # G1 churn gate — the candidate-index churn/static ALLOCATION ratio at n=15,000, t=1
+  # (indexMode=INDEX), emitted by run-g1-churn.sh via perf-test-microbench.sh under .churn.
+  # A within-run STATIC-vs-CHURN A/B (the CandidateIndexBenchmark gold-standard shape): it
+  # cancels host/JVM/GC noise and is machine-INDEPENDENT — allocation is bytes/op, not timing —
+  # so it rides the FULL baseline (this else-family), NOT the JMH .config.jmh fingerprint, and
+  # an absolute floor on it is methodology-independent. dir up: a regression that reintroduced
+  # rebuild-on-read moves it ~1.06x -> ~1000x+ (three orders of magnitude). It GATES on an
+  # absolute floor (perf-budgets.json churn.alloc_ratio_index_n15000, gating:true) — the
+  # premerge_alloc.* precedent: a deterministic allocation metric with a provisional absolute
+  # floor and huge headroom, honestly labelled, gates from day one because a rolling median
+  # would absorb the very slow drift this control exists to catch. EXACT bkey (like
+  # rig_valid_peak_achieved_rps / forward.error_rate), not a wildcard family. A producer-step
+  # failure leaves .churn absent -> value null -> dropped by $headmetrics (the red is on the
+  # microbench step, not a fail-closed missing-budget here).
+  ( {name:"churn.alloc_ratio_index_n15000", value:((.churn // {}).alloc_ratio_index_n15000), bkey:"churn.alloc_ratio_index_n15000"} ),
   # forward.error_rate: the forward connection-pool guard (forward.js) — a
   # discriminating pass/fail guard (pool works vs it does not).
   ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), bkey:"forward.error_rate"} );

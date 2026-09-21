@@ -2744,9 +2744,56 @@ experiment is the first real run, and the script's own diagnostics (`pool_per_ru
 `vus_pool_grew`) make it self-checking: the boundary rung must stay rig-valid with `vus_active_max`
 below its pool, and 48k/64k must still show the knee.
 
+## G1 churn gate — wired into CI, and what it took to make it trustworthy
+
+**Shipped 2026-09-21.** `CandidateIndexChurnBenchmark` ran nowhere in CI; only a by-hand script drove
+it. It is the control that would have caught G1 going stale, so it now runs in the daily perf pipeline
+and **gates** the churn/static allocation ratio at n=15,000 (`churn.alloc_ratio_index_n15000`,
+absolute floor **1.5**, `dir:"up"`, `gating:true`, `provisional:true`).
+
+The measured ratio is ~1.07 (worst short-run 1.16) and a revert to rebuild-on-read moves it by three
+orders of magnitude, so 1.5 is ~30% clear of noise with ~600x margin on the failure. Proven to fire:
+1.069 exits 0, 1000 exits 1. It gates from day one rather than notify-only, on the `premerge_alloc.*`
+precedent — a deterministic allocation metric expressed as a WITHIN-RUN ratio cancels host speed, so an
+absolute floor is machine-independent, and a rolling median would absorb the slow drift this control
+exists to catch.
+
+**Two reviews, two real defects — both false greens in a control built to prevent them.**
+
+*The first BLOCK.* The design leaned on a "rebuild proof" to guarantee a silently-static churn arm
+could not pass. It could not deliver that: `CandidateIndexChurnRebuildProof` is **synchronous** and
+never touches the benchmark's daemon `churnThread`, which the measured arm depends on entirely. A
+daemon dying of an uncaught exception dies silently, CHURN degrades to static, the ratio lands ~1.0
+under the floor, the build goes GREEN — and the proof still prints PASS, because it tested a different
+path. The benchmark already computed the liveness signals and merely `println`'d them; nothing parsed
+the line.
+
+*The second defect, found only by demonstrating the first fix.* Making `@TearDown` throw was not
+enough: **JMH's `failOnError` defaults to false**, so the exception printed while
+`org.openjdk.jmh.Main` still exited 0 and the false green survived. `-foe true` is now hardcoded on the
+gated invocation, deliberately outside the overridable args. This is the argument for demanding a
+forced failure rather than an assertion: the demonstration is what exposed that the fix did not work.
+
+**Why the three checks are OR-combined, which a later review round got wrong.** A reviewer proposed
+only treating zero rebuilds as a failure when the store-modification counter ALSO showed no churn.
+That would have deleted the detector for the partial-failure shape — mutations counting while the
+cache is never invalidated, which IS the G1 regression: no invalidation means no rebuilds, allocation
+collapses to static, ratio ~1.0, green. The store counter cannot see it, because mutations still
+count. Measured proof that the OR is required: in that state `storeModifications` read **136,485**
+while rebuilds read **0**; an AND would not have thrown.
+
+The real fix for the flakiness the reviewer correctly identified was to make the SAMPLE robust rather
+than the condition weaker — the sampler now yields to the writer and samples to a 500 ms deadline.
+Verified both ways: 6 trials under 28 busy loops on 14 cores never read zero, and the partial-failure
+state still reds.
+
+**Residual, disclosed not fixed:** the artifact upload uses `|| true`, so a producer that succeeds but
+whose upload fails leaves the gate silently absent with a green build. Pre-existing and shared
+identically with every sibling perf artifact; everything upstream of the upload fails closed.
+
 ## What remains
 
-**Ten things are outstanding: four can be settled from the repo, and six cannot be settled
+**Nine things are outstanding: three can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2756,8 +2803,6 @@ hard way.
 flowchart TD
   left["Settleable from the repo"]
   right["Needs a run, or an external system"]
-  left --> b["Gate the candidate-index
-  churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
   left --> l["Low value: .laptop block,
@@ -2778,7 +2823,6 @@ flowchart TD
 
 | | What is owed | Detail |
 |---|---|---|
-| **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
 | **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
