@@ -1165,7 +1165,28 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     public void clear(RequestDefinition requestDefinition) {
         if (requestDefinition != null) {
             HttpRequestMatcher clearHttpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
-            getHttpRequestMatchersCopy().forEach(httpRequestMatcher -> {
+            // Narrow the O(n) clear scan to the candidate index when possible. The index buckets
+            // an expectation on its literal path (and, for the tighter (method,path) bucket, its
+            // literal method); a clear carrying a literal path can therefore consult one bucket
+            // plus the always-included fallthrough(s) instead of every registered expectation. This
+            // can only ever SHRINK the set that gets the full reverse match below (it is a subset),
+            // so it under-removes never over-removes — and clearCandidates returns null (forcing
+            // the full scan) for exactly the shapes that would under-remove (a regex/blank path, a
+            // path-parameter or non-HTTP clear). Below the index threshold, or when narrowing is
+            // unsound, fall back to scanning the whole store. The full reverse match still runs on
+            // every candidate, so any extra clear constraint (method, headers, query, body) is
+            // applied exactly as before.
+            List<HttpRequestMatcher> clearScanList = null;
+            if (httpRequestMatchers.size() >= candidateIndexThreshold) {
+                clearScanList = candidateIndex.clearCandidates(
+                    requestDefinition,
+                    !configuration.matchExactCase(),
+                    httpRequestMatchers::toSortedList);
+            }
+            Stream<HttpRequestMatcher> clearScan = clearScanList != null
+                ? clearScanList.stream()
+                : getHttpRequestMatchersCopy();
+            clearScan.forEach(httpRequestMatcher -> {
                 RequestDefinition request = httpRequestMatcher
                     .getExpectation()
                     .getHttpRequest();

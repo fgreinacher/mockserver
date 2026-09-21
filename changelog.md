@@ -25,6 +25,14 @@ MockServer could lose data and report nothing.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **Clearing an expectation no longer scans every expectation you have registered.** Teardown between
+  tests used to compare the clear against the whole store, so a suite sharing one long-lived server
+  got slower at cleaning up as its expectations accumulated. A measured per-test cycle grew about
+  6.8x between an empty store and 15,000 expectations, and `clear` was **59%** of that growth. Clears
+  that name a path (with or without a method) are now served from an index: **1,585 microseconds →
+  0.2** at 15,000 expectations, and flat across store size rather than linear. Clears that cannot be
+  narrowed safely — a regex path, a path with parameters, or a store running with `matchExactCase`
+  enabled — fall back to the old full scan, so behaviour is identical in every case.
 
 **Memory**
 

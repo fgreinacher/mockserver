@@ -106,6 +106,31 @@ class CandidateIndex {
     private static final String FALLTHROUGH_KEY = "\u0000FALLTHROUGH";
 
     /**
+     * Locator sentinel for the PATH-ONLY dimension: "this id's path is not a plain literal, so it
+     * lives in the path fallthrough". Kept distinct from {@link #FALLTHROUGH_KEY} only so the two
+     * dimensions' locators never alias; within each dimension the sentinel just means "not bucketed
+     * in this dimension".
+     * <p>
+     * Note the collision guarantee here is WEAKER than {@link #FALLTHROUGH_KEY}'s and rests on
+     * different facts, so do not read the two as equivalent. A composed (method, path) key always
+     * contains a '\n' separator, which structurally cannot appear in the sentinel. A path key has
+     * NO separator — {@link #composePathKey} returns the path itself — so the sentinel's safety is
+     * instead:
+     * <ul>
+     *   <li>the path dimension is only ever READ in case-insensitive mode
+     *       ({@link #clearCandidates} returns null under exact-case), and</li>
+     *   <li>in that mode every bucket key is {@code toLowerCase(ROOT)}-folded, which cannot produce
+     *       the uppercase letters in "PATH_FALLTHROUGH" — so no real key can equal the sentinel.</li>
+     * </ul>
+     * Under exact-case a literal path COULD in principle collide (it is stored unfolded), but the
+     * dimension is never consulted then, and a later flip to case-insensitive triggers a full
+     * rebuild. Hence no reachable defect — but the invariant is conditional, not structural, and a
+     * future change that read the path buckets under exact-case would break it.
+     */
+    // Same escape discipline as FALLTHROUGH_KEY: write the NUL as \u0000, never a raw NUL byte.
+    private static final String PATH_FALLTHROUGH_KEY = "\u0000PATH_FALLTHROUGH";
+
+    /**
      * Published index state. The maps are concurrent so data-plane readers iterate them
      * lock-free while the single control-plane writer mutates them; the whole object is
      * swapped atomically (through the {@code volatile snapshot} reference) only on a case-mode
@@ -123,6 +148,22 @@ class CandidateIndex {
         // find the exact placement in O(1) WITHOUT recomputing the bucket key, so removal is
         // robust even if the matcher's state changed between add and remove.
         final ConcurrentMap<String, String> locator = new ConcurrentHashMap<>();
+
+        // ---- PATH-ONLY dimension (used ONLY by the control-plane clear fast path, never by the
+        // data-plane read). An expectation is path-bucketed on its literal path ALONE, regardless
+        // of whether its method is literal, so a path-only clear (no method, matches any method)
+        // can narrow to the one path bucket plus the path fallthrough. This is a SEPARATE placement
+        // from the (method,path) dimension above because their bucketable predicates differ: an
+        // expectation with a literal path but a regex/blank/notted method is (method,path)-
+        // fallthrough yet path-BUCKETED here.
+        // pathKey (folded literal path) -> (expectationId -> matcher).
+        final ConcurrentMap<String, ConcurrentMap<String, HttpRequestMatcher>> pathBuckets = new ConcurrentHashMap<>();
+        // expectationId -> matcher for every expectation whose PATH is not a plain literal.
+        final ConcurrentMap<String, HttpRequestMatcher> pathFallthrough = new ConcurrentHashMap<>();
+        // expectationId -> its path placement (a path key, or PATH_FALLTHROUGH_KEY). Same O(1)-
+        // removal role as {@code locator}, for the path dimension.
+        final ConcurrentMap<String, String> pathLocator = new ConcurrentHashMap<>();
+
         final boolean caseInsensitive;
 
         State(boolean caseInsensitive) {
@@ -167,6 +208,8 @@ class CandidateIndex {
     private static void placeIntoState(State state, String id, HttpRequestMatcher matcher) {
         // Drop any previous placement of this id first (handles re-add / re-bucket robustly).
         removeFromState(state, id);
+
+        // (method, path) dimension — used by the data-plane read.
         String key = bucketKeyFor(matcher, state.caseInsensitive);
         if (key == null) {
             state.fallthrough.put(id, matcher);
@@ -175,24 +218,52 @@ class CandidateIndex {
             state.buckets.computeIfAbsent(key, k -> new ConcurrentHashMap<>()).put(id, matcher);
             state.locator.put(id, key);
         }
+
+        // Path-only dimension — used by the control-plane clear fast path. Placed independently:
+        // an expectation with a literal path but a non-literal method is (method,path)-fallthrough
+        // above yet path-bucketed here.
+        String pathKey = pathKeyFor(matcher, state.caseInsensitive);
+        if (pathKey == null) {
+            state.pathFallthrough.put(id, matcher);
+            state.pathLocator.put(id, PATH_FALLTHROUGH_KEY);
+        } else {
+            state.pathBuckets.computeIfAbsent(pathKey, k -> new ConcurrentHashMap<>()).put(id, matcher);
+            state.pathLocator.put(id, pathKey);
+        }
     }
 
     private static void removeFromState(State state, String id) {
+        // (method, path) dimension.
         String key = state.locator.remove(id);
-        if (key == null) {
-            return;
+        if (key != null) {
+            if (FALLTHROUGH_KEY.equals(key)) {
+                state.fallthrough.remove(id);
+            } else {
+                ConcurrentMap<String, HttpRequestMatcher> bucket = state.buckets.get(key);
+                if (bucket != null) {
+                    bucket.remove(id);
+                    // Reclaim an emptied bucket so a long churn of DISTINCT (method,path) keys
+                    // (e.g. many one-time expectations) cannot leak empty maps. Single-writer, so
+                    // the value-guarded remove only prevents dropping a bucket already replaced.
+                    if (bucket.isEmpty()) {
+                        state.buckets.remove(key, bucket);
+                    }
+                }
+            }
         }
-        if (FALLTHROUGH_KEY.equals(key)) {
-            state.fallthrough.remove(id);
-        } else {
-            ConcurrentMap<String, HttpRequestMatcher> bucket = state.buckets.get(key);
-            if (bucket != null) {
-                bucket.remove(id);
-                // Reclaim an emptied bucket so a long churn of DISTINCT (method,path) keys
-                // (e.g. many one-time expectations) cannot leak empty maps. Single-writer, so
-                // the value-guarded remove only prevents dropping a bucket already replaced.
-                if (bucket.isEmpty()) {
-                    state.buckets.remove(key, bucket);
+
+        // Path-only dimension (mirror of the above).
+        String pathKey = state.pathLocator.remove(id);
+        if (pathKey != null) {
+            if (PATH_FALLTHROUGH_KEY.equals(pathKey)) {
+                state.pathFallthrough.remove(id);
+            } else {
+                ConcurrentMap<String, HttpRequestMatcher> pathBucket = state.pathBuckets.get(pathKey);
+                if (pathBucket != null) {
+                    pathBucket.remove(id);
+                    if (pathBucket.isEmpty()) {
+                        state.pathBuckets.remove(pathKey, pathBucket);
+                    }
                 }
             }
         }
@@ -323,6 +394,135 @@ class CandidateIndex {
         return fresh;
     }
 
+    /**
+     * Returns the narrowed CANDIDATE set for a control-plane {@code clear(RequestDefinition)} — the
+     * only expectations whose request the clear matcher could possibly match — or {@code null} when
+     * the clear shape cannot be soundly narrowed and the caller MUST fall back to scanning every
+     * registered expectation.
+     *
+     * <p><b>Direction.</b> Unlike the data-plane read, the clear's request is the MATCHER and each
+     * expectation's request is the SUBJECT ({@code clearMatcher.matches(expectation.request)}), a
+     * control-plane reverse match. The narrowing is nonetheless sound for the same structural
+     * reason: a candidate set that is a SUBSET of all expectations can only ever UNDER-remove, and
+     * we only ever exclude an expectation when it provably cannot match the clear's literal path.
+     *
+     * <p><b>Soundness.</b> When the clear carries a pure-ASCII literal path, the reverse path match
+     * reduces to literal (folded) equality against any other literal path (both sides are
+     * regex-metacharacter-free, so as-regex each matches only itself), so an expectation in a
+     * DIFFERENT literal-path bucket provably fails the clear's path criterion. Every expectation
+     * whose path is NOT a plain literal lives in the {@code pathFallthrough} and is ALWAYS included
+     * — that covers a regex-path expectation a literal clear still removes (bidirectional match),
+     * and every notted/blank/schema/path-parameter path. Extra clear constraints (a literal method,
+     * headers, query, body) only make it MORE selective and are still applied by the full reverse
+     * match the caller runs on each returned candidate, so they never cause an under-removal.
+     *
+     * <p><b>Shapes.</b>
+     * <ul>
+     *   <li>literal path + literal method → the one {@code (method,path)} bucket ∪ {@code fallthrough}
+     *       (the tighter set; a foreign method sits in a different (method,path) bucket);</li>
+     *   <li>literal path + any non-literal method (absent/blank/regex/notted) → the one path bucket
+     *       ∪ {@code pathFallthrough} (method imposes no bucket constraint);</li>
+     *   <li>anything else (non-literal path, path parameters, a non-HTTP clear) → {@code null},
+     *       forcing the full scan (e.g. a regex-path clear spans many literal buckets).</li>
+     * </ul>
+     * The clear's literal path/method come from {@link #literalValue}, which already rejects
+     * non-ASCII, so no non-ASCII case-fold fallback is needed here (a non-ASCII expectation path is
+     * itself in the path fallthrough and always included).
+     *
+     * <p><b>Case mode.</b> The control-plane clear matcher is ALWAYS case-insensitive, independent
+     * of {@code matchExactCase} (see {@code HttpRequestPropertiesMatcher}, where
+     * {@code caseSensitive = !controlPlaneMatcher && matchExactCase} is false for any clear filter).
+     * So narrowing is only possible against a case-insensitively folded index, which exists only
+     * when {@code matchExactCase} is OFF ({@code caseInsensitiveNow == true}); with exact-case ON we
+     * return {@code null} (full scan) rather than under-remove against case-sensitive buckets. This
+     * is the opposite of the data-plane read, whose index fold tracks {@code matchExactCase}.
+     *
+     * <p>Order is irrelevant — a clear removes EVERY match, not the first — so the union is returned
+     * unsorted. A live {@code matchExactCase} flip to OFF is handled by a one-off {@link #rebuild}
+     * to the case-insensitive fold under the monitor before the lookup.
+     *
+     * @param caseInsensitiveNow {@code !configuration.matchExactCase()} — true when the (case-
+     *                           insensitive) clear can be served by the case-insensitively folded
+     *                           index; false forces the full scan
+     * @return the candidate matchers to run the full reverse match against, or {@code null} to mean
+     * "cannot narrow — scan everything".
+     */
+    List<HttpRequestMatcher> clearCandidates(
+        RequestDefinition clearRequest,
+        boolean caseInsensitiveNow,
+        Supplier<List<HttpRequestMatcher>> authoritativeSnapshot
+    ) {
+        if (!(clearRequest instanceof HttpRequest)) {
+            return null;
+        }
+        HttpRequest httpRequest = (HttpRequest) clearRequest;
+
+        // Path parameters on the CLEAR rewrite its path into a regex, so it is not a literal-path
+        // clear and cannot be narrowed by a literal-path bucket lookup.
+        Parameters pathParameters = httpRequest.getPathParameters();
+        if (pathParameters != null && !pathParameters.isEmpty()) {
+            return null;
+        }
+
+        // The control-plane clear matcher is ALWAYS case-insensitive, independent of matchExactCase
+        // (HttpRequestPropertiesMatcher: caseSensitive = !controlPlaneMatcher && matchExactCase, so
+        // false for any clear/verify/retrieve filter — administrative operations kept the historical
+        // case-insensitive behaviour). We can therefore only narrow using a CASE-INSENSITIVELY
+        // folded index. That index exists exactly when matchExactCase is OFF (caseInsensitiveNow ==
+        // true); when exact-case is ON the maintained buckets are case-sensitive and cannot serve a
+        // case-insensitive clear without under-removing (e.g. clear "/a2" must still remove "/A2"),
+        // so fall back to the full scan. matchExactCase is off by default and is where the measured
+        // G9 win sits, so this fallback does not cost the common case.
+        if (!caseInsensitiveNow) {
+            return null;
+        }
+
+        String literalPath = literalValue(httpRequest.getPath());
+        if (literalPath == null) {
+            // Blank/notted/regex/schema/non-ASCII path — cannot narrow (a regex clear legitimately
+            // spans many literal buckets, and a non-ASCII path's case fold diverges from the
+            // matcher's equalsIgnoreCase); scan everything.
+            return null;
+        }
+
+        State state = snapshot;
+        if (!state.caseInsensitive) {
+            // matchExactCase was flipped OFF at runtime but no data-plane read has rebuilt the index
+            // to the case-insensitive fold yet. Rebuild now (same discipline as
+            // candidatesInGlobalOrder: pass the SUPPLIER, rebuild under the monitor, never capture
+            // the authoritative list on this thread first) so the bucket keys are CI-folded.
+            state = rebuild(authoritativeSnapshot, true);
+        }
+
+        // Fold with true unconditionally: the clear is case-insensitive and the bucket keys are now
+        // guaranteed CI-folded (state.caseInsensitive == true).
+        String literalMethod = literalValue(httpRequest.getMethod());
+        if (literalMethod != null) {
+            // (method, path) fast path — the tightest sound candidate set.
+            String key = composeKey(literalMethod, literalPath, true);
+            return union(state.fallthrough, state.buckets.get(key));
+        }
+        // Path-only fast path — the clear imposes no method bucket constraint.
+        String pathKey = composePathKey(literalPath, true);
+        return union(state.pathFallthrough, state.pathBuckets.get(pathKey));
+    }
+
+    /**
+     * Concatenates an always-included fallthrough map's values with an optional bucket's values into
+     * a fresh list. No sorting (clear order is irrelevant) and no dedup is needed: within a single
+     * dimension an id is in EITHER the fallthrough OR exactly one bucket, never both.
+     */
+    private static List<HttpRequestMatcher> union(
+        ConcurrentMap<String, HttpRequestMatcher> fallthrough,
+        ConcurrentMap<String, HttpRequestMatcher> bucket
+    ) {
+        List<HttpRequestMatcher> candidates = new ArrayList<>(fallthrough.values());
+        if (bucket != null) {
+            candidates.addAll(bucket.values());
+        }
+        return candidates;
+    }
+
     private static SortableExpectationId sortableId(HttpRequestMatcher matcher) {
         return matcher.getExpectation() != null
             ? matcher.getExpectation().getSortableId()
@@ -379,6 +579,46 @@ class CandidateIndex {
             return null;
         }
         return composeKey(method, path, caseInsensitive);
+    }
+
+    /**
+     * Returns the folded literal-path key for a matcher when — and only when — the expectation's
+     * PATH is a plain literal, or {@code null} ("path fallthrough — a path-only clear must check it
+     * regardless") otherwise. Deliberately says NOTHING about the method: unlike
+     * {@link #bucketKeyFor}, an expectation with a literal path is path-bucketable even when its
+     * method is a regex/blank/notted matcher, because the path-only clear fast path applies no
+     * method criterion of its own (a blank clear method matches any expectation method) and the
+     * full reverse match still runs on each candidate.
+     *
+     * <p>Same conservative literal test as {@link #bucketKeyFor}'s path leg: a plain
+     * {@link HttpRequest} {@link HttpRequestPropertiesMatcher}, no path parameters (they rewrite the
+     * matched path into a {@code .*} regex), and a non-null, non-blank, non-notted, non-optional,
+     * non-schema, pure-ASCII, regex-metacharacter-free path value.
+     */
+    private static String pathKeyFor(HttpRequestMatcher matcher, boolean caseInsensitive) {
+        if (!(matcher instanceof HttpRequestPropertiesMatcher)) {
+            return null;
+        }
+        Expectation expectation = matcher.getExpectation();
+        if (expectation == null) {
+            return null;
+        }
+        RequestDefinition requestDefinition = expectation.getHttpRequest();
+        if (!(requestDefinition instanceof HttpRequest)) {
+            return null;
+        }
+        HttpRequest httpRequest = (HttpRequest) requestDefinition;
+
+        Parameters pathParameters = httpRequest.getPathParameters();
+        if (pathParameters != null && !pathParameters.isEmpty()) {
+            return null;
+        }
+
+        String path = literalValue(httpRequest.getPath());
+        if (path == null) {
+            return null;
+        }
+        return composePathKey(path, caseInsensitive);
     }
 
     /**
@@ -446,6 +686,17 @@ class CandidateIndex {
             path = path.toLowerCase(Locale.ROOT);
         }
         return method + METHOD_PATH_SEPARATOR + path;
+    }
+
+    /**
+     * Folds a literal path into a path-dimension bucket key. Folds with {@code toLowerCase(ROOT)}
+     * in case-insensitive mode so a case-insensitive literal clear matches a literal expectation
+     * differing only in case — the same fold {@link #composeKey} applies to the path segment. No
+     * separator is prefixed: every value here is a real path, and the path fallthrough is keyed by
+     * the NUL-sentinel {@link #PATH_FALLTHROUGH_KEY}, never by a path value.
+     */
+    private static String composePathKey(String path, boolean caseInsensitive) {
+        return caseInsensitive ? path.toLowerCase(Locale.ROOT) : path;
     }
 
     // ---- pure-ASCII-literal test (mirrors RegexStringMatcher) ----
