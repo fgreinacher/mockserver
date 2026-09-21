@@ -2316,13 +2316,28 @@ task wrapper and `FutureTask`. `e838244b7` fixed the main case — `RegexComplex
 a pattern cannot backtrack super-linearly and lets it run inline, while everything unproven, and
 all `find()`-style matching, keeps the timeout isolation unchanged.
 
-**Two smaller findings from the same sweep are still open** and are listed in
-[What remains](#what-remains): `MediaType.parse` re-parses and re-allocates the same
-`Content-Type` per request with no cache (`MediaType.java:85`, called from
-`BodyDecoderEncoder.java:68,105`), and the full request body is eagerly decoded to a `String` even
-when no matcher reads it (`BodyDecoderEncoder.java:106-124`). A third — XPath re-parsing the XML
-DOM per candidate expectation outside the timeout wrapper, so that cost scales with body size x
-candidate count — **is being fixed now** (`XPathEvaluator.java`, in flight).
+**The three smaller findings from the same sweep are now all settled, two shipped and one
+rejected on measurement.**
+
+*Shipped.* `MediaType.parse` re-parsed and re-allocated the same `Content-Type` per request with no
+cache. Now bounded-cached (1,024 entries, keyed on the verbatim header so `charset=utf-8` and
+`charset=UTF-8` stay distinct keys that each parse correctly): **960 B/op -> ~0 in isolation**, and
+`InboundDecodeBenchmark` **6,584 -> 5,680 B/op** end-to-end, where the -904 cross-checks against the
+isolated ~960. The same change wraps `parameters` in `Collections.unmodifiableMap` — `getParameters()`
+had been handing callers the internal mutable `TreeMap`, which a shared cache would have turned from
+a latent aliasing bug into a live one. XPath re-parsing the XML DOM per candidate expectation shipped
+in `92b1c8f79`.
+
+*Rejected — a measured negative.* Making the body decode lazy would save nothing at the default
+settings. At `logLevel` INFO the decoded body `String` is materialised per request **anyway**, for the
+event-log message: `MockServerEventLog:659` writes unconditionally, `MockServerLogger:212-219`
+evaluates `getMessage()`, and that resolves `request.toString()` -> the body. A lazy decode would move
+the allocation a few microseconds later on the same thread and remove nothing. It would pay only when
+`logLevel >= WARN` **and** no matcher reads the body **and** nothing retrieves, verifies or renders the
+request — bought by making the core immutable domain objects lazily decoded across matching,
+reflective `equals`, serialisation and the log ring. The plan's own parenthetical caveat ("the body is
+retained for the event-log entry anyway, so the saving is narrower than it first looks") was right, and
+narrower turned out to mean zero.
 
 *One lesson from building the classifier, kept because it generalises:* an adversarial review
 reported ONE alphabet under-approximation in it. Sweeping the *class* of defect rather than fixing
@@ -2568,18 +2583,20 @@ never mounted this panel at 200 rows, so it did not exercise this path at all.)
 | **4. Cap rendered rows with "showing 50 of 200"** | **Most of it** — 4x fewer elements at a 50-row cap | Rows past the cap are not in the DOM either, so it has option 1's Ctrl-F problem — but it is HONEST about it, since the user is told | Low | Reasonable fallback if option 1's audit proves too costly; strictly worse UX than windowing |
 | **5. Lower the server's `UI_UPDATE_ITEM_LIMIT` (100/category)** | Proportional, and it also cuts the SERVER cost measured in 9a | Changes how much history every dashboard shows, for every user | Low | A product decision about the dashboard's purpose, not a rendering fix. Note it is the one option that helps both sides |
 
-**Recommended sequence: 3 then 1.** Slimming the row is free of behaviour risk, banks about half the
-win immediately, and leaves every row cheaper for whatever comes after. Then virtualise, treating the
-behaviour audit — Ctrl-F, selectors, screenshots, bulk-select, keyboard navigation — as the actual
-deliverable rather than the rendering change, which is close to a one-line swap to a component that
-already works.
+**This recommended 3-then-1, and the order turned out to be wrong.** The case for going first to
+option 3 rested on it banking "about half the win" for free; when it was actually attempted, the
+wrapper that estimate counted did not exist, so it banked nearly nothing. Option 1 was taken alone
+and beat its own estimate — 2,234 DOM elements at 200 rows became 145 at both 50 and 200 rows, flat
+in dataset size rather than merely smaller — which also removed most of option 3's remaining value,
+since only ~9 rows now mount. **The generalisable part: the cheap-and-safe step was ordered first on
+an unverified estimate of its size, and verifying that estimate was cheaper than doing the work.**
 
 **Do not reach for option 2 first** on the grounds that it is the safest. It is the safest, and on
 the evidence available it does not fix the thing that was measured.
 
 ## What remains
 
-**Fourteen things are outstanding: eight can be settled from the repo, and six cannot be settled
+**Thirteen things are outstanding: seven can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2595,8 +2612,6 @@ flowchart TD
   churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> d["G6 residue: MediaType.parse cache,
-  eager body decode"]
   left --> e["9b SOCKS5 rung,
   9c JMH relay benchmark"]
   left --> l["Low value: toSortedList dedup,
@@ -2620,7 +2635,6 @@ flowchart TD
 | **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
 | **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
 | **`peak_achieved_rps`** | Rename the top-level field to `rig_valid_peak_achieved_rps`, delete the false continuity claim, and give the two same-named quantities distinct names | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case. Also key `sweep_client_had_headroom` off a **count** of rig-valid rungs rather than off a throughput value, and reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run |
-| **G6 residue** | Cache `MediaType.parse`; stop eagerly decoding the body to a `String` when no matcher reads it | `MediaType.java:85`, called per request from `BodyDecoderEncoder.java:68,105`; the eager decode is `BodyDecoderEncoder.java:106-124` (note the body is retained for the event-log entry anyway, so the saving is narrower than it first looks). `InboundDecodeBenchmark` already targets the decode path. **The third finding from that sweep — XPath re-parsing the DOM per candidate expectation — is IN PROGRESS**, not outstanding |
 | **9b / 9c proxy arms** | A SOCKS5 rung, and a JMH relay benchmark | Both were named when 9a shipped and neither has been built — there is no SOCKS arm anywhere under `mockserver-performance-test/k6/`, and no relay benchmark in `mockserver-benchmark`. **9b:** k6 supports an HTTP proxy but not SOCKS, so this needs a small driver or a SOCKS-aware sidecar; if that is awkward, downgrade it to a JMH benchmark of the handshake handlers rather than skipping the dimension. **9c:** the relay is byte-copy dominated and nothing like matching, so the matcher backstop says nothing about it — measure bytes/s and allocation per relayed KB |
 | **`toSortedList` dedup** | Deduplicate the rebuild across concurrent readers — **but do not over-invest** | `CircularPriorityQueue.java:299-306` still rebuilds the whole list whenever `sortedCache` is null, with no dedup, and the cache is still nulled on every structural mutation. **Its blast radius collapsed from "every request at any store >= 64" to almost nothing**, because the hit path no longer calls it: `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is a much smaller question than G1 posed |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |

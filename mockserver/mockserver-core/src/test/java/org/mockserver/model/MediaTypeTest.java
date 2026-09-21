@@ -3,16 +3,21 @@ package org.mockserver.model;
 import com.google.common.collect.ImmutableMap;
 import org.junit.Test;
 
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.allOf;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.hamcrest.Matchers.nullValue;
+import static org.hamcrest.Matchers.sameInstance;
 import static org.hamcrest.collection.IsMapContaining.hasEntry;
 import static org.hamcrest.core.Is.is;
+import static org.junit.Assert.assertThrows;
 
 public class MediaTypeTest {
 
@@ -549,6 +554,104 @@ public class MediaTypeTest {
             assertThat(contentTypeExample, MediaType.parse(contentTypeExample), is(MediaType.parse(MediaType.parse(contentTypeExample).toString())));
         }
         assertThat(MediaType.create("text", "plain").withCharset(StandardCharsets.UTF_16), is(MediaType.parse(MediaType.create("text", "plain").withCharset(StandardCharsets.UTF_16).toString())));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Parse cache (perf: MediaType.parse is on every request-with-body path). The cache must never
+    // change parse RESULTS, must never conflate charset-case variants, must return an instance that
+    // cannot be mutated through getParameters() (a shared cached instance would otherwise be a
+    // cross-request data leak), and must stay bounded because the Content-Type header is
+    // attacker-controlled off the wire.
+    // ---------------------------------------------------------------------------------------------
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, MediaType> parseCache() throws Exception {
+        Field field = MediaType.class.getDeclaredField("PARSE_CACHE");
+        field.setAccessible(true);
+        return (Map<String, MediaType>) field.get(null);
+    }
+
+    private static int maxCacheEntries() throws Exception {
+        Field field = MediaType.class.getDeclaredField("MAX_CACHE_ENTRIES");
+        field.setAccessible(true);
+        return (int) field.get(null);
+    }
+
+    @Test
+    public void shouldCacheParsedContentTypeAndReturnSharedInstanceOnHit() throws Exception {
+        // given - a header unique to this run so the assertion is independent of other tests' cache use
+        String subtype = "x-cache-probe-" + UUID.randomUUID();
+        String header = "application/" + subtype;
+
+        // when
+        MediaType first = MediaType.parse(header);
+
+        // then - the parse result is stored in the bounded cache (unless the cache happens to be full)
+        Map<String, MediaType> cache = parseCache();
+        assertThat(
+            "a freshly parsed header must be cached unless the bounded cache is already full",
+            cache.containsKey(header) || cache.size() >= maxCacheEntries(),
+            is(true)
+        );
+
+        // and - when it is cached, a second parse returns the SAME instance (the hit path), never a re-parse
+        if (cache.containsKey(header)) {
+            assertThat(MediaType.parse(header), sameInstance(first));
+        }
+        // and - either way the value is correct
+        assertThat(MediaType.parse(header), is(new MediaType("application", subtype)));
+    }
+
+    @Test
+    public void shouldNotConflateCharsetCaseVariantsThroughCache() {
+        // given - two headers that differ ONLY in charset case; keyed verbatim they are distinct cache
+        // keys, but each must resolve to the same (correct) UTF-8 charset - never conflated, never lost
+        MediaType lower = MediaType.parse("application/json; charset=utf-8");
+        MediaType upper = MediaType.parse("application/json; charset=UTF-8");
+
+        // then
+        assertThat(lower.getCharset(), is(StandardCharsets.UTF_8));
+        assertThat(upper.getCharset(), is(StandardCharsets.UTF_8));
+        assertThat(lower, is(upper));
+        // re-parsing (cache hit) does not drift
+        assertThat(MediaType.parse("application/json; charset=UTF-8").getCharset(), is(StandardCharsets.UTF_8));
+    }
+
+    @Test
+    public void shouldExposeUnmodifiableParametersFromParseWithParameter() {
+        Map<String, String> parameters = MediaType.parse("text/html; charset=utf-8").getParameters();
+        assertThrows(UnsupportedOperationException.class, () -> parameters.put("charset", "iso-8859-1"));
+        assertThrows(UnsupportedOperationException.class, () -> parameters.remove("charset"));
+    }
+
+    @Test
+    public void shouldExposeUnmodifiableParametersFromParseWithoutParameter() {
+        Map<String, String> parameters = MediaType.parse("application/json").getParameters();
+        assertThrows(UnsupportedOperationException.class, () -> parameters.put("charset", "utf-8"));
+    }
+
+    @Test
+    public void shouldExposeUnmodifiableParametersFromConstructor() {
+        Map<String, String> parameters = new MediaType("application", "json").getParameters();
+        assertThrows(UnsupportedOperationException.class, () -> parameters.put("charset", "utf-8"));
+    }
+
+    @Test
+    public void shouldBoundParseCacheAgainstAttackerControlledContentTypes() throws Exception {
+        // given
+        int max = maxCacheEntries();
+
+        // when - parse far more DISTINCT headers than the bound (as a hostile client sending a unique
+        // Content-Type per request would)
+        for (int i = 0; i < (max * 2) + 100; i++) {
+            MediaType.parse("application/x-bound-probe-" + i);
+        }
+
+        // then - the cache never grows past its hard bound, so it cannot be an unbounded memory sink
+        assertThat(parseCache().size(), is(lessThanOrEqualTo(max)));
+
+        // and - parsing still returns correct results for an uncached header while the cache is full
+        assertThat(MediaType.parse("text/plain"), is(new MediaType("text", "plain")));
     }
 
 }

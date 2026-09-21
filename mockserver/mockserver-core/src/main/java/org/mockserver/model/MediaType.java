@@ -8,6 +8,7 @@ import org.mockserver.serialization.ObjectMapperFactory;
 
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.TreeMap;
@@ -82,7 +83,46 @@ public class MediaType extends ObjectWithJsonToString {
     public static final MediaType JPEG = new MediaType("image", "jpeg");
     public static final MediaType PNG = new MediaType("image", "png");
 
+    /**
+     * Bounded cache of parsed Content-Type headers, keyed on the verbatim header string. Every
+     * request-with-body parses its Content-Type here (see {@code BodyDecoderEncoder}), and in practice
+     * that header is drawn from a tiny fixed set ({@code application/json}, {@code text/plain}, ...), so
+     * the same string is re-parsed - and its substrings, parameter map, backing TreeMap and toString
+     * re-allocated - on every request. Caching the parsed result removes all of that on the hit path.
+     * <p>
+     * The value is safe to share across requests because a {@link MediaType} is immutable: its
+     * {@code parameters} map is wrapped {@link Collections#unmodifiableMap unmodifiable} in the
+     * constructor, so a caller that reaches it via {@link #getParameters()} cannot mutate a cached
+     * (shared) instance. The key is the header EXACTLY as received, so charset-case variants
+     * ({@code charset=utf-8} vs {@code charset=UTF-8}) are distinct keys mapping to independently-correct
+     * results - never conflated - at the cost of at most a couple of extra entries.
+     * <p>
+     * The Content-Type header is attacker-controlled off the wire, so the cache is HARD-BOUNDED at
+     * {@link #MAX_CACHE_ENTRIES}: once full it stops accepting new keys (a miss simply parses without
+     * caching), so it can never grow without limit and, at worst, degrades to the un-cached baseline.
+     */
+    private static final int MAX_CACHE_ENTRIES = 1024;
+    private static final Map<String, MediaType> PARSE_CACHE = new ConcurrentHashMap<>();
+
     public static MediaType parse(String mediaTypeHeader) {
+        // null cannot be a ConcurrentHashMap key; the null/blank path is cheap and rare, so parse it directly.
+        if (mediaTypeHeader == null) {
+            return doParse(null);
+        }
+        MediaType cached = PARSE_CACHE.get(mediaTypeHeader);
+        if (cached != null) {
+            return cached;
+        }
+        MediaType parsed = doParse(mediaTypeHeader);
+        // size() is a racy read across threads, but only as a soft cap on cache growth - the invariant
+        // that matters (never unbounded) holds because no key is added once at/over the limit.
+        if (PARSE_CACHE.size() < MAX_CACHE_ENTRIES) {
+            PARSE_CACHE.putIfAbsent(mediaTypeHeader, parsed);
+        }
+        return parsed;
+    }
+
+    private static MediaType doParse(String mediaTypeHeader) {
         if (isNotBlank(mediaTypeHeader)) {
             int typeSeparator = mediaTypeHeader.indexOf(TYPE_SEPARATOR);
             int typeEndIndex = 0;
@@ -163,13 +203,18 @@ public class MediaType extends ObjectWithJsonToString {
     private MediaType(String type, String subtype, String charset, Map<String, String> parameterMap) {
         this.type = isBlank(type) ? null : type;
         this.subtype = isBlank(subtype) ? null : subtype;
-        this.parameters = new TreeMap<>(String::compareToIgnoreCase);
+        // Build into a local map, then publish it wrapped unmodifiable to the final field: a parsed
+        // MediaType is cached and shared across requests (see PARSE_CACHE), and getParameters() exposes
+        // this map by reference, so an unmodifiable view is what stops a caller mutating a shared
+        // instance - a cross-request data leak. The backing TreeMap is case-insensitive so equals/hashCode
+        // (reflective, content-based) stay consistent regardless of parameter-name case.
+        TreeMap<String, String> params = new TreeMap<>(String::compareToIgnoreCase);
         if (parameterMap != null) {
-            parameterMap.forEach((key, value) -> this.parameters.put(key.toLowerCase(), value));
+            parameterMap.forEach((key, value) -> params.put(key.toLowerCase(), value));
         }
         Charset parsedCharset = null;
         if (isNotBlank(charset)) {
-            this.parameters.put(CHARSET_PARAMETER, charset);
+            params.put(CHARSET_PARAMETER, charset);
             try {
                 parsedCharset = Charset.forName(charset);
             } catch (Throwable throwable) {
@@ -184,8 +229,8 @@ public class MediaType extends ObjectWithJsonToString {
             }
         } else {
             try {
-                if (parameters.containsKey(CHARSET_PARAMETER)) {
-                    parsedCharset = Charset.forName(parameters.get(CHARSET_PARAMETER));
+                if (params.containsKey(CHARSET_PARAMETER)) {
+                    parsedCharset = Charset.forName(params.get(CHARSET_PARAMETER));
                 }
             } catch (Throwable throwable) {
                 if (MockServerLogger.isEnabled(DEBUG)) {
@@ -198,6 +243,7 @@ public class MediaType extends ObjectWithJsonToString {
                 }
             }
         }
+        this.parameters = Collections.unmodifiableMap(params);
         this.charset = parsedCharset;
         this.toString = initialiseToString();
         this.isBlank = isBlank(this.toString);

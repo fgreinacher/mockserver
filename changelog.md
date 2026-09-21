@@ -25,6 +25,9 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
 - **~114x faster** generation of internal ids at 32 threads. The shared secure PRNG behind every
   event-log, correlation, stream and trace id was the only material lock contention on the request
   path, serialising all worker event loops as request rate peaked.
+- **−904 bytes allocated per request with a body.** Every such request re-parsed its `Content-Type`
+  header from scratch, allocating about 960 bytes to reproduce one of a handful of values. Parsed
+  types are now reused, taking the whole inbound decode path from 6,584 to 5,680 bytes per request.
 - **−37.9% allocation** when a JSON body does not match, at the default log level — a non-match is
   now proven before a full diff is built.
 - **3,486 → 86 bytes per comparison** when recording why a match failed; diffs are built only if
