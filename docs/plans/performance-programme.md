@@ -2407,6 +2407,55 @@ the one where the tension is real, and it is flagged there.
 | 9b | **Dashboard responsiveness under a large dataset — the client half.** The server pushes bounded 100-item batches ~1/s, so client slowness is about ACCUMULATED state: unbounded in-memory lists, reconciliation that is O(accumulated) rather than O(new), un-virtualised DOM growth, and derivations recomputed per render rather than memoised per entry | The reported symptom ("the page got heavy when there are lots of logs") has never been measured client-side. `mockserver-ui/src/__bench__/` has three benches, but they are OLD-vs-NEW proofs of a PAST optimisation and **nothing in `.buildkite/` runs them** - they proved a win once and guard nothing now | Medium — vitest bench exists; the work is realistic scale and turning proofs into guards | **Yes** — benches confirmed dark |
 | 9 | **The overload contract.** The programme fixed congestion collapse (it used to serve LESS as load rose). What SHOULD happen at 2x capacity is still unspecified: backpressure, 503s, bounded queues? | "Holds 25,488" is an improvement, not a contract | Low — needs design decisions before measurement | Reasoned |
 
+### The observability death spiral — a dashboard is MOST likely to be open exactly when load is heaviest
+
+**Raised by the owner 2026-09-21, and a code read says the concern is well founded and LARGER than
+what 9a measured.** The scenario: someone watches the dashboard *because* the server is under heavy
+load. That is when the dashboard's own cost is most harmful, and it is precisely when it will be
+open. If the UI degrades the server it is monitoring, that is a disaster rather than a slowdown.
+
+**What the code does per dashboard, per update (~1/second), FOUND BY READING — NOT YET MEASURED:**
+
+1. `MockServerEventLog.querySnapshot(descending=true, ...)` allocates
+   `new ArrayList<>(eventLog.size())` and copies **the entire event log** by reference
+   (`MockServerEventLog.java:539-542`).
+2. `retrieveLogEntriesInReverseForUI` (`:1220-1231`) streams that whole snapshot through a cheap
+   predicate and then `logItem.matches(httpRequestMatcher)` — **a full request match per entry**. The
+   code's own comment calls that "the expensive request matcher".
+3. `DashboardWebSocketHandler` consumes it with `.forEach(...)` guarded by
+   `size() < UI_UPDATE_ITEM_LIMIT` (`:513, :532, :554`) — **so it walks the ENTIRE stream and merely
+   stops ADDING after 100.** There is no `limit()` and no short-circuit.
+
+So the per-update cost is **O(entire event log), not O(100)** — the 100 caps the OUTPUT, not the
+WORK. The scan is per connection, because each client carries its own filter.
+
+**This reframes the 9a measurement.** 9a attributed the cost to expectation serialisation because it
+scaled with expectation count — but it held the log at **8,000 entries**, where the scan was
+evidently cheap next to 150 expectations. `maxLogEntries` defaults far higher, and the in-flight ring
+default is `min(maxLogEntries, 16384)`. At a full log the scan term grows by more than an order of
+magnitude while the expectation term does not. **Option 6 fixes the half that 9a happened to expose;
+this is the half that gets worse exactly as load rises.**
+
+**Why it is a spiral rather than a tax.** Heavier load fills the log faster and keeps it full, so
+each update walks more entries — while there is *less* spare CPU to walk them with, and more
+dashboards are likely to be open because people are watching. The three terms move the wrong way
+together.
+
+**Candidate fixes, cheapest and most valuable first. None measured yet — measure before choosing.**
+
+| | Fix | Why it should help |
+|---|---|---|
+| 1 | **Short-circuit once all three categories are full.** The consumer already knows when `logMessages`, `recordedRequests` and `proxiedRequests` have each hit 100; it just keeps iterating anyway. Stopping there turns O(whole log) into O(depth actually needed), which for an unfiltered dashboard is ~the first few hundred entries | Biggest structural win, and it changes no output whatsoever — the same items are produced, the walk simply ends when nothing more can be added |
+| 2 | **Skip the request matcher when the dashboard has no filter.** The common case. A full per-entry match to answer "does this match an empty filter" is pure waste | Removes the expensive term from the common path |
+| 3 | **Avoid the O(n) snapshot copy** for the UI path, or make its cost proportional to what is consumed | Removes an allocation-and-copy of the whole log per dashboard per second |
+| 4 | **Adaptive back-off under load** — lengthen the update interval when the server is busy | A monitoring view going slightly staler under extreme load is a far better outcome than degrading the thing being monitored. Worth considering only if 1-3 prove insufficient; it trades freshness, where the others trade nothing |
+
+**Measure first, and measure the right regime.** The 9a method is the template but must be re-run
+with a FULL log rather than 8,000 entries, under CONCURRENT load, with 0 / 1 / several dashboards,
+and with and without a filter set — a filtered dashboard is the worst case for fix 2 and the best
+case for fix 1. Note the trap already hit twice on this subject: at idle there is spare CPU and
+background work is free, so an idle measurement will report "no effect" no matter how bad the code is.
+
 ### Cutting the server-side dashboard cost — options 6 and 7, in that order
 
 **Both approved 2026-09-21.** These attack the cost measured in 9a: with 1 expectation a connected
