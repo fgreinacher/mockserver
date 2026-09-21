@@ -257,7 +257,7 @@ Additional correctness constraints:
 
 - **Case-insensitive mode** (`matchExactCase=false`, the default): bucket keys are folded with `toLowerCase(ROOT)`. However, a non-ASCII request method or path cannot be safely narrowed by fold-based bucketing (e.g. Turkish dotted-I U+0130 changes length under `toLowerCase`), so such requests fall back to the full authoritative scan.
 - **Blank method/path on the request** (only constructible programmatically): falls back to the full scan because a blank request component matches the method/path criterion of every expectation.
-- **Generation-driven lazy rebuild**: the index is rebuilt from the authoritative sorted snapshot whenever the control-plane's monotonic modification counter changes. In steady state (no control-plane mutations between requests) no rebuild occurs.
+- **Incremental (per-mutation) maintenance**: the index is maintained as the store changes — `onAdded`/`onRemoved` update one bucket in O(1), driven by a mutation listener `RequestMatchers` wires onto the backing `CircularPriorityQueue` (`RequestMatchers.java:236`), so add, remove, in-place update, priority re-key, overflow eviction and reset all reach it. **A read never rebuilds.** This replaced an earlier generation-driven rebuild-on-read-after-any-mutation design, which was O(n) per request under churn and, being `synchronized`, serialised concurrent readers so it got worse with more cores — and churn is produced by the serving path itself, since `once()` / limited-`Times` matchers schedule their own lazy removal. Measured at 15,000 expectations, the churn-versus-static penalty went from **8,168x to 1.03x** in time and **~13,000x to 1.06x** in allocation. The only rebuild left is a one-off reconciliation when a read observes a live `matchExactCase` change.
 
 ```mermaid
 flowchart TD
@@ -273,6 +273,40 @@ flowchart TD
     EVAL -->|Match| DONE([Return expectation])
     EVAL -->|Exhausted| NULL([Return null])
 ```
+
+##### `clear` uses the index too — via a second, path-only dimension
+
+`RequestMatchers.clear(RequestDefinition)` used to run a full match against **every** registered
+expectation, and a per-test teardown typically does three of them. It now asks the index for a
+candidate set (`CandidateIndex.clearCandidates`), falling back to the untouched full scan whenever
+narrowing would be unsound. Narrowing can only ever *shrink* the set, and only where the excluded
+matchers provably could not match — everything not bucketed sits in a fallthrough that is always
+unioned in — so the failure mode being designed against, **silent under-removal**, cannot arise from
+a missing bucket.
+
+A clear is served from one of two dimensions:
+
+| clear shape | served from |
+|---|---|
+| literal method AND literal path | the `(method, path)` bucket ∪ fallthrough (the same dimension matching uses) |
+| literal path, no method (or a non-literal one) | a **path-only** bucket ∪ a path-only fallthrough |
+
+The path-only dimension exists because the common teardown shape — and the one the measurement
+actually used — names a path without a method, which the `(method, path)` buckets cannot serve.
+
+Two constraints are easy to get backwards:
+
+- **A clear is always case-insensitive**, whatever `matchExactCase` says: `HttpRequestPropertiesMatcher`
+  computes `caseSensitive = !controlPlaneMatcher && matchExactCase()`, and a clear is a control-plane
+  matcher. So narrowing is only sound from a case-insensitively folded index, which exists exactly
+  when `matchExactCase` is **off** (the default). With it on, the full scan runs.
+- **A regex-path clear legitimately spans many literal buckets** (clearing `/a.*` must remove `/a1`
+  and `/a2`), and **a literal clear must also remove a regex expectation that covers it**. The first
+  falls back to the full scan; the second works because regex-path expectations live in the
+  fallthrough.
+
+Measured candidate-enumeration cost at 15,000 expectations: **1,585 µs → 0.2 µs**, and flat across
+store size rather than linear.
 
 ### Expectation Namespacing (Multi-Tenancy)
 
