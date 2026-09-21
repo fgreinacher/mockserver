@@ -2,6 +2,7 @@ package org.mockserver.dashboard;
 
 import com.google.common.base.Joiner;
 import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelOutboundInvoker;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.http.DefaultFullHttpRequest;
 import io.netty.handler.codec.http.FullHttpResponse;
@@ -2406,6 +2407,64 @@ public class DashboardWebSocketHandlerTest {
         // The filtered dashboard sees only its three matches.
         assertThat("filtered dashboard sees only its matches", countOccurrences(filteredResult.frame, "_request\""), is(3));
         assertThat(filteredResult.frame, not(containsString("/other-")));
+    }
+
+    // =============================================================================================
+    // Connection-limit eviction observability. getClientRegistry() is a CircularHashMap bounded to
+    // DASHBOARD_CONNECTION_LIMIT (100). The (limit+1)th connection evicts the eldest. That eviction
+    // USED to be silent - the evicted browser kept an open socket that simply stopped updating forever.
+    // registerClient() now makes it observable: the evicted connection is CLOSED (so the UI's existing
+    // reconnect handling engages) and logged, while the surviving connections keep receiving updates.
+    // =============================================================================================
+
+    @Test
+    public void evictingTheOldestDashboardConnectionClosesItAndKeepsServingTheSurvivors() throws Exception {
+        // given - a handler with a single log entry so a survivor's update carries observable content
+        DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
+
+        // when - fill the registry to exactly the connection limit (100); none of these evicts
+        List<MockChannelHandlerContext> connections = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+            connections.add(ctx);
+            assertThat("no eviction while under the limit", handler.registerClient(ctx), is(nullValue()));
+        }
+        MockChannelHandlerContext oldest = connections.get(0);
+
+        // ... then the 101st connection must evict the OLDEST
+        MockChannelHandlerContext overflow = new MockChannelHandlerContext();
+        ChannelOutboundInvoker evicted = handler.registerClient(overflow);
+        oldest.runPendingTasks(); // flush the close task on the embedded event loop
+
+        // then - the evicted connection is OBSERVABLE, not silently frozen
+        assertThat("the oldest connection is the one evicted", evicted, is(sameInstance((ChannelOutboundInvoker) oldest)));
+        assertThat("the evicted connection was CLOSED so its browser will reconnect", oldest.isOpen(), is(false));
+        assertThat("the evicted connection left the registry", handler.getClientRegistry().containsKey(oldest), is(false));
+
+        // ... and the bound is preserved: still exactly 100 members, with the newcomer among them
+        assertThat("registry still bounded to the connection limit", handler.getClientRegistry().size(), is(100));
+        assertThat("the new connection is registered", handler.getClientRegistry().containsKey(overflow), is(true));
+
+        // ... and the surviving connections still receive updates
+        MockChannelHandlerContext survivor = connections.get(50);
+        assertThat("a survivor is still registered", handler.getClientRegistry().containsKey(survivor), is(true));
+        assertThat("a survivor is still open", survivor.isOpen(), is(true));
+        // Re-send until a frame lands (the once-per-second global throttle is shared across all 100
+        // survivors here, so a single send may not win a permit) - exactly the retry pattern awaitFrame
+        // uses. The point is that the survivor is STILL SERVED at all, unlike the evicted connection.
+        survivor.textWebSocketFrame = null;
+        String survivorFrame = null;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline) {
+            handler.sendUpdate(survivor, request());
+            Thread.sleep(400);
+            if (survivor.textWebSocketFrame != null) {
+                survivorFrame = survivor.textWebSocketFrame.text();
+                break;
+            }
+        }
+        assertThat("a surviving dashboard still receives update frames", survivorFrame, is(not(nullValue())));
+        assertThat("the survivor's update carries live content", survivorFrame, containsString("/only"));
     }
 
 

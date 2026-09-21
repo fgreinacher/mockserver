@@ -98,16 +98,25 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // handler is configured), so a client-chosen limit is an ATTACKER-chosen limit on a default
     // deployment. Per-request validation bounds the PER-CLIENT cost; it does NOT bound the aggregate.
     // A client asking for exactly the maximum on every connection forever is valid input and still
-    // costs (connections x max x frequency). What keeps that aggregate finite is (a) this maximum and
-    // (b) the pre-existing fan-out cap: getClientRegistry() is a CircularHashMap(100) and the update
-    // paths iterate ONLY registry entries, so a single @Sharable handler fans each update out to at
-    // most 100 connections. Note what that cap is and is not - CircularHashMap EVICTS rather than
-    // refuses (LinkedHashMap.removeEldestEntry, no eviction listener here), so connection 101 is served
-    // and connection 1 silently stops receiving updates; it bounds registry membership, not open
-    // sockets. For this cost that is the right bound, because only registry entries are walked.
-    // 500 is 5x the default - a meaningful history increase for a virtualising client - giving a worst
-    // case of 500 x 100 = 50,000 log-DTO constructions per update, 5x today's already-tolerated
-    // 100 x 100. Per-row log work is O(1), and the one genuinely expensive per-item operation
+    // costs (connections x max x frequency).
+    //
+    // DO NOT READ getClientRegistry()'s CircularHashMap(100) AS THAT AGGREGATE BOUND. An earlier version
+    // of this note did, and it was wrong. The registry is an INSTANCE field, and PortUnificationHandler
+    // constructs a NEW DashboardWebSocketHandler for every HTTP/1.1 channel, so in production each
+    // instance's registry holds exactly ONE connection - its own. (The @Sharable annotation is real, but
+    // the only pipeline that shares one instance is the HTTP/2 child initialiser, and an HTTP/2 dashboard
+    // upgrade is refused with 501, so no shared instance ever serves a dashboard.) The 100 cap therefore
+    // bounds nothing in a live deployment, and the eviction path below is DEFENSIVE rather than a bound
+    // anything relies on.
+    //
+    // What that means for the real aggregate: every upgraded dashboard registers its OWN instance as a
+    // log and matcher listener, so N open dashboards means N independent walks per notification, each up
+    // to this maximum deep. The aggregate is N x max x frequency, and N is limited only by whatever
+    // limits connections generally - not by 100. Raising this maximum multiplies that whole product.
+    // (Each dashboard also costs two threads of its own, which is the practical brake on N today.)
+    //
+    // 500 is 5x the default - a meaningful history increase for a virtualising client. Per-row log work
+    // is O(1), and the one genuinely expensive per-item operation
     // (DescriptionProcessor's OpenAPI parse) is reachable only from the EXPECTATIONS path, which is
     // fixed at EXPECTATION_UPDATE_ITEM_LIMIT and NOT client-tunable - so this knob cannot amplify it.
     //
@@ -124,12 +133,20 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // a client sent is always the one finally served. So the honest statement is: this maximum deepens a
     // per-window-bounded walk 5x on an endpoint that is unauthenticated by default; a client can no
     // longer drive an UNBOUNDED rate of these deep walks from the pull path. That walk is a PRE-EXISTING
-    // surface at depth 100 and the increase is bounded, which is why 500 is acceptable.
+    // surface at depth 100, and per connection the rate is now bounded on both paths, which is what
+    // makes 500 acceptable - NOT any cap on how many dashboards exist.
     // A genuinely tighter aggregate bound, if ever needed, is a separate control (a connection cap or a
     // shared budget), NOT something per-request validation buys.
     private static final int MAX_LOG_UPDATE_ITEM_LIMIT = 500;
     // Expectations stay on the fixed cap - not client-tunable (see the split rationale above).
     private static final int EXPECTATION_UPDATE_ITEM_LIMIT = 100;
+    // Maximum number of dashboard connections whose updates this @Sharable handler fans out to (see the
+    // fan-out cap note on MAX_LOG_UPDATE_ITEM_LIMIT). getClientRegistry() is a CircularHashMap bounded to
+    // this size: adding the (limit+1)th connection EVICTS the eldest. That eviction USED to be silent -
+    // the evicted browser kept an open socket that simply stopped updating forever - which is the defect
+    // registerClient() fixes by closing the evicted connection so the UI's reconnect handling engages.
+    // Named (not a magic 100) so the operator-facing log message and the bound cannot drift apart.
+    private static final int DASHBOARD_CONNECTION_LIMIT = 100;
     // Query-string parameter on the upgrade URI by which a client requests a log-row limit, e.g.
     // /_mockserver_ui_websocket?logLimit=250. Absent / invalid resolves to the DEFAULT.
     private static final String LOG_ITEM_LIMIT_PARAM = "logLimit";
@@ -272,9 +289,69 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     @VisibleForTesting
     public synchronized Map<ChannelOutboundInvoker, HttpRequest> getClientRegistry() {
         if (clientRegistry == null) {
-            clientRegistry = new CircularHashMap<>(100);
+            clientRegistry = new CircularHashMap<>(DASHBOARD_CONNECTION_LIMIT);
         }
         return clientRegistry;
+    }
+
+    /**
+     * Register a newly-upgraded dashboard connection in the bounded client registry, making any
+     * connection-limit eviction OBSERVABLE instead of silent. The registry is a
+     * {@link CircularHashMap} bounded to {@link #DASHBOARD_CONNECTION_LIMIT}, so adding the
+     * (limit+1)th connection evicts the eldest. Left silent, that eldest browser kept an open socket
+     * that simply stopped updating forever, with no signal to anyone.
+     * <p>
+     * The {@code CircularHashMap} eviction listener is NOT usable to fix this: it receives the
+     * evicted VALUE (a blank filter {@link HttpRequest}), not the KEY (the
+     * {@link ChannelOutboundInvoker} needed to reach that connection) - and the value is the same
+     * blank request for every not-yet-filtered client, so it cannot even identify which connection
+     * was dropped. So the eviction is detected here from the KEY side and the evicted connection is
+     * both logged (so an operator sees WHY a dashboard fell silent) and CLOSED (so the browser's
+     * existing "server unreachable" / reconnect handling engages instead of showing a frozen page).
+     * <p>
+     * Concurrency: the map mutation and the eviction detection happen under the registry lock; the
+     * network I/O (the log write and the channel close) happen AFTER the lock is released, because
+     * doing I/O while holding the non-thread-safe registry's lock would risk a lock-ordering hazard,
+     * and the eviction itself fires re-entrantly inside {@code LinkedHashMap.put} where touching the
+     * map again would be a bug. Package-private so a test can drive the eviction path directly.
+     *
+     * @return the connection that was evicted and closed to make room, or {@code null} if the
+     * registry had room for this connection.
+     */
+    @VisibleForTesting
+    ChannelOutboundInvoker registerClient(ChannelOutboundInvoker ctx) {
+        ChannelOutboundInvoker evicted = addToRegistryDetectingEviction(ctx);
+        if (evicted != null) {
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("dashboard connection disconnected because the dashboard connection limit of {} was reached - the oldest connection was closed and its browser will attempt to reconnect")
+                        .setArguments(DASHBOARD_CONNECTION_LIMIT)
+                );
+            }
+            evicted.close();
+        }
+        return evicted;
+    }
+
+    // Add ctx to the registry under its lock and, still under the lock, work out which connection the
+    // bound evicted (if any) so the caller can close it OUTSIDE the lock. Detection observes the map's
+    // OWN decision - the entry that was eldest before the put is absent after it - rather than
+    // reimplementing the size>limit eviction policy, so it stays correct if the bound ever changes.
+    // (LinkedHashMap.removeEldestEntry always evicts the eldest, so the eldest-before key is the only
+    // candidate.) Returns null when the put replaced an existing entry or the registry had room.
+    private ChannelOutboundInvoker addToRegistryDetectingEviction(ChannelOutboundInvoker ctx) {
+        Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
+        synchronized (registry) {
+            Iterator<ChannelOutboundInvoker> keys = registry.keySet().iterator();
+            ChannelOutboundInvoker eldestBefore = keys.hasNext() ? keys.next() : null;
+            registry.put(ctx, request());
+            if (eldestBefore != null && eldestBefore != ctx && !registry.containsKey(eldestBefore)) {
+                return eldestBefore;
+            }
+            return null;
+        }
     }
 
     @Override
@@ -622,12 +699,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 httpRequest,
                 new DefaultHttpHeaders(),
                 ctx.channel().newPromise()
-            ).addListener((ChannelFutureListener) future -> {
-                Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
-                synchronized (registry) {
-                    registry.put(ctx, request());
-                }
-            });
+            ).addListener((ChannelFutureListener) future -> registerClient(ctx));
         }
         registerListeners();
     }

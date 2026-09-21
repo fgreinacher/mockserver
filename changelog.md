@@ -339,12 +339,6 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   an unbounded rate of them. Bursts are now collapsed: the first filter after a pause is served
   immediately as before, and a rapid burst costs one further scan at the end, always reflecting the
   most recent filter. Filtering feels the same; the server does a bounded amount of work.
-- **Two dashboards open at once no longer interfere with each other's WebSocket close.** The
-  dashboard handler is shared across every dashboard connection, but it kept the WebSocket
-  handshake state for "the" connection in a single field, so opening a second dashboard overwrote
-  the first's. Closing either one then used the surviving handshake state, on the wrong connection.
-  The state now lives on the connection it belongs to. Opening one dashboard at a time was never
-  affected.
 - **Watching the initialization file no longer churns memory while the server is idle.** With
   `watchInitializationJson=true`, MockServer re-read the *entire* initialization file every poll (5
   seconds by default) to fingerprint it -- whether or not the file had changed -- allocating a byte

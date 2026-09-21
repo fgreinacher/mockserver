@@ -110,7 +110,9 @@ The `DashboardWebSocketHandler` implements both `MockServerLogListener` and `Moc
 
 The **expectation** count is deliberately not client-tunable and stays at `EXPECTATION_UPDATE_ITEM_LIMIT`. Expectations are expensive per item and change rarely — and the one genuinely costly per-item operation, `DescriptionProcessor`'s OpenAPI parse, is reachable only from that path. Keeping it off the client-controlled knob means this parameter cannot amplify it.
 
-This matters because **the dashboard WebSocket is unauthenticated by default**, so the requested limit is attacker-controlled on a default deployment. The protection is the maximum combined with the fan-out cap (`clientRegistry` is a `CircularHashMap(100)`, and the update paths iterate only registry entries) — not the per-request validation, which bounds only the per-client cost.
+This matters because **the dashboard WebSocket is unauthenticated by default**, so the requested limit is attacker-controlled on a default deployment. The protection is the maximum itself together with the per-connection rate bound on both update paths — not the per-request validation, which bounds only the per-client cost.
+
+**Do not mistake `clientRegistry`'s `CircularHashMap(100)` for a cap on dashboards.** The registry is an instance field and `PortUnificationHandler` builds a **new** `DashboardWebSocketHandler` per HTTP/1.1 channel, so in production each registry holds exactly one connection — its own. (`@Sharable` is real, but the only pipeline sharing one instance is the HTTP/2 child initialiser, and HTTP/2 dashboard upgrades are refused with 501.) Each upgraded dashboard registers its own instance as a log and matcher listener and runs two threads of its own, so N open dashboards means N independent walks per notification. The aggregate cost scales with N, which nothing in this class bounds.
 
 ## Error Resilience
 
