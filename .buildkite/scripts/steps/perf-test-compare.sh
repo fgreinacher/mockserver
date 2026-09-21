@@ -516,6 +516,28 @@ def metrics:
     ( {name:($k+".p95_ms"),     value:$v.p95_ms,     bkey:"behaviours.*.p95_ms"},
       {name:($k+".p99_ms"),     value:$v.p99_ms,     bkey:"behaviours.*.p99_ms"},
       {name:($k+".error_rate"), value:$v.error_rate, bkey:"behaviours.*.error_rate"} ) ),
+  # The INFO-log-level publication arm (open question 5). The run has measured this
+  # since the arm was added and perf-budgets.json has carried info_* entries for just
+  # as long, but NOTHING consumed them: this function enumerates HEAD metrics
+  # explicitly, so a key it does not name is never compared. The arm was therefore
+  # measured, budgeted, and silently discarded every run - and because the fail-closed
+  # "metric with no budget" check also only sees what this function emits, the gap could
+  # not announce itself either. All four info_* budgets are gating:false, so these are
+  # NOTIFY-ONLY: they surface movement at the shipped default log level without being
+  # able to red the build.
+  #
+  # Guarded on .measured: the arm sets it false when a regression or sweep leg fails,
+  # and emitting nulls from a degraded arm would look like a metric that collapsed
+  # rather than one that was never taken.
+  (if ((.info_log_level_arm // {}).measured == true) then
+    (((.info_log_level_arm.behaviours) // {}) | to_entries[] | .key as $k | .value as $v |
+      ( {name:("info_" + $k + ".p95_ms"),     value:$v.p95_ms,     bkey:"info_behaviours.*.p95_ms"},
+        {name:("info_" + $k + ".p99_ms"),     value:$v.p99_ms,     bkey:"info_behaviours.*.p99_ms"},
+        {name:("info_" + $k + ".error_rate"), value:$v.error_rate, bkey:"info_behaviours.*.error_rate"} ) ),
+    (if ((.info_log_level_arm.peak_achieved_rps) != null) then
+       {name:"info_peak_achieved_rps", value:(.info_log_level_arm.peak_achieved_rps), bkey:"info_peak_achieved_rps"}
+     else empty end)
+   else empty end),
   ((.growth // {}) |
     # cpu_ratio/heap_ratio detect a SLOPE; live_set_bytes detects a STEP a plateaued
     # leak (ratio ~1.0) would hide. p95_ratio is the noisier latency slope.
