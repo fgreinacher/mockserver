@@ -2463,7 +2463,20 @@ dashboard was free; with 150 it moved serving p95 by roughly +40% to +90%. The c
 EXPECTATION COUNT, not log size, which points at the per-update expectation serialisation rather
 than the event-log scan.
 
-**Option 6 — stop re-serialising expectations that have not changed. Do this FIRST.**
+**Option 6 — SHIPPED 2026-09-21 (`3e65926d5`). 60,700 serialisations over an identical run became
+267.** Two things from it are worth carrying forward. First, the OBVIOUS invalidation signal was
+wrong: keying off `RequestMatchers`' modification counter would have shipped a stale remaining-Times
+display, because limited-Times consumption happens on the SERVING path and `RequestMatchers:942-945`
+fires `notifyListeners` without calling `markMatchersModified` (`:722-724`, the only bump site).
+What shipped instead reuses the cached node only when the matcher holds the SAME `Expectation`
+object reference AND the same `remainingTimes` — both plain reads, nothing added to the serving path.
+Second, **the latency claim in 9a is now contested**: this implementation's harness could not
+reproduce the "+40% to +90% p95" and declined to assert a figure, because an in-process load
+generator saturates the cores it measures. 9a used external client processes and showed
+non-overlapping arms. Two harnesses disagree, so treat the WORK reduction as the defensible claim and
+9a's percentage as one laptop's reading rather than a settled number.
+
+~~**Option 6 — stop re-serialising expectations that have not changed. Do this FIRST.**~~
 `DashboardWebSocketHandler:481-488` runs `objectMapper.valueToTree(new ExpectationDTO(...))` for up
 to `UI_UPDATE_ITEM_LIMIT` (100) expectations on EVERY update — roughly once a second, per connected
 dashboard. A grep for cache / memo / last-sent finds nothing: there is no change detection. Since
