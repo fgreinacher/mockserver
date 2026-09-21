@@ -596,6 +596,38 @@ def metrics:
       {name:($k+".rss_mb"),           value:$v.rss_mb,           bkey:"laptop.*.rss_mb"},
       {name:($k+".threads"),          value:$v.threads,          bkey:"laptop.*.threads"},
       {name:($k+".compressed_bytes"), value:$v.compressed_bytes, bkey:"laptop.*.compressed_bytes"} ) ),
+  # item 17 — N parallel MockServer instances on one host (the laptop / MockServerExtension
+  # profile), notify-only. TWO shapes under .laptop_parallel, each a list of per-N runs
+  # (n in {1,4,8,16,32}); keyed laptop_parallel.<shape>_<N>.<metric> so the SAME laptop.*.<metric>
+  # wildcard budgets that item 8 uses cover every N of every shape — no new namespace. Head-driven
+  # like every other optional profile: an absent/disabled .laptop_parallel (opt-in
+  # PERF_LAPTOP_PARALLEL, off by default) makes both `// []` fall through, so this emits ZERO
+  # metrics rather than a fail-closed missing-budget trip — the serving_percore/streaming pattern.
+  # This is the emission BRIDGE: the harness raw field names differ from the snake_case budget
+  # leaves (the .java in-JVM shape is camelCase, the .py container shape is snake_case with a
+  # _median suffix), so each raw field is mapped to its leaf here, exactly as serving_percore.*
+  # maps .healthy_ceiling_rps. dir "up" throughout (more heap / threads / sockets / RSS / latency
+  # is worse). NOTIFY-ONLY: the laptop.*.<metric> budgets omit `gating`, so a flag annotates but
+  # NEVER fails the build until >=10 runs of history let a MAD-derived floor be set (the item 8 rule).
+  # IN-JVM shape (InJvmParallelBench.java): one JVM, N instances, stores sized off the whole host.
+  ((.laptop_parallel.injvm.runs // []) | .[] | ("laptop_parallel.injvm_" + (.n|tostring)) as $pk |
+    ( {name:($pk+".cold_ready_ms"),        value:.coldReadyMs,       bkey:"laptop.*.cold_ready_ms"},
+      {name:($pk+".heap_used_mb"),         value:.heapUsedMb,        bkey:"laptop.*.heap_used_mb"},
+      {name:($pk+".total_threads"),        value:.totalThreads,      bkey:"laptop.*.total_threads"},
+      {name:($pk+".threads_per_instance"), value:.threadsPerInstance,bkey:"laptop.*.threads_per_instance"},
+      {name:($pk+".tcp_sockets"),          value:.tcpSockets,        bkey:"laptop.*.tcp_sockets"},
+      {name:($pk+".load_p95_median_ms"),   value:.loadP95MedianMs,   bkey:"laptop.*.load_p95_median_ms"},
+      {name:($pk+".load_p99_max_ms"),      value:.loadP99MaxMs,      bkey:"laptop.*.load_p99_max_ms"} ) ),
+  # CONTAINER shape (parallel_instances.py): N containers, N JVMs, each cgroup-sized; the aggregate
+  # cost a laptop actually pays. agg_threads maps to the SAME laptop.*.total_threads leaf as the
+  # in-JVM totalThreads (distinct metric NAMES — container_<N> vs injvm_<N> — so no baseline
+  # collision); threads_per_container reads the harness _median field.
+  ((.laptop_parallel.container.runs // []) | .[] | ("laptop_parallel.container_" + (.n|tostring)) as $pk |
+    ( {name:($pk+".cold_ready_ms"),         value:.cold_ready_ms,               bkey:"laptop.*.cold_ready_ms"},
+      {name:($pk+".agg_rss_mb"),            value:.agg_rss_mb,                  bkey:"laptop.*.agg_rss_mb"},
+      {name:($pk+".rss_mb_per_container"),  value:.rss_mb_per_container,        bkey:"laptop.*.rss_mb_per_container"},
+      {name:($pk+".threads_per_container"), value:.threads_per_container_median,bkey:"laptop.*.threads_per_container"},
+      {name:($pk+".total_threads"),         value:.agg_threads,                 bkey:"laptop.*.total_threads"} ) ),
   ((.tls_handshake // {}) | to_entries[] | .key as $k | .value as $v |
     # item 14 — TLS/mTLS/native-absent inbound-handshake cost (proxy.js handshake
     # mode). Keyed by arm: tls13, mtls, jdk. handshake_p50/p95_ms is the TLS

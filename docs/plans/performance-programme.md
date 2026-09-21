@@ -2819,9 +2819,40 @@ gate anything. Five of six requirements are substantial; the one cheap edit yiel
 Combined with the plan's own assessment — low-to-medium value and somewhat theoretical, since most
 clients pool — the item is closed. If it is ever revisited, the design above is the one to build.
 
+## Item 17(a) — the laptop parallel block, wired notify-only
+
+**Shipped 2026-09-21.** Item 17's harnesses already ran and wrote their own JSON but were unwired from
+`perf-test-compare.sh`. They now feed a **notify-only** block, behind nine new `laptop.*` wildcard
+budgets, with an **opt-in producer** (`PERF_LAPTOP_PARALLEL`, default off) so the consumer is not dead
+code — a compare block with nothing to consume would be a control that looks live and measures nothing.
+
+**The reconciliation that mattered.** The nine names this plan listed are **budget LEAF names, not the
+fields the harnesses emit.** `InJvmParallelBench` emits camelCase (`heapUsedMb`, `totalThreads`,
+`loadP95MedianMs`); `parallel_instances.py` emits `agg_threads` and `threads_per_container_median`.
+The compare jq is the bridge, exactly as it is for `serving_percore`. Taking this plan's list as the
+emitted names would have produced metrics nothing budgets — and compare is fail-closed, so that reds
+the daily build. Note also `threads_per_container` has no bare field at all: only `_min/_max/_median`,
+and `_median` is what is mapped.
+
+`total_threads` deliberately receives BOTH the in-JVM `totalThreads` and the container `agg_threads`.
+That is safe because baselines key on the metric NAME — `laptop_parallel.injvm_8.total_threads` and
+`laptop_parallel.container_8.total_threads` are distinct series, and the shared leaf supplies only
+`dir` and `min_pct`.
+
+**Verified:** every metric emittable across both shapes, every N, empty arrays and null fields resolves
+to a committed budget; no budget is left unemitted; `gating` omitted means these can never contribute
+to a non-zero exit; and the decision core (`compare.sh:800-905`) is byte-for-byte unchanged, so nothing
+else was weakened. The harness sources were read directly to confirm every mapped field is numeric or
+null, closing the valid-JSON-but-non-numeric hole.
+
+**Deliberately no presence gate**, unlike item 8's laptop block and `serving_percore`, which RED when
+their producer wholesale fails. This profile is opt-in and its absence is the normal daily state, so a
+presence gate would add a red path guarding nothing. The accepted cost: opting in while both shapes
+silently produce nothing leaves a green build with only stderr as signal.
+
 ## What remains
 
-**Eight things are outstanding: two can be settled from the repo, and six cannot be settled
+**Seven things are outstanding: one can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2833,7 +2864,6 @@ flowchart TD
   right["Needs a run, or an external system"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> l[".laptop block"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
   right --> g["Build-272 SUT crash post-mortem"]
@@ -2851,7 +2881,6 @@ flowchart TD
 | | What is owed | Detail |
 |---|---|---|
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
-| **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
 
 ### Needs a run, or an external system
 

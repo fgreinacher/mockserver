@@ -1712,6 +1712,57 @@ if [ "${PERF_LAPTOP_PROFILE:-true}" = "true" ]; then
   fi
 fi
 
+# --- item 17: N parallel instances on one host (laptop / MockServerExtension profile) ---
+# OPT-IN (PERF_LAPTOP_PARALLEL=true), OFF by default: this spins {1,4,8,16,32} MockServer
+# instances twice (an in-JVM shape and a container shape), so it is a deliberately-scheduled
+# research profile, NOT added to every daily run — the serving_percore opt-in pattern. Every
+# metric it emits is NOTIFY-ONLY (the laptop.*.<metric> budgets omit `gating`), so a flagged
+# regression annotates but never fails the build. Merged into result.json under `.laptop_parallel`
+# with two sub-shapes {injvm, container}, each a list of per-N runs; perf-test-compare.sh keys them
+# laptop_parallel.<shape>_<N>.<metric> against the laptop.* wildcard budgets. NON-FATAL by
+# construction (like the item 8 laptop / streaming profiles): the SUT ($SERVER) is idle here, and
+# a measurement failure must never cost the k6/growth result its baseline place — on any failure the
+# block simply stays {} and compare (head-driven) emits zero laptop_parallel metrics, no
+# missing-budget trip. NOT an add_check for the same reason the laptop block is not.
+LAPTOP_PARALLEL_JSON='{}'
+if [ "${PERF_LAPTOP_PARALLEL:-false}" = "true" ]; then
+  echo "--- item 17 parallel-instances profile (opt-in; PERF_LAPTOP_PARALLEL=true)"
+  LP_COUNTS="${PERF_LAPTOP_PARALLEL_COUNTS:-1,4,8,16,32}"
+  LP_INJVM='{}'
+  LP_CONTAINER='{}'
+  # in-JVM shape: needs a jar-with-dependencies on the classpath (reuse the one the item 8 block
+  # already extracted into $LAPTOP_JAR) and a JDK on PATH. Single-file source launch prints the
+  # block as `BENCH_JSON {...}` on stdout; a JRE-only agent or a missing jar SKIPS this shape.
+  if [ -n "${LAPTOP_JAR:-}" ] && command -v java >/dev/null 2>&1; then
+    if LP_INJVM_RAW="$(java -Xmx"${PERF_LAPTOP_PARALLEL_XMX:-2g}" -cp "$LAPTOP_JAR" \
+          "$REPO_ROOT/scripts/perf/InJvmParallelBench.java" \
+          --counts "$LP_COUNTS" --label injvm 2>/dev/null \
+          | sed -n 's/^BENCH_JSON //p' | tail -1)"; then
+      if jq -e . >/dev/null 2>&1 <<<"$LP_INJVM_RAW"; then LP_INJVM="$LP_INJVM_RAW"; fi
+    fi
+    echo "--- laptop_parallel in-JVM runs: $(jq -r '(.runs|length)//0' <<<"$LP_INJVM" 2>/dev/null)"
+  else
+    echo "--- laptop_parallel in-JVM shape SKIPPED (no jar-with-deps or no java on PATH)" >&2
+  fi
+  # container shape: needs docker + the SUT image. Writes `{"container":{...,"runs":[...]}}` to --out.
+  if command -v docker >/dev/null 2>&1; then
+    if python3 "$REPO_ROOT/scripts/perf/parallel_instances.py" \
+          --image "$MOCKSERVER_IMAGE" --counts "$LP_COUNTS" \
+          --settle "${PERF_LAPTOP_PARALLEL_SETTLE:-6}" \
+          --out "$OUT_DIR/laptop-parallel-container.json" >/dev/null 2>&1; then
+      LP_CONTAINER_RAW="$(jq -c '.container // {}' "$OUT_DIR/laptop-parallel-container.json" 2>/dev/null || echo '{}')"
+      if jq -e . >/dev/null 2>&1 <<<"$LP_CONTAINER_RAW"; then LP_CONTAINER="$LP_CONTAINER_RAW"; fi
+    fi
+    echo "--- laptop_parallel container runs: $(jq -r '(.runs|length)//0' <<<"$LP_CONTAINER" 2>/dev/null)"
+  else
+    echo "--- laptop_parallel container shape SKIPPED (no docker on PATH)" >&2
+  fi
+  LAPTOP_PARALLEL_JSON="$(jq -cn --argjson injvm "$LP_INJVM" --argjson container "$LP_CONTAINER" \
+    '{injvm:$injvm, container:$container}' 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$LAPTOP_PARALLEL_JSON" || LAPTOP_PARALLEL_JSON='{}'
+  printf '%s' "$LAPTOP_PARALLEL_JSON" > "$OUT_DIR/laptop-parallel.json"
+fi
+
 # --- item 12: LLM/SSE streaming under concurrency -----------------------------
 # Drive STREAMING.concurrency concurrent SSE streams (streaming.js, constant-vus)
 # while measuring the four item-12 metrics. Two of them k6 CANNOT see (it buffers
@@ -2474,6 +2525,7 @@ jq -n \
   --argjson config "$CONFIG_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
   --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
+  --argjson laptop_parallel "$LAPTOP_PARALLEL_JSON" \
   --argjson serving_percore "$SERVING_PERCORE_JSON" \
   --argjson serving_percore_attempted "$SERVING_PERCORE_ATTEMPTED" \
   --argjson info_log_level_arm "$INFO_ARM_JSON" \
@@ -2589,6 +2641,15 @@ jq -n \
     # but empty/docker-incomplete) instead of mistaking it for a disabled profile.
     laptop: ($laptop.laptop // {}),
     laptop_attempted: $laptop_attempted,
+    # item 17 — N parallel instances (laptop / MockServerExtension profile), notify-only and
+    # OPT-IN (PERF_LAPTOP_PARALLEL). `{}` when disabled or when a shape was skipped/failed;
+    # compare iterates .laptop_parallel.<shape>.runs, so an empty object emits zero laptop.*
+    # metrics (head-driven, no missing-budget trip) — the serving_percore / streaming pattern.
+    # No *_attempted flag by design: unlike the item 8 laptop and serving_percore presence gates
+    # (which RED a wholesale producer failure), item 17 is a deliberately-scheduled research
+    # profile whose absence is the normal daily state, so a presence gate would add a RED path
+    # with no daily signal to guard. A shape that runs but measures nothing simply emits nothing.
+    laptop_parallel: $laptop_parallel,
     # item 18 — req/s per core for the SERVING path. `{}` when the profile was
     # disabled or its measurement failed; compare iterates .serving_percore.points,
     # so an empty object emits zero serving_percore.* metrics (no missing-budget
