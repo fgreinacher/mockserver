@@ -2409,6 +2409,62 @@ public class DashboardWebSocketHandlerTest {
     }
 
 
+    // =============================================================================================
+    // Client-pull coalescing. The dashboard WebSocket is UNAUTHENTICATED BY DEFAULT and the client
+    // controls both the inbound-frame rate and the deserialised filter, so before this bound each frame
+    // drove a fresh logItemLimit-deep walk with no rate limit at all. schedulePullUpdate coalesces the
+    // pull path per channel (leading + trailing), so a burst collapses to at most one leading + one
+    // trailing walk per window while the LAST filter is always the one finally served.
+    //
+    // pullUpdateDispatchCountForTesting() counts DISPATCHES (walks triggered by the coalescer), not
+    // inbound frames, and is immune to the sendMessage retry path - so the count is EXACT, not a loose
+    // bound. Frames for one channel are serialised on its event loop (as in production), so a tight
+    // synchronous burst lands entirely within one window and the trailing dispatch is deterministic.
+    // =============================================================================================
+
+    @Test
+    public void pullPathCoalescesABurstOfInboundFramesIntoBoundedWalks() throws Exception {
+        // given - a live pull connection on an otherwise-idle handler
+        DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+
+        // when - a tight burst of 20 inbound pull requests, all well within one PULL_COALESCE window
+        for (int i = 0; i < 20; i++) {
+            handler.schedulePullUpdate(ctx, request("/burst-" + i));
+        }
+        // let the trailing window elapse and its flush run (window is 250ms; wait generously)
+        Thread.sleep(1500);
+
+        // then - NOT one walk per frame: exactly one leading walk (first frame, served immediately) plus
+        // one trailing walk (the collapsed burst), regardless of the 20 frames delivered.
+        assertThat("a 20-frame burst dispatches only the leading walk plus one trailing walk",
+            handler.pullUpdateDispatchCountForTesting(), is(2L));
+    }
+
+    @Test
+    public void pullPathReflectsTheLastFilterAfterABurst() throws Exception {
+        // given - a live pull connection
+        DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+
+        // when - a burst whose FINAL filter differs from every superseded one in the middle
+        HttpRequest last = request("/the-last-filter");
+        handler.schedulePullUpdate(ctx, request("/first"));
+        for (int i = 0; i < 10; i++) {
+            handler.schedulePullUpdate(ctx, request("/superseded-" + i));
+        }
+        handler.schedulePullUpdate(ctx, last);
+        Thread.sleep(1500);
+
+        // then - the burst still collapsed (leading + trailing only) ...
+        assertThat("burst collapsed to leading + trailing, never one walk per frame",
+            handler.pullUpdateDispatchCountForTesting(), is(2L));
+        // ... and the LAST filter the client sent is the one finally served: the trailing walk carries it,
+        // so the UI can never be left showing results for a superseded filter (no lost update).
+        assertThat("the last filter the client sent is the one finally served",
+            handler.lastPullFilterDispatchedForTesting(), is(sameInstance((RequestDefinition) last)));
+    }
+
     public static class MockChannelHandlerContext extends EmbeddedChannel {
 
         // can't use future as called multiple times

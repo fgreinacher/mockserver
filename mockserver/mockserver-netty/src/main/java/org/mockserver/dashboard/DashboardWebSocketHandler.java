@@ -47,6 +47,7 @@ import org.slf4j.event.Level;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -113,13 +114,17 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // BE PRECISE ABOUT WHICH THROTTLE APPLIES, because this is the note a future reader will trust when
     // deciding whether to raise the ceiling again. The Semaphore(1) is a SINGLE GLOBAL permit refilled
     // ~1/second, and it gates only the JSON serialise-and-write in sendMessage. It does NOT gate the
-    // DTO-construction walk below, which has already run by then. That walk executes on coalesced log
-    // updates at up to ~4/second (MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS = 250) per registry
-    // entry, and UNTHROTTLED on every inbound TextWebSocketFrame, whose rate and filter the client
-    // controls. So the honest statement is: this maximum deepens a client-drivable walk 5x on an
-    // endpoint that is unauthenticated by default. That walk is a PRE-EXISTING surface at depth 100 and
-    // the increase is bounded, which is why 500 is acceptable - but if the pull path is ever to be made
-    // cheap, gate it the way the push path is coalesced rather than raising this number further.
+    // DTO-construction walk below, which has already run by then. That walk executes per registry entry
+    // on two paths, and BOTH are now rate-bounded per connection: the push path is coalesced by
+    // MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS = 250 (~4/second), and the client-pull path (an
+    // inbound TextWebSocketFrame, whose rate and filter the client controls) is coalesced PER CHANNEL by
+    // the leading+trailing debounce below (see schedulePullUpdate / PULL_COALESCE_WINDOW_MILLIS), which
+    // mirrors the push path's machinery: a burst of inbound frames collapses to at most one leading walk
+    // plus one trailing walk per window per connection instead of one walk per frame, and the LAST filter
+    // a client sent is always the one finally served. So the honest statement is: this maximum deepens a
+    // per-window-bounded walk 5x on an endpoint that is unauthenticated by default; a client can no
+    // longer drive an UNBOUNDED rate of these deep walks from the pull path. That walk is a PRE-EXISTING
+    // surface at depth 100 and the increase is bounded, which is why 500 is acceptable.
     // A genuinely tighter aggregate bound, if ever needed, is a separate control (a connection cap or a
     // shared budget), NOT something per-request validation buys.
     private static final int MAX_LOG_UPDATE_ITEM_LIMIT = 500;
@@ -133,16 +138,51 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // channel, not in an instance field, or concurrent connections would clobber each other's limit -
     // exactly the defect 16a9686a8 fixed for HANDSHAKER. Absent attribute => DEFAULT.
     private static final AttributeKey<Integer> LOG_ITEM_LIMIT = AttributeKey.valueOf("UI_WEB_SOCKET_LOG_ITEM_LIMIT");
+    // Debounce window for coalescing the CLIENT-PULL update path, mirroring the push path's
+    // MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS. A client controls the rate of inbound
+    // TextWebSocketFrames on an endpoint that is unauthenticated by default, and each frame used to
+    // trigger a fresh logItemLimit-deep walk (up to 500 deep) with no rate bound at all. The pull path
+    // is now coalesced per channel (leading + trailing) over this window: the first frame after a quiet
+    // period is served immediately (no added latency for a lone filter change), and a burst that lands
+    // within the window collapses to a single trailing walk carrying the LAST filter. Kept equal to the
+    // push window so the two paths stay visually consistent (≤ ~4 walks/sec/connection).
+    private static final long PULL_COALESCE_WINDOW_MILLIS = 250L;
+    // Per-channel coalescing state for the client-pull path. Per-channel (not an instance field) because
+    // the handler is @Sharable - one instance serves every dashboard channel - exactly like HANDSHAKER
+    // and LOG_ITEM_LIMIT. The registry entry records the client's current FILTER promptly on every frame;
+    // this only debounces the WORK (the walk) the filter change triggers. Absent attribute => no pull
+    // update has been scheduled on this channel yet.
+    private static final AttributeKey<PullCoalescer> PULL_COALESCER = AttributeKey.valueOf("UI_WEB_SOCKET_PULL_COALESCER");
     // Test-only instrument (instance-scoped, so concurrent tests / handlers never pollute each
     // other's reading): counts every DashboardLogEntryDTO this handler's per-update log stream
     // constructs, i.e. the "expensive" per-entry work (the entry survived the cheap predicate AND
     // the request matcher, then a DTO was built). Used to prove the short-circuit reduces the walk
     // from O(entire log) to O(depth actually consumed). Not part of any wire format.
     private final AtomicLong logDtoConstructionCount = new AtomicLong();
+    // Test-only instrument (instance-scoped, like logDtoConstructionCount, so concurrent tests / handlers
+    // never pollute each other's reading): counts how many times the CLIENT-PULL coalescer actually
+    // dispatched an update (i.e. triggered a walk) - NOT how many inbound frames arrived. It is the exact
+    // instrument for the coalescing property: a burst of N frames must dispatch far fewer than N walks.
+    // It is incremented once per real dispatch and is immune to the sendMessage retry path (which
+    // re-walks without going back through the coalescer), so it stays exact where an end-to-end DTO count
+    // would be inflated by retries. lastPullFilterDispatched records the filter of the most recent
+    // dispatch, so a test can prove the LAST filter a client sent is the one finally served.
+    private final AtomicLong pullUpdateDispatchCount = new AtomicLong();
+    private volatile RequestDefinition lastPullFilterDispatched;
 
     @VisibleForTesting
     long logDtoConstructionCountForTesting() {
         return logDtoConstructionCount.get();
+    }
+
+    @VisibleForTesting
+    long pullUpdateDispatchCountForTesting() {
+        return pullUpdateDispatchCount.get();
+    }
+
+    @VisibleForTesting
+    RequestDefinition lastPullFilterDispatchedForTesting() {
+        return lastPullFilterDispatched;
     }
 
     @VisibleForTesting
@@ -259,6 +299,20 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
+    // NOTE, because this is a trap for anyone adding HTTP/2 dashboard support: both executors are shut
+    // down here and NOT nulled, so registerListeners cannot recreate them. On an HTTP/1.1 channel that is
+    // correct - PortUnificationHandler builds a fresh handler per channel, so removal means that one
+    // connection is finished. But Http2MultiplexChildInitializer creates ONE instance and adds it to
+    // EVERY child stream, so the first sibling stream to close would permanently disable the throttle
+    // refill and the pull coalescer for all the others (scheduleCoalescedPullFlush would then take its
+    // isShutdown branch and dispatch every frame, losing the bound below).
+    //
+    // That is unreachable TODAY only because a dashboard upgrade over HTTP/2 is refused with 501 in
+    // channelRead, so a stream channel never gets CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET and therefore never
+    // reaches handleWebSocketFrame. (The refusal is itself reliable because HTTP2_ENABLED is in
+    // ConnectionScopeHandler.CONNECTION_SCOPED_ATTRIBUTES and that handler runs FIRST on the child
+    // pipeline, so isHttp2Enabled is true on a stream channel rather than silently defaulting to false.)
+    // If HTTP/2 dashboards are ever supported, make this per-channel before enabling them.
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
         if (this.scheduler != null) {
@@ -366,12 +420,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // resolve it to a Channel to read the attribute; an absent value (channel never upgraded through
     // the resolver, or not channel-shaped) uses the DEFAULT.
     private static int logItemLimitFor(ChannelOutboundInvoker ctx) {
-        Channel channel = null;
-        if (ctx instanceof ChannelHandlerContext) {
-            channel = ((ChannelHandlerContext) ctx).channel();
-        } else if (ctx instanceof Channel) {
-            channel = (Channel) ctx;
-        }
+        Channel channel = channelOf(ctx);
         if (channel != null) {
             Integer limit = channel.attr(LOG_ITEM_LIMIT).get();
             if (limit != null) {
@@ -379,6 +428,110 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
             }
         }
         return DEFAULT_LOG_UPDATE_ITEM_LIMIT;
+    }
+
+    // The update path holds a ChannelOutboundInvoker (a ChannelHandlerContext in production, an
+    // EmbeddedChannel in tests); resolve it to the Channel that carries the per-channel attributes, or
+    // null when it is not channel-shaped.
+    private static Channel channelOf(ChannelOutboundInvoker ctx) {
+        if (ctx instanceof ChannelHandlerContext) {
+            return ((ChannelHandlerContext) ctx).channel();
+        } else if (ctx instanceof Channel) {
+            return (Channel) ctx;
+        }
+        return null;
+    }
+
+    /**
+     * Bound the CLIENT-PULL update path so a client cannot drive one full logItemLimit-deep walk per
+     * inbound frame. Coalesces per channel with a leading + trailing debounce over
+     * {@link #PULL_COALESCE_WINDOW_MILLIS}, reusing the same dirty/scheduled machinery as the push path's
+     * {@code MockServerEventLogNotifier}:
+     * <ul>
+     *   <li><b>Leading edge</b> - the first frame after a quiet period dispatches immediately, so a lone
+     *       filter change is served with no added latency (never dropped, never delayed a whole window).</li>
+     *   <li><b>Trailing edge</b> - frames that land while the window is open only update the latest filter;
+     *       when the window elapses the LATEST filter is served once. So a burst of N frames collapses to
+     *       at most one leading + one trailing walk per window, and the LAST filter a client sent is
+     *       always the one finally reflected - a superseded filter can never be the last view shown.</li>
+     * </ul>
+     * Inbound frames for one channel are serialised on that channel's event loop, so the only concurrency
+     * is frame-vs-flush; that race is handled exactly as the notifier does (release the gate, then
+     * re-check for a late arrival). Never holds a lock, and never touches the {@code getClientRegistry()}
+     * lock across the walk.
+     */
+    @VisibleForTesting
+    void schedulePullUpdate(ChannelOutboundInvoker ctx, RequestDefinition filter) {
+        Channel channel = channelOf(ctx);
+        if (channel == null) {
+            // Not channel-shaped (defensive): dispatch immediately rather than drop the update.
+            dispatchPullUpdate(ctx, filter);
+            return;
+        }
+        PullCoalescer coalescer = channel.attr(PULL_COALESCER).get();
+        if (coalescer == null) {
+            PullCoalescer created = new PullCoalescer();
+            coalescer = channel.attr(PULL_COALESCER).setIfAbsent(created);
+            if (coalescer == null) {
+                coalescer = created;
+            }
+        }
+        coalescer.latestFilter = filter;
+        coalescer.dirty.set(true);
+        if (coalescer.scheduled.compareAndSet(false, true)) {
+            fireCoalescedPull(ctx, coalescer);
+        }
+    }
+
+    // Serve the latest filter now (if there is unserved work) and open/refresh the cooldown window.
+    private void fireCoalescedPull(ChannelOutboundInvoker ctx, PullCoalescer coalescer) {
+        if (coalescer.dirty.compareAndSet(true, false)) {
+            dispatchPullUpdate(ctx, coalescer.latestFilter);
+        }
+        scheduleCoalescedPullFlush(ctx, coalescer);
+    }
+
+    private void scheduleCoalescedPullFlush(ChannelOutboundInvoker ctx, PullCoalescer coalescer) {
+        ScheduledExecutorService executor = throttleExecutorService;
+        if (executor == null || executor.isShutdown()) {
+            // No scheduler available (never in production - registerListeners ran at upgrade). Reset the
+            // gate so the next frame still dispatches via the leading edge rather than wedging.
+            coalescer.scheduled.set(false);
+            return;
+        }
+        try {
+            executor.schedule(() -> flushCoalescedPull(ctx, coalescer), PULL_COALESCE_WINDOW_MILLIS, MILLISECONDS);
+        } catch (RejectedExecutionException shuttingDown) {
+            coalescer.scheduled.set(false);
+        }
+    }
+
+    // Runs on the throttle executor when the window elapses. Mirrors MockServerEventLogNotifier.runCoalesced:
+    // serve once more if frames arrived during the window (and re-arm), otherwise close the window and
+    // re-check for a late arrival that saw the window still open.
+    private void flushCoalescedPull(ChannelOutboundInvoker ctx, PullCoalescer coalescer) {
+        if (coalescer.dirty.get()) {
+            fireCoalescedPull(ctx, coalescer);
+        } else {
+            coalescer.scheduled.set(false);
+            if (coalescer.dirty.get() && coalescer.scheduled.compareAndSet(false, true)) {
+                fireCoalescedPull(ctx, coalescer);
+            }
+        }
+    }
+
+    private void dispatchPullUpdate(ChannelOutboundInvoker ctx, RequestDefinition filter) {
+        pullUpdateDispatchCount.incrementAndGet();
+        lastPullFilterDispatched = filter;
+        sendUpdate(ctx, filter);
+    }
+
+    // Per-channel client-pull coalescing state. dirty/scheduled carry the same meaning as in
+    // MockServerEventLogNotifier: dirty = "there is an unserved filter", scheduled = "a window is open".
+    private static final class PullCoalescer {
+        private final AtomicBoolean scheduled = new AtomicBoolean(false);
+        private final AtomicBoolean dirty = new AtomicBoolean(false);
+        private volatile RequestDefinition latestFilter;
     }
 
     @Override
@@ -553,9 +706,13 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 HttpRequest httpRequest = httpRequestSerializer.deserialize(((TextWebSocketFrame) frame).text());
                 Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
                 synchronized (registry) {
+                    // The filter is STATE - record it promptly on every frame so the push path always
+                    // serves the client's current filter, even if the resulting pull update is coalesced.
                     registry.put(ctx, httpRequest);
                 }
-                sendUpdate(ctx, httpRequest);
+                // The update is WORK - coalesce it per channel so an unbounded burst of client frames
+                // cannot drive one deep walk per frame on this unauthenticated-by-default endpoint.
+                schedulePullUpdate(ctx, httpRequest);
             } catch (IllegalArgumentException iae) {
                 sendMessage(ctx, null, ImmutableMap.of("error", iae.getMessage()), 2);
             }
