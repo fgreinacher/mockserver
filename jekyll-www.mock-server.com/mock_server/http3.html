@@ -54,7 +54,7 @@ sitemap:
 
 <p>When <span class="inline_code">http3Port</span> is configured, the HTTP/3 server starts automatically with MockServer and stops when MockServer shuts down. No separate lifecycle management is needed.</p>
 
-<p>If the native QUIC transport is not available on the platform (see <a href="#http3_native_requirement">native platform requirement</a>), MockServer logs a warning and continues without HTTP/3. The existing TCP/HTTP server is never affected.</p>
+<p>If the native QUIC library is not available (see <a href="#http3_native_requirement">native platform requirement</a>), MockServer <strong>fails to start</strong> with an error explaining how to add it. Earlier versions logged a warning and started anyway without HTTP/3, which meant the UDP port you asked for was silently never listening; starting up and telling you is the safer behaviour. To run without HTTP/3, remove <span class="inline_code">http3Port</span>.</p>
 
 <p>The bound HTTP/3 port can be retrieved programmatically via <span class="inline_code">MockServer.getHttp3Port()</span>.</p>
 
@@ -62,7 +62,22 @@ sitemap:
 
 <h2>Native platform requirement</h2>
 
-<p>HTTP/3 uses the mainline <a target="_blank" href="https://github.com/netty/netty" rel="noopener noreferrer"><span class="inline_code">io.netty:netty-codec-http3</span></a> library (Netty 4.2), which requires a native BoringSSL library for the QUIC transport. The native library is included automatically for the following platforms:</p>
+<p>HTTP/3 uses the mainline <a target="_blank" href="https://github.com/netty/netty" rel="noopener noreferrer"><span class="inline_code">io.netty:netty-codec-http3</span></a> library (Netty 4.2), which requires a native BoringSSL library for the QUIC transport.</p>
+
+<p><strong>These native binaries are not in the default artifacts.</strong> They add about 11 MB across the five supported platforms &mdash; the largest single item in the standalone jar &mdash; for a feature that is experimental and does nothing unless <span class="inline_code">http3Port</span> is set, so they are packaged separately and everyone else stops paying to download them. Pick whichever row matches how you run MockServer:</p>
+
+<table class="table-standard">
+    <thead>
+    <tr><th>How you run MockServer</th><th>How to get HTTP/3</th></tr>
+    </thead>
+    <tbody>
+    <tr><td>Standalone jar</td><td>download the <span class="inline_code">jar-with-dependencies-http3</span> classifier instead of the default jar &mdash; it is otherwise identical</td></tr>
+    <tr><td>Maven or Gradle</td><td>add a dependency on <span class="inline_code">io.netty:netty-codec-native-quic</span> with the classifier for your platform, at the same Netty version as the rest of the server</td></tr>
+    <tr><td>Docker / Kubernetes</td><td>mount <span class="inline_code">netty-codec-native-quic-&lt;version&gt;-linux-&lt;arch&gt;.jar</span> (about 3 MB) into <span class="inline_code">/libs</span>, which is already on the classpath in every image variant. Images up to this release served HTTP/3 without this step</td></tr>
+    </tbody>
+</table>
+
+<p>Native binaries exist for these platforms:</p>
 
 <ul>
     <li><span class="inline_code">linux-x86_64</span></li>
@@ -72,7 +87,7 @@ sitemap:
     <li><span class="inline_code">windows-x86_64</span></li>
 </ul>
 
-<p>If the native library cannot be loaded on the current platform, the HTTP/3 server will not start (a warning is logged). The existing TCP/HTTP server is not affected.</p>
+<p>On any other platform there is no native library to add, and HTTP/3 cannot be used. Leave <span class="inline_code">http3Port</span> unset; HTTP/1.1 and HTTP/2 are unaffected and need nothing extra.</p>
 
 <a id="http3_tls" class="anchor" href="#http3_tls">&nbsp;</a>
 
@@ -111,7 +126,7 @@ sitemap:
     <li><strong>Request body</strong> &mdash; text and binary request bodies are read and matched correctly</li>
     <li><strong>Configurable TLS</strong> &mdash; uses the same TLS certificate as the HTTPS server</li>
     <li><strong>Lifecycle integration</strong> &mdash; starts and stops automatically with MockServer</li>
-    <li><strong>Fail-soft startup</strong> &mdash; graceful fallback when native QUIC is unavailable</li>
+    <li><strong>Actionable startup failure</strong> &mdash; if <span class="inline_code">http3Port</span> is set without the native QUIC library, start-up fails with a message naming the artifact to use, rather than silently leaving the port unserved</li>
     <li><strong>Alt-Svc auto-discovery</strong> &mdash; when <span class="inline_code">http3Port</span> is set, MockServer automatically adds an <span class="inline_code">Alt-Svc</span> header to all TCP (HTTP/1.1 and HTTP/2) responses advertising the HTTP/3 endpoint. HTTP/3-capable clients will automatically upgrade to QUIC on subsequent requests, with transparent fallback to HTTP/2 or HTTP/1.1 if QUIC is unavailable. The advertisement max-age is configurable via <span class="inline_code">http3AltSvcMaxAge</span> (default 86400 seconds). Set <span class="inline_code">http3AdvertiseAltSvc=false</span> to disable advertising while keeping HTTP/3 enabled</li>
     <li><strong>W3C trace-context propagation</strong> &mdash; <span class="inline_code">traceparent</span> and <span class="inline_code">tracestate</span> headers on inbound HTTP/3 requests are parsed and stored for OpenTelemetry span parenting, matching the TCP path. When <span class="inline_code">otelPropagateTraceContext</span> is enabled, the headers are copied to outbound HTTP/3 responses. When <span class="inline_code">otelGenerateTraceId</span> is enabled, a trace context is generated for requests without a <span class="inline_code">traceparent</span> header. Both features are default-off (same config as TCP)</li>
     <li><strong>mTLS client-certificate capture</strong> &mdash; when mTLS is configured (<span class="inline_code">tlsMutualAuthenticationRequired</span> or <span class="inline_code">tlsMutualAuthenticationCertificateChain</span>), client certificates are captured from the QUIC TLS handshake and attached to the request, enabling cert-based expectation matching and verification over HTTP/3</li>

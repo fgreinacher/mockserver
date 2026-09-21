@@ -108,6 +108,10 @@ public class Http3StreamingForwardIntegrationTest {
 
     @BeforeClass
     public static void startServers() throws Exception {
+        // MUST be the first statement: setting http3Port without the QUIC native is now a start-up
+        // FAILURE, and @Before (where the sibling HTTP/3 tests put this guard) runs too late to help
+        // a server constructed here - the class would ERROR on a platform limitation instead of skipping.
+        assumeQuicAvailable();
         // A bare HTTP/1.1 Netty upstream that serves an SSE stream: response head + early event
         // immediately, then the late event + end-of-stream withheld for UPSTREAM_LATE_EVENT_DELAY_MS.
         upstreamGroup = new NioEventLoopGroup(1);

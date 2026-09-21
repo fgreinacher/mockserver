@@ -148,6 +148,20 @@ check_http "mockserver-maven-plugin $V pom" \
   "https://repo1.maven.org/maven2/org/mock-server/mockserver-maven-plugin/$V/mockserver-maven-plugin-$V.pom"
 check_http "mockserver-netty $V brew-tar (for Homebrew livecheck)" \
   "https://repo1.maven.org/maven2/org/mock-server/mockserver-netty/$V/mockserver-netty-$V-brew-tar.tar"
+# The standalone jar and its classifier variants. All four are attached by maven-assembly and
+# published by the same `mvn deploy`, so they are verified the same way rather than trusted. The
+# -http3 one is load-bearing for a USER INSTRUCTION: when http3Port is set without the QUIC native,
+# the server refuses to start and names this exact classifier, so a 404 here turns our own error
+# message into a dead end. The linux-* ones are size optimisations, but a jar the pom advertises and
+# Central lacks is a release defect either way.
+check_http "mockserver-netty $V jar-with-dependencies (the standalone jar)" \
+  "https://repo1.maven.org/maven2/org/mock-server/mockserver-netty/$V/mockserver-netty-$V-jar-with-dependencies.jar"
+check_http "mockserver-netty $V jar-with-dependencies-http3 (named by the HTTP/3 startup error)" \
+  "https://repo1.maven.org/maven2/org/mock-server/mockserver-netty/$V/mockserver-netty-$V-jar-with-dependencies-http3.jar"
+for arch in linux-x86_64 linux-aarch_64; do
+  check_http "mockserver-netty $V jar-with-dependencies-$arch (slim variant)" \
+    "https://repo1.maven.org/maven2/org/mock-server/mockserver-netty/$V/mockserver-netty-$V-jar-with-dependencies-$arch.jar"
+done
 
 log_info ""
 log_info "== npm =="

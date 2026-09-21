@@ -1,17 +1,16 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <!--
-  The DEFAULT standalone jar. It bundles every platform's Netty natives EXCEPT the QUIC
-  (HTTP/3) ones, which are excluded here and shipped in the `-http3` classifier instead.
+  The HTTP/3 standalone jar: identical to `jar-with-dependencies` plus the QUIC native
+  libraries for every supported platform.
 
-  WHY: the quiche natives are 11.22 MiB compressed across five platforms - the single
-  largest item in this jar - and HTTP/3 is experimental and OFF unless `http3Port` is set.
-  The QUIC *classes* (0.41 MiB) stay, so nothing fails to load; MockServer checks
-  `Quic.isAvailable()` when http3Port is set and fails at startup with instructions.
+  Use this one only if you set `http3Port`. It is ~11 MiB larger than the default for
+  that reason, and HTTP/3 remains experimental (see docs/code/http3.md). Running the
+  default jar with `http3Port` set fails at startup with a message naming this artifact.
 -->
 <assembly xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
           xmlns="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2"
           xsi:schemaLocation="http://maven.apache.org/plugins/maven-assembly-plugin/assembly/1.1.2 http://maven.apache.org/xsd/assembly-1.1.2.xsd">
-    <id>jar-with-dependencies</id>
+    <id>jar-with-dependencies-http3</id>
     <formats>
         <format>jar</format>
     </formats>
@@ -22,22 +21,12 @@
             <useProjectArtifact>true</useProjectArtifact>
             <unpack>true</unpack>
             <scope>provided</scope>
-            <unpackOptions>
-                <excludes>
-                    <exclude>META-INF/native/*quiche*</exclude>
-                </excludes>
-            </unpackOptions>
         </dependencySet>
         <dependencySet>
             <outputDirectory>/</outputDirectory>
             <useProjectArtifact>true</useProjectArtifact>
             <unpack>true</unpack>
             <scope>runtime</scope>
-            <unpackOptions>
-                <excludes>
-                    <exclude>META-INF/native/*quiche*</exclude>
-                </excludes>
-            </unpackOptions>
         </dependencySet>
     </dependencySets>
 </assembly>

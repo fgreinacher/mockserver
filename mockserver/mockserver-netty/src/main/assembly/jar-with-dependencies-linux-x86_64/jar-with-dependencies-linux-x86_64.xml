@@ -73,6 +73,11 @@
                 <includes>
                     <include>META-INF/native/*x86_64.so</include>
                 </includes>
+                <!-- the arch-suffix include above would otherwise re-add the QUIC native;
+                     HTTP/3 ships in the `-http3` classifier, see that descriptor's header -->
+                <excludes>
+                    <exclude>META-INF/native/*quiche*</exclude>
+                </excludes>
             </unpackOptions>
         </dependencySet>
     </dependencySets>

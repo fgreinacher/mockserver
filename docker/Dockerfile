@@ -98,14 +98,24 @@ FROM ${source} AS intermediate
 # used above to fetch the matching tcnative.
 #
 # The KEEP filter is the "*<arch>.so" SUFFIX, and that shape is deliberate: the linux
-# natives for one arch are THREE differently-named files —
+# natives for one arch are differently-named files —
 #   libnetty_tcnative_linux_<arch>.so
-#   libnetty_quiche42_linux_<arch>.so
 #   libnetty_transport_native_epoll_<arch>.so   <-- note: NO "linux_" in the name
 # so a "linux_<arch>" filter would silently delete the epoll .so and degrade epoll to
-# NIO with no error anywhere in the log. Matching the "<arch>.so" suffix keeps all
-# three ELF .so and drops .jnilib/.dll/wrong-arch. NEVER narrow this filter such that
-# it could remove this arch's epoll, tcnative or quiche .so.
+# NIO with no error anywhere in the log. Matching the "<arch>.so" suffix keeps both
+# ELF .so and drops .jnilib/.dll/wrong-arch. NEVER narrow this filter such that it
+# could remove this arch's epoll or tcnative .so.
+#
+# libnetty_quiche42_linux_<arch>.so used to be a third file here. The QUIC natives no
+# longer ship in the default fat jar (they moved to the jar-with-dependencies-http3
+# classifier), so there is nothing for this filter to keep: THESE IMAGES NO LONGER
+# SERVE HTTP/3. That is a real capability change and it is worth being precise about
+# the price, because it is not the ~11 MiB the standalone jar saves — this trim already
+# discarded four of the five platforms' quiche binaries, so the image was only ever
+# carrying ~2.4 MiB of them. A user who sets http3Port here gets an actionable start-up
+# failure (MockServer.requireQuicNative) rather than a silently unserved UDP port, and
+# can restore HTTP/3 by mounting netty-codec-native-quic-<ver>-linux-<arch>.jar (~2.7 MiB)
+# into /libs, which is already on the classpath in the ENTRYPOINT below.
 #
 # The jar is then repacked with STORED (uncompressed) entries. A jar is already a zip,
 # so the image layer's gzip gains almost nothing on it; storing the class bytes raw lets
@@ -165,7 +175,9 @@ RUN set -eu; \
     mkdir ex && (cd ex && unzip -q ../app.jar) && rm app.jar; \
     (cd ex && zip -q -0 -X ../app.jar META-INF/MANIFEST.MF && zip -q -0 -X -r ../app.jar . -x META-INF/MANIFEST.MF); \
     echo "kept natives:"; unzip -l app.jar 'META-INF/native/*' "${KEEP_ZSTD}*" "${KEEP_SNAPPY}*" "${KEEP_JNA}*" "${KEEP_LZ4}*"; \
-    unzip -l app.jar 'META-INF/native/*' | grep -q "$ARCH.so" || { echo "ERROR: no netty $ARCH native survived the trim"; exit 1; }; \
+    unzip -l app.jar 'META-INF/native/*' | grep -q "libnetty_transport_native_epoll_$ARCH.so" || { echo "ERROR: no netty epoll $ARCH native survived the trim"; exit 1; }; \
+    unzip -l app.jar 'META-INF/native/*' | grep -q "libnetty_tcnative_linux_$ARCH.so" || { echo "ERROR: no netty tcnative $ARCH native survived the trim"; exit 1; }; \
+    if unzip -l app.jar 'META-INF/native/*' | grep -q "quiche"; then echo "ERROR: a quiche native is present - this image builds from the DEFAULT jar, which must not carry QUIC natives"; exit 1; fi; \
     unzip -l app.jar | grep -q "${KEEP_ZSTD}libzstd-jni" || { echo "ERROR: no zstd native for $TARGETARCH survived the trim"; exit 1; }; \
     unzip -l app.jar | grep -q "${KEEP_SNAPPY}libsnappyjava" || { echo "ERROR: no snappy native for $TARGETARCH survived the trim"; exit 1; }; \
     unzip -l app.jar | grep -q "${KEEP_JNA}libjnidispatch" || { echo "ERROR: no JNA native for $TARGETARCH survived the trim"; exit 1; }; \

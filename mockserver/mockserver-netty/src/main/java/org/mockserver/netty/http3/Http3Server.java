@@ -48,8 +48,11 @@ import static org.mockserver.socket.tls.PEMToFile.x509ChainFromPEMFile;
  * <p>
  * The server uses MockServer's configured TLS certificate material. If no custom
  * certificate is configured, MockServer's auto-generated BouncyCastle certificate
- * is used. The QUIC transport requires a native BoringSSL library; if unavailable
- * at startup the server logs a warning and does not start (fail-soft).
+ * is used. The QUIC transport requires a native BoringSSL library, which no longer ships in the
+ * default artifacts (it lives in the {@code jar-with-dependencies-http3} classifier). If it is
+ * unavailable, {@code MockServer.requireQuicNative} fails start-up with an actionable message
+ * BEFORE any port is bound - it does not log a warning and continue, which used to leave the
+ * configured UDP port silently unserved.
  * <p>
  * HTTP/3 is OFF by default ({@code http3Port=0}) and is built on the Netty 4.2
  * {@code netty-codec-http3} module (graduated from the incubator). HTTP/3 support

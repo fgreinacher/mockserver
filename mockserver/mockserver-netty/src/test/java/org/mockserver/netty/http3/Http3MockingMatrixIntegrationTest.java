@@ -87,6 +87,10 @@ public class Http3MockingMatrixIntegrationTest {
 
     @BeforeClass
     public static void startServer() {
+        // MUST be the first statement: setting http3Port without the QUIC native is now a start-up
+        // FAILURE, and @Before (where the sibling HTTP/3 tests put this guard) runs too late to help
+        // a server constructed here - the class would ERROR on a platform limitation instead of skipping.
+        assumeQuicAvailable();
         // upstream target for the forward / forward-overridden actions (plain HTTP/1.1 over TCP)
         upstreamServer = new MockServer();
         upstreamClient = new MockServerClient("127.0.0.1", upstreamServer.getLocalPort());

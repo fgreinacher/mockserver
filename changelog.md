@@ -122,6 +122,21 @@ MockServer could lose data and report nothing.
   as zero.
 
 ### Changed
+- **BREAKING (experimental feature): HTTP/3's native libraries now ship separately, making the
+  standalone jar ~11 MB smaller.** The QUIC native binaries were the single largest item in the
+  standalone jar — about 11 MB across five platforms — for a feature that is experimental, off by
+  default, and does nothing unless `http3Port` is set. They now ship in a new
+  `jar-with-dependencies-http3` classifier, and the default jar is **104 MB → 93 MB**. The QUIC
+  *classes* are still bundled, so nothing fails to load: if you set `http3Port` without the native
+  present, MockServer refuses to start and tells you exactly how to get it, rather than quietly
+  ignoring the port you asked it to listen on. **If you use HTTP/3**, switch to the
+  `jar-with-dependencies-http3` jar, or add `io.netty:netty-codec-native-quic` (with your platform's
+  classifier) to your build, or mount the native jar into `/libs` in a container. **Docker users
+  should read this twice**: the images previously carried the QUIC native for their architecture and
+  served HTTP/3 out of the box, so a container that sets `http3Port` will now fail to start until
+  `netty-codec-native-quic-<version>-linux-<arch>.jar` (~3 MB) is mounted into `/libs`, which is
+  already on the classpath in every image variant. **If you do not use HTTP/3 — which is the default
+  — nothing changes except a smaller download.**
 - **The Docker image is smaller again — another ~10 MB off the download.** The image already
   trimmed Netty's native libraries to the architecture the container actually runs on. Four more
   libraries ship native binaries the same way and were not covered: zstd-jni, snappy, JNA and

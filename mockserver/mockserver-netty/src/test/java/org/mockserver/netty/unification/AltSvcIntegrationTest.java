@@ -5,10 +5,12 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Test;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.netty.MockServer;
+import org.mockserver.netty.http3.Http3Server;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.*;
@@ -42,8 +44,10 @@ public class AltSvcIntegrationTest {
 
     @Test
     public void shouldAddAltSvcHeaderWhenHttp3PortIsSet() throws Exception {
-        // given - MockServer with http3Port set (does not need QUIC to actually start;
-        // the Alt-Svc header is added to TCP responses based on the config value alone)
+        requireQuicNative();
+        // given - MockServer with http3Port set. The Alt-Svc header is derived from the config value
+        // alone, but setting http3Port now REQUIRES the QUIC native (start-up fails without it), so
+        // these tests carry the same availability guard as the HTTP/3 suite.
         Configuration config = configuration()
             .http3Port(8443)
             .http3AltSvcMaxAge(3600L);
@@ -103,6 +107,7 @@ public class AltSvcIntegrationTest {
 
     @Test
     public void shouldNotAddAltSvcHeaderWhenAdvertisingDisabled() throws Exception {
+        requireQuicNative();
         // given - MockServer with http3Port set but advertisement explicitly disabled
         Configuration config = configuration()
             .http3Port(8443)
@@ -132,6 +137,7 @@ public class AltSvcIntegrationTest {
 
     @Test
     public void shouldNotClobberUserSetAltSvcHeader() throws Exception {
+        requireQuicNative();
         // given - MockServer with http3Port set AND an expectation that explicitly sets alt-svc
         Configuration config = configuration()
             .http3Port(8443)
@@ -165,6 +171,7 @@ public class AltSvcIntegrationTest {
 
     @Test
     public void shouldUseDefaultMaxAgeWhenNotExplicitlyConfigured() throws Exception {
+        requireQuicNative();
         // given - MockServer with http3Port set, using default max-age (86400)
         Configuration config = configuration()
             .http3Port(443);
@@ -190,5 +197,16 @@ public class AltSvcIntegrationTest {
                 httpResponse.getFirstHeader("alt-svc").getValue(),
                 is("h3=\":443\"; ma=86400"));
         }
+    }
+
+    /**
+     * Setting a non-zero {@code http3Port} without the QUIC native is a start-up failure, so a test
+     * that sets one cannot run where the native is absent. Guarding here keeps that a SKIP; without
+     * it the constructor throws and a platform limitation is reported as a broken Alt-Svc feature.
+     * {@code shouldNotAddAltSvcHeaderWhenHttp3PortIsZero} deliberately has no guard - port 0 means
+     * HTTP/3 is off, which is exactly the case that must keep working everywhere.
+     */
+    private static void requireQuicNative() {
+        Assume.assumeTrue("native QUIC not available on this platform", Http3Server.isQuicAvailable());
     }
 }

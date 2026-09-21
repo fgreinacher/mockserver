@@ -9,6 +9,30 @@ fact that the underlying QUIC codec is still evolving, although it has now
 graduated from the Netty incubator into the mainline Netty 4.2 release as
 `io.netty:netty-codec-http3`.
 
+## Getting the QUIC native library
+
+**HTTP/3's native binaries do not ship in the default artifacts.** They are ~11 MiB across five
+platforms — the largest single item in the standalone jar — for a feature that is experimental and
+inert unless `http3Port` is set, so they are packaged separately and everyone else stops paying for
+them.
+
+The QUIC *classes* are still bundled, so nothing fails to load. When `http3Port` is set and the
+native is absent, MockServer **refuses to start** and names the remedy, rather than starting a server
+that silently ignores the port it was told to listen on.
+
+| How you run MockServer | How to get HTTP/3 |
+|---|---|
+| Standalone jar | use the `jar-with-dependencies-http3` classifier instead of the default jar |
+| Maven / Gradle | add `io.netty:netty-codec-native-quic` with your platform's classifier, at the same Netty version as the rest of the server |
+| Container | mount `netty-codec-native-quic-<version>-linux-<arch>.jar` (~2.7 MiB) into `/libs`, which is already on the classpath in every image variant |
+
+There is no `-http3` image tag yet; the `/libs` mount is the container route today. Note the image
+previously DID serve HTTP/3: `docker/Dockerfile`'s arch-suffix trim kept this arch's
+`libnetty_quiche42_linux_<arch>.so`, so the image only ever carried ~2.4 MiB of QUIC native, not the
+~11 MiB the standalone jar carries. Dropping it from the image therefore buys much less than it does
+from the jar — if HTTP/3-in-Docker is ever wanted back, the cheapest route is to fetch the native for
+`TARGETARCH` in the jarprep stage exactly as the Dockerfile already fetches netty-tcnative.
+
 ## Overview
 
 MockServer can optionally listen for HTTP/3 requests over QUIC (UDP). HTTP/3
@@ -137,9 +161,20 @@ The HTTP/3 server is started automatically by `MockServer.createServerBootstrap(
 when `http3Port > 0`. It is stopped during `MockServer.stopAsync()`. The lifecycle
 mirrors how the DNS mock server is conditionally started.
 
-**Fail-soft startup**: if the native QUIC transport is not available on the platform,
-MockServer logs a warning and continues without HTTP/3. The existing TCP/HTTP server
-is never affected by HTTP/3 startup failures.
+**Fail-fast startup**: if the QUIC native is not available, `MockServer.requireQuicNative()`
+throws an `IllegalStateException` naming the artifact that carries it. It is called at the TOP of
+`createServerBootstrap`, before `bindServerPorts` — and that ordering is load-bearing, not
+incidental. The throw escapes the constructor, so the caller never receives a reference and can
+never call `stop()`; anything already allocated would be orphaned for the life of the JVM. Embedded
+users (`MockServerRule`, the JUnit 5 extension, Spring) run long-lived JVMs and would leak a
+listening socket per failed construction. It also calls `stop()` before rethrowing, because
+`LifeCycle`'s constructor has already created the boss/worker event-loop groups by then — hoisting
+alone does not release those.
+This replaced a fail-soft path that logged a warning and continued — which was defensible while the
+native shipped in every jar and the only way to hit it was an unsupported platform, but became a
+silent misconfiguration once the natives moved to their own classifier: the user set a UDP port and
+got a server that never listened on it. `startHttp3Server` asserts the check ran, so a future second
+call site cannot reinstate the silent-disable behaviour. See *Getting the QUIC native library*.
 
 The bound HTTP/3 port is accessible via `MockServer.getHttp3Port()`.
 
@@ -271,7 +306,7 @@ declarations are needed -- they resolve automatically.
 - Request recording for verification via the standard event log
 - MockServer TLS certificate reuse (same key/cert as HTTPS)
 - Lifecycle integration: start/stop with MockServer
-- Fail-soft startup when native QUIC is unavailable
+- Fail-fast startup with an actionable message when the native QUIC library is absent
 - Metrics: HTTP/3 requests counted in `REQUESTS_RECEIVED_COUNT`
 - **Streaming/SSE responses**: `StreamingBody` (SSE, chunked proxy forwarding,
   LLM streaming) responses are fully supported over HTTP/3. Each chunk is sent

@@ -586,6 +586,7 @@
                              jarprep stage). -->
                         <descriptor>src/main/assembly/jar-with-dependencies-linux-x86_64/jar-with-dependencies-linux-x86_64.xml</descriptor>
                         <descriptor>src/main/assembly/jar-with-dependencies-linux-aarch_64/jar-with-dependencies-linux-aarch_64.xml</descriptor>
+                        <descriptor>src/main/assembly/jar-with-dependencies-http3/jar-with-dependencies-http3.xml</descriptor>
                         <descriptor>src/main/assembly/brew-tar/brew-tar.xml</descriptor>
                     </descriptors>
                 </configuration>

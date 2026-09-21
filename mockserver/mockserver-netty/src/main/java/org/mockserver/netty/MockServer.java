@@ -158,6 +158,24 @@ public class MockServer extends LifeCycle {
             configuration = configuration();
         }
 
+        // FIRST, before anything is bound. This depends only on configuration, so there is no reason to
+        // discover it late - and discovering it late is expensive: the throw escapes the constructor, so
+        // the caller never gets a reference and can never call stop(). Anything already allocated is
+        // orphaned for the life of the JVM. That is survivable for the CLI (the JVM exits) but not for
+        // the embedded users - MockServerRule, the JUnit 5 extension, Spring - where a long-lived JVM
+        // would leak a listening socket per failed construction, on what this change deliberately makes
+        // a COMMON user state. stop() still runs because LifeCycle's constructor has already built the
+        // boss/worker event-loop groups by the time we get here; hoisting alone would not release those.
+        Integer configuredHttp3Port = configuration.http3Port();
+        if (configuredHttp3Port != null && configuredHttp3Port > 0) {
+            try {
+                requireQuicNative(configuredHttp3Port);
+            } catch (Throwable throwable) {
+                stop();
+                throw throwable;
+            }
+        }
+
         List<Integer> portBindings = singletonList(0);
         if (localPorts != null && localPorts.length > 0) {
             portBindings = Arrays.asList(localPorts);
@@ -216,7 +234,8 @@ public class MockServer extends LifeCycle {
             }
         }
 
-        // start HTTP/3 (QUIC) server when configured (http3Port > 0)
+        // start HTTP/3 (QUIC) server when configured (http3Port > 0). Availability was already
+        // established at the top of this method, before any port was bound.
         Integer http3Port = configuration.http3Port();
         if (http3Port != null && http3Port > 0) {
             startHttp3Server(configuration, initializer.getActionHandler(), http3Port, this.mcpSessionManager);
@@ -241,6 +260,58 @@ public class MockServer extends LifeCycle {
         }
 
         startedServer(getLocalPorts());
+    }
+
+    /**
+     * Fail fast, and usefully, when HTTP/3 is switched on without the QUIC native library present.
+     * <p>
+     * The default standalone jar and the default Docker image deliberately omit the QUIC natives:
+     * they are the largest single item in the jar (~11 MiB across five platforms) for a feature that
+     * is experimental and does nothing unless {@code http3Port} is set. The QUIC <em>classes</em> are
+     * still bundled, so this check can run at all — without them the failure would be a
+     * {@code NoClassDefFoundError} from deep inside server start-up, naming a Netty class and giving
+     * the reader nothing to act on.
+     * <p>
+     * Setting {@code http3Port} is an explicit request for HTTP/3, so refusing to start is the honest
+     * response: starting without it would leave a server that silently ignores the port it was told
+     * to listen on.
+     * <p>
+     * Every route the message names works today. There is deliberately no mention of an {@code -http3}
+     * image tag: none is published yet, and a remedy a reader cannot follow is worse than one fewer
+     * option. Containers are pointed at {@code /libs} instead, which is already on the classpath in
+     * every image variant.
+     */
+    private void requireQuicNative(int http3Port) {
+        // Http3Server.isQuicAvailable() already wraps the Netty call in catch(Throwable): loading a
+        // native can fail with an Error, not just return false, and an Error escaping here would
+        // replace the actionable message below with a raw UnsatisfiedLinkError.
+        if (Http3Server.isQuicAvailable()) {
+            return;
+        }
+        Throwable cause;
+        try {
+            cause = io.netty.handler.codec.quic.Quic.unavailabilityCause();
+        } catch (Throwable t) {
+            cause = t;
+        }
+        throw new IllegalStateException(quicUnavailableMessage(http3Port), cause);
+    }
+
+    /**
+     * The message is the whole point of the failure, so it is built here rather than inline: the throw
+     * itself can only be reached on a platform without the QUIC native, which is no CI agent we have, so
+     * an inline message would ship with nothing executing that reads it. Package-private so a test can
+     * assert the remedies it names without needing the native to be absent.
+     */
+    static String quicUnavailableMessage(int http3Port) {
+        return "HTTP/3 was enabled (http3Port=" + http3Port + ") but the QUIC native library is not available. "
+            + "MockServer mocks HTTP/1.1 and HTTP/2 out of the box; HTTP/3 is experimental and its native "
+            + "binaries ship separately so every other user does not pay for them. To enable it, use the "
+            + "artifact that carries them. Standalone jar: use the 'jar-with-dependencies-http3' "
+            + "classifier. Maven or Gradle: add io.netty:netty-codec-native-quic with the classifier for "
+            + "your platform, at the same Netty version as the rest of the server. Container: mount "
+            + "netty-codec-native-quic-<version>-linux-<arch>.jar into /libs, which is already on the "
+            + "server's classpath. Alternatively remove http3Port to run without HTTP/3.";
     }
 
     public InetSocketAddress getRemoteAddress() {
@@ -306,16 +377,16 @@ public class MockServer extends LifeCycle {
         return server != null ? server.getActiveConnectionCount() : 0;
     }
 
+    /**
+     * Callers MUST have passed {@link #requireQuicNative(int)} first. This used to log a warning and
+     * return when the native was missing, silently leaving the configured HTTP/3 port unserved; that
+     * check now lives in {@code requireQuicNative}, which fails start-up instead. The assertion keeps
+     * the ordering machine-enforced rather than comment-enforced, so a future second call site cannot
+     * quietly reinstate the silent-disable behaviour.
+     */
     private void startHttp3Server(Configuration configuration, HttpActionHandler actionHandler, int http3Port, org.mockserver.netty.mcp.McpSessionManager mcpSessionMgr) {
         if (!Http3Server.isQuicAvailable()) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(SERVER_CONFIGURATION)
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("native QUIC transport not available on this platform - HTTP/3 server disabled (http3Port was set to {})")
-                    .setArguments(http3Port)
-            );
-            return;
+            throw new AssertionError("startHttp3Server reached without requireQuicNative - HTTP/3 would have been silently disabled");
         }
         try {
             Http3Server server = new Http3Server(configuration, mockServerLogger, httpState, actionHandler, MockServer.this, mcpSessionMgr);
