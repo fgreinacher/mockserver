@@ -2440,6 +2440,21 @@ Two constraints on option 7, both load-bearing:
    property, and it must be chosen so that (max x plausible connection count) is survivable. **The
    DEFAULT must not rise above today's 100** — a client that asks for nothing must cost no more than
    it does now.
+
+   *Validate the requested value server-side, and be clear about what that buys.* Reject or clamp
+   anything non-numeric, negative, zero or above the maximum, at a SINGLE choke point that also
+   applies the maximum — two places that can disagree is how a bound gets bypassed. Fail toward the
+   DEFAULT, never toward the maximum: an unparseable value must not be read as "give me everything",
+   which is the classic shape of this bug.
+
+   But validation bounds the PER-CLIENT cost, not the AGGREGATE. A client asking for exactly the
+   maximum, on every connection, forever, is perfectly valid input — every request passes every
+   check, and the cost is still (connections x max x frequency). So validation is necessary and not
+   sufficient: the number that actually protects the data plane is the MAXIMUM, and if that is not
+   survivable multiplied by a plausible connection count, no amount of input checking rescues it.
+   If the aggregate needs bounding too, that is a separate control — a connection cap, or a budget
+   shared across connections — and it should be recognised as such rather than assumed to fall out
+   of per-request validation.
 2. **One constant currently governs two very different things.** `UI_UPDATE_ITEM_LIMIT` caps log
    rows AND expectations (`:481, :513, :532, :554`). They have opposite profiles: log rows change
    constantly and are cheap each; expectations change rarely and are expensive each. A single
