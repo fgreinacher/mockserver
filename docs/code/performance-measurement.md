@@ -62,7 +62,7 @@ Everything else is reported in the Buildkite annotation but does not change the 
 
 **Notify-only until ≥ 10 clean run history exists to derive a budget from:**
 - All `regression.js` latency percentiles
-- `sweep.js` `peak_achieved_rps` (extended from 16k to 64k in the current code)
+- `sweep.js` `rig_valid_peak_achieved_rps` (extended from 16k to 64k in the current code)
 - `growth.js` ratios and `live_set_bytes`
 - All promoted dark benchmark metrics
 

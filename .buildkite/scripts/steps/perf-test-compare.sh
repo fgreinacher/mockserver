@@ -24,7 +24,7 @@ set -euo pipefail
 #
 # Only metrics with a derived, trustworthy budget start gating (JMH micro-benchmark
 # time/alloc per op, and forward.error_rate — a discriminating pass/fail guard).
-# Every other metric (k6 latency percentiles, growth ratios, peak_achieved_rps,
+# Every other metric (k6 latency percentiles, growth ratios, rig_valid_peak_achieved_rps,
 # live_set_bytes) runs notify-only until it has >=10 clean runs of history and a
 # budget derived from them — a gate that fires on noise gets switched off, which is
 # the failure mode this design avoids. See docs/plans/performance-programme.md item 1.
@@ -277,10 +277,10 @@ PLAUSIBILITY_PROBLEMS="$(jq -r '
        | map(select((.value.p95_ms | type) == "number" and .value.p95_ms > 0 and .value.p95_ms < 600000))
        | length) as $ok
       | if $ok == 0 then "no behaviour arm carries a plausible p95_ms (expected 0 < p95 < 600000 ms) — the newest object records no request latency, i.e. it measured nothing" else empty end ),
-    # 2. peak_achieved_rps, when present, must be a positive, non-absurd rate.
-    ( if (.peak_achieved_rps != null)
-         and (((.peak_achieved_rps | type) != "number") or .peak_achieved_rps <= 0 or .peak_achieved_rps > 100000000)
-      then "peak_achieved_rps present but implausible: \(.peak_achieved_rps) (expected a number in 0 < rps <= 1e8)" else empty end ),
+    # 2. rig_valid_peak_achieved_rps, when present, must be a positive, non-absurd rate.
+    ( if (.rig_valid_peak_achieved_rps != null)
+         and (((.rig_valid_peak_achieved_rps | type) != "number") or .rig_valid_peak_achieved_rps <= 0 or .rig_valid_peak_achieved_rps > 100000000)
+      then "rig_valid_peak_achieved_rps present but implausible: \(.rig_valid_peak_achieved_rps) (expected a number in 0 < rps <= 1e8)" else empty end ),
     # 3. forward_guard.error_rate, when present, must be a fraction in [0,1].
     ( if ((.forward_guard // {}).error_rate != null)
          and (((.forward_guard.error_rate | type) != "number") or .forward_guard.error_rate < 0 or .forward_guard.error_rate > 1)
@@ -512,7 +512,8 @@ def metrics:
     # k6 latency percentiles + per-behaviour error_rate. throughput_rps is
     # DELIBERATELY not budgeted (recorded with offered_rps + dropped_iterations +
     # delivery_ratio alongside): a shortfall below offered is AMBIGUOUS (server
-    # slower vs client VU-starved). peak_achieved_rps (below) is the ceiling signal.
+    # slower vs client VU-starved). rig_valid_peak_achieved_rps (below) is the
+    # rig-valid peak (a property of the k6 rig, not a server ceiling).
     ( {name:($k+".p95_ms"),     value:$v.p95_ms,     bkey:"behaviours.*.p95_ms"},
       {name:($k+".p99_ms"),     value:$v.p99_ms,     bkey:"behaviours.*.p99_ms"},
       {name:($k+".error_rate"), value:$v.error_rate, bkey:"behaviours.*.error_rate"} ) ),
@@ -534,8 +535,8 @@ def metrics:
       ( {name:("info_" + $k + ".p95_ms"),     value:$v.p95_ms,     bkey:"info_behaviours.*.p95_ms"},
         {name:("info_" + $k + ".p99_ms"),     value:$v.p99_ms,     bkey:"info_behaviours.*.p99_ms"},
         {name:("info_" + $k + ".error_rate"), value:$v.error_rate, bkey:"info_behaviours.*.error_rate"} ) ),
-    (if ((.info_log_level_arm.peak_achieved_rps) != null) then
-       {name:"info_peak_achieved_rps", value:(.info_log_level_arm.peak_achieved_rps), bkey:"info_peak_achieved_rps"}
+    (if ((.info_log_level_arm.rig_valid_peak_achieved_rps) != null) then
+       {name:"info_rig_valid_peak_achieved_rps", value:(.info_log_level_arm.rig_valid_peak_achieved_rps), bkey:"info_rig_valid_peak_achieved_rps"}
      else empty end)
    else empty end),
   ((.growth // {}) |
@@ -611,7 +612,7 @@ def metrics:
       {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
   # item 12 — LLM/SSE streaming under concurrency. The .streaming block is a FLAT
   # object (not per-arm), so a CURATED subset of its scalars is budgeted here with
-  # EXACT bkeys (like peak_achieved_rps / forward.error_rate, not the wildcard arm
+  # EXACT bkeys (like rig_valid_peak_achieved_rps / forward.error_rate, not the wildcard arm
   # families). All NON-GATING (their perf-budgets.json entries omit gating) and
   # unfiltered by the k6 fingerprint (they are not .behaviours), riding the
   # full-baseline else-branch like tls_handshake. A skipped streaming profile
@@ -664,17 +665,20 @@ def metrics:
   # fail-closed missing-budget error — the wholesale-failure case is caught by the
   # serving_percore_attempted PRESENCE gate below, not here. healthy_ceiling_rps
   # (dir DOWN = a drop is worse) is the headline; rps_per_core (DOWN) is the
-  # per-core efficiency; peak_achieved_rps (DOWN) is the degraded-overload top;
+  # per-core efficiency; rig_valid_peak_achieved_rps (DOWN) is the degraded-overload top;
   # healthy_ceiling_p50_ms (UP) guards the latency at the ceiling.
   ((.serving_percore.points // []) | .[] | ("serving_percore." + (.cores|tostring) + "c") as $pc |
     ( {name:($pc+".healthy_ceiling_rps"),   value:.healthy_ceiling_rps,   bkey:"serving_percore.*.healthy_ceiling_rps"},
       {name:($pc+".rps_per_core"),          value:.rps_per_core,          bkey:"serving_percore.*.rps_per_core"},
-      {name:($pc+".peak_achieved_rps"),     value:.peak_achieved_rps,     bkey:"serving_percore.*.peak_achieved_rps"},
+      {name:($pc+".rig_valid_peak_achieved_rps"), value:.rig_valid_peak_achieved_rps, bkey:"serving_percore.*.rig_valid_peak_achieved_rps"},
       {name:($pc+".healthy_ceiling_p50_ms"),value:.healthy_ceiling_p50_ms,bkey:"serving_percore.*.healthy_ceiling_p50_ms"} ) ),
-  # peak_achieved_rps: max achieved throughput across sweep rungs where the k6
-  # CLIENT was sound. CONTINUOUS, so a relative floor is meaningful. saturation_rps
-  # (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
-  ( {name:"peak_achieved_rps", value:(.peak_achieved_rps), bkey:"peak_achieved_rps"} ),
+  # rig_valid_peak_achieved_rps: max achieved over the RIG-VALID rungs (the k6 client
+  # had CPU headroom, dropped no iterations, low errors). It is a property of the RIG,
+  # not the server: the rig-validity filter caps it at whichever rung the client stops
+  # being clean, which on this rig is far below the server ceiling — so it does NOT move
+  # continuously with the server ceiling. Non-gating (perf-budgets.json gating:false).
+  # saturation_rps (the knee) is ladder-QUANTISED, so it is recorded but NOT budgeted here.
+  ( {name:"rig_valid_peak_achieved_rps", value:(.rig_valid_peak_achieved_rps), bkey:"rig_valid_peak_achieved_rps"} ),
   # forward.error_rate: the forward connection-pool guard (forward.js) — a
   # discriminating pass/fail guard (pool works vs it does not).
   ( {name:"forward.error_rate", value:((.forward_guard // {}).error_rate), bkey:"forward.error_rate"} );
@@ -725,7 +729,7 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 # affected by the regression arm mix, so they keep the FULL baseline and DO compare
 # across the stock->graaljs image change unfiltered — acceptable because the extra
 # GraalJS jars are inert for non-JS paths (loaded lazily only when a JS template
-# renders): growth.* and peak_achieved_rps are non-gating, and forward.error_rate
+# renders): growth.* and rig_valid_peak_achieved_rps are non-gating, and forward.error_rate
 # (gating) is a connection-pool guard the template engine cannot influence.
 | ((.behaviours // {}) | keys | sort) as $headarms
 | $baseline as $ballruns

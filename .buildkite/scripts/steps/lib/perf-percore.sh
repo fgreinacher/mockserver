@@ -12,7 +12,7 @@ set -euo pipefail
 # per-core ceiling of the LOAD GENERATOR. This is its mirror for the SERVER: pin
 # ONE MockServer SUT to C cores, drive the sweep ladder against it from a k6 on
 # DISJOINT cores, and record, per C:
-#   * peak_achieved_rps   — max achieved over RIG-VALID rungs (client had CPU
+#   * rig_valid_peak_achieved_rps — max achieved over RIG-VALID rungs (client had CPU
 #                           headroom, no dropped iterations, low errors). This is
 #                           the SAME rig-valid peak definition perf-test-run.sh's
 #                           saturation block uses; a rung where k6 (not the SUT)
@@ -366,7 +366,7 @@ for C in "${CORES_ARR[@]}"; do
   # this ladder is here to capture rather than a reason to discard the rung. (This
   # comment previously claimed the two blocks matched EXACTLY, which was false and led a
   # reader to treat a valid ceiling reading as a false green because it carried drops.)
-  # perf-test-run.sh:1185 does include $no_drops; do not "restore" it here. peak_achieved_rps
+  # perf-test-run.sh:1185 does include $no_drops; do not "restore" it here. rig_valid_peak_achieved_rps
   # = max achieved over rig-valid rungs. p95/p99 are SUPPRESSED to null on any rung
   # whose sample_count < MIN_TAIL_SAMPLES (the repo rule) so a low-C, low-rate rung
   # never reports a tail that is really just its max.
@@ -472,7 +472,7 @@ for C in "${CORES_ARR[@]}"; do
         healthy_ceiling_dropped_iterations:($hcrung.dropped_iterations // null),
         healthy_ceiling_client_cpu_pct:($hcrung.k6_cpu_pct // null),
         client_limited_at_ceiling:(if $hcrung == null then null else ($hcrung.rig_valid | not) end),
-        peak_achieved_rps:$peak,
+        rig_valid_peak_achieved_rps:$peak,
         peak_offered_rps:($peakrung.offered_rps // null),
         rps_per_core:(if $hc_rps == null then null else (($hc_rps / $cores) * 100 | round) / 100 end),
         peak_per_core:(($peak / $cores) * 100 | round) / 100,
@@ -530,7 +530,7 @@ for C in "${CORES_ARR[@]}"; do
         first_rung_slower_than_second:(($r1 != null) and ($r2 != null) and ($r1 > $r2))
       }' <<<"$AGG")"
 
-  echo "    C=$C  healthy_ceiling=${HC_RPS} rps_per_core=$(jq -r '.rps_per_core' <<<"$AGG") peak=$(jq -r '.peak_achieved_rps' <<<"$AGG") sut_cpu@peak=$(jq -r '.sut_cpu_at_peak_pct' <<<"$AGG")%/$(jq -r '.sut_pin_pct' <<<"$AGG")% peak_limited_by=$(jq -r '.peak_limited_by' <<<"$AGG")" >&2
+  echo "    C=$C  healthy_ceiling=${HC_RPS} rps_per_core=$(jq -r '.rps_per_core' <<<"$AGG") peak=$(jq -r '.rig_valid_peak_achieved_rps' <<<"$AGG") sut_cpu@peak=$(jq -r '.sut_cpu_at_peak_pct' <<<"$AGG")%/$(jq -r '.sut_pin_pct' <<<"$AGG")% peak_limited_by=$(jq -r '.peak_limited_by' <<<"$AGG")" >&2
   POINTS+=("$AGG")
   MAX_MEASURED="$C"
 done

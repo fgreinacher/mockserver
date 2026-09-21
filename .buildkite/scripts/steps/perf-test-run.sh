@@ -236,7 +236,7 @@ SWEEP_K6="k6-sweep-${RUN_ID}"
 # (sweep.js) and the per-behaviour percentiles (regression.js) — so the site can show
 # an honest "out of the box" number ALONGSIDE the (legitimate, but labelled) ERROR
 # one. Its output lands under DISTINCT top-level keys (info_log_level_arm.*), never
-# under .behaviours / .sweep / peak_achieved_rps, so an INFO number can never be
+# under .behaviours / .sweep / rig_valid_peak_achieved_rps, so an INFO number can never be
 # confused with, or diffed against, the ERROR baseline series. Set PERF_INFO_ARM=false
 # to skip it if the (serialised) perf box is time-pressed — it is a pure add-on and
 # nothing else in the run depends on it.
@@ -1158,10 +1158,10 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
   # A rung is RIG-VALID when the measurement itself is trustworthy: the k6 client
   # had CPU headroom, dropped no iterations, and the server was not returning fast
   # errors (a rung "achieves" its offered rate even while erroring, so error_rate is
-  # part of validity, not just throughput). The BUDGETED metric is peak_achieved_rps
+  # part of validity, not just throughput). The BUDGETED metric is rig_valid_peak_achieved_rps
   # = max achieved over rig-valid rungs.
   #
-  # peak_achieved_rps IS A PROPERTY OF THE RIG, NOT OF THE SERVER. An earlier version of
+  # rig_valid_peak_achieved_rps IS A PROPERTY OF THE RIG, NOT OF THE SERVER. An earlier version of
   # this comment called it "CONTINUOUS (it moves proportionally with the real ceiling,
   # e.g. 36,324 achieved at 48,000 offered)". The data falsifies that: in build 325 the
   # server achieved 28,377.4 at 48,000 offered with zero errors, and this field still read
@@ -1212,7 +1212,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
     | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
     | ([ $rungs[] | select(.clean) | .offered_rps ] | max // 0) as $sat
     | ([ $rungs[] | select(.rig_valid) ] | length) as $rig_valid_rungs
-    | { peak_achieved_rps:$peak, saturation_rps:$sat,
+    | { rig_valid_peak_achieved_rps:$peak, saturation_rps:$sat,
         rig_valid_rungs:$rig_valid_rungs,
         client_pin_pct:$pin, client_cores:$cores,
         ladder:$rungs,
@@ -1224,9 +1224,9 @@ echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
 run_sweep "$SWEEP_K6" "$SERVER_ALIAS" "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG"
 SWEEP_T0="$LAST_SWEEP_T0"
 SATURATION_JSON="$(derive_saturation "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG" "$SWEEP_T0")"
-PEAK_ACHIEVED_RPS="$(jq -r '.peak_achieved_rps' <<<"$SATURATION_JSON")"
+PEAK_ACHIEVED_RPS="$(jq -r '.rig_valid_peak_achieved_rps' <<<"$SATURATION_JSON")"
 SATURATION_RPS="$(jq -r '.saturation_rps' <<<"$SATURATION_JSON")"
-echo "--- peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (client pin=${K6_PIN_PCT}%, cores=$K6_CORES)"
+echo "--- rig_valid_peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (client pin=${K6_PIN_PCT}%, cores=$K6_CORES)"
 
 # Validity: at least one rung was measured with the client sound (headroom, no
 # drops, low errors). If EVERY rung was excluded the rig was compromised
@@ -1234,7 +1234,7 @@ echo "--- peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (c
 # a synthetic ladder with the k6 CPU above 85% of pin at every rung yields
 # rig_valid_rungs=0 and this check false (see the item's can-it-fail evidence).
 #
-# KEYED OFF THE RUNG COUNT, NOT off peak_achieved_rps > 0. Those are not the same
+# KEYED OFF THE RUNG COUNT, NOT off rig_valid_peak_achieved_rps > 0. Those are not the same
 # question. A rung can be rig-valid and still achieve 0 rps (a server that is down
 # rather than a client that is compromised), and the old form reported that as "every
 # rung excluded" — blaming the rig for a server failure. The count asks what the check
@@ -1248,7 +1248,7 @@ echo "--- peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (c
 # print it instead of guessing.
 RIG_VALID_RUNGS="$(jq -r '.rig_valid_rungs // 0' <<<"$SATURATION_JSON")"
 if awk -v v="$RIG_VALID_RUNGS" 'BEGIN{exit !(v+0>0)}'; then
-  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no dropped iterations, low errors (peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
+  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no dropped iterations, low errors (rig_valid_peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
 else
   SWEEP_EXCLUSIONS="$(jq -r '[.ladder[] | "\(.offered_rps): \(.exclude_reason // "?")"] | join("; ")' <<<"$SATURATION_JSON")"
   add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
@@ -1265,7 +1265,7 @@ fi
 #
 # NON-GATING BY CONSTRUCTION. This arm never fails the step and never touches the
 # ERROR baseline: (1) its output lands under DISTINCT keys (info_log_level_arm.*),
-# not .behaviours / .sweep / peak_achieved_rps, so it can never be confused with or
+# not .behaviours / .sweep / rig_valid_peak_achieved_rps, so it can never be confused with or
 # diffed against the ERROR series; (2) it is EXCLUDED from VALIDITY_CHECKS, so an
 # INFO hiccup cannot flip validity.valid and block the ERROR baseline from being
 # stored; (3) every fallible command is guarded so a failure degrades to
@@ -1358,17 +1358,18 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
       # .behaviours but under a distinct key so it is never fingerprint-matched or
       # diffed against the ERROR series.
       behaviours: $behaviours,
-      # The knee curve at INFO + its derived saturation (peak_achieved_rps is the
-      # continuous ceiling; saturation_rps is the ladder-quantised knee).
+      # The knee curve at INFO + its derived saturation (rig_valid_peak_achieved_rps here
+      # is the rig-valid peak — max achieved over rig-valid rungs, a property of the k6 rig,
+      # see derive_saturation; saturation_rps is the ladder-quantised knee).
       sweep: { proto: ($sweep.proto // "http"), points: ($sweep.points // []) },
       saturation: $saturation,
-      peak_achieved_rps: ($saturation.peak_achieved_rps // null),
+      rig_valid_peak_achieved_rps: ($saturation.rig_valid_peak_achieved_rps // null),
       saturation_rps: ($saturation.saturation_rps // null)
     }')"
-  INFO_PEAK="$(jq -r '.peak_achieved_rps // "n/a"' <<<"$INFO_ARM_JSON")"
+  INFO_PEAK="$(jq -r '.rig_valid_peak_achieved_rps // "n/a"' <<<"$INFO_ARM_JSON")"
   INFO_SAT="$(jq -r '.saturation_rps // "n/a"' <<<"$INFO_ARM_JSON")"
   INFO_T_END="$(date -u +%s)"
-  echo "--- INFO-log-level arm done (log_level=${INFO_LOG_LEVEL_VAL} measured=${INFO_MEASURED} peak_achieved_rps=${INFO_PEAK} saturation_rps=${INFO_SAT}); added wall-clock $((INFO_T_END - INFO_T_START))s"
+  echo "--- INFO-log-level arm done (log_level=${INFO_LOG_LEVEL_VAL} measured=${INFO_MEASURED} rig_valid_peak_achieved_rps=${INFO_PEAK} saturation_rps=${INFO_SAT}); added wall-clock $((INFO_T_END - INFO_T_START))s"
   # Free the INFO SUT's heap before the growth phase (cleanup() also reaps it).
   docker rm -f "$INFO_SERVER" >/dev/null 2>&1 || true
 else
@@ -2275,7 +2276,7 @@ HEAP_RATIO="$(ratio "$HEAP_MIN_LAST" "$HEAP_MIN_FIRST")"
 
 # --- item 18: req/s per core for the SERVING path -----------------------------
 # Pin ONE SUT to C cores in {1,2,4,8,16} and drive the sweep ladder against it
-# from a k6 on DISJOINT cores, recording peak_achieved_rps, healthy_ceiling_rps
+# from a k6 on DISJOINT cores, recording rig_valid_peak_achieved_rps, healthy_ceiling_rps
 # and rps_per_core per C (lib/perf-percore.sh does the work + the C=16 feasibility
 # handling + the pinning proof). DEFAULT OFF (opt-in): unlike the streaming /
 # clustered arms, this does NOT share the main SUT — it spins up and tears down one
@@ -2458,7 +2459,7 @@ jq -n \
   --argjson sweep "$SWEEP_JSON" \
   --argjson saturation "$SATURATION_JSON" \
   --arg saturation_rps "$SATURATION_RPS" \
-  --arg peak_achieved_rps "$PEAK_ACHIEVED_RPS" \
+  --arg rig_valid_peak_achieved_rps "$PEAK_ACHIEVED_RPS" \
   --argjson forward "$FORWARD_JSON" \
   --arg forward_exit "$FORWARD_EXIT" \
   --argjson proxyfwd "$PROXY_FWD_JSON" \
@@ -2554,7 +2555,12 @@ jq -n \
       threads_peak: ($threads_peak|tonumber)
     },
     sweep: $sweep,
-    peak_achieved_rps: (try ($peak_achieved_rps|tonumber) catch null),
+    # rig_valid_peak_achieved_rps: the max achieved over RIG-VALID rungs only (see
+    # derive_saturation). It is a property of the k6 RIG, not the server — the rig-validity
+    # filter caps it at whichever rung the client stops being clean, which on this rig is far
+    # below the server ceiling. Named to say so; the all-rung server peak the website
+    # publishes is a DIFFERENT number computed independently in lib/perf-website-figures.jq.
+    rig_valid_peak_achieved_rps: (try ($rig_valid_peak_achieved_rps|tonumber) catch null),
     saturation_rps: (try ($saturation_rps|tonumber) catch null),
     saturation: $saturation,
     # forward_guard.status distinguishes an INFRA failure (k6 exited non-zero but
@@ -2594,7 +2600,7 @@ jq -n \
     # figure families (knee curve + per-behaviour percentiles) re-measured against a
     # SUT at the shipped-default log level, so the site can show an honest
     # out-of-the-box number ALONGSIDE the (legitimate, labelled) ERROR baseline. Lives
-    # here under a DISTINCT key — NOT in .behaviours / .sweep / peak_achieved_rps — so
+    # here under a DISTINCT key — NOT in .behaviours / .sweep / rig_valid_peak_achieved_rps — so
     # an INFO number can never be confused with or diffed against the ERROR series, and
     # carries its own .config.log_level so it is self-describing in the DATA. `{}` when
     # the arm was disabled (PERF_INFO_ARM=false); the sibling *_attempted flag

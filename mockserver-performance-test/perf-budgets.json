@@ -182,7 +182,7 @@
     "microbench.*.alloc_bytes_per_op":  { "dir": "up",   "min_pct": 0.05, "floor": null,  "gating": true },
     "microbench_extra.*.time_per_op":        { "dir": "up",   "min_pct": 0.05, "floor": null },
     "microbench_extra.*.alloc_bytes_per_op": { "dir": "up",   "min_pct": 0.05, "floor": null },
-    "peak_achieved_rps":                { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false },
+    "rig_valid_peak_achieved_rps":      { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false },
     "forward.error_rate":               { "dir": "up",   "min_pct": 0,    "floor": 0.01,  "gating": true },
 
     "_comment_info_log_level_arm": [
@@ -195,10 +195,10 @@
       "S3 run is ERROR, so publishing it is legitimate) but publish INFO too, clearly",
       "LABELLED as INFO, so nobody is misled. The INFO figures land under DISTINCT",
       "result keys (.info_log_level_arm.*), so they can never be confused with, or",
-      "diffed against, the ERROR series (.behaviours / .sweep / peak_achieved_rps).",
+      "diffed against, the ERROR series (.behaviours / .sweep / rig_valid_peak_achieved_rps).",
       "",
       "The budget keys below MIRROR their ERROR twins but with an info_ prefix, so a",
-      "future compare traversal of .info_log_level_arm.behaviours / .peak_achieved_rps",
+      "future compare traversal of .info_log_level_arm.behaviours / .rig_valid_peak_achieved_rps",
       "resolves against these — never the ERROR wildcard budgets. They are NON-GATING",
       "(no `gating` key -> notify-only) AND `provisional: true`: plan open question 9",
       "is explicit that a new wall-clock arm ships notify-only, is observed for ten",
@@ -206,14 +206,14 @@
       "perf-test-compare.sh does NOT yet emit metrics under these keys (the INFO",
       "publication is sequenced after a run produces both series); these entries are",
       "staged so the fail-closed missing-budget check is satisfied the moment it does.",
-      "info_peak_achieved_rps is dir DOWN (a throughput drop is worse); the INFO",
+      "info_rig_valid_peak_achieved_rps is dir DOWN (a throughput drop is worse); the INFO",
       "saturation_rps knee is ladder-quantised and recorded but, like its ERROR twin,",
       "NOT budgeted here."
     ],
     "info_behaviours.*.p95_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true },
     "info_behaviours.*.p99_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true },
     "info_behaviours.*.error_rate":     { "dir": "up",   "min_pct": 0,    "floor": 0.005, "gating": false, "provisional": true },
-    "info_peak_achieved_rps":           { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false, "provisional": true },
+    "info_rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false, "provisional": true },
 
     "laptop.*.ready_ms":                { "dir": "up",   "min_pct": 0.25, "floor": null },
     "laptop.*.cold_ready_ms":           { "dir": "up",   "min_pct": 0.25, "floor": null },
@@ -362,7 +362,7 @@
       "                       C's sweep as a synthetic run) — not a third copy of the rule.",
       "                       dir DOWN: a drop in sustainable throughput is worse.",
       "  rps_per_core         healthy_ceiling_rps / C — per-core efficiency. dir DOWN.",
-      "  peak_achieved_rps    max achieved over RIG-VALID rungs (client had CPU headroom,",
+      "  rig_valid_peak_achieved_rps  max achieved over RIG-VALID rungs (client had CPU headroom,",
       "                       no dropped iterations, low errors) — the degraded overload",
       "                       top, same rig-valid peak definition perf-test-run.sh uses.",
       "                       dir DOWN.",
@@ -377,7 +377,7 @@
     ],
     "serving_percore.*.healthy_ceiling_rps":    { "dir": "down", "min_pct": 0.25, "floor": null },
     "serving_percore.*.rps_per_core":           { "dir": "down", "min_pct": 0.25, "floor": null },
-    "serving_percore.*.peak_achieved_rps":      { "dir": "down", "min_pct": 0.25, "floor": null },
+    "serving_percore.*.rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.25, "floor": null },
     "serving_percore.*.healthy_ceiling_p50_ms": { "dir": "up",   "min_pct": 0.25, "floor": null }
   }
 }

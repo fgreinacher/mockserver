@@ -296,7 +296,7 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | Dim | Profile | Status | What exists | Cadence | Threshold |
 |---|---|---|---|---|---|
 | D1 Scale | L | none | — | — | — |
-| D1 | C | continuous | Knee ladder. **Extended to 64,000 in `19686f9f1`** — it previously stopped at 16,000, below saturation, so the ceiling could not move the number | daily | `peak_achieved_rps`, `dir:"down"`, validity-gated |
+| D1 | C | continuous | Knee ladder. **Extended to 64,000 in `19686f9f1`** — it previously stopped at 16,000, below saturation, so the ceiling could not move the number | daily | `rig_valid_peak_achieved_rps`, `dir:"down"`, validity-gated |
 | D1 | C | once | Published knee: p50 0.19 ms at 32,000 offered / 31,751 achieved; peak achieved 36,324 at 48,000 offered, where p50 had already risen to 23.1 ms. **2026-06-24, build #64, commit `15f4dcf50`, pre-8.0.0, instance type not recorded** | one-off | — |
 | D1 | C | none | Connection-count ceiling; keep-alive pool limits; max concurrent connections | — | — |
 | D1 | C | continuous | HTTP/2 streams per connection, N = 1, 10, 100 over one h2c connection | daily | **none by design** — variance unknown; a threshold would be guessing |
@@ -348,7 +348,7 @@ sharper question: *could this check pass while the thing it measures had regress
 | `regression.js` `throughput_rps` | **It fired for the wrong reason — now understood.** A dropped-iteration counter in disguise: it fell when k6's VU pool was tied up, conflating server slowdown with client starvation. Published values 177.7 to 191.8 against a nominal 200. Labelled with `offered_rps` and a delivery ratio (`19686f9f1`); the shortfall it detected is the **same** tied-up pool as the latency tail, now fixed (Finding 3) — post-fix light-path `delivery_ratio` reads ~1.00. Keep it un-budgeted (it is a client-health gate, not a server throughput measure — use the sweep for peak throughput) |
 | `MatchingBenchmark` | **Yes for allocation, weakly for time.** `gc.alloc.rate.norm` is a real absolute backstop. `time_per_op` runs `-f 1` — a **single JMH fork** — so inter-fork JIT variance is never sampled and the measured dispersion understates the real one. It was also **silently dark 2026-09-12 to 2026-09-16** |
 | `load.js` CI gate | **Barely.** 300 rps against a server measured near 32,000; a p95 gate of 25 ms against a sweep p50 of 0.19 ms. A 50x throughput regression passes. It runs on the Spot `default` queue, so its noise floor is worse than its sensitivity |
-| `sweep.js` knee | **Now yes, previously no.** The ladder reached only 16,000 where the server is comfortable. Extended to 64,000 with `peak_achieved_rps` budgeted (`19686f9f1`) |
+| `sweep.js` knee | **Now yes, previously no.** The ladder reached only 16,000 where the server is comfortable. Extended to 64,000 with `rig_valid_peak_achieved_rps` budgeted (`19686f9f1`) |
 | `sweep.js` — was the **client** the bottleneck? | **Now asserted, previously unknown.** k6's own CPU and dropped iterations are captured per rung and a compromised rung is excluded and named. Before this, the published "~36,000 req/s on six cores" was not proven to be MockServer's ceiling rather than a six-core k6's |
 | `growth.js` heap | **Now yes, previously weakly.** Was last-instantaneous over first-instantaneous — a point on the GC saw-tooth — with the SUT unbounded on a 32 GB box where GC barely cycled. Now the live-set floor plus a budgeted absolute, bounded to 2g (`19686f9f1`) |
 | Ring-buffer bound | The **bound** is enforced in unit tests. Its behaviour **under sustained load in a live process** is asserted in prose, never demonstrated |
@@ -391,7 +391,7 @@ Three caveats the page does not state:
   the way down, not a healthy operating ceiling. A reader sizing a deployment from it will
   provision for 36,000 and get 23 ms medians. Publish `healthy_ceiling_rps` — highest rung
   where achieved is within 5% of offered **and** latency stays within a stated multiple of
-  the flat part, which on this data is **32,000 at p50 0.194 ms** — with `peak_achieved_rps`
+  the flat part, which on this data is **32,000 at p50 0.194 ms** — with `rig_valid_peak_achieved_rps`
   beside it, explicitly labelled as degraded.
 
 ### Finding 2: the 8.0.0 HTTP/2 multiplex change is unverified
@@ -569,7 +569,7 @@ need for a webhook, a channel, or an owner reading it.
   metrics (`*.time_per_op`, `*.alloc_bytes_per_op`) and `forward.error_rate` (a discriminating
   pass/fail guard, not a tuned threshold). **Everything else starts notify-only** — every k6 latency
   percentile (only just fixed in `4ce6ae27b`, so zero clean runs of history), every growth
-  ratio, `peak_achieved_rps`, and `live_set_bytes`. Gating those now would fire on noise, and
+  ratio, `rig_valid_peak_achieved_rps`, and `live_set_bytes`. Gating those now would fire on noise, and
   a gate that cries wolf gets switched off — the failure mode this whole document warns
   about.
 - **`time_per_op` is the weaker of the two JMH signals, and gates anyway — deliberately.**
@@ -604,20 +604,20 @@ invalid-run and warming-up paths still exiting 0.
 
 The ladder now reaches 64,000. Per rung, k6's own CPU and `dropped_iterations` are captured,
 and a rung where the client was pinned or starved is **excluded and named** rather than
-reported. The budgeted metric is **`peak_achieved_rps`**, not `saturation_rps`.
+reported. The budgeted metric is **`rig_valid_peak_achieved_rps`**, not `saturation_rps`.
 
 **Two corrections made during implementation, worth preserving:**
 
 - `saturation_rps` as originally specified is **ladder-quantised** — on the published data its
   only neighbours are 16,000 and 32,000. A metric whose smallest possible move is a factor of
-  two cannot carry a 15% floor. `peak_achieved_rps` is continuous and moves with the ceiling.
+  two cannot carry a 15% floor. `peak_achieved_rps` is continuous and moves with the ceiling. *(This claim was subsequently refuted — the field is structurally capped at the rig's validity boundary and has since been renamed `rig_valid_peak_achieved_rps`; see [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server).)*
 - `perf-test-compare.sh` applied `$m.floor` **only in the `dir:"up"` branch**, so a
   `dir:"down"` floor was **silently ignored**. Fixed symmetrically, with the up branch left
   byte-identical. Without this the item would have shipped a threshold that could not fire —
   the exact defect the programme exists to remove, built into the programme.
 
 Validity-exclusion is bidirectional: if the k6 container degrades, top rungs are excluded,
-`peak_achieved_rps` falls, and a **client** problem reports as a **server** regression. The
+`rig_valid_peak_achieved_rps` falls, and a **client** problem reports as a **server** regression. The
 annotation names which rungs were excluded and why, so an operator can tell them apart.
 
 #### 3. Wire up `forward.js` — **[landed `19686f9f1`]**
@@ -1099,7 +1099,7 @@ needed first (compare is fail-closed on unbudgeted metrics): `laptop.*.heap_used
 #### 18. req/s per core for the serving path — **research, about a week**
 
 Pin the SUT to C in {1, 2, 4, 8, 16} cores and run the ladder at each, recording
-`peak_achieved_rps`, `healthy_ceiling_rps` and `rps_per_core`. **Prerequisite easy to miss:**
+`rig_valid_peak_achieved_rps`, `healthy_ceiling_rps` and `rps_per_core`. **Prerequisite easy to miss:**
 at C = 16 the SUT wants more cores than the client has. On a 16 vCPU box you cannot pin 16 to
 the server and still have a k6. Either the top rung moves to a second box or the curve stops
 at C = 8 and says so.
@@ -1107,7 +1107,7 @@ at C = 8 and says so.
 **Shipped 2026-09-17.** `.buildkite/scripts/steps/lib/perf-percore.sh` pins ONE SUT to C cores
 in {1, 2, 4, 8, 16} with `--cpuset-cpus` (item 17's lever — the JVM's `availableProcessors()`
 follows it, sizing `actionHandlerThreadCount()` and its derived pools) and drives the `sweep.js`
-ladder against it from a k6 on DISJOINT cores. Per C it records `peak_achieved_rps` (max achieved
+ladder against it from a k6 on DISJOINT cores. Per C it records `rig_valid_peak_achieved_rps` (max achieved
 over CLIENT-SOUND rungs — client CPU headroom + low error; dropped iterations *with* client
 headroom are the server-saturation signal, `server_saturated`, NOT a client limit), the reused
 Finding-1 `healthy_ceiling_rps` (each C's sweep is fed to `lib/perf-website-figures.jq` and its
@@ -1163,7 +1163,7 @@ more than 10%, so it does not open a PR every day. A stale page then becomes an 
 rather than invisible rot. Requires item 0 for the provenance line. Finding 3 is now resolved
 (2026-09-16), so per-behaviour percentiles are publishable — but publish figures from the
 **fixed** `regression.js` only, never the pre-fix rig-artefact numbers. **Publish
-`healthy_ceiling_rps` with its latency, not `peak_achieved_rps` alone** — see Finding 1.
+`healthy_ceiling_rps` with its latency, not `rig_valid_peak_achieved_rps` alone** — see Finding 1.
 
 #### 20. HTTP/3 and QUIC — **research**
 
@@ -1867,7 +1867,7 @@ flowchart LR
   file and one S3 query.
 - **Deferred past the quarter:** 13, 17, 18, 20, 21.
 
-**First budget attachable:** `peak_achieved_rps`, about three weeks after landing (10 daily
+**First budget attachable:** `rig_valid_peak_achieved_rps`, about three weeks after landing (10 daily
 runs). **Last:** item 10's soak metrics, about ten weeks after landing. Nothing here produces
 a tight control loop inside a month, and a plan implying otherwise is lying about the
 statistics.
@@ -1989,7 +1989,7 @@ inference, and this programme has been burned by exactly that inference once.
 | 14. TLS | **Control REFUTED as worded, and replaced** (2026-09-18, build 290). The rate did not move: `handshakes_per_s` read 51.40 (tls13), 51.42 (mtls), 51.40 (jdk/native-absent). It **cannot** move — `proxy.js` drives the handshake arms from a constant-arrival-rate executor at a fixed offered rate (`K6_HS_RATE`, default 50/s), so the column reports what k6 OFFERED, not server capacity, and falls only if the server drops below a modest fixed load. The budget entry behind it (a 25% `dir:down` band) was a gate on a quantity with nothing to say — the same shape as 9a. **What is provider-sensitive is per-handshake COST**: `handshake_p50_ms` 3.992 → 6.02 (**+51%**) and `cpu_ms_per_handshake` 7.133 → 8.951 (**+25%**), both budgeted `dir:up`/0.25 and both shown to flag against a native baseline in a replayed `perf-test-compare.sh`. The +25% CPU move only just clears its band, so 0.25 is the **loosest defensible** figure there until ≥10 runs allow a MAD-derived bound. **Keep-up** moved to the scale-free `delivery_ratio` (throughput ÷ offered, `dir:down`, floor 0.90), which `proxy.js` already computed and compare never extracted: proven at a *different* offered rate (200/s) to flag a 20%-short server the old absolute floor of 45 passed blind. `handshakes_per_s` is demoted to a liveness floor of 1. Landed `6fbd2eb7e` | **Confirmed on a second, clean-tier run (build 306, 2026-09-19):** tls13 p50 **4.234 ms** vs jdk **6.516 ms** (+54%) and cpu_ms_per_handshake 5.396 → 8.333 (+54%), while `handshakes_per_s` read 52.12 vs 52.14 — identical to two decimal places, exactly as the refutation predicts. Two independent runs now agree that the rate column cannot move and the cost columns do |
 | 16. allocation gate (master path) | **Done** — executed by accident on 2026-09-17, not staged, which makes it a stronger control than a rehearsed one. Build **2262** of `mockserver-java` (branch `master`, `pull_request: None`, commit `0d1d4f4db`): the `:scales: per-merge allocation gate (item 16)` job **failed exit 1** with `ERROR: allocation gate measured 4 benchmark row(s), expected 3`. Real cause, not contrived: `0d1d4f4db` added a `declareBodyCharset` `@Param` to `ResponseWriteBenchmark` **without pinning it in the gate's `-p` list**, so JMH expanded the axis and the class emitted **2 rows instead of 1** (`declareBodyCharset=false` → 36409 B/op, `=true` → 20121 B/op), giving 4 rows against the pinned expectation of 3. Build **2263** (repair, commit `4cab2a47d`) shows the same job passing **exit 0**. What it demonstrates: the **exact-row-count** assertion fired on a **real surface change, on master** — and **both** offending rows were individually *within* their floor (36409 and 20121 both < `floor=46000`, logged `:white_check_mark:`), so a gate checking only "is each row within its floor" would have passed **green while measuring a different workload than its floor describes**. It also demonstrates the master-path framing above: the gate reddened the master build **after** the offending commit had already merged — a post-merge detector, not a blocker, on the direct-to-main path |
 | 16. allocation gate (PR path) | **Done** (2026-09-19, PR #2715, java build 2310). A throwaway branch added ~16 KB/op to the decode path (`new byte[16384]` escaping into a static sink so the JIT cannot scalar-replace it away — a dead local would have made the gate see nothing and *look* like a passing control). The gate failed on the **PR** build, pre-merge: `InboundDecodeBenchmark alloc=53968 B/op floor=47000`, with the other three benchmarks green (`MatchingBenchmark` 1,498,011/1,850,000; `MatchingBenchmark_detailed` 2,096,357/2,650,000; `ResponseWriteBenchmark` 36,537/46,000) — so the probe hit only the path it targeted. **The load-bearing detail is what PASSED:** `:maven: build` and the dashboard gate were both green, making the allocation gate the SOLE blocker. A first attempt was discarded because checkstyle also failed (the probe field was `static` but not `final`, so SCREAMING_SNAKE violated the static-variable rule), which would have left the claim ambiguous — "the PR was blocked" is not "the gate blocked it". PR closed and branch deleted; it was never merged |
-| Baseline freshness | **Done** — control found the content check MISSING, then added it. First established by execution that the dedicated watchdog (`perf-baseline-freshness.sh`) keys off producer LIVENESS only and cannot read the object (no perf-bucket S3 on the trigger queue): fed a live+passed producer via fake `aws`/`curl`, it exits 0 regardless of what the producer wrote. Then ran the real `perf-test-compare.sh` against a structurally-valid-but-empty head (`validity.valid:true`, `behaviours:{}`, `peak_achieved_rps:null`) over a 6-run baseline: it exited **0 GREEN** ("No performance regressions", empty table) and would have persisted the empty object — the false green. Fix adds a content-plausibility gate in compare (the reader that HAS the object), independent of `validity.valid`: ≥1 behaviour arm with `0 < p95_ms < 600000`, plus range sanity on `peak_achieved_rps` (`0 < rps ≤ 1e8`) and `forward_guard.error_rate` (`[0,1]`) when present. After: empty head→`exit 1` IMPLAUSIBLE; `peak=-5`→`exit 1`; `forward.error_rate=1.7`→`exit 1`; normal head→`exit 0` GREEN; legitimately-partial (`forward_guard.status:infra_error`, error_rate null)→`exit 0` GREEN (no false red) |
+| Baseline freshness | **Done** — control found the content check MISSING, then added it. First established by execution that the dedicated watchdog (`perf-baseline-freshness.sh`) keys off producer LIVENESS only and cannot read the object (no perf-bucket S3 on the trigger queue): fed a live+passed producer via fake `aws`/`curl`, it exits 0 regardless of what the producer wrote. Then ran the real `perf-test-compare.sh` against a structurally-valid-but-empty head (`validity.valid:true`, `behaviours:{}`, `rig_valid_peak_achieved_rps:null`) over a 6-run baseline: it exited **0 GREEN** ("No performance regressions", empty table) and would have persisted the empty object — the false green. Fix adds a content-plausibility gate in compare (the reader that HAS the object), independent of `validity.valid`: ≥1 behaviour arm with `0 < p95_ms < 600000`, plus range sanity on `rig_valid_peak_achieved_rps` (`0 < rps ≤ 1e8`) and `forward_guard.error_rate` (`[0,1]`) when present. After: empty head→`exit 1` IMPLAUSIBLE; `peak=-5`→`exit 1`; `forward.error_rate=1.7`→`exit 1`; normal head→`exit 0` GREEN; legitimately-partial (`forward_guard.status:infra_error`, error_rate null)→`exit 0` GREEN (no false red) |
 
 That last row is the one to read twice. A freshness assertion that checks an object's
 timestamp passes forever against a producer writing valid empty JSON every day. **It must
@@ -2084,7 +2084,7 @@ Before, throughput FELL past the knee — the congestion-collapse signature. Aft
 This also retires the rig-sizing question the heap-cap change raised: no container-memory override is
 needed, and the 60% cap is validated in the configuration users actually run.
 
-Read `peak_achieved_rps` with care all the same: it still reports **2,000**, because it admits only rungs
+Read `rig_valid_peak_achieved_rps` with care all the same: it still reports **2,000**, because it admits only rungs
 with ZERO dropped iterations. It has not moved and must not be read as "no improvement" — it measures a
 different property from the 26,937 knee, which is precisely the ambiguity item 19 must not publish past.
 
@@ -2409,7 +2409,7 @@ the one where the tension is real, and it is flagged there.
 | # | Gap | Why it matters | Ease | Verified? |
 |---|---|---|---|---|
 | 1 | **Incremental image download.** The fat jar ships as ONE ~100 MB layer (`docker/Dockerfile:241`). Split stable third-party deps from MockServer's own classes. | Helps BOTH cases, which is why it ranks first. **Upgrade**: every size win so far cut ABSOLUTE bytes, none considered layer REUSE, and the upgrade delta is currently 100%. **Fresh pull**: Docker and containerd fetch layers CONCURRENTLY (default 3 at a time, configurable), so a single 100 MB layer is pulled by ONE worker with no parallelism at all — splitting lets several fetch at once. That second benefit is bandwidth-dependent: it is largest on a latency-bound link to a distant registry where TCP ramp-up dominates, and near zero on an already-saturated pipe. | Medium. **NOTE: you cannot split a layer, only the ARTIFACT** — one file cannot span layers, so this means shipping deps as separate jars rather than one fat jar. The mechanism already exists: the ENTRYPOINT is already `-cp ...jar-with-dependencies.jar:/libs/*`. Also check the AppCDS archive, which is classpath-derived and changes every release regardless | **Yes** — layer measured at 99.8 MB via `docker history`. Of the other large layers, the jlink runtime is ALREADY correctly separate and stable across releases, the CDS archive cannot be made stable, and the distroless base is already many small layers — so the jar is the only one worth splitting |
-| 2 | **A measurement-validity checklist.** `optimisation-safety.md` codifies "did this change break correctness". Nothing codifies "does this number measure what it claims". | The recurring failure of this programme. In one day: a churn counter that counted loop iterations not store mutations; an INFO arm measured and discarded; `peak_achieved_rps` documented as tracking a ceiling it structurally cannot; a ladder's rung spacing read as a server curve. Each was honest, passing, and about the wrong subject | **Easiest thing here** — a short pre-registration: what is this a number OF, what would make it lie, degrade it and confirm red | n/a — process |
+| 2 | **A measurement-validity checklist.** `optimisation-safety.md` codifies "did this change break correctness". Nothing codifies "does this number measure what it claims". | The recurring failure of this programme. In one day: a churn counter that counted loop iterations not store mutations; an INFO arm measured and discarded; `peak_achieved_rps` (since renamed `rig_valid_peak_achieved_rps`) documented as tracking a ceiling it structurally cannot; a ladder's rung spacing read as a server curve. Each was honest, passing, and about the wrong subject | **Easiest thing here** — a short pre-registration: what is this a number OF, what would make it lie, degrade it and confirm red | n/a — process |
 | 3 | **Concurrent control plane.** G9 measured a SERIAL per-test cycle and says so explicitly; several suites sharing one server present concurrent control-plane calls, where contention and a throughput ceiling matter and the serial figure does not bound them | The shared-CI-server shape. **This is the item where the data-plane-priority rule bites**: the obvious fixes are shared structures the data plane must maintain | Medium — extend the existing G9 harness to N threads | Gap is stated in G9's own text |
 | 4 | **Load spikes.** Every harness is constant-arrival-rate or a stepped ladder WITH SETTLE WINDOWS THAT DISCARD THE START TRANSIENT. Correct for steady state, and it means the spike case is the one thing none of them can see | 0 -> N instantly is a rollout, or a CI suite starting 200 threads: accept backlog, pool growth, TLS handshake storm, GC on a sudden allocation burst | Medium — new k6 scenario; `regression.js` is the pattern to copy | **Yes** — settle-window exclusion confirmed in the harnesses |
 | 5 | **Time-to-steady-state, not time-to-ready.** Startup is measured to 566 ms ready and the readiness probe is fixed, but a ready JVM is not yet a fast one: AppCDS and AOT help class loading, not JIT | Nobody measures "requests until p99 stabilises". Hits the per-test-method and autoscaling profiles this plan already says it under-serves | Medium — measurement only at first, no product change | Reasoned from what the startup work measured |
@@ -2594,6 +2594,47 @@ an unverified estimate of its size, and verifying that estimate was cheaper than
 **Do not reach for option 2 first** on the grounds that it is the safest. It is the safest, and on
 the evidence available it does not fix the thing that was measured.
 
+## Item 9c — the relay does no body copy, and the plan's premise was wrong
+
+**Built and measured 2026-09-21** (`RelayByteCopyBenchmark`). The plan said "the relay is byte-copy
+dominated" and asked for allocation per relayed KB. Both the premise and the metric were wrong, and
+the benchmark now disproves them.
+
+**There is no userspace body copy.** A runtime probe prints the aggregated body's class at every
+parameter combination: it is always a `CompositeByteBuf`, whose components are the decoder's retained
+slices added BY REFERENCE. Netty carries the body from decode to encode without ever memcpying it.
+
+**The cost is per-FRAGMENT, not per-byte.** With the body pinned at 262,144 bytes and the socket
+read size swept, allocation halves every time the fragment size doubles:
+
+| fragment size | fragments | alloc B/op |
+|---|---|---|
+| 365 | 719 | 179,410 |
+| 730 | 360 | 89,977 |
+| 1,460 | 180 | 45,482 |
+| 5,840 | 45 | 12,577 |
+
+A linear fit gives **~247 B per fragment + ~1,440 B fixed per message, with a per-body-byte term of
+zero** — and it also retrodicts the earlier body-size sweep to within 1%. So **the lever is fragment
+sizing and pooling, not copy elimination**, and "allocation per relayed KB" is a meaningless unit
+here: it is really allocation per read.
+
+**The measurement-validity lesson, which is the part worth keeping.** The first version of this
+benchmark swept body size only, found a clean linear fit (0.171 then 0.167 B per body byte), and
+concluded the cumulator was copying. That conclusion was wrong and the check could not have caught
+it: **at a fixed fragment size, fragment count is itself linear in body size**, so per-fragment object
+churn and a per-byte copy produce identical signatures. A monotonic fit in the one variable you chose
+to vary only rules out "no relationship" — it cannot identify a mechanism. The free tell was
+arithmetic: 45,465 B/op for a 262,144-byte body is *six times below* the payload, and any real
+full-body copy has an allocation floor of at least the payload size. Discriminating needed the rival
+variable pinned and swept, which is now built into the benchmark as the `readSize` parameter.
+
+**What it does not cover:** the production socket read copies every kernel byte into a pooled receive
+buffer, and this benchmark omits that entirely because it hands the decoder wrappers over a
+pre-existing array. The figure is the relay's object/aggregation cost ABOVE the socket, not its total
+per-byte cost. Also excluded: SSE/streaming relay, HTTP/2 relay, raw CONNECT tunnel byte pumping,
+SOCKS, TLS, and de/recompression.
+
 ## What remains
 
 **Thirteen things are outstanding: seven can be settled from the repo, and six cannot be settled
@@ -2612,8 +2653,7 @@ flowchart TD
   churn/static allocation ratio"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> e["9b SOCKS5 rung,
-  9c JMH relay benchmark"]
+  left --> e["9b SOCKS5 rung"]
   left --> l["Low value: toSortedList dedup,
   .laptop block, G11 plaintext arm"]
   right --> f["Item 18: a load generator
@@ -2634,8 +2674,8 @@ flowchart TD
 |---|---|---|
 | **`sweep.js` VU pool** | Apply the Finding-3 `preAllocatedVUs == maxVUs` invariant — **but the value needs measuring first; this is not a one-liner** | `sweep.js` is the only arrival-rate script that never got the fix: `lib/config.js:300-301` still ramps `preAllocatedVUs: 200` -> `maxVUs: 4000`. **What `regression.js` actually did is the thing to copy, and it was not a plain equalisation:** it RAISED the floor (20 -> 50) *and* LOWERED the ceiling (200 -> 50), and its own comment warns that `preAllocatedVUs` is also the connection/handshake count. Naively equalising `sweep.js` at its current 4,000 would open **4,000 connections up front** — the connection storm the invariant exists to prevent. Under-sizing is not free either: it causes dropped iterations, and a dropped iteration is what the `rig_valid` exclusion keys off — that is what voided build #322 on a 0.4% blip. **Size it by measurement (Little's law against the target rung is the starting point, not the answer), then equalise.** See [Why `sweep.js` still ramps](#why-sweepjs-still-ramps) |
 | **G1 churn gate** | Gate the candidate-index churn/static **allocation** ratio at n=15,000, t=1 | `CandidateIndexChurnBenchmark` **runs nowhere in CI** — only `mockserver/mockserver-benchmark/run-g1-churn.sh` drives it, by hand. This is the control that would have caught G1 going stale. The ratio is now 1.06x with +/-3.4 B error bars — the most stable, least machine-sensitive number in the matrix — and a regression to rebuild-on-read would move it by three orders of magnitude |
-| **`peak_achieved_rps`** | Rename the top-level field to `rig_valid_peak_achieved_rps`, delete the false continuity claim, and give the two same-named quantities distinct names | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case. Also key `sweep_client_had_headroom` off a **count** of rig-valid rungs rather than off a throughput value, and reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run |
-| **9b / 9c proxy arms** | A SOCKS5 rung, and a JMH relay benchmark | Both were named when 9a shipped and neither has been built — there is no SOCKS arm anywhere under `mockserver-performance-test/k6/`, and no relay benchmark in `mockserver-benchmark`. **9b:** k6 supports an HTTP proxy but not SOCKS, so this needs a small driver or a SOCKS-aware sidecar; if that is awkward, downgrade it to a JMH benchmark of the handshake handlers rather than skipping the dimension. **9c:** the relay is byte-copy dominated and nothing like matching, so the matcher backstop says nothing about it — measure bytes/s and allocation per relayed KB |
+| **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
+| **9b proxy arm** | A SOCKS5 rung | Named when 9a shipped and never built — there is no SOCKS arm anywhere under `mockserver-performance-test/k6/`. k6 supports an HTTP proxy but not SOCKS, so this needs a small driver or a SOCKS-aware sidecar; if that is awkward, downgrade it to a JMH benchmark of the handshake handlers rather than skipping the dimension. **9c is DONE — see below, and note it refuted this row's own premise** |
 | **`toSortedList` dedup** | Deduplicate the rebuild across concurrent readers — **but do not over-invest** | `CircularPriorityQueue.java:299-306` still rebuilds the whole list whenever `sortedCache` is null, with no dedup, and the cache is still nulled on every structural mutation. **Its blast radius collapsed from "every request at any store >= 64" to almost nothing**, because the hit path no longer calls it: `RequestMatchers.java:755-762` passes it as a **Supplier**, evaluated only on a live `matchExactCase` flip or a non-ASCII method/path. Whether it is still worth fixing is a much smaller question than G1 posed |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
 | **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
@@ -2655,6 +2695,8 @@ that is merely undone.
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 ### `peak_achieved_rps` measures the client, not the server
+
+*(This defect led to the rename: the field is now called `rig_valid_peak_achieved_rps` in all three namespaces that name the rig-valid quantity. The heading retains the old name because the old name is the subject of this account.)*
 
 Found 2026-09-19 while reconciling build 325. Its `perf-result.json` reports a top-level
 `peak_achieved_rps` of **2,000.1** while the same artifact's own sweep block shows the server
@@ -3030,7 +3072,7 @@ load generator. What is left here is standing risk rather than an unanswered que
 **Published and kept current**, each figure carrying **version, date, core count, heap, GC and
 log level** — none of which the schema records today:
 
-- The knee curve, with **`healthy_ceiling_rps` as the headline** and `peak_achieved_rps` beside
+- The knee curve, with **`healthy_ceiling_rps` as the headline** and `rig_valid_peak_achieved_rps` beside
   it labelled as degraded, with the latency measured at each. Never a ceiling without its
   latency.
 - Per-behaviour percentiles — **now publishable (Finding 3 resolved 2026-09-16).** The tail

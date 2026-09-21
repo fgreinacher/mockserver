@@ -165,7 +165,7 @@ rate.
 
 **1. What is this a number OF?** Name the subject in one sentence, then check the instrument actually
 touches it.
-- `peak_achieved_rps` was documented as tracking the server's ceiling. It is `max(achieved)` over
+- `peak_achieved_rps` (now renamed `rig_valid_peak_achieved_rps`) was documented as tracking the server's ceiling. It is `max(achieved)` over
   rig-VALID rungs, so it is structurally capped at whichever rung the CLIENT stops being clean — a
   property of the rig. Build 325: server achieved 28,377 rps; the field read 2,000.1.
 - A dashboard measurement reported zero long tasks and a DOM frozen at exactly 218 elements. It was
