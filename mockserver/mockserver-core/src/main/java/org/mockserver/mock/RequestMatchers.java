@@ -123,6 +123,25 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     // (including in-place-update re-keys and overflow eviction) to the index in O(1), so a
     // request NEVER rebuilds it. See CandidateIndex (G1).
     private final CandidateIndex candidateIndex;
+    // Set of expectation ids that currently carry respondBeforeBody == TRUE. It is the fast-path
+    // gate for firstMatchingEarlyExpectation: EarlyMatchingHandler is on every HTTP/1.1 pipeline
+    // and calls that method once per connection, but respondBeforeBody is a niche opt-in, so for
+    // almost every deployment there are ZERO such expectations and the O(n) sorted-list scan (plus
+    // a possible toSortedList() rebuild) accomplishes nothing. When this set is empty the method
+    // returns null before touching the store; when it is non-empty the existing scan runs unchanged.
+    // The scan re-verifies the flag on every candidate, so it - not this set - is the source of
+    // truth: a wrong-NON-EMPTY set costs one pointless scan, while only a wrong-EMPTY set could lose
+    // the feature. That asymmetry is why the maintenance below is written to err toward keeping ids.
+    //
+    // A SET KEYED BY EXPECTATION ID, deliberately not an int counter: set operations are IDEMPOTENT
+    // (adding an id twice or removing an absent id is harmless), so the structure cannot silently
+    // drift out of step with the store the way a double-incremented or missed-decremented counter
+    // would. The dangerous failure is a WRONG-EMPTY set (respondBeforeBody silently stops working);
+    // id-keyed idempotency is what prevents it. Maintained INCREMENTALLY off the SAME CPQ mutation
+    // listener as candidateIndex (add / remove / in-place update / priority re-key / overflow
+    // eviction / reset), so it tracks every structural mutation without a rebuild. ConcurrentHashMap
+    // key-set: the data-plane read (isEmpty) is lock-free; the single-writer mutations need no lock.
+    private final Set<String> respondBeforeBodyIds = ConcurrentHashMap.newKeySet();
     // Monotonic control-plane modification counter. Incremented on every structural mutation of
     // httpRequestMatchers (add / remove / update-in-place / reconcile / eviction / reset). The
     // CandidateIndex no longer depends on it (it is maintained incrementally via the CPQ mutation
@@ -237,11 +256,16 @@ public class RequestMatchers extends MockServerMatcherNotifier {
             @Override
             public void onAdd(HttpRequestMatcher element) {
                 candidateIndex.onAdded(element);
+                trackRespondBeforeBody(element);
             }
 
             @Override
             public void onRemove(HttpRequestMatcher element) {
                 candidateIndex.onRemoved(element);
+                String id = idOf(element);
+                if (id != null) {
+                    respondBeforeBodyIds.remove(id);
+                }
             }
         });
         expectationRequestDefinitions = new CircularHashMap<>(configuration.maxExpectations());
@@ -604,6 +628,43 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 markMatchersModified();
                 notifyListeners(this, cause);
             }
+        }
+    }
+
+    /**
+     * The expectation id of a matcher, or {@code null} if the matcher has no expectation yet.
+     * Mirrors {@link CandidateIndex}'s id derivation so the respondBeforeBody set is keyed
+     * identically to the candidate index (both off the same CPQ mutation listener).
+     */
+    private static String idOf(HttpRequestMatcher matcher) {
+        if (matcher == null || matcher.getExpectation() == null) {
+            return null;
+        }
+        return matcher.getExpectation().getId();
+    }
+
+    /**
+     * Reconciles {@code element}'s membership of {@link #respondBeforeBodyIds} with its CURRENT
+     * expectation. Called from the CPQ mutation listener's {@code onAdd} — which fires on a fresh
+     * add AND on the {@code addPriorityKey} half of an in-place update (after
+     * {@code matcher.update(newExpectation)}), so it must ADD the id when the new expectation opts
+     * into respondBeforeBody and REMOVE it otherwise. Removing on the false branch is what makes an
+     * update that turns the flag OFF drop the stale id (the {@code onRemove} half already removed it
+     * under the OLD expectation; this keeps it removed under the NEW one). Idempotent in both
+     * directions.
+     */
+    private void trackRespondBeforeBody(HttpRequestMatcher element) {
+        String id = idOf(element);
+        if (id == null) {
+            return;
+        }
+        RequestDefinition requestDefinition = element.getExpectation().getHttpRequest();
+        boolean respondBeforeBody = requestDefinition instanceof HttpRequest
+            && Boolean.TRUE.equals(((HttpRequest) requestDefinition).getRespondBeforeBody());
+        if (respondBeforeBody) {
+            respondBeforeBodyIds.add(id);
+        } else {
+            respondBeforeBodyIds.remove(id);
         }
     }
 
@@ -1074,6 +1135,24 @@ public class RequestMatchers extends MockServerMatcherNotifier {
             && headersOnlyRequest.getPath() != null
             && headersOnlyRequest.getPath().getValue() != null
             && headersOnlyRequest.getPath().getValue().startsWith(HttpState.PATH_PREFIX)) {
+            return null;
+        }
+        // Fast path (runs AFTER the control-plane guard so it never changes that decision): when no
+        // registered expectation currently carries respondBeforeBody == TRUE, the whole scan below
+        // would hit `continue` on every matcher and return null — so return null now, before the
+        // O(n) toSortedList() walk (and any sorted-cache rebuild it would trigger). respondBeforeBody
+        // is a niche opt-in; for almost every deployment this set is empty. When it is non-empty the
+        // existing scan runs unchanged, so behaviour is identical UNDER THE EVENTUAL-CONSISTENCY
+        // CONTRACT this class already documents for data-plane reads (see the threading note above)
+        // - not in the stricter sense of "in every possible interleaving". One sub-microsecond window
+        // exists: addPriorityKey adds to the sort-order skip list BEFORE firing onAdd
+        // (CircularPriorityQueue:196-197), so while the LAST remaining respondBeforeBody expectation
+        // is being re-keyed in place, a concurrent read can see it in the list but not yet in this
+        // set, return null, and let that one request fall through to normal full-body matching. That
+        // is graceful degradation of an optimisation, not a wrong answer, and it is the same
+        // eventual consistency a reader already has against the CPQ snapshot itself.
+        // See the respondBeforeBodyIds field comment for why this is an id-keyed set and not a counter.
+        if (respondBeforeBodyIds.isEmpty()) {
             return null;
         }
         String requestNamespace = extractRequestNamespace(headersOnlyRequest);

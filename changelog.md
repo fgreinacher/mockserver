@@ -25,6 +25,12 @@ MockServer could lose data and report nothing.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **The first request on every connection no longer scans your whole expectation store.** MockServer
+  checks each new connection for an expectation configured with `respondBeforeBody`, and that check
+  walked every registered expectation — even though almost nobody uses the feature, so the walk
+  found nothing. It is now skipped outright unless such an expectation actually exists: **73.5
+  microseconds → 0.003** at 15,000 expectations, and it stops allocating entirely. If you do use
+  `respondBeforeBody`, nothing changes — the same check runs exactly as before.
 - **Clearing an expectation no longer scans every expectation you have registered.** Teardown between
   tests used to compare the clear against the whole store, so a suite sharing one long-lived server
   got slower at cleaning up as its expectations accumulated. A measured per-test cycle grew about

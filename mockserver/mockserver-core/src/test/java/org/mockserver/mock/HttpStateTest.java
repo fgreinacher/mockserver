@@ -4557,6 +4557,173 @@ public class HttpStateTest {
         assertThat(matched, is(expectation));
     }
 
+    // --- respondBeforeBody fast-path (empty-set skip) behavioural tests ---
+    // These exercise the id-keyed set that gates firstMatchingEarlyExpectation: when no expectation
+    // carries respondBeforeBody the scan is skipped, and the set must stay in step with the store
+    // across add / update / remove / reset / eviction so the feature never silently stops working.
+
+    @Test
+    public void shouldEarlyMatchRespondBeforeBodyAmongManyOrdinaryExpectations() {
+        // given many ordinary expectations plus one respondBeforeBody expectation
+        for (int i = 0; i < 50; i++) {
+            httpState.add(new Expectation(
+                request().withMethod("GET").withPath("/ordinary/" + i)
+            ).thenRespond(response().withStatusCode(200)));
+        }
+        Expectation early = new Expectation(
+            request().withMethod("POST").withPath("/upload").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403));
+        httpState.add(early);
+
+        // then the respondBeforeBody expectation is found by the early matcher
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(early));
+        // and an ordinary request (no respondBeforeBody expectation matches it) is not early-matched
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("GET").withPath("/ordinary/7")
+        ), is(nullValue()));
+    }
+
+    @Test
+    public void shouldEarlyMatchRespondBeforeBodyAfterStoreChurn() {
+        // given a respondBeforeBody expectation surrounded by churn (adds, updates and removes)
+        Expectation early = new Expectation(
+            request().withMethod("POST").withPath("/upload").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403));
+        httpState.add(early);
+        for (int i = 0; i < 20; i++) {
+            httpState.add(new Expectation(
+                request().withMethod("GET").withPath("/churn/" + i)
+            ).thenRespond(response().withStatusCode(200)));
+        }
+        for (int i = 0; i < 10; i++) {
+            // clear a specific expectation: the matcher to clear is carried in the request BODY
+            httpState.clear(request().withMethod("PUT").withBody(
+                requestDefinitionSerializer.serialize(request().withMethod("GET").withPath("/churn/" + i))
+            ));
+        }
+        for (int i = 10; i < 20; i++) {
+            // re-add (churn) around the early expectation
+            httpState.add(new Expectation(
+                request().withMethod("GET").withPath("/churn/" + i)
+            ).thenRespond(response().withStatusCode(201)));
+        }
+
+        // then the respondBeforeBody expectation still early-matches through all the churn
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(early));
+
+        // and once it is removed the early matcher no longer matches its path
+        httpState.clear(request().withMethod("PUT").withBody(
+            requestDefinitionSerializer.serialize(request().withMethod("POST").withPath("/upload"))
+        ));
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(nullValue()));
+    }
+
+    @Test
+    public void shouldTrackRespondBeforeBodyAcrossInPlaceUpdateFlagFlips() {
+        // given an in-place-updatable expectation (fixed id) that starts with respondBeforeBody=true
+        String id = "flip-expectation-id";
+        httpState.add(new Expectation(
+            request().withMethod("POST").withPath("/flip").withRespondBeforeBody(true)
+        ).withId(id).thenRespond(response().withStatusCode(403)));
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/flip")
+        ), is(notNullValue()));
+
+        // when the same id is updated in place to turn respondBeforeBody OFF
+        httpState.add(new Expectation(
+            request().withMethod("POST").withPath("/flip")
+        ).withId(id).thenRespond(response().withStatusCode(200)));
+
+        // then it no longer early-matches
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/flip")
+        ), is(nullValue()));
+
+        // when the same id is updated in place to turn respondBeforeBody back ON
+        httpState.add(new Expectation(
+            request().withMethod("POST").withPath("/flip").withRespondBeforeBody(true)
+        ).withId(id).thenRespond(response().withStatusCode(403)));
+
+        // then it early-matches again
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/flip")
+        ), is(notNullValue()));
+    }
+
+    @Test
+    public void shouldKeepRespondBeforeBodyTrackingConsistentAcrossReset() {
+        // given a respondBeforeBody expectation that early-matches
+        httpState.add(new Expectation(
+            request().withMethod("POST").withPath("/upload").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403)));
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(notNullValue()));
+
+        // when the store is reset
+        httpState.reset();
+
+        // then the early matcher no longer matches its former path
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(nullValue()));
+
+        // and a freshly-added respondBeforeBody expectation early-matches again (set works post-reset)
+        Expectation afterReset = new Expectation(
+            request().withMethod("POST").withPath("/again").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403));
+        httpState.add(afterReset);
+        assertThat(httpState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/again")
+        ), is(afterReset));
+    }
+
+    @Test
+    public void shouldKeepRespondBeforeBodyTrackingConsistentAcrossEviction() {
+        // given a store capped at maxExpectations=3
+        Scheduler evictionScheduler = mock(Scheduler.class);
+        HttpState smallState = new HttpState(
+            configuration().maxExpectations(3),
+            new MockServerLogger(configuration, MockServerLogger.class),
+            evictionScheduler
+        );
+
+        // and a respondBeforeBody expectation added FIRST (so it is the oldest / first evicted)
+        smallState.add(new Expectation(
+            request().withMethod("POST").withPath("/upload").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403)));
+        assertThat(smallState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(notNullValue()));
+
+        // when enough ordinary expectations are added to overflow the cap and evict the oldest
+        for (int i = 0; i < 3; i++) {
+            smallState.add(new Expectation(
+                request().withMethod("GET").withPath("/evict/" + i)
+            ).thenRespond(response().withStatusCode(200)));
+        }
+
+        // then the evicted respondBeforeBody expectation no longer early-matches
+        assertThat(smallState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/upload")
+        ), is(nullValue()));
+
+        // and a fresh respondBeforeBody expectation still early-matches (set consistent after eviction)
+        Expectation afterEviction = new Expectation(
+            request().withMethod("POST").withPath("/fresh").withRespondBeforeBody(true)
+        ).thenRespond(response().withStatusCode(403));
+        smallState.add(afterEviction);
+        assertThat(smallState.firstMatchingEarlyExpectation(
+            request().withMethod("POST").withPath("/fresh")
+        ), is(afterEviction));
+    }
+
     @Test
     public void shouldResetFileStore() {
         // given
