@@ -2791,9 +2791,37 @@ state still reds.
 whose upload fails leaves the gate silently absent with a green build. Pre-existing and shared
 identically with every sibling perf artifact; everything upstream of the upload fails closed.
 
+## G11 plaintext accept-churn — CLOSED, because the cheap version measures the wrong thing
+
+**Assessed 2026-09-21, not built.** The row carried its own condition — "only if it is near-free" —
+and the honest answer is that it is not, for a reason more interesting than cost.
+
+**The client driver really is reusable.** `proxy.js`'s non-reuse mechanism is
+`noConnectionReuse: MODE === 'handshake'`, which is NOT TLS-specific: pointed at `http://` it produces
+exactly the plaintext accept churn this item names. So a near-free-LOOKING arm is one flag away.
+
+**But the isolation is TLS-specific, and that is what kills it.** Handshake mode reports
+`http_req_tls_handshaking` (`proxy.js:165`) — a dedicated k6 phase covering ONLY the handshake, cleanly
+separated from request duration. **Plaintext has no equivalent phase.** `http_req_connecting` is
+client-side TCP/RTT and kernel accept-queue, not Netty pipeline construction; `http_req_waiting` is
+TTFB, which folds pipeline setup and protocol detection together with matching and handling. So a
+plaintext arm built the cheap way falls back to `http_req_duration` and, on loopback, reports
+something dominated by request handling. It would look like an accept-churn measurement and be a
+throughput measurement — precisely the failure this programme keeps finding.
+
+**The only valid isolation is server-side**, mirroring the TLS arm: CPU and allocation per accepted
+connection, sampled per-SUT and denominated by `requests_received_count` (`perf-test-run.sh:1567+`),
+with accept cost attributed by differencing against the keep-alive per-request baseline. That needs a
+plaintext SUT, a new CI invocation, the server-side sampling, a new enumeration block in compare, new
+budget keys (compare is fail-closed on unbudgeted metrics), and fresh baseline history before it could
+gate anything. Five of six requirements are substantial; the one cheap edit yields the invalid arm.
+
+Combined with the plan's own assessment — low-to-medium value and somewhat theoretical, since most
+clients pool — the item is closed. If it is ever revisited, the design above is the one to build.
+
 ## What remains
 
-**Nine things are outstanding: three can be settled from the repo, and six cannot be settled
+**Eight things are outstanding: two can be settled from the repo, and six cannot be settled
 here at all** — those six need a run on real hardware, or an external system to report something.
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
@@ -2805,8 +2833,7 @@ flowchart TD
   right["Needs a run, or an external system"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
-  left --> l["Low value: .laptop block,
-  G11 plaintext arm"]
+  left --> l[".laptop block"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
   right --> g["Build-272 SUT crash post-mortem"]
@@ -2825,7 +2852,6 @@ flowchart TD
 |---|---|---|
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 | **17(a) `.laptop` block** | The optional notify-only `.laptop` parallel block for `perf-test-compare.sh` | Item 17's measurement is done and lives in its own section; the harnesses write their own `--out` JSON and are deliberately unwired. Wiring them needs new **notify-only** wildcard budgets first, because compare is fail-closed on unbudgeted metrics: `laptop.*.heap_used_mb`, `laptop.*.threads_per_instance`, `laptop.*.total_threads`, `laptop.*.tcp_sockets`, `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`, `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` — all `dir:"up"`, `gating:false`. The existing `laptop.*` leaves (`ready_ms` / `cold_ready_ms` / `rss_mb` / `threads`) already cover the reused metrics |
-| **G11 plaintext churn** | One plaintext HTTP/1.1 accept-churn arm — **only if it is near-free** | Every direct data-plane arm uses keep-alive; the only non-reuse arm is `proxy.js` handshake mode, which is TLS. Item 21 is connection *count*, item 14 is *TLS* handshake cost; neither is plaintext accept churn. Low-to-medium value and somewhat theoretical, since most clients pool |
 
 ### Needs a run, or an external system
 
