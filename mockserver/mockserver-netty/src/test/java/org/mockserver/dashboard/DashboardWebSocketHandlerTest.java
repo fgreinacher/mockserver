@@ -20,13 +20,30 @@ import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.RequestMatchers;
 import org.mockserver.mock.listeners.MockServerMatcherNotifier;
+import org.mockserver.model.HttpRequest;
 import org.mockserver.model.RequestDefinition;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.uuid.UUIDService;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.ObjectWriter;
+import org.mockserver.configuration.Configuration;
+import org.mockserver.dashboard.model.DashboardLogEntryDTO;
+import org.mockserver.dashboard.serializers.DashboardLogEntryDTOGroupSerializer;
+import org.mockserver.dashboard.serializers.DashboardLogEntryDTOSerializer;
+import org.mockserver.dashboard.serializers.DescriptionProcessor;
+import org.mockserver.dashboard.serializers.DescriptionSerializer;
+import org.mockserver.dashboard.serializers.ThrowableSerializer;
+import org.mockserver.serialization.ObjectMapperFactory;
+
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedList;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -34,6 +51,7 @@ import static org.apache.commons.lang3.exception.ExceptionUtils.getStackTrace;
 import static org.hamcrest.CoreMatchers.anyOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.mockserver.character.Character.NEW_LINE;
@@ -1949,6 +1967,282 @@ public class DashboardWebSocketHandlerTest {
             assertThat(response.status().code(), not(anyOf(is(401), is(403))));
         }
     }
+
+    // =============================================================================================
+    // Unit 1: short-circuit the reverse UI log walk once all three output categories (logMessages,
+    // recordedRequests, proxiedRequests) have each reached UI_UPDATE_ITEM_LIMIT. The consumer used to
+    // walk the ENTIRE event log every update and merely stop ADDING after 100 in each category, so
+    // the per-update cost was O(entire log). The short-circuit stops the walk once nothing more can be
+    // added, turning it into O(depth actually consumed) WITHOUT changing the emitted frame.
+    //
+    // Two properties are proved separately:
+    //   (1) OUTPUT INVARIANCE (byte-identical): populateLogSections(shortCircuit=true) produces
+    //       byte-identical sections to populateLogSections(shortCircuit=false) over the SAME DTOs.
+    //   (2) WORK REDUCTION: on a large unfiltered log the number of DashboardLogEntryDTOs actually
+    //       constructed collapses from ~= log size to ~= the depth needed to fill the categories.
+    // =============================================================================================
+
+    private static final ObjectWriter SECTIONS_WRITER = ObjectMapperFactory.createObjectMapper(
+        new DashboardLogEntryDTOSerializer(),
+        new DashboardLogEntryDTOGroupSerializer(),
+        new DescriptionSerializer(),
+        new ThrowableSerializer()
+    ).writerWithDefaultPrettyPrinter();
+
+    private static DashboardLogEntryDTO logDto(LogEntry.LogMessageType type, String path) {
+        return new DashboardLogEntryDTO(
+            new LogEntry().setType(type).setHttpRequest(request(path)).setHttpResponse(response("ok")).setMessageFormat("m {}").setArguments(path),
+            configuration());
+    }
+
+    // Drive the extracted consumer over the given reverse-ordered DTOs and serialise the three
+    // resulting sections. Fresh DescriptionProcessors per call, exactly as production does per update.
+    private static String renderSections(List<DashboardLogEntryDTO> reverseOrdered, boolean shortCircuit) throws Exception {
+        List<Object> logMessages = new LinkedList<>();
+        List<Map<String, Object>> recordedRequests = new LinkedList<>();
+        List<Map<String, Object>> proxiedRequests = new LinkedList<>();
+        DashboardWebSocketHandler.populateLogSections(
+            reverseOrdered.stream(), shortCircuit,
+            logMessages, recordedRequests, proxiedRequests,
+            new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
+        Map<String, Object> sections = new LinkedHashMap<>();
+        sections.put("logMessages", logMessages);
+        sections.put("recordedRequests", recordedRequests);
+        sections.put("proxiedRequests", proxiedRequests);
+        return SECTIONS_WRITER.writeValueAsString(sections);
+    }
+
+    @Test
+    public void shortCircuitProducesByteIdenticalSectionsToFullWalk() throws Exception {
+        // Reverse (newest-first) order chosen so recordedRequests is the LAST category to fill: the
+        // 100 FORWARDED entries fill proxiedRequests and logMessages first, then the 100 RECEIVED
+        // entries fill recordedRequests, then 3000 deeper RECEIVED entries that the caps must drop.
+        // A short-circuit that stopped as soon as ANY category was full would drop the RECEIVED block
+        // and diverge from the full walk — so this data makes that bug observable.
+        List<DashboardLogEntryDTO> reverse = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            reverse.add(logDto(FORWARDED_REQUEST, "/proxied-" + i));
+        }
+        for (int i = 0; i < 100; i++) {
+            reverse.add(logDto(RECEIVED_REQUEST, "/recorded-" + i));
+        }
+        for (int i = 0; i < 3000; i++) {
+            reverse.add(logDto(RECEIVED_REQUEST, "/filler-" + i));
+        }
+
+        String shortCircuited = renderSections(reverse, true);
+        String fullWalk = renderSections(reverse, false);
+
+        // (1) byte-identical
+        assertThat("short-circuit output must be byte-identical to the full walk", shortCircuited, is(fullWalk));
+        // (2) and it is the genuinely full frame, not two empty frames coincidentally equal
+        assertThat("recordedRequests filled to the cap", countOccurrences(fullWalk, "_request\""), is(100));
+        assertThat("proxiedRequests filled to the cap", countOccurrences(fullWalk, "_proxied\""), is(100));
+        assertThat("logMessages filled to the cap", countOccurrences(fullWalk, "_log\""), is(100));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // End-to-end (real MockServerEventLog + real sendUpdate) tests. logDtoConstructionCountForTesting()
+    // counts DashboardLogEntryDTO constructions on THIS handler's stream, so it measures the walk
+    // depth directly. A single controlled scan is taken (throttle permit ensured free first, so the
+    // first send is not retried into extra scans).
+    // ---------------------------------------------------------------------------------------------
+
+    private static LogEntry received(String path) {
+        return new LogEntry().setType(RECEIVED_REQUEST).setHttpRequest(request(path)).setMessageFormat("received {}").setArguments(path);
+    }
+
+    private static LogEntry forwarded(String path) {
+        return new LogEntry().setType(FORWARDED_REQUEST).setHttpRequest(request(path)).setHttpResponse(response("ok")).setMessageFormat("forwarded {}").setArguments(path);
+    }
+
+    private DashboardWebSocketHandler newSeededHandler(List<LogEntry> entries) {
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Configuration configuration = configuration().maxLogEntries(50000);
+        Scheduler scheduler = new Scheduler(configuration, mockServerLogger, true);
+        HttpState httpState = new HttpState(configuration, mockServerLogger, scheduler);
+        MockServerEventLog eventLog = httpState.getMockServerLog();
+        for (LogEntry entry : entries) {
+            eventLog.add(entry);
+        }
+        return new DashboardWebSocketHandler(httpState, false, true).registerListeners();
+    }
+
+    private static final class ScanResult {
+        private final String frame;
+        private final long dtosConstructed;
+
+        private ScanResult(String frame, long dtosConstructed) {
+            this.frame = frame;
+            this.dtosConstructed = dtosConstructed;
+        }
+    }
+
+    // One controlled scan: wait for a throttle permit, reset the counter, send once, wait for the
+    // frame, then let the async counter settle. Returns the frame text and the DTOs constructed.
+    private ScanResult singleScan(DashboardWebSocketHandler handler, MockChannelHandlerContext ctx, RequestDefinition filter) throws InterruptedException {
+        Thread.sleep(1200); // ensure the once-per-second throttle permit is available so no retry-scan fires
+        ctx.textWebSocketFrame = null;
+        handler.resetLogDtoConstructionCountForTesting();
+        handler.sendUpdate(ctx, filter);
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline && ctx.textWebSocketFrame == null) {
+            Thread.sleep(100);
+        }
+        // allow the off-thread scan's counter to settle
+        long previous = -1;
+        long settleDeadline = System.currentTimeMillis() + 3000;
+        while (System.currentTimeMillis() < settleDeadline) {
+            long current = handler.logDtoConstructionCountForTesting();
+            if (current == previous) {
+                break;
+            }
+            previous = current;
+            Thread.sleep(150);
+        }
+        return new ScanResult(ctx.textWebSocketFrame == null ? null : ctx.textWebSocketFrame.text(),
+            handler.logDtoConstructionCountForTesting());
+    }
+
+    /**
+     * The work reduction, measured DETERMINISTICALLY by counting how many entries the short-circuit
+     * actually pulls from the stream.
+     * <p>
+     * An earlier version of this test drove a real end-to-end scan and read an instance-scoped DTO
+     * counter. It was FLAKY and review caught it failing 1 run in 4 with 2,211 against a `< 500`
+     * bound. The counter was not wrong about the code — 2,211 is about 11 x 201, i.e. each
+     * individual scan short-circuited correctly and the counter had summed roughly eleven of them.
+     * Two things fire extra scans inside the measurement window: the retry path re-schedules
+     * sendUpdate whenever the once-per-second permit is contended, and each scan's own querySnapshot
+     * publishes to the disruptor, which this handler listens to. Under the parallel surefire provider
+     * that contention is exactly what CI produces.
+     * <p>
+     * So the instrument moved to where it can be exact: drive populateLogSections directly, as the
+     * byte-identity test does, and count pulls with a peek. No scheduler, no throttle, no listener
+     * feedback — the number is the walk depth and nothing else.
+     */
+    @Test
+    public void shortCircuitPullsOnlyTheDepthItNeeds() throws Exception {
+        // Newest-first: 100 FORWARDED fill proxied + logMessages, then 100 RECEIVED fill recorded,
+        // then 4,000 deeper entries the caps must never touch.
+        List<DashboardLogEntryDTO> reverse = new ArrayList<>();
+        for (int i = 0; i < 100; i++) {
+            reverse.add(logDto(FORWARDED_REQUEST, "/proxied-" + i));
+        }
+        for (int i = 0; i < 100; i++) {
+            reverse.add(logDto(RECEIVED_REQUEST, "/recorded-" + i));
+        }
+        for (int i = 0; i < 4000; i++) {
+            reverse.add(logDto(RECEIVED_REQUEST, "/filler-" + i));
+        }
+
+        long shortCircuited = countPulls(reverse, true);
+        long fullWalk = countPulls(reverse, false);
+
+        // 200 to fill all three categories, plus the one element whose takeWhile test fails and ends
+        // the stream. Exact, not a loose bound - a loose bound is what hid the flake.
+        assertThat("short-circuit pulls only the depth it needs", shortCircuited, is(201L));
+        assertThat("the un-short-circuited walk pulls everything", fullWalk, is(4200L));
+    }
+
+    /** Counts how many elements populateLogSections actually pulls from the stream. */
+    private static long countPulls(List<DashboardLogEntryDTO> reverseOrdered, boolean shortCircuit) throws Exception {
+        AtomicLong pulled = new AtomicLong();
+        DashboardWebSocketHandler.populateLogSections(
+            reverseOrdered.stream().peek(ignored -> pulled.incrementAndGet()), shortCircuit,
+            new LinkedList<>(), new LinkedList<>(), new LinkedList<>(),
+            new DescriptionProcessor(), new DescriptionProcessor(), new DescriptionProcessor());
+        return pulled.get();
+    }
+
+    @Test
+    public void filteredDashboardStillFindsSparseMatchesDeepInTheLog() throws Exception {
+        // 5 matching /needle RECEIVED at the BOTTOM (oldest / deepest in reverse), buried under 3000
+        // non-matching /other RECEIVED. The categories never fill (only 5 match), so the short-circuit
+        // must NOT stop early — the deep matches must still be found.
+        List<LogEntry> entries = new ArrayList<>();
+        for (int i = 0; i < 5; i++) {
+            entries.add(received("/needle-" + i));
+        }
+        for (int i = 0; i < 3000; i++) {
+            entries.add(received("/other-" + i));
+        }
+        DashboardWebSocketHandler handler = newSeededHandler(entries);
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        HttpRequest filter = request("/needle-.*");
+        handler.getClientRegistry().put(ctx, filter);
+
+        ScanResult result = singleScan(handler, ctx, filter);
+
+        assertThat("a frame was produced", result.frame, is(not(nullValue())));
+        assertThat("all 5 sparse deep matches were found", countOccurrences(result.frame, "_request\""), is(5));
+        assertThat("only matching traffic is shown", result.frame, containsString("/needle-"));
+        assertThat("non-matching traffic is excluded", result.frame, not(containsString("/other-")));
+    }
+
+    @Test
+    public void fewerEntriesThanCapAreAllRendered() throws Exception {
+        List<LogEntry> entries = new ArrayList<>();
+        for (int i = 0; i < 10; i++) {
+            entries.add(received("/recorded-" + i));
+        }
+        for (int i = 0; i < 10; i++) {
+            entries.add(forwarded("/proxied-" + i));
+        }
+        DashboardWebSocketHandler handler = newSeededHandler(entries);
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        handler.getClientRegistry().put(ctx, request());
+
+        ScanResult result = singleScan(handler, ctx, request());
+
+        assertThat("a frame was produced", result.frame, is(not(nullValue())));
+        assertThat("all recorded requests rendered", countOccurrences(result.frame, "_request\""), is(10));
+        assertThat("all proxied requests rendered", countOccurrences(result.frame, "_proxied\""), is(10));
+    }
+
+    @Test
+    public void emptyLogProducesEmptySections() throws Exception {
+        DashboardWebSocketHandler handler = newSeededHandler(Collections.emptyList());
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        handler.getClientRegistry().put(ctx, request());
+
+        ScanResult result = singleScan(handler, ctx, request());
+
+        assertThat("a frame was produced", result.frame, is(not(nullValue())));
+        assertThat("no recorded requests", countOccurrences(result.frame, "_request\""), is(0));
+        assertThat("no proxied requests", countOccurrences(result.frame, "_proxied\""), is(0));
+        assertThat("no DTOs constructed for an empty log", result.dtosConstructed, is(0L));
+    }
+
+    @Test
+    public void multipleDashboardsWithDifferentFiltersEachSeeTheirOwnView() throws Exception {
+        List<LogEntry> entries = new ArrayList<>();
+        for (int i = 0; i < 3; i++) {
+            entries.add(received("/needle-" + i));
+        }
+        for (int i = 0; i < 3; i++) {
+            entries.add(received("/other-" + i));
+        }
+        DashboardWebSocketHandler handler = newSeededHandler(entries);
+
+        MockChannelHandlerContext unfiltered = new MockChannelHandlerContext();
+        handler.getClientRegistry().put(unfiltered, request());
+        MockChannelHandlerContext filtered = new MockChannelHandlerContext();
+        HttpRequest filter = request("/needle-.*");
+        handler.getClientRegistry().put(filtered, filter);
+
+        ScanResult unfilteredResult = singleScan(handler, unfiltered, request());
+        ScanResult filteredResult = singleScan(handler, filtered, filter);
+
+        assertThat(unfilteredResult.frame, is(not(nullValue())));
+        assertThat(filteredResult.frame, is(not(nullValue())));
+        // The unfiltered dashboard sees all six requests.
+        assertThat("unfiltered dashboard sees all traffic", countOccurrences(unfilteredResult.frame, "_request\""), is(6));
+        // The filtered dashboard sees only its three matches.
+        assertThat("filtered dashboard sees only its matches", countOccurrences(filteredResult.frame, "_request\""), is(3));
+        assertThat(filteredResult.frame, not(containsString("/other-")));
+    }
+
 
     public static class MockChannelHandlerContext extends EmbeddedChannel {
 

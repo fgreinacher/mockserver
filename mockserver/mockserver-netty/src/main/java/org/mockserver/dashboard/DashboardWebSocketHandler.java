@@ -49,6 +49,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.google.common.net.HttpHeaders.HOST;
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_LENGTH;
@@ -75,6 +76,22 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private static final AttributeKey<Boolean> CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET = AttributeKey.valueOf("CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET");
     private static final String UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI = "/_mockserver_ui_websocket";
     private static final int UI_UPDATE_ITEM_LIMIT = 100;
+    // Test-only instrument (instance-scoped, so concurrent tests / handlers never pollute each
+    // other's reading): counts every DashboardLogEntryDTO this handler's per-update log stream
+    // constructs, i.e. the "expensive" per-entry work (the entry survived the cheap predicate AND
+    // the request matcher, then a DTO was built). Used to prove the short-circuit reduces the walk
+    // from O(entire log) to O(depth actually consumed). Not part of any wire format.
+    private final AtomicLong logDtoConstructionCount = new AtomicLong();
+
+    @VisibleForTesting
+    long logDtoConstructionCountForTesting() {
+        return logDtoConstructionCount.get();
+    }
+
+    @VisibleForTesting
+    void resetLogDtoConstructionCountForTesting() {
+        logDtoConstructionCount.set(0);
+    }
     // Eagerly initialised and safely published via static-final so reads from the off-event-loop
     // scheduler threads see a fully constructed mapper without a data race. The mapper is stateless
     // and thread-safe once configured, so a single shared instance is correct.
@@ -499,7 +516,10 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 logEntry -> !logEntry.isDeleted()
                     && (logEntry.isAlwaysLog() || overrides == null || overrides.isEmpty()
                     || MockServerLogger.isEnabled(logEntry.getLogLevel(), LogEntry.LogMessageTypeCategory.resolveEffectiveLevel(logEntry.getType(), overrides, globalLevel))),
-                logEntry -> new DashboardLogEntryDTO(logEntry, configuration),
+                logEntry -> {
+                    logDtoConstructionCount.incrementAndGet();
+                    return new DashboardLogEntryDTO(logEntry, configuration);
+                },
                 reverseLogEventsStream -> {
                     List<ImmutableMap<String, Object>> activeExpectations = requestMatchers
                         .retrieveRequestMatchers(httpRequest)
@@ -522,80 +542,10 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     List<Map<String, Object>> proxiedRequests = new LinkedList<>();
                     List<Map<String, Object>> recordedRequests = new LinkedList<>();
                     List<Object> logMessages = new LinkedList<>();
-                    Map<String, DashboardLogEntryDTOGroup> logEntryGroups = new HashMap<>();
-                    // The dashboard Traffic/Sessions/Cost panels render each
-                    // mock-matched request alongside the response that was
-                    // returned. The reverse-chronological stream surfaces the
-                    // response (EXPECTATION_RESPONSE / NO_MATCH_RESPONSE)
-                    // before its corresponding RECEIVED_REQUEST, so we stash
-                    // responses by correlationId and look them up when the
-                    // matching request is processed.
-                    Map<String, Object> responsesByCorrelationId = new HashMap<>();
-                    reverseLogEventsStream
-                        .forEach(logEntryDTO -> {
-                            if (logEntryDTO != null) {
-                                if (logMessages.size() < UI_UPDATE_ITEM_LIMIT) {
-                                    DashboardLogEntryDTO dashboardLogEntryDTO = logEntryDTO.setDescription(logMessagesDescriptionProcessor.description(logEntryDTO));
-                                    if (isNotBlank(logEntryDTO.getCorrelationId()) && logEntryDTO.getType() != TRACE) {
-                                        DashboardLogEntryDTOGroup logEntryGroup = logEntryGroups.get(logEntryDTO.getCorrelationId());
-                                        if (logEntryGroup == null) {
-                                            logEntryGroup = new DashboardLogEntryDTOGroup(logMessagesDescriptionProcessor);
-                                            logEntryGroups.put(logEntryDTO.getCorrelationId(), logEntryGroup);
-                                            logMessages.add(logEntryGroup);
-                                        }
-                                        logEntryGroup.getLogEntryDTOS().add(dashboardLogEntryDTO);
-                                    } else {
-                                        logMessages.add(dashboardLogEntryDTO);
-                                    }
-                                }
-                                if ((logEntryDTO.getType() == EXPECTATION_RESPONSE || logEntryDTO.getType() == NO_MATCH_RESPONSE)
-                                    && isNotBlank(logEntryDTO.getCorrelationId())
-                                    && logEntryDTO.getHttpResponse() != null) {
-                                    responsesByCorrelationId.putIfAbsent(logEntryDTO.getCorrelationId(), logEntryDTO.getHttpResponse());
-                                }
-                                if (recordedRequestsPredicate.test(logEntryDTO) && recordedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
-                                    for (RequestDefinition request : logEntryDTO.getHttpRequests()) {
-                                        if (request != null) {
-                                            Map<String, Object> value = new LinkedHashMap<>();
-                                            value.put("httpRequest", request);
-                                            Object response = isNotBlank(logEntryDTO.getCorrelationId())
-                                                ? responsesByCorrelationId.get(logEntryDTO.getCorrelationId())
-                                                : null;
-                                            if (response != null) {
-                                                value.put("httpResponse", response);
-                                            }
-                                            Map<String, Object> entry = new LinkedHashMap<>();
-                                            Description description = recordedRequestsDescriptionProcessor.description(request);
-                                            if (description != null) {
-                                                entry.put("description", description);
-                                            }
-                                            entry.put("value", value);
-                                            entry.put("key", logEntryDTO.getId() + "_request");
-                                            recordedRequests.add(entry);
-                                        }
-                                    }
-                                }
-                                if (proxiedRequestsPredicate.test(logEntryDTO) && proxiedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
-                                    Map<String, Object> value = new LinkedHashMap<>();
-                                    if (logEntryDTO.getHttpRequest() != null) {
-                                        value.put("httpRequest", logEntryDTO.getHttpRequest());
-                                    }
-                                    if (logEntryDTO.getHttpResponse() != null) {
-                                        value.put("httpResponse", logEntryDTO.getHttpResponse());
-                                    }
-                                    Map<String, Object> entry = new LinkedHashMap<>();
-                                    Description description = proxiedRequestsDescriptionProcessor.description(logEntryDTO.getHttpRequest());
-                                    if (description != null) {
-                                        entry.put("description", description);
-                                    }
-                                    entry.put("value", value);
-                                    entry.put("key", logEntryDTO.getId() + "_proxied");
-                                    if (!value.isEmpty()) {
-                                        proxiedRequests.add(entry);
-                                    }
-                                }
-                            }
-                        });
+                    populateLogSections(
+                        reverseLogEventsStream, true,
+                        logMessages, recordedRequests, proxiedRequests,
+                        logMessagesDescriptionProcessor, recordedRequestsDescriptionProcessor, proxiedRequestsDescriptionProcessor);
                     sendMessage(ctx, httpRequest, ImmutableMap.of(
                         "logMessages", logMessages,
                         "activeExpectations", activeExpectations,
@@ -604,6 +554,112 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     ), retryCount);
                 }
             );
+    }
+
+    // Consume the reverse-chronological UI log stream into the three dashboard sections.
+    // Extracted (and package-private) so a test can drive it twice over an IDENTICAL list of
+    // DTOs -- once with shortCircuit=true and once with shortCircuit=false -- and assert the two
+    // produce byte-identical sections, proving the short-circuit changes performance not output.
+    // Production always passes shortCircuit=true.
+    @VisibleForTesting
+    static void populateLogSections(
+        Stream<DashboardLogEntryDTO> reverseLogEventsStream,
+        boolean shortCircuit,
+        List<Object> logMessages,
+        List<Map<String, Object>> recordedRequests,
+        List<Map<String, Object>> proxiedRequests,
+        DescriptionProcessor logMessagesDescriptionProcessor,
+        DescriptionProcessor recordedRequestsDescriptionProcessor,
+        DescriptionProcessor proxiedRequestsDescriptionProcessor
+    ) {
+        Map<String, DashboardLogEntryDTOGroup> logEntryGroups = new HashMap<>();
+        // The dashboard Traffic/Sessions/Cost panels render each
+        // mock-matched request alongside the response that was
+        // returned. The reverse-chronological stream surfaces the
+        // response (EXPECTATION_RESPONSE / NO_MATCH_RESPONSE)
+        // before its corresponding RECEIVED_REQUEST, so we stash
+        // responses by correlationId and look them up when the
+        // matching request is processed.
+        Map<String, Object> responsesByCorrelationId = new HashMap<>();
+        // Short-circuit once all three output categories are full. The stream is sequential and
+        // ordered and this predicate is evaluated BEFORE each element, so an element only reaches
+        // the body while at least one category still has room. Once logMessages, recordedRequests
+        // and proxiedRequests have each hit UI_UPDATE_ITEM_LIMIT no later element could be added to
+        // ANY of them (every add below is guarded by the same size check, and responsesByCorrelationId
+        // is only ever consumed to enrich recordedRequests, which is full), so stopping here drops
+        // only entries the old full walk would have discarded -- the emitted frame is byte-identical
+        // while the walk becomes O(depth needed) not O(entire log).
+        Stream<DashboardLogEntryDTO> boundedStream = shortCircuit
+            ? reverseLogEventsStream.takeWhile(logEntryDTO ->
+                logMessages.size() < UI_UPDATE_ITEM_LIMIT
+                    || recordedRequests.size() < UI_UPDATE_ITEM_LIMIT
+                    || proxiedRequests.size() < UI_UPDATE_ITEM_LIMIT)
+            : reverseLogEventsStream;
+        boundedStream
+            .forEach(logEntryDTO -> {
+                if (logEntryDTO != null) {
+                    if (logMessages.size() < UI_UPDATE_ITEM_LIMIT) {
+                        DashboardLogEntryDTO dashboardLogEntryDTO = logEntryDTO.setDescription(logMessagesDescriptionProcessor.description(logEntryDTO));
+                        if (isNotBlank(logEntryDTO.getCorrelationId()) && logEntryDTO.getType() != TRACE) {
+                            DashboardLogEntryDTOGroup logEntryGroup = logEntryGroups.get(logEntryDTO.getCorrelationId());
+                            if (logEntryGroup == null) {
+                                logEntryGroup = new DashboardLogEntryDTOGroup(logMessagesDescriptionProcessor);
+                                logEntryGroups.put(logEntryDTO.getCorrelationId(), logEntryGroup);
+                                logMessages.add(logEntryGroup);
+                            }
+                            logEntryGroup.getLogEntryDTOS().add(dashboardLogEntryDTO);
+                        } else {
+                            logMessages.add(dashboardLogEntryDTO);
+                        }
+                    }
+                    if ((logEntryDTO.getType() == EXPECTATION_RESPONSE || logEntryDTO.getType() == NO_MATCH_RESPONSE)
+                        && isNotBlank(logEntryDTO.getCorrelationId())
+                        && logEntryDTO.getHttpResponse() != null) {
+                        responsesByCorrelationId.putIfAbsent(logEntryDTO.getCorrelationId(), logEntryDTO.getHttpResponse());
+                    }
+                    if (recordedRequestsPredicate.test(logEntryDTO) && recordedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
+                        for (RequestDefinition request : logEntryDTO.getHttpRequests()) {
+                            if (request != null) {
+                                Map<String, Object> value = new LinkedHashMap<>();
+                                value.put("httpRequest", request);
+                                Object response = isNotBlank(logEntryDTO.getCorrelationId())
+                                    ? responsesByCorrelationId.get(logEntryDTO.getCorrelationId())
+                                    : null;
+                                if (response != null) {
+                                    value.put("httpResponse", response);
+                                }
+                                Map<String, Object> entry = new LinkedHashMap<>();
+                                Description description = recordedRequestsDescriptionProcessor.description(request);
+                                if (description != null) {
+                                    entry.put("description", description);
+                                }
+                                entry.put("value", value);
+                                entry.put("key", logEntryDTO.getId() + "_request");
+                                recordedRequests.add(entry);
+                            }
+                        }
+                    }
+                    if (proxiedRequestsPredicate.test(logEntryDTO) && proxiedRequests.size() < UI_UPDATE_ITEM_LIMIT) {
+                        Map<String, Object> value = new LinkedHashMap<>();
+                        if (logEntryDTO.getHttpRequest() != null) {
+                            value.put("httpRequest", logEntryDTO.getHttpRequest());
+                        }
+                        if (logEntryDTO.getHttpResponse() != null) {
+                            value.put("httpResponse", logEntryDTO.getHttpResponse());
+                        }
+                        Map<String, Object> entry = new LinkedHashMap<>();
+                        Description description = proxiedRequestsDescriptionProcessor.description(logEntryDTO.getHttpRequest());
+                        if (description != null) {
+                            entry.put("description", description);
+                        }
+                        entry.put("value", value);
+                        entry.put("key", logEntryDTO.getId() + "_proxied");
+                        if (!value.isEmpty()) {
+                            proxiedRequests.add(entry);
+                        }
+                    }
+                }
+            });
     }
 
     // Lazily created, bounded like expectationRequestDefinitions (one entry per live expectation).

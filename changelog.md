@@ -31,6 +31,11 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **An open dashboard no longer reads your whole request log every second.** To fill three panels of
+  100 entries each, MockServer walked every entry it held — running a full request match and building
+  a display object for all of them — and simply stopped adding once the panels were full. It now stops
+  walking once they are full: on a 4,200-entry log that is **201 entries examined instead of 4,200**,
+  and the gap widens the more traffic you have captured. The dashboard shows exactly the same thing.
 - **Having the dashboard open costs the server far less.** Every second, for each connected
   dashboard, MockServer rebuilt the JSON for up to 100 expectations — even though expectations rarely
   change. That JSON is now reused until the expectation actually changes: over an identical run, the
