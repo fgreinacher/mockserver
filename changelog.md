@@ -31,6 +31,11 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **Upgrading the Docker image downloads far less.** The image shipped MockServer and all its
+  dependencies as a single ~57 MB layer, so every new version re-pulled all of it — even though the
+  dependencies had barely changed. They now sit on their own layer, which Docker reuses: a patch
+  upgrade pulls about **21 MB instead of 66 MB**. The image total is unchanged, and on a first pull
+  the layers now fetch in parallel rather than one after another.
 - **An open dashboard no longer reads your whole request log every second.** To fill three panels of
   100 entries each, MockServer walked every entry it held — running a full request match and building
   a display object for all of them — and simply stopped adding once the panels were full. It now stops

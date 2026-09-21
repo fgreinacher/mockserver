@@ -21,10 +21,21 @@ function build_initialiser_jar() {
   if [[ -z "${MOCKSERVER_JAR}" ]]; then
     # Fall back: extract JAR from the integration_testing image
     printMessage "Fat JAR not found locally; extracting from Docker image"
-    MOCKSERVER_JAR="${SCRIPT_DIR}/mockserver-netty-jar-with-dependencies.jar"
+    # The integration_testing image is built from docker/Dockerfile, which since the incremental-pull
+    # work ships the classes as TWO jars - /mockserver.jar (org/mockserver/**) and
+    # /mockserver-deps.jar - rather than one fat jar. Extract both and MERGE them back, because
+    # everything downstream (the cp below, Dockerfile.initialiser's compile classpath) expects a
+    # single fat jar at a fixed name. Copying only /mockserver.jar would produce a jar with
+    # MockServer's classes and none of its dependencies, which compiles until it doesn't.
+    local EXTRACT_DIR="${SCRIPT_DIR}/.jar-extract"
+    rm -rf "${EXTRACT_DIR}"; mkdir -p "${EXTRACT_DIR}/merged"
+    MOCKSERVER_JAR="${EXTRACT_DIR}/mockserver-netty-jar-with-dependencies.jar"
     docker create --name libs_extract mockserver/mockserver:integration_testing true >/dev/null 2>&1
-    docker cp libs_extract:/mockserver-netty-jar-with-dependencies.jar "${MOCKSERVER_JAR}"
+    docker cp libs_extract:/mockserver.jar "${EXTRACT_DIR}/own.jar"
+    docker cp libs_extract:/mockserver-deps.jar "${EXTRACT_DIR}/deps.jar"
     docker rm -f libs_extract >/dev/null 2>&1
+    # deps first so its META-INF/MANIFEST.MF lands in the merged jar (own.jar is manifest-less)
+    ( cd "${EXTRACT_DIR}/merged" && unzip -qo ../deps.jar && unzip -qo ../own.jar && zip -qr "${MOCKSERVER_JAR}" . )
   fi
 
   # Copy fat JAR to build context for the Dockerfile

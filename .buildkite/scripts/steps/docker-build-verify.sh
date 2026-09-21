@@ -82,7 +82,11 @@ REACTOR_DIR="$REPO_ROOT/mockserver"
 IMAGE_TAG="${DOCKER_VERIFY_IMAGE:-mockserver/mockserver:docker-build-verify}"
 PROBE_JDK_IMAGE="eclipse-temurin:25-jdk-noble"
 IN_IMAGE_JAVA="/usr/lib/jvm/temurin25-trimmed/bin/java"
-IN_IMAGE_JAR="/mockserver-netty-jar-with-dependencies.jar"
+# The image ships MockServer's own classes and its third-party dependencies as TWO jars on the
+# classpath (docker/Dockerfile splits the fat jar for incremental image download), so the in-image
+# classpath is both jars. Used below both for the OpenSsl probe (netty lives in deps) and for the
+# HealthCheck invocation (org.mockserver.cli.HealthCheck lives in the own-classes jar).
+IN_IMAGE_JAR="/mockserver.jar:/mockserver-deps.jar"
 
 # ── Detect host arch → docker TARGETARCH + the .so the runtime must contain ─────
 case "$(uname -m)" in

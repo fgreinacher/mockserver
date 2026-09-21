@@ -137,7 +137,7 @@ For example to add all jar files in the current directory, map <strong>$(pwd)</s
 <p>The built-in health check works automatically with no configuration required:</p>
 
 <pre><code class="code">HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3
-  CMD ["java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]</code></pre>
+  CMD ["java", "-cp", "/mockserver.jar:/mockserver-deps.jar", "org.mockserver.cli.HealthCheck"]</code></pre>
 
 <p>The health check reads the <span class="inline_code">SERVER_PORT</span> or <span class="inline_code">MOCKSERVER_SERVER_PORT</span> environment variable to determine the correct port (defaults to 1080). Docker reports the container as <span class="inline_code">healthy</span> once MockServer is ready to accept requests.</p>
 

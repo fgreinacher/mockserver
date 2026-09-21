@@ -154,7 +154,7 @@ All production MockServer **server** Dockerfiles include a built-in `HEALTHCHECK
 
 ```dockerfile
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
-  CMD ["java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]
+  CMD ["java", "-cp", "/mockserver.jar:/mockserver-deps.jar", "org.mockserver.cli.HealthCheck"]
 ```
 
 The health check reads `SERVER_PORT` / `MOCKSERVER_SERVER_PORT` to determine the correct port (defaults to 1080).
@@ -183,7 +183,7 @@ distroless/java-base-debian12:nonroot
 
     RT --> EXPOSE["EXPOSE 1080"]
     RT --> ENTRY["ENTRYPOINT java -XX:SharedArchiveFile=/mockserver.jsa
--cp mockserver-netty-jar-with-dependencies.jar org.mockserver.cli.Main"]
+-cp /mockserver.jar:/mockserver-deps.jar org.mockserver.cli.Main"]
 ```
 
 The main Dockerfile supports two source modes via the `source` build ARG:
@@ -199,7 +199,9 @@ After the source stage the JAR flows through an **AppCDS build stage** (see [App
 
 > **MCP endpoint:** When `mcpEnabled=true` (via system property or `mockserver.properties`), the MCP (Model Context Protocol) endpoint is available at `/mockserver/mcp` on the same port. AI agents can connect using HTTP+SSE transport.
 
-**Entry point:** `/usr/lib/jvm/temurin25-trimmed/bin/java -Dfile.encoding=UTF-8 -XX:MaxRAMPercentage=60.0 -XX:SharedArchiveFile=/mockserver.jsa -cp /mockserver-netty-jar-with-dependencies.jar:/libs/* -Dmockserver.propertyFile=/config/mockserver.properties org.mockserver.cli.Main`
+**Entry point:** `/usr/lib/jvm/temurin25-trimmed/bin/java -Dfile.encoding=UTF-8 -XX:MaxRAMPercentage=60.0 -XX:SharedArchiveFile=/mockserver.jsa -cp /mockserver.jar:/mockserver-deps.jar:/libs/* -Dmockserver.propertyFile=/config/mockserver.properties org.mockserver.cli.Main`
+
+**Why two jars rather than the fat jar.** `docker/Dockerfile` splits the assembled jar into `/mockserver.jar` (MockServer's own `org/mockserver/**`, ~16% of the bytes) and `/mockserver-deps.jar` (everything else), each on its own image layer. Dependencies are the overwhelming majority and rarely change — 88.5% of dependency bytes were byte-identical between 8.0.0 and 8.0.1-SNAPSHOT, across a boundary that bumped BouncyCastle, Netty and OpenTelemetry — so a patch upgrade re-pulls roughly 21 MB instead of 66 MB. Both jars are built deterministically (sorted entry order, fixed timestamps, STORED) so identical dependency bytes yield an identical layer digest, which is what makes the reuse real. **Classpath ORDER matters and is fixed:** the AppCDS training run, the ENTRYPOINT and the HEALTHCHECK all use `own:deps` in that order. The SIBLING images (`docker/local`, `aot`, `snapshot`, `root`, `root-snapshot`, `clustered`, `graaljs`) still ship the single `/mockserver-netty-jar-with-dependencies.jar`.
 
 **Heap cap:** `-XX:MaxRAMPercentage=60.0` limits the JVM heap to 60% of the container's memory limit so the in-memory request/expectation ring buffers size off a bounded heap rather than total node memory. The cap is **60%, not 75%**: under sustained load a committed heap was measured occupying ~1.48× its size in real RSS (a 1,536 MiB heap → ~2,271 MiB RSS — the heap plus Netty direct arenas, G1 metadata, thread stacks and malloc arenas, none counted by `-Xmx`). At 75% of a 2 GiB container that footprint exceeds the limit and the kernel OOM-SIGKILLs the container (exit 137, `OOMKilled: true`, no `OutOfMemoryError`); 60% keeps peak RSS near ~88% of the limit. Treat 1.48× as a conservative upper bound (the diagnostic run also carried JFR/NMT, which use native memory) that rises with concurrency and body sizes. The Helm chart delivers any `app.jvmOptions` value via the `JAVA_TOOL_OPTIONS` environment variable; the JVM **prepends** `JAVA_TOOL_OPTIONS` flags before the command-line args, so the `ENTRYPOINT`'s `-XX:MaxRAMPercentage=60.0` is evaluated **last** and wins over any competing `MaxRAMPercentage` in `jvmOptions`. An explicit `-Xmx` in `jvmOptions` (or `JAVA_TOOL_OPTIONS`) does disable `MaxRAMPercentage` — once `-Xmx` is present the flag is ignored. All `docker/**/Dockerfile` images that run `org.mockserver.cli.Main` include this flag (enforced by `.buildkite/scripts/steps/docker-validate-sync.sh`).
 
