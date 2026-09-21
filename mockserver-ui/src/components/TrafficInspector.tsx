@@ -55,6 +55,7 @@ import ExplainUnmatchedDialog from './ExplainUnmatchedDialog';
 import PromoteRecordingsDialog from './PromoteRecordingsDialog';
 import RepeatAdvancedDialog from './RepeatAdvancedDialog';
 import OperatorSearchField from './OperatorSearchField';
+import ProgressiveList from './ProgressiveList';
 import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
 import { parseSearchTerm, matchesItemSearch } from '../lib/searchMatcher';
@@ -2696,32 +2697,46 @@ export default function TrafficInspector() {
               </Typography>
             )
           ) : (
-            filtered.map(({ item, summary }, index) => (
-              <TrafficRow
-                key={item.key}
-                itemKey={item.key}
-                summary={summary}
-                // Memoised on the request reference, so this is a stable prop
-                // and the row stays skippable by React.memo.
-                graphql={graphqlOperationOf(item.value)}
-                index={filtered.length - index}
-                selected={
-                  compareMode
-                    ? validCompareKeys.includes(item.key)
-                    : selectMode
-                      ? selectedKeys.has(item.key)
-                      : selectedKey === item.key
-                }
-                onSelect={handleRowSelect}
-                compareMode={compareMode}
-                compareChecked={validCompareKeys.includes(item.key)}
-                compareDisabled={validCompareKeys.length >= 2}
-                onCompareToggle={toggleCompareKey}
-                selectMode={selectMode}
-                selectChecked={selectedKeys.has(item.key)}
-                onSelectToggle={toggleSelectKey}
-              />
-            ))
+            // Windowed like LogPanel: only the rows in (or near) the scroll
+            // viewport — the ancestor Box above — are mounted, so the DOM stays
+            // bounded regardless of how many requests were captured. Selection,
+            // compare and bulk-select are all driven by the DATA arrays
+            // (`filtered`, `selectedKeys`, `validCompareKeys`) keyed by item key,
+            // not by mounted rows, so a selected row scrolled out of view keeps
+            // its state. Guarded by `perf-domWeight.test.tsx`.
+            <ProgressiveList
+              count={filtered.length}
+              estimateSize={40}
+              getKey={(i) => filtered[i]!.item.key}
+              renderRow={(i) => {
+                const { item, summary } = filtered[i]!;
+                return (
+                  <TrafficRow
+                    itemKey={item.key}
+                    summary={summary}
+                    // Memoised on the request reference, so this is a stable prop
+                    // and the row stays skippable by React.memo.
+                    graphql={graphqlOperationOf(item.value)}
+                    index={filtered.length - i}
+                    selected={
+                      compareMode
+                        ? validCompareKeys.includes(item.key)
+                        : selectMode
+                          ? selectedKeys.has(item.key)
+                          : selectedKey === item.key
+                    }
+                    onSelect={handleRowSelect}
+                    compareMode={compareMode}
+                    compareChecked={validCompareKeys.includes(item.key)}
+                    compareDisabled={validCompareKeys.length >= 2}
+                    onCompareToggle={toggleCompareKey}
+                    selectMode={selectMode}
+                    selectChecked={selectedKeys.has(item.key)}
+                    onSelectToggle={toggleSelectKey}
+                  />
+                );
+              }}
+            />
           )}
         </Box>
       </Paper>

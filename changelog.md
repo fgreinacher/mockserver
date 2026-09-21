@@ -31,6 +31,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **The request list stays fast however much traffic you capture.** The Inspect view rendered every
+  request it held — up to 200 rows — so the page got heavier as traffic accumulated. It now renders
+  only the rows near the viewport: **2,234 DOM elements became 145**, and that figure no longer grows
+  with the number of requests. Selecting, comparing and filtering still work across the whole list,
+  not just what is on screen. Rows scrolled out of view are no longer in the page, so your browser's
+  own find-in-page only searches visible rows.
 - **The dashboard does less work on every update.** All four panels re-rendered whenever recorded or
   proxied requests moved — including the Expectations panel, whose data had not changed. Each panel
   now re-renders only when its own data changes, cutting the work per update by about **20%**.
