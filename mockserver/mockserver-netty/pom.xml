@@ -541,6 +541,39 @@
                         </configuration>
 
                     </execution>
+
+
+                    <execution>
+
+                        <!-- The other half of the guard above: the http3 classifier is the ONLY artifact that
+
+                             carries the QUIC natives, so nothing else would notice if they vanished. -->
+
+                        <id>assert-http3-jar-natives</id>
+
+                        <phase>verify</phase>
+
+                        <goals>
+
+                            <goal>exec</goal>
+
+                        </goals>
+
+                        <configuration>
+
+                            <workingDirectory>${basedir}</workingDirectory>
+
+                            <executable>../mockserver-netty-no-dependencies/src/packaging/assert-http3-jar-natives.sh</executable>
+
+                            <arguments>
+
+                                <argument>${project.build.directory}/${project.build.finalName}-jar-with-dependencies-http3.jar</argument>
+
+                            </arguments>
+
+                        </configuration>
+
+                    </execution>
                 </executions>
             </plugin>
             <!-- make jar executable -->

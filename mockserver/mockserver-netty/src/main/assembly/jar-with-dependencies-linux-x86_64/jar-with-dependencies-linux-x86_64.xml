@@ -22,17 +22,21 @@
          rule is the "*<arch>.so" SUFFIX, expressed here as: exclude the whole
          META-INF/native/ tree in the two unpack sets, then add back ONLY this arch's
          "*x86_64.so" in the third set. The suffix form is deliberate and must not be
-         narrowed to a "linux_<arch>" match: this arch's linux natives are THREE
-         differently-named files -
+         narrowed to a "linux_<arch>" match: the two natives this jar KEEPS are
+         differently-named -
              libnetty_tcnative_linux_x86_64.so
-             libnetty_quiche42_linux_x86_64.so
              libnetty_transport_native_epoll_x86_64.so   <- note: NO "linux_" in the name
          so a "linux_<arch>" filter would silently drop the epoll .so and degrade epoll to
-         NIO with no error. The "*x86_64.so" suffix keeps all three ELF .so and drops every
+         NIO with no error. The "*x86_64.so" suffix keeps both remaining ELF .so and drops every
          .jnilib / .dll / wrong-arch entry (the osx "*_x86_64.jnilib" contain the arch
          string but are Mach-O, and are correctly excluded because the third set only adds
-         back ".so"). NEVER narrow this so it could remove this arch's epoll, tcnative or
-         quiche .so. -->
+         back ".so"). NEVER narrow this so it could remove this arch's epoll or tcnative
+         .so.
+
+         The QUIC native (libnetty_quiche42_linux_x86_64.so) is NOT kept: the arch-suffix
+         include would re-add it, so the third set excludes it explicitly below. HTTP/3
+         ships in the -jar-with-dependencies-http3 classifier instead. Both halves are
+         enforced at verify by assert-slim-jar-natives.sh / assert-http3-jar-natives.sh. -->
     <id>jar-with-dependencies-linux-x86_64</id>
     <formats>
         <format>jar</format>
