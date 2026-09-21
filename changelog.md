@@ -31,6 +31,13 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
+- **Matching an XML body with XPath no longer re-parses it once per expectation.** A request body
+  checked against several XPath expectations was parsed into a DOM separately for each one. It is
+  now parsed once and reused: **8,629 → 640 microseconds** for a large body against 20 expectations,
+  and a single expectation got slightly faster too. Separately, the parse is now covered by
+  `xpathMatchingTimeoutMillis` — it previously ran outside that budget, so a pathological body could
+  occupy a matching thread for as long as it liked. The timeout message now says whether it was the
+  body or the expression that took too long.
 - **The first request on every connection no longer scans your whole expectation store.** MockServer
   checks each new connection for an expectation configured with `respondBeforeBody`, and that check
   walked every registered expectation — even though almost nobody uses the feature, so the walk

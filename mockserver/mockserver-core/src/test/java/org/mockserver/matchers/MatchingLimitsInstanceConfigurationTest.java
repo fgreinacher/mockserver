@@ -124,12 +124,22 @@ public class MatchingLimitsInstanceConfigurationTest {
     public void shouldUseXPathTimeoutPoolWhenInstanceLeavesTheTimeoutUnset() {
         XPathEvaluator evaluator = new XPathEvaluator("/root/value/text()", null, null);
 
+        // A body unique to this test guarantees the DOM parse is NOT served from the per-thread
+        // parse cache. That does not change the submitted-task COUNT under the single hand-off (a
+        // cache hit and a cache miss both submit exactly one task — the difference is only whether
+        // that one task also parses), but it keeps this test independent of order and makes the
+        // asserted count unambiguous: it is the one combined parse-and-evaluate submission.
         long before = MatchingTimeoutExecutor.submittedTaskCount();
         Object result = evaluator.evaluateXPathExpression(
-            "<root><value>found</value></root>", (matched, throwable, level) -> {
+            "<root><value>found-xpath-pool-unset-marker</value></root>", (matched, throwable, level) -> {
             }, XPathConstants.STRING);
 
-        assertThat(String.valueOf(result), is("found"));
+        assertThat(String.valueOf(result), is("found-xpath-pool-unset-marker"));
+        // With a positive timeout the XPath path bounds BOTH the DOM parse AND the expression
+        // evaluation inside ONE callable submitted to the pool under a single timeout budget — so
+        // one evaluation submits exactly ONE task. It is NOT zero: the pool cannot be skipped via the
+        // inline fast path because, with parse and evaluate sharing one budget, the inline path would
+        // require BOTH to be provably linear, and a user XPath expression has no linearity proof.
         assertThat(MatchingTimeoutExecutor.submittedTaskCount() - before, is(1L));
     }
 }
