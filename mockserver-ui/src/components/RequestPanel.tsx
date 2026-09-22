@@ -177,6 +177,7 @@ function RequestPanel({
       searchValue={searchValue}
       onSearchChange={onSearchChange}
       onScrolledAwayChange={setScrolledAway}
+      hasOpenItem={expansion.anyExpanded}
     >
       {shown.length === 0 ? (
         items.length === 0 ? (
@@ -214,6 +215,8 @@ function RequestPanel({
         <ProgressiveList
           count={shown.length}
           getKey={(i) => shown[i]!.key}
+          anchorAtTop={expansion.anyExpanded}
+          anchorKey={expansion.expandedKey}
           renderRow={(i) => (
             <RequestRow
               item={shown[i]!}

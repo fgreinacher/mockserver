@@ -18,6 +18,13 @@ export interface Expansion {
   isExpanded: (key: string) => boolean;
   toggle: (key: string) => void;
   /**
+   * The key of an expanded row, or null. Panels hand this to ProgressiveList as
+   * the anchor: "keep THIS row where it is". Anchoring to whatever happens to sit
+   * at the top of the viewport cannot do that — at the top it is always row 0, so
+   * holding it is a no-op while the opened row walks away beneath it.
+   */
+  expandedKey: string | null;
+  /**
    * True when ANY row is expanded. The panels combine this with "scrolled away
    * from the top" to decide whether the reader is mid-read and the live window
    * must not be allowed to delete what they are looking at (see `useHeldItems`).
@@ -39,6 +46,12 @@ export function useExpansion(): Expansion {
 
   const isExpanded = useCallback((key: string) => keys.has(key), [keys]);
   const anyExpanded = keys.size > 0;
+  // Iteration order of a Set is insertion order, so this is the row the reader
+  // opened first and is presumably reading.
+  const expandedKey = anyExpanded ? (keys.values().next().value ?? null) : null;
 
-  return useMemo(() => ({ isExpanded, toggle, anyExpanded }), [isExpanded, toggle, anyExpanded]);
+  return useMemo(
+    () => ({ isExpanded, toggle, anyExpanded, expandedKey }),
+    [isExpanded, toggle, anyExpanded, expandedKey],
+  );
 }

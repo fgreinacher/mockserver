@@ -50,6 +50,7 @@ function LogPanel() {
       searchValue={search}
       onSearchChange={setSearch}
       onScrolledAwayChange={setScrolledAway}
+      hasOpenItem={expansion.anyExpanded}
       searchInputRef={searchRef}
       searchFields={LOG_SEARCH_FIELDS}
       liveRegion
@@ -62,6 +63,8 @@ function LogPanel() {
         <ProgressiveList
           count={shown.length}
           getKey={(i) => shown[i]!.key}
+          anchorAtTop={expansion.anyExpanded}
+          anchorKey={expansion.expandedKey}
           renderRow={(i) => {
             const message = shown[i]!;
             return isLogGroup(message) ? (

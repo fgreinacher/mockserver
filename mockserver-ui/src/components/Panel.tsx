@@ -51,6 +51,12 @@ interface PanelProps {
    * the scroll container.
    */
   onScrolledAwayChange?: (scrolledAway: boolean) => void;
+  /**
+   * True when the reader has a row open. Tail-following is suppressed while it is
+   * set: someone reading an entry is reading it wherever they opened it, and that
+   * includes at the very top of the list.
+   */
+  hasOpenItem?: boolean;
   children: ReactNode;
 }
 
@@ -65,6 +71,7 @@ export default function Panel({
   headerActions,
   liveRegion,
   onScrolledAwayChange,
+  hasOpenItem = false,
   children,
 }: PanelProps) {
   const autoScroll = useDashboardStore((s) => s.autoScroll);
@@ -80,12 +87,18 @@ export default function Panel({
     // at can be unmounted by the very update we are trying to compensate for, so
     // it cannot be located in the DOM afterwards. Only the virtualizer knows
     // where it went, because it measures every row whether or not it is mounted.
-    if (autoScroll && atTopRef.current && scrollRef.current) {
-      // Only when the reader is already at the very top, so a push never yanks
-      // the viewport away from a row they scrolled down to and opened.
+    // `!hasOpenItem` is the part that was missing, and it is the whole bug a
+    // reader actually hits. Opening a row does not require scrolling first: click
+    // one near the top, and tail-following pins scrollTop at 0 while new rows
+    // prepend ABOVE it, walking the row down the screen and then off it.
+    // Measured on a real server at ~10 req/s, an entry opened without scrolling
+    // went top=657 -> 853 -> 1049 -> gone in four seconds, with scrollTop stuck
+    // at 0 throughout. Holding the ROWS was not enough; the view has to stop
+    // chasing the tail as soon as the reader is reading something.
+    if (autoScroll && atTopRef.current && !hasOpenItem && scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
-  }, [count, autoScroll]);
+  }, [count, autoScroll, hasOpenItem]);
 
   return (
     <Paper

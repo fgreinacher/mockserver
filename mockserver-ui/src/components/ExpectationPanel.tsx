@@ -257,6 +257,7 @@ function ExpectationPanel() {
         searchValue={search}
         onSearchChange={setSearch}
         onScrolledAwayChange={setScrolledAway}
+        hasOpenItem={expansion.anyExpanded}
         headerActions={
           <>
             <Tooltip title="Sort by match priority (highest first)">
@@ -351,6 +352,8 @@ function ExpectationPanel() {
           <ProgressiveList
             count={shown.length}
             getKey={(i) => shown[i]!.key}
+            anchorAtTop={expansion.anyExpanded}
+            anchorKey={expansion.expandedKey}
             renderRow={(i) => {
               const item = shown[i]!;
               // Per-row actions are only meaningful for expectations that carry
