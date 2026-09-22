@@ -1091,6 +1091,21 @@ SETTLE_S="${PERF_SWEEP_SETTLE_S:-3}"
 K6_CORES="$(k6_core_count "$K6_CPUS")"
 K6_PIN_PCT=$((K6_CORES * 100))
 SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
+# Fractional drop TOLERANCE for rig-validity (see derive_saturation). A rung's
+# dropped_iterations are forgiven only when they are BELOW this fraction of the
+# rung's intended iterations AND the rung's VU pool had headroom — never on the
+# fraction alone. 0.01 = 1% is DERIVED, not picked: it sits above the largest
+# recorded blip (build #322's 2,000 rung, 133 drops = 0.44%, client 13.6% CPU) with
+# >2x margin and below the smallest recorded genuine shortfall (build #347's 8,000
+# rung at 1.83%; native 16k at 2.5%; build #290 16k at 3.3%) with >1.8x margin, and
+# it means a rig-valid rung delivered >=99% of offered — 5x tighter than the 0.95
+# "clean" (knee) rule, so it can never admit a rung the knee logic would call short.
+# NOTE the figures above were recorded under the OLD ramping pool (preAllocatedVUs
+# 200 -> maxVUs 4000); the fixed per-rung pool landed later in fa18ac3de. That shift
+# only makes this filter MORE conservative - under the new pools build #347's 8,000
+# rung HAS headroom (peak 301 < pool 640), so it is the FRACTION term that correctly
+# excludes it at 1.83%, which is exactly why this threshold must stay below that.
+SWEEP_DROP_TOL="${PERF_SWEEP_DROP_TOL:-0.01}"
 
 # Background sampler of the k6 CLIENT container's CPU while a sweep runs — the
 # missing "was the client the bottleneck?" evidence. A rung where k6 is near its
@@ -1156,10 +1171,11 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
     cpu_map="$(jq -c --arg k "$r" --argjson v "${maxcpu:-0}" '. + {($k): $v}' <<<"$cpu_map")"
   done
   # A rung is RIG-VALID when the measurement itself is trustworthy: the k6 client
-  # had CPU headroom, dropped no iterations, and the server was not returning fast
-  # errors (a rung "achieves" its offered rate even while erroring, so error_rate is
-  # part of validity, not just throughput). The BUDGETED metric is rig_valid_peak_achieved_rps
-  # = max achieved over rig-valid rungs.
+  # had CPU headroom, dropped no more than a small tolerated FRACTION of iterations
+  # (and only when its VU pool had headroom — see the $no_drops derivation below),
+  # and the server was not returning fast errors (a rung "achieves" its offered rate
+  # even while erroring, so error_rate is part of validity, not just throughput).
+  # The BUDGETED metric is rig_valid_peak_achieved_rps = max achieved over rig-valid rungs.
   #
   # rig_valid_peak_achieved_rps IS A PROPERTY OF THE RIG, NOT OF THE SERVER. An earlier version of
   # this comment called it "CONTINUOUS (it moves proportionally with the real ceiling,
@@ -1185,28 +1201,61 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
     --argjson cpu "$cpu_map" \
     --argjson pin "$K6_PIN_PCT" \
     --argjson cores "$K6_CORES" \
-    --argjson err_eps "$SWEEP_ERR_EPS" '
+    --argjson err_eps "$SWEEP_ERR_EPS" \
+    --argjson drop_tol "$SWEEP_DROP_TOL" '
     ($pin * 0.85) as $cpu_ceiling
     | (($sweep[0].points) // []) as $points
+    | (($sweep[0].vus_diagnostics.pool_per_rung) // {}) as $pools
     | [ $points[]
         | ($cpu[(.offered_rps|tostring)]) as $c
         | (.dropped_iterations // 0) as $drops
+        | (.sample_count // 0) as $completed
         | (.error_rate // 0) as $err
         | (.offered_rps) as $off | (.achieved_rps // 0) as $ach
+        | (.vus_active_max) as $vmax
+        | ($pools[($off|tostring)]) as $pool
         | (($cores <= 0) or ($c == null) or ($c <= $cpu_ceiling)) as $headroom
-        | ($drops <= 0) as $no_drops
+        # Drop fraction = drops / (drops + completed). A dropped iteration is one the
+        # constant-arrival-rate executor could not launch because no VU was free, so
+        # (drops + completed) is the intended iteration count and this is the exact
+        # fraction of the offered load the client failed to deliver.
+        | (if ($drops + $completed) > 0 then ($drops / ($drops + $completed)) else 0 end) as $drop_frac
+        # VU-pool headroom: the rung had spare VUs (its peak concurrency stayed below
+        # its FIXED per-rung pool), so the pool was NOT the constraint. Requires BOTH
+        # the per-iteration vus_active_max and the rung pool_per_rung to be present.
+        | (($vmax != null) and ($pool != null) and ($vmax < $pool)) as $vu_headroom
+        # $no_drops (the rig-validity drop clause): forgive drops ONLY when they are a
+        # small FRACTION *and* the VU pool had headroom. A tolerance on the fraction
+        # ALONE would admit a genuinely VU-starved rung whose achieved rate is a
+        # CLIENT ceiling (the exact dishonesty rig_valid exists to prevent), so the
+        # corroborating headroom signal is required, not optional. When either signal
+        # is unavailable (an older artifact with no vus_active_max, or no pool_per_rung
+        # recorded) fall back to the strict zero-drop rule — never lenient on drops we
+        # cannot corroborate. This voids build #322 no longer: its 2,000 rung dropped
+        # 133 of ~30,000 (0.44% < 1%) with the pool barely touched, a blip; but build
+        # #347s 8,000 rung (1.83%) and every high-rung collapse stay excluded on the
+        # fraction, and any rung that reached its pool ceiling stays excluded on the
+        # headroom term even below tolerance.
+        | (if $drops <= 0 then true
+           elif $vu_headroom then ($drop_frac <= $drop_tol)
+           else false end) as $no_drops
         | ($err <= $err_eps) as $low_err
         # rig_valid: the measurement itself is trustworthy (says nothing about the
         # server verdict). clean: rig_valid AND the server actually kept up (knee).
         | ($headroom and $no_drops and $low_err) as $rig_valid
         | ($rig_valid and ($off > 0) and ($ach >= 0.95 * $off)) as $clean
         | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c,
-            dropped_iterations:$drops, error_rate:$err,
+            dropped_iterations:$drops, dropped_fraction:($drop_frac|.*100000|round/100000),
+            vus_active_max:$vmax, pool_per_rung:$pool, error_rate:$err,
             rig_valid:$rig_valid, clean:$clean,
             exclude_reason:(
               if $rig_valid then null
               elif ($headroom|not) then "k6 client CPU \($c)% >= 85% of \($pin)% pin (client bottleneck)"
-              elif ($no_drops|not) then "k6 dropped \($drops) iterations (client VU-starved)"
+              elif ($no_drops|not) then
+                "k6 dropped \($drops) iterations = \(($drop_frac*1000|round)/10)% of offered"
+                + (if $vu_headroom then " (> \(($drop_tol*100))% tolerance despite VU-pool headroom - too sustained to be a blip)"
+                   elif (($vmax != null) and ($pool != null)) then " with VU pool exhausted (vus_active_max \($vmax) >= pool \($pool), client-limited)"
+                   else " (no VU-pool diagnostics to corroborate a blip; strict zero-drop applied)" end)
               else "server error_rate \($err) > \($err_eps) (fast errors inflate achieved)" end) } ]
     | . as $rungs
     | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
@@ -1217,7 +1266,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         client_pin_pct:$pin, client_cores:$cores,
         ladder:$rungs,
         excluded:[ $rungs[] | select(.rig_valid|not)
-                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, error_rate, reason:.exclude_reason} ] }'
+                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, dropped_fraction, vus_active_max, pool_per_rung, error_rate, reason:.exclude_reason} ] }'
 }
 
 echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
