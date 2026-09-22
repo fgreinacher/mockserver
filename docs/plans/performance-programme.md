@@ -3329,13 +3329,23 @@ Three things landed with it, and the order they were found in matters more than 
    would have been compared against `c5.4xlarge` history — see
    [the baseline has no hardware term](#the-rolling-baseline-has-no-hardware-term-so-a-resize-would-hide-its-own-effect).
 
-**What the first run on the new hardware will tell us, beyond the numbers.** The guard prints how many
-distinct physical cores the three roles occupy. **13** means vCPUs enumerate as core *N* then its
-sibling at *N+24* (the standard mapping), and the server genuinely has six cores. **7** would mean
-siblings are adjacent pairs and the server actually has three physical cores with both threads — still
-contention-free, still a valid measurement, but not the six-core configuration the ladder assumes. The
-guard checks disjointness, not that each role received the number of cores intended, so that second
-case would pass while meaning something different. Read the count before trusting the first figures.
+**ANSWERED by build 397, the first run on the new hardware.** The open question was which way the vCPU
+enumeration went, because the guard proves isolation but not that each role received the number of
+cores intended. The log settles it:
+
+```
+--- core-pinning enabled (48 logical cpus): server=0-5 upstream=6 k6=8-13
+--- verified: server / upstream / k6 occupy 13 distinct physical cores, none shared
+```
+
+**Thirteen distinct cores**, so vCPUs enumerate as core *N* with its sibling at *N+24* — the standard
+mapping — and the server genuinely has **six physical cores of its own**. The alternative (7, meaning
+siblings are adjacent pairs and the server really had three cores with both threads) would also have
+passed the guard while meaning something materially different, which is why the count was worth
+reading rather than assuming.
+
+This is the first MockServer performance measurement taken with the load generator outside the
+server's cores.
 
 The rows below are what remains.
 
