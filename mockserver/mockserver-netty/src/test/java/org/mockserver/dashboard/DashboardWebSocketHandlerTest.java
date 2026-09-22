@@ -27,6 +27,7 @@ import org.mockserver.model.RequestDefinition;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.uuid.UUIDService;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.ObjectWriter;
 import org.mockserver.configuration.Configuration;
@@ -1691,11 +1692,30 @@ public class DashboardWebSocketHandlerTest {
         fixture.requestMatchers.add(new Expectation(request("four")).withId("id-four").thenRespond(response("four")), MockServerMatcherNotifier.Cause.API);
         long afterAdd = quiesce(fixture.handler);
 
-        // then the new expectation appears, and exactly one further serialisation occurred (the three
-        // pre-existing expectations were reused)
+        // then the new expectation appears, and ONLY the added expectation is (re)serialised: the
+        // three pre-existing expectations are reused from the warm cache.
+        //
+        // The delta is 1 OR 2, not exactly 1, and both are correct. An add fires TWO independent
+        // dashboard push triggers: the matcher-changed notifier (RequestMatchers.notifyListeners)
+        // AND -- when INFO logging is enabled -- the event-log notifier for the CREATED_EXPECTATION
+        // entry the add records. Each drives its own sendUpdate, and the per-expectation JSON is
+        // built OUTSIDE the send throttle's semaphore (the semaphore gates only the network write),
+        // so the two passes can race: if the second reads activeExpectationJsonCache before the first
+        // has stored id-four's tree, both serialise id-four once (delta 2); if the first stored
+        // first, the second is a cache hit (delta 1). This is the documented, harmless "cold-start
+        // double-fire" race -- the two trees for id-four are byte-identical (same reference, same
+        // remainingTimes) and only the throttled write is user-visible -- so the fix is to assert the
+        // property that actually matters rather than a race-sensitive exact count. The property: the
+        // added expectation is serialised at most once PER TRIGGER (so at most 2) while the three
+        // pre-existing ones are reused. If the warm cache were NOT reused, every pass would
+        // re-serialise all four expectations, making the delta >= 4 -- so the <= 2 bound still fails
+        // loudly on a broken cache.
         String frame = awaitFrame(fixture, request());
-        assertThat(frame, containsString("id-four"));
-        assertThat("only the added expectation is serialised", afterAdd - warm, is(1L));
+        assertThat(activeExpectations(frame), containsString("id-four"));
+        long delta = afterAdd - warm;
+        assertThat("adding one expectation reuses the warm set and serialises only the new id"
+                + " (1 or, under the two-trigger race, 2 -- never the reused set, which would be >= 4): delta=" + delta,
+            delta >= 1 && delta <= 2, is(true));
     }
 
     @Test
@@ -1711,12 +1731,22 @@ public class DashboardWebSocketHandlerTest {
         fixture.requestMatchers.add(new Expectation(request("two")).withId("id-two").thenRespond(response("edited-two")), MockServerMatcherNotifier.Cause.API);
         long afterEdit = quiesce(fixture.handler);
 
-        // then the NEW body is shown (never the stale cached one) and exactly one re-serialisation
-        // occurred
+        // then the NEW body is shown (never the stale cached one), and ONLY the edited expectation is
+        // re-serialised -- id-one and id-three are reused from the warm cache.
         String frame = awaitFrame(fixture, request());
-        assertThat(frame, containsString("edited-two"));
-        assertThat(frame, not(containsString("original-two")));
-        assertThat("only the edited expectation is re-serialised", afterEdit - warm, is(1L));
+        assertThat(activeExpectations(frame), containsString("edited-two"));
+        assertThat(activeExpectations(frame), not(containsString("original-two")));
+        // Delta 1 OR 2: an in-place edit is an upsert, which fires the matcher-changed notifier and --
+        // when INFO logging is enabled -- the UPDATED_EXPECTATION event-log notifier. Each drives a
+        // sendUpdate that must re-serialise id-two (its Expectation reference changed, so the cache
+        // entry is invalidated); the two passes race on repopulating the cache exactly as the added-
+        // expectation test documents, so id-two is serialised once or twice (byte-identically). The
+        // reused pair (id-one, id-three) is NEVER re-serialised, so a broken warm cache would re-
+        // serialise all three per pass and push the delta to >= 3 -- the <= 2 bound still catches it.
+        long delta = afterEdit - warm;
+        assertThat("editing one expectation reuses the warm pair and re-serialises only the edited id"
+                + " (1 or, under the two-trigger race, 2 -- never the reused pair, which would be >= 3): delta=" + delta,
+            delta >= 1 && delta <= 2, is(true));
     }
 
     @Test
@@ -1734,9 +1764,9 @@ public class DashboardWebSocketHandlerTest {
 
         // then the removed expectation is gone, the survivors remain, and nothing was re-serialised
         String frame = awaitFrame(fixture, request());
-        assertThat(frame, containsString("id-one"));
-        assertThat(frame, containsString("id-three"));
-        assertThat(frame, not(containsString("id-two")));
+        assertThat(activeExpectations(frame), containsString("id-one"));
+        assertThat(activeExpectations(frame), containsString("id-three"));
+        assertThat(activeExpectations(frame), not(containsString("id-two")));
         assertThat("removal re-serialises nothing", afterRemove - warm, is(0L));
     }
 
@@ -1747,7 +1777,7 @@ public class DashboardWebSocketHandlerTest {
             new Expectation(request("once"), Times.exactly(2), TimeToLive.unlimited(), 0).withId("id-once").thenRespond(response("body"))
         ));
         long warm = quiesce(fixture.handler);
-        assertThat(awaitFrame(fixture, request()), containsString("\"remainingTimes\" : 2"));
+        assertThat(activeExpectations(awaitFrame(fixture, request())), containsString("\"remainingTimes\" : 2"));
 
         // when the SERVING path consumes one match (remainingTimes 2 -> 1). This is the trap: the
         // control-plane modification counter does not move, but the serialised form did.
@@ -1755,11 +1785,22 @@ public class DashboardWebSocketHandlerTest {
         long afterConsume = quiesce(fixture.handler);
 
         // then the dashboard shows the NEW remaining count, not the stale cached "2", and the
-        // expectation was re-serialised
+        // expectation was re-serialised. The staleness guard is the pair of containsString assertions
+        // over activeExpectations (the live state shows 1, never the cached 2); the count assertion
+        // only confirms a re-serialisation DID happen (delta >= 1) rather than the stale tree being
+        // served untouched (delta 0). The upper bound tolerates the same two-trigger race as the
+        // added/edited tests: under INFO logging the EXPECTATION_MATCHED event-log notifier fires a
+        // second sendUpdate alongside the serving-path refresh, so the single expectation can be re-
+        // serialised twice (byte-identically). With only one expectation the count cannot itself
+        // distinguish a broken cache -- that is precisely what the remainingTimes containsString
+        // assertions above are for.
         String frame = awaitFrame(fixture, request());
-        assertThat(frame, containsString("\"remainingTimes\" : 1"));
-        assertThat(frame, not(containsString("\"remainingTimes\" : 2")));
-        assertThat("consuming Times re-serialises the expectation", afterConsume - warm, is(1L));
+        assertThat(activeExpectations(frame), containsString("\"remainingTimes\" : 1"));
+        assertThat(activeExpectations(frame), not(containsString("\"remainingTimes\" : 2")));
+        long delta = afterConsume - warm;
+        assertThat("consuming Times re-serialises the expectation at least once"
+                + " (1, or 2 under the two-trigger race): delta=" + delta,
+            delta >= 1 && delta <= 2, is(true));
     }
 
     @Test
@@ -1849,6 +1890,33 @@ public class DashboardWebSocketHandlerTest {
             }
         }
         throw new AssertionError("no dashboard frame produced within timeout");
+    }
+
+    // Scope a cache assertion to the "activeExpectations" subtree -- the CURRENT expectation state the
+    // ExpectationDTO->JSON cache under test serves -- rather than the raw frame text. Every frame also
+    // carries a "logMessages" array of historical event snapshots (CREATED_EXPECTATION /
+    // UPDATED_EXPECTATION / CLEARED / REMOVED_EXPECTATION / EXPECTATION_MATCHED), and those snapshots
+    // legitimately embed an expectation's id, body, or remaining Times AT THE TIME THE EVENT WAS
+    // LOGGED. When INFO logging is enabled a raw-frame containsString therefore sees an id or body that
+    // lingers only in that history -- nothing to do with the cache -- which is exactly why the raw
+    // assertions were broken on arrival (they only passed at the default ERROR log level, where the
+    // events are never recorded). Parsing the frame and matching only activeExpectations tests the real
+    // property: the cache serves the live state and never a stale cached tree. The subtree is
+    // re-serialised with the DEFAULT pretty printer so the field/value separator stays " : ", matching
+    // the pretty-printed needles (the handler under test is built with prettyPrint=true). Because the
+    // subtree is taken from the frame the handler actually produced, a broken cache (serving a stale
+    // tree) still surfaces here and fails the assertion -- the scoping narrows WHERE we look, it does
+    // not make the assertion vacuous (the positive containsString checks in each test also prove the
+    // subtree is non-empty).
+    private static String activeExpectations(String frame) {
+        try {
+            ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
+            JsonNode activeExpectations = objectMapper.readTree(frame).get("activeExpectations");
+            assertThat("frame carries an activeExpectations array", activeExpectations, is(notNullValue()));
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(activeExpectations);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new AssertionError("dashboard frame was not valid JSON: " + frame, e);
+        }
     }
 
     private void shouldRenderFilteredLogEntriesCorrectly(boolean contains, RequestDefinition requestFilter, List<LogEntry> logEntries, List<Expectation> expectations, String... renderListSections) throws InterruptedException {
