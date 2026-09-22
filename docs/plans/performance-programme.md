@@ -2947,9 +2947,43 @@ The between-queue gap is the same magnitude as within-queue run-to-run spread (~
 instance types inside the `default` queue m5 vs m6a differ by 0.02%. Hardware contributes under ~0.2%,
 indistinguishable from noise, and the committed floors sit 19-23% above measured values — dwarfing it.
 
+## The dashboard "closes the item I clicked" bug — FIXED, and it was not ours
+
+**Fixed 2026-09-22.** Recorded here because this plan previously blamed it on the performance
+programme, and that was wrong.
+
+**Selection state was never lost.** Every hypothesis in the original entry was falsified: React keys
+are stable server UUIDs, expansion and selection were lifted above the list back in June
+(`473718915`) and keyed by stable id, no reset-on-data-change effect exists, and `ProgressiveList`
+keys its children by id. A real-Chromium test proved state survives a virtualisation unmount and
+remount directly (`stillExpandedAfterRemount=1`).
+
+**The actual cause is `Panel.tsx`'s auto-scroll, which PREDATES this programme:**
+
+```js
+useEffect(() => { if (autoScroll && scrollRef.current) { scrollRef.current.scrollTop = 0; } },
+         [count, autoScroll]);
+```
+
+Every `count` change yanked the viewport to the top. Virtualisation then unmounted the opened row that
+had just scrolled off-screen, so it visibly vanished. That is why it only happened while data was
+changing: a static dataset never changes `count`. So the windowing work did not introduce this — it
+**made a latent behaviour visible**, by converting "your row is still there, just scrolled away" into
+"your row is gone".
+
+**The fix is tail-following**: snap to top only when the user is already there (within 8px, which
+absorbs HiDPI sub-pixel offsets and inertial overshoot). Someone watching the newest entries still
+gets them; someone who scrolled down to read one is left alone. The windowing is untouched, and the
+DOM-weight tests confirm the 2,234-to-145 flat-in-dataset property still holds.
+
+**The lesson worth keeping.** A perf change can be blameless and still be the reason a bug became
+intolerable. Virtualisation converted a mild annoyance into an unusable panel without touching the
+code at fault — so "did we cause it?" and "did we make it matter?" are different questions, and only
+the second one predicts what a user will report.
+
 ## What remains
 
-**Five things are outstanding: two can be settled from the repo, and three need a run, a bigger
+**Four things are outstanding: one can be settled from the repo, and three need a run, a bigger
 rig, or an external system to report something.** The newest is not a measurement gap at all but a
 **usability regression this programme caused** — the dashboard panels became unusable for clicking
 while live data arrives. It leads the table deliberately: a panel that will not let you open an item
@@ -2963,8 +2997,6 @@ hard way.
 flowchart TD
   left["Settleable from the repo"]
   right["Needs a run, or an external system"]
-  left --> m["UI: keep a clicked item open
-  while new data arrives"]
   left --> c["Rename peak_achieved_rps,
   delete its false continuity claim"]
   right --> f["Item 18: a load generator
@@ -2979,7 +3011,6 @@ flowchart TD
 
 | | What is owed | Detail |
 |---|---|---|
-| **UI: selection lost on live update** — REGRESSION WE CAUSED, highest priority | Keep an opened dashboard item open while new data arrives | Clicking an item in **Log Messages** or **Received Requests** opens it, but the moment new data arrives the list refreshes and the item CLOSES. Only while data is changing — live requests arriving, or expectations being added; a static dataset is fine. The repo owner's word for those panels is **"unusable"**. Suspects, in order: `4c1e82e40` (windowing via `ProgressiveList`), `356a13c47` (re-render only the changed panel), possibly `3e65926d5`/`37ec6f00c` changing what each update sends. Likely mechanisms: index-based React keys (the dashboard prepends newest-first, so ONE new item shifts every index and remounts the rows), selection held inside the row so any virtualisation unmount destroys it, or a reset-on-data-change effect. **The fix must not unwind the windowing** — that took the traffic list from 2,234 DOM elements at 200 rows to 145 at both 50 and 200. Selection must be keyed by a STABLE id and held ABOVE the list so it survives both re-render and unmount |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 
 ### Needs a run, or an external system

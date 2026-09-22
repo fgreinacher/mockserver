@@ -7,6 +7,15 @@ import { useDashboardStore } from '../store';
 import { transitions } from '../theme';
 import OperatorSearchField from './OperatorSearchField';
 
+// A scroll offset at or below this many pixels counts as "at the top" for
+// tail-following auto-scroll. 8 is not arbitrary: it has to absorb sub-pixel
+// scrollTop values on HiDPI displays (up to ~1px at 2x) AND the few pixels of
+// inertial overshoot a trackpad or touch fling leaves behind (typically 5-8px).
+// Tighter than that and a user parked at the top stops being recognised as such,
+// so live pushes would silently stop following the tail; much looser and someone
+// who deliberately scrolled down a little would still get yanked back.
+const AT_TOP_THRESHOLD_PX = 8;
+
 interface PanelProps {
   title: string;
   count: number;
@@ -51,9 +60,18 @@ export default function Panel({
 }: PanelProps) {
   const autoScroll = useDashboardStore((s) => s.autoScroll);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Whether the user is currently parked at the very top of the list. Auto-scroll
+  // only "follows the tail" when this is true, so a new push never yanks the
+  // viewport away from a row the user has scrolled down to and opened.
+  const atTopRef = useRef(true);
 
   useEffect(() => {
-    if (autoScroll && scrollRef.current) {
+    // Snap to the top on new data ONLY when the user is already at the top
+    // (tail-following). If they have scrolled down to inspect or expand a row,
+    // leave their position alone — otherwise every ~1/sec push scrolls that row
+    // out of view (and virtualization then unmounts it), which reads as the
+    // opened item "closing" and made the live panels unusable.
+    if (autoScroll && atTopRef.current && scrollRef.current) {
       scrollRef.current.scrollTop = 0;
     }
   }, [count, autoScroll]);
@@ -116,6 +134,11 @@ export default function Panel({
       </Box>
       <Box
         ref={scrollRef}
+        onScroll={(e) => {
+          // Treat "within a few px of the top" as at-top so a hair of momentum
+          // scroll or a sub-pixel offset does not switch off tail-following.
+          atTopRef.current = e.currentTarget.scrollTop <= AT_TOP_THRESHOLD_PX;
+        }}
         {...(liveRegion ? { role: 'log', 'aria-live': 'polite' as const, 'aria-relevant': 'additions' as const } : {})}
         sx={{
           flex: 1,

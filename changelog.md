@@ -334,6 +334,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **The dashboard no longer jumps back to the top while you are reading an item.** Opening an entry
+  in Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
+  moment new data arrived: every update scrolled the panel back to the top, which scrolled the open
+  entry out of view. Panels now follow new data only while you are already at the top, so scrolling
+  down to read something keeps you there. Scroll back to the top and it resumes following. Panels
+  were effectively unusable for reading individual entries on a busy server.
 - **A dashboard filtering rapidly no longer makes the server re-scan the event log for every
   keystroke.** Each filter the dashboard sent triggered its own full scan, so a client could drive
   an unbounded rate of them. Bursts are now collapsed: the first filter after a pause is served
