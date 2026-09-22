@@ -950,7 +950,7 @@ forces Netty's JDK provider via `-Dio.netty.handler.ssl.noOpenSsl=true` (verifie
 its delta ÷ the `requests_received_count` delta on that arm's SUT). All `tls_handshake.*`
 budgets are notify-only.
 
-#### 15. Cheap feature arms on measurements that already run — **near-free**
+#### 15. Cheap feature arms on measurements that already run — **[landed `764731d10`]**
 
 *Cost: 1-2 days for all four.*
 
@@ -966,7 +966,7 @@ budgets are notify-only.
   tighter than the data supports. **Land this before deriving any timing budget.**
 - **15d.** A body-size axis on `large`: 4 KB, 1 MB, 10 MB, plus one file-backed body.
 
-#### 16. Widen the allocation backstop, and wire it where it runs pre-merge
+#### 16. Widen the allocation backstop, and wire it where it runs pre-merge — **[landed `f377c891b`]**
 
 *Cost: folded into 15b plus half a day.*
 
