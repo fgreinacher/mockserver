@@ -534,12 +534,32 @@ assert_cpusets_physically_disjoint() {
 CORES="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
 SERVER_CPUS=""; UPSTREAM_CPUS=""; K6_CPUS=""
 if [ "$CORES" -ge 16 ]; then
-  # Defaults: server=0-5 upstream=6 k6=8-13. NOTE these are LOGICAL cpu ids; the
+  # Defaults: server=0-5 upstream=6 k6=8-19. NOTE these are LOGICAL cpu ids; the
   # guard below is what establishes they land on distinct physical cores, because
   # this list alone cannot tell you that.
+  #
+  # k6 holds TWELVE cores, not the six it had on the old box. That is not tuning
+  # for its own sake — build 397, the first run on the 24-core c5.12xlarge, came
+  # back with only the rungs up to 4,000 rps rig-valid and k6 shedding 203, then
+  # 3,908, then 103,558, then 343,971, then 558,068 iterations as the ladder
+  # climbed. The server was not refusing that load; the client could not generate
+  # it. The box had grown from 8 physical cores to 24 and this line had not moved,
+  # so eleven cores sat idle while the measurement stayed client-bound.
+  #
+  # The SERVER's cpuset is deliberately unchanged at six cores. Widening it would
+  # change the subject of the measurement and reset the baseline again; the point
+  # here is to let the client saturate the same six-core server, not to measure a
+  # bigger one.
+  #
+  # These defaults now need a box with at least NINETEEN physical cores (6 + 1 +
+  # 12). c5.12xlarge has 24. A c5.9xlarge has only 18, so the guard below would
+  # fail the run rather than let k6 quietly share the server's cores again —
+  # verified against a simulated 18-core topology. If the perf queue is ever moved
+  # to a smaller box, narrow PERF_K6_CPUS to match instead of disabling the guard.
+  #
   # Each cpuset is overridable via PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS
   # so a re-run can, e.g., hand k6 more cores to drive higher arrival rates.
-  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-8-13}"
+  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-8-19}"
   echo "--- core-pinning enabled (${CORES} logical cpus): server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS"
   assert_cpusets_physically_disjoint || exit 1
 else
