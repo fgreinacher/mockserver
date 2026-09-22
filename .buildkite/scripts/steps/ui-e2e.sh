@@ -5,7 +5,11 @@
 # provide. Covers dashboard-driven expectation CRUD against the live control
 # plane and the live WebSocket log stream.
 #
-# Hard CI gate — a failure here blocks master (fail-closed: Playwright exits
+# Runs two Playwright suites: the served-dashboard suite described below, and
+# the Panel scroll-anchoring regression, which drives the real Panel +
+# ProgressiveList over its own Vite harness and needs no server.
+#
+# Hard CI gate — a failure in EITHER blocks master (fail-closed: Playwright exits
 # non-zero on any failure AND when zero tests are found).
 #
 # Topology (same-origin, mirroring how a user runs the dashboard):
@@ -101,4 +105,20 @@ echo "--- :playwright: Using Playwright image v${PW_VERSION}-noble (from mockser
   -e "E2E_MS_PORT=$SERVER_PORT" \
   -e "CI=true" \
   --network "$NETWORK_NAME" \
-  -- bash -c 'npm ci && npm run test:e2e'
+  -- bash -c '
+    set -uo pipefail
+    npm ci || exit 1
+    # Two browser suites, both hard gates, run independently so one failing
+    # still yields the other'"'"'s result instead of masking it.
+    #   test:e2e        — the served dashboard against the live JAR above.
+    #   test:e2e:anchor — the Panel scroll-anchoring regression (e2e/anchor-harness).
+    #                     It needs no server: the defect is a pure client-side
+    #                     virtualization/scroll interaction, and jsdom structurally
+    #                     cannot reproduce it (no layout engine, so scrollTop /
+    #                     scrollHeight / offsetHeight are always 0 and the list
+    #                     never windows). Real browser or no coverage at all.
+    npm run test:e2e; RC_MAIN=$?
+    npm run test:e2e:anchor; RC_ANCHOR=$?
+    echo "--- e2e exit codes: dashboard=$RC_MAIN anchor=$RC_ANCHOR"
+    [ "$RC_MAIN" -eq 0 ] && [ "$RC_ANCHOR" -eq 0 ]
+  '
