@@ -1,4 +1,5 @@
 import { useMemo, useState, useCallback, useRef, memo } from 'react';
+import { useTransientFlag } from '../hooks/useTransientFlag';
 import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
@@ -1808,7 +1809,7 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
   const debugMismatch = useDebugMismatchContext();
   const generateStub = useGenerateStubContext();
   const setBreakpoint = useSetBreakpointContext();
-  const [curlCopied, setCurlCopied] = useState(false);
+  const [curlCopied, flashCurlCopied] = useTransientFlag(false);
 
   const httpRequest = useMemo(() => {
     const req = item.value['httpRequest'];
@@ -1839,13 +1840,12 @@ function DetailActions({ item, summary, canCapture, unmatched, onCaptureAsMock, 
     if (!curl) return;
     try {
       await navigator.clipboard.writeText(curl);
-      setCurlCopied(true);
-      setTimeout(() => setCurlCopied(false), 1500);
+      flashCurlCopied(true, false, 1500);
     } catch {
       // Clipboard denied (insecure context / permissions) — silently no-op,
       // consistent with the shared CopyButton's failure handling.
     }
-  }, [item.value, summary]);
+  }, [item.value, summary, flashCurlCopied]);
 
   return (
     <>

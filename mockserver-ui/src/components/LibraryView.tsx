@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useMemo, useRef, type ChangeEvent } from 'react';
+import { useTransientFlag } from '../hooks/useTransientFlag';
 import Box from '@mui/material/Box';
 import IconButton from '@mui/material/IconButton';
 import Paper from '@mui/material/Paper';
@@ -363,7 +364,7 @@ function ExportTab({ connectionParams }: { connectionParams: ConnectionParams })
   const [scope, setScope] = useState<ExportScope>('requests');
   const [format, setFormat] = useState<ExportFormat>('har');
   const [downloading, setDownloading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useTransientFlag(false);
   const [error, setError] = useState<ReturnType<typeof humanizeError> | null>(null);
 
   const scopeMeta = SCOPES.find((s) => s.value === scope)!;
@@ -458,12 +459,11 @@ function ExportTab({ connectionParams }: { connectionParams: ConnectionParams })
     try {
       const text = await fetchText();
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      flashCopied(true, false, 2000);
     } catch (e) {
       setError(humanizeError(e));
     }
-  }, [fetchText]);
+  }, [fetchText, flashCopied]);
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, maxWidth: 720 }}>

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useTransientFlag } from '../hooks/useTransientFlag';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
@@ -10,16 +10,14 @@ interface CopyButtonProps {
 }
 
 export default function CopyButton({ text, size = 'small' }: CopyButtonProps) {
-  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [status, flashStatus] = useTransientFlag<'idle' | 'copied' | 'failed'>('idle');
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(text);
-      setStatus('copied');
-      setTimeout(() => setStatus('idle'), 1500);
+      flashStatus('copied', 'idle', 1500);
     } catch {
-      setStatus('failed');
-      setTimeout(() => setStatus('idle'), 2000);
+      flashStatus('failed', 'idle', 2000);
     }
   };
 

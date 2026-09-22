@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTransientFlag } from '../hooks/useTransientFlag';
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
 import Paper from '@mui/material/Paper';
@@ -223,13 +224,12 @@ function VerdictBanner({ verdict }: { verdict: OptimisationVerdict }) {
 
 /** A code block with a small copy-to-clipboard button. */
 function SnippetBlock({ label, snippet }: { label: string; snippet: string }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useTransientFlag(false);
   const onCopy = useCallback(() => {
     void navigator.clipboard.writeText(snippet).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      flashCopied(true, false, 2000);
     });
-  }, [snippet]);
+  }, [snippet, flashCopied]);
   return (
     <Box sx={{ position: 'relative', mt: 0.5 }}>
       <Tooltip title={copied ? 'Copied!' : `Copy ${label}`}>
@@ -365,8 +365,8 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
   const [loadedTrafficCount, setLoadedTrafficCount] = useState<number | null>(null);
   const [busyAction, setBusyAction] = useState<null | 'copy' | 'copyVerdict' | 'download'>(null);
   const [actionError, setActionError] = useState<HumanError | null>(null);
-  const [copied, setCopied] = useState(false);
-  const [verdictCopied, setVerdictCopied] = useState(false);
+  const [copied, flashCopied] = useTransientFlag(false);
+  const [verdictCopied, flashVerdictCopied] = useTransientFlag(false);
 
   // Map the picker selection to the query the lib expects (omit for "all").
   const query = useMemo(
@@ -413,14 +413,13 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
     try {
       const markdown = await fetchOptimisationBrief(connectionParams, query);
       await navigator.clipboard.writeText(markdown);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      flashCopied(true, false, 2000);
     } catch (e) {
       setActionError(humanizeError(e));
     } finally {
       setBusyAction(null);
     }
-  }, [connectionParams, query]);
+  }, [connectionParams, query, flashCopied]);
 
   // Build a compact plain-text verdict CLIENT-SIDE from the already-loaded JSON
   // report (no fetch) and write it to the clipboard.
@@ -430,14 +429,13 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
     setActionError(null);
     try {
       await navigator.clipboard.writeText(buildVerdictText(report));
-      setVerdictCopied(true);
-      setTimeout(() => setVerdictCopied(false), 2000);
+      flashVerdictCopied(true, false, 2000);
     } catch (e) {
       setActionError(humanizeError(e));
     } finally {
       setBusyAction(null);
     }
-  }, [report]);
+  }, [report, flashVerdictCopied]);
 
   const handleDownload = useCallback(async () => {
     setBusyAction('download');
