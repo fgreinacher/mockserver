@@ -516,7 +516,7 @@ named so a reader can see what was actually done versus what was planned.
 
 ### Tier 0 — must precede or accompany everything else
 
-#### 0. Make a result self-describing before anything compares them
+#### 0. Make a result self-describing before anything compares them — **[landed `7ff92db0a`; schema v3 `5740ff989`]**
 
 *Serves: all. Cost: half a day. **Blocks items 2, 7, 11, 19 and the whole Sustaining section.***
 
@@ -717,7 +717,7 @@ relegating to a nightly.
 
 ### Tier 2 — moderate cost, closes named mandate gaps
 
-#### 8. Laptop profile: startup and footprint
+#### 8. Laptop profile: startup and footprint — **[landed `c1b12f2fd`]**
 
 *Serves: D5, D6 / profile L. Cost: 3-4 days. Where: daily, pinned `perf` queue.*
 
@@ -741,7 +741,7 @@ Notify-only for 10 runs to establish the MAD, then `dir:"up"` with a 25% floor. 
 floor on a 566 ms baseline is a 141 ms dead band — wide enough to hide most real regressions
 while catching a total AppCDS loss, so it is a backstop, not the signal.
 
-#### 9. Proxy-path benchmarks — **the largest genuinely uncovered area the mandate names**
+#### 9. Proxy-path benchmarks — **[landed: 9a `19686f9f1`, 9b/9c wired `0cd2c57b9`]**
 
 *Serves: D3 / all profiles. Cost: 9a about 2 days; 9b and 9c about a week.*
 
@@ -831,7 +831,7 @@ server with `growth.js`, which needs the default 100k ring to reproduce issue #2
 O(n)-eviction slope — so shrinking the ring there would silently disable the control `growth.js`
 exists to be. Do not "just shrink the ring" on the shared SUT.
 
-#### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis
+#### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis — **[landed `c7fe73d54`; daily budget dormant by design]**
 
 *Serves: D1, D4 / profile C. Cost: 2-3 days.*
 
@@ -870,7 +870,7 @@ per-connection costs. The in-process harness also warms the h2 path before the f
 same correction), which removed a ~108 KB one-time upward bias from the 1x1 figure; its residual spread is
 GC-read granularity at single-connection scale, so the low-noise 100x10 (spread ~1%) is the figure to trust.
 
-#### 12. LLM and SSE streaming under concurrency — **new**
+#### 12. LLM and SSE streaming under concurrency — **[landed `c81798ad2`]**
 
 *Serves: D2, D4, D1 / profiles C, P. Cost: 3-4 days.*
 
@@ -914,7 +914,7 @@ reader (`k6/tools/sse-fidelity-reader.py`) times inter-token gaps idle (client-j
 positive control) then under load; `perf-test-run.sh` samples heap-per-open-stream. All
 `streaming.*` budgets are notify-only.
 
-#### 13. Clustered state under load — **new**
+#### 13. Clustered state under load — **[harness landed `648780a33`; NOT MEASURING — the clustered image is never provisioned on the perf queue, so every run takes the absent-image skip and emits zero metrics]**
 
 *Serves: D1, D2, D4 / profile C. Cost: about a week.*
 
@@ -928,7 +928,7 @@ within-run A/B pattern `CandidateIndexBenchmark` already establishes as the repo
 standard, and it cancels almost all environmental noise. Reuse the clustered-libs jars the
 container-tests pipeline already builds rather than inventing a second build.
 
-#### 14. TLS and mTLS handshake cost — **new**
+#### 14. TLS and mTLS handshake cost — **[landed `9ac4ee0fc`]**
 
 *Serves: D2, D4 / profiles C, L. Cost: 1-2 days, sharing item 9a's run.*
 
@@ -1179,7 +1179,7 @@ unchanged (env-overridable ladder/cores), and it now records `sut_cpu_frac_of_pi
 and `peak_limited_by` per C so the next run on a real box states which side bound each rung. What
 stopped short is the measurement box, not the method.
 
-#### 19. Close the loop from S3 back to the website
+#### 19. Close the loop from S3 back to the website — **[landed `f15c2de9e`; emits a patch artifact rather than opening a PR — see the deviation note]**
 
 *Cost: 2-3 days. Where: tail of the daily run, non-gating.*
 

@@ -15,7 +15,7 @@ regressions hide and stale claims get published.
 | `forward.js` | Forward connection-pool regression guard | Daily (perf queue) | `forward.error_rate` only |
 | `proxy.js` | Proxy and TLS handshake latency | Daily (perf queue) | No — notify-only |
 | `streaming.js` | LLM/SSE streaming concurrency vs match latency | Daily (perf queue) | No — notify-only |
-| `clustered_crossing.js` | Cross-node request latency in a cluster | Daily (perf queue) | **No — not compared at all**; results are stored, but `perf-test-compare.sh` never reads them, so nothing flags a regression |
+| `clustered_crossing.js` | Cross-node request latency in a cluster | Daily (perf queue) — but **never actually runs** | **No — nothing is measured.** `perf-test-compare.sh` DOES read `clustered_state.*` (notify-only), so the older claim that it ignores them was wrong about the mechanism. The real gap is upstream: the clustered image (`PERF_CLUSTERED_IMAGE`, default `mockserver/mockserver:mockserver-snapshot-clustered`) is never pulled or built on the perf queue, so every run takes the absent-image skip, sets `clustered_attempted=false` and emits no `clustered_state` block for compare to read. Compare annotates the skip and counts consecutive misses |
 | `MatchingBenchmark` JMH | Matcher hot-path time/op and allocation/op | Daily (perf queue) | Yes — `time_per_op` + `alloc_bytes_per_op` |
 | `CandidateIndexBenchmark` JMH | Index vs scan scaling | Daily (perf queue) | No |
 | Promoted dark benchmarks (7 classes, see below) | Various hot paths | Daily (perf queue) | No — notify-only |
