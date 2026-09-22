@@ -89,9 +89,22 @@ variable "trigger_max_size" {
 }
 
 variable "perf_instance_types" {
-  description = "EC2 instance type for the perf queue — a SINGLE fixed-performance type (no comma list) for reproducible benchmark numbers"
+  description = "EC2 instance type for the perf queue — a SINGLE fixed-performance type (no comma list) for reproducible benchmark numbers. MUST have enough PHYSICAL cores for the run's cpusets (see below); perf-test-run.sh fails the build if they overlap."
   type        = string
-  default     = "c5.4xlarge"
+  # 48 vCPU across 24 PHYSICAL cores. The physical count is the binding one, and
+  # picking on vCPU alone is what broke the rig: perf-test-run.sh pins server=0-5,
+  # upstream=6, k6=8-13, i.e. 13 cores, and the previous c5.4xlarge has 16 vCPU but
+  # only EIGHT physical cores. k6 therefore ran on the hyperthread siblings of cores
+  # the server was already saturating, so every throughput figure measured a server
+  # contending with its own load generator — and it is the main reason "the client
+  # saturates first" blocked the 36k knee (k6 read 600.9% against a 600% pin on a
+  # run that otherwise passed).
+  #
+  # 24 physical cores fits the 13 with room to widen k6 for the higher sweep rungs.
+  # Single-socket, so the server stays in one NUMA domain, and the same c5 (Cascade
+  # Lake) microarchitecture as before, which keeps cross-hardware drift to a minimum.
+  # c5.18xlarge and above are dual-socket — do not go there without re-checking NUMA.
+  default = "c5.12xlarge"
 }
 
 variable "perf_min_size" {

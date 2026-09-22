@@ -427,17 +427,123 @@ k6_core_count() {
   echo "$total"
 }
 
+# Expand a cpuset spec ("0-5" / "8,9" / "6") into a space-separated list of logical
+# CPU ids, so each can be mapped to the PHYSICAL core it actually sits on.
+expand_cpuset() {
+  local spec="$1" part a b i out="" _xparts
+  [ -z "$spec" ] && { echo ""; return; }
+  IFS=',' read -ra _xparts <<< "$spec"
+  for part in "${_xparts[@]}"; do
+    if [[ "$part" == *-* ]]; then
+      a="${part%%-*}"; b="${part##*-}"
+      for ((i=a; i<=b; i++)); do out="$out $i"; done
+    else
+      out="$out $part"
+    fi
+  done
+  echo "${out# }"
+}
+
+# Map a logical CPU id to a stable PHYSICAL core key ("<package>:<core>"). Two
+# hyperthread siblings share one key, which is the whole point: cpusets that look
+# disjoint in logical numbering can be the two threads of the same core.
+# PERF_SYSFS_CPU_ROOT exists so the guard itself can be tested against a SIMULATED
+# topology (see the self-test below); it defaults to the real sysfs path.
+phys_core_key() {
+  local cpu="$1" base="${PERF_SYSFS_CPU_ROOT:-/sys/devices/system/cpu}/cpu$1/topology"
+  [ -r "$base/core_id" ] || return 1
+  printf '%s:%s' "$(cat "$base/physical_package_id" 2>/dev/null || echo 0)" "$(cat "$base/core_id")"
+}
+
+# THE GUARD. The cpusets below are chosen to be disjoint — but "disjoint" has to
+# mean disjoint in PHYSICAL cores, and for a long time it did not.
+#
+# On the c5.4xlarge this queue used to run, the defaults asked for 6 (server) + 1
+# (upstream) + 6 (k6) = 13 cores on a box with 16 vCPU but only EIGHT physical
+# cores. Thirteen into eight does not go, so k6 necessarily ran on the sibling
+# threads of cores the server was already saturating. Every throughput figure the
+# rig produced was therefore a measurement of a server sharing silicon with its own
+# load generator, and it is the main reason "the client saturates first" blocked
+# the knee for so long (k6 read 600.9% against its 600% pin on a VALID run).
+#
+# Nothing caught it because the check above was `_NPROCESSORS_ONLN >= 16`, which
+# counts LOGICAL cpus — the one number that cannot detect this. So the check now
+# resolves real topology and fails the run rather than quietly producing a figure
+# that means something other than it claims.
+assert_cpusets_physically_disjoint() {
+  # `seen` is a newline-separated "<core key> <role>" table rather than an
+  # associative array: `local -A` needs bash 4, and macOS still ships bash 3.2, so
+  # the array form dies with a syntax error instead of running the check — which
+  # is a guard that fails for the wrong reason, the exact failure mode this whole
+  # function exists to prevent. (Caught by the self-test; it reported a FAIL on the
+  # overlapping topology for the syntax error, not for the overlap.)
+  local seen="" role spec cpu key dupe="" count=0 prev
+  for role in server upstream k6; do
+    case "$role" in
+      server)   spec="$SERVER_CPUS" ;;
+      upstream) spec="$UPSTREAM_CPUS" ;;
+      k6)       spec="$K6_CPUS" ;;
+    esac
+    [ -z "$spec" ] && continue
+    # A non-empty spec that expands to NOTHING would skip this role's check
+    # entirely and report the remaining roles as disjoint — a guard passing
+    # because it examined nothing, which is the failure it exists to catch. A
+    # reversed range ("13-8") does exactly that, so treat any such spec as fatal
+    # rather than letting it quietly narrow what is verified.
+    local _expanded; _expanded="$(expand_cpuset "$spec")"
+    if [ -z "$_expanded" ]; then
+      echo "^^^ +++"
+      echo ":x: the $role cpuset '$spec' expands to no cpus (a reversed or malformed range?) — refusing to verify core isolation against an empty set" >&2
+      return 1
+    fi
+    for cpu in $_expanded; do
+      if ! key="$(phys_core_key "$cpu")"; then
+        # Topology is unreadable (no /sys — e.g. a local macOS run). Off-CI that is
+        # a limitation, not a fault; in CI it means we cannot prove the numbers are
+        # honest, and an unprovable benchmark is the thing this guard exists to stop.
+        if [ "${BUILDKITE:-}" = "true" ]; then
+          echo "^^^ +++"
+          echo ":x: cannot read CPU topology for cpu${cpu}; refusing to produce benchmark figures that cannot be shown to be contention-free" >&2
+          return 1
+        fi
+        echo "--- WARNING: CPU topology unreadable — cannot verify the cpusets are physically disjoint (expected off-CI)"
+        return 0
+      fi
+      prev="$(printf '%s\n' "$seen" | awk -v k="$key" '$1==k {print $2; exit}')"
+      if [ -n "$prev" ]; then
+        dupe="$dupe\n    physical core $key is used by BOTH $prev and $role (via cpu$cpu)"
+      else
+        seen="$seen$key $role"$'\n'
+        count=$((count + 1))
+      fi
+    done
+  done
+  if [ -n "$dupe" ]; then
+    echo "^^^ +++"
+    echo ":x: the server, upstream and k6 cpusets OVERLAP on physical cores — the load generator would contend with the system under test, so any throughput figure from this run would measure the two of them fighting, not the server:" >&2
+    printf '%b\n' "$dupe" >&2
+    echo "    server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS on $(nproc 2>/dev/null || echo '?') logical cpus" >&2
+    echo "    Fix the cpusets (PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS) or use a box with more physical cores." >&2
+    return 1
+  fi
+  echo "--- verified: server / upstream / k6 occupy ${count} distinct physical cores, none shared"
+  return 0
+}
+
 # --- core pinning --------------------------------------------------------------
 CORES="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
 SERVER_CPUS=""; UPSTREAM_CPUS=""; K6_CPUS=""
 if [ "$CORES" -ge 16 ]; then
-  # Defaults: server=0-5 upstream=6 k6=8-13 (7,14,15 left for kernel/docker/sampler).
+  # Defaults: server=0-5 upstream=6 k6=8-13. NOTE these are LOGICAL cpu ids; the
+  # guard below is what establishes they land on distinct physical cores, because
+  # this list alone cannot tell you that.
   # Each cpuset is overridable via PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS
   # so a re-run can, e.g., hand k6 more cores to drive higher arrival rates.
   SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-8-13}"
-  echo "--- core-pinning enabled (${CORES} vCPU): server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS"
+  echo "--- core-pinning enabled (${CORES} logical cpus): server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS"
+  assert_cpusets_physically_disjoint || exit 1
 else
-  echo "--- WARNING: ${CORES} vCPU (<16) — core-pinning skipped; numbers will be noisier"
+  echo "--- WARNING: ${CORES} logical cpus (<16) — core-pinning skipped; numbers will be noisier"
 fi
 cpuset_arg() { [ -n "$1" ] && printf -- '--cpuset-cpus=%s' "$1"; }
 
