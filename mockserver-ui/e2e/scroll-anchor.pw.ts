@@ -188,3 +188,44 @@ test('an expanded row stays put when the list length is fixed and rows are evict
   expect(topAfter, 'opened row still inside the viewport (bottom edge)').toBeLessThan(vpAfter.bottom);
   expect(Math.abs(topAfter - topBefore)).toBeLessThanOrEqual(3);
 });
+
+// REGRESSION, the stale anchor: scrolling back to the top must LEAVE the reader
+// at the top. A scroll event is delivered asynchronously, so when Panel's
+// tail-following sets scrollTop = 0 a React commit can land before the anchor
+// listener has re-captured — leaving an anchor that points at wherever the
+// reader used to be. Correcting towards it threw them back down the list.
+//
+// Found on the live dashboard, not here: scrolling the Received Requests panel
+// to the top snapped it to the very bottom of the list. The harness tests above
+// never scrolled back up, so nothing contradicted it.
+test('scrolling back to the top leaves the reader at the top', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByTestId('frame')).toBeVisible();
+  await page.waitForFunction(() => document.querySelectorAll('[data-vrow]').length > 0);
+
+  const scroller = await findScroller(page);
+
+  // Establish an anchor part-way down, the way a reader browsing the list does.
+  await scroller.evaluate((el) => {
+    (el as HTMLElement).scrollTop = 700;
+  });
+  await page.waitForTimeout(150);
+  await page.evaluate(() => (window as unknown as { prependRows: (n: number) => void }).prependRows(10));
+  await page.waitForTimeout(150);
+  expect(
+    await scroller.evaluate((el) => (el as HTMLElement).scrollTop),
+    'anchored away from the top',
+  ).toBeGreaterThan(100);
+
+  // Now go back to the top and let updates keep arriving.
+  await scroller.evaluate((el) => {
+    (el as HTMLElement).scrollTop = 0;
+  });
+  for (let i = 0; i < 4; i++) {
+    await page.evaluate(() => (window as unknown as { prependRows: (n: number) => void }).prependRows(10));
+    await page.waitForTimeout(120);
+  }
+
+  const finalTop = await scroller.evaluate((el) => (el as HTMLElement).scrollTop);
+  expect(finalTop, 'still at the top — the stale anchor did not drag the reader away').toBeLessThanOrEqual(8);
+});

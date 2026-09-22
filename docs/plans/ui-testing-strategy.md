@@ -143,37 +143,50 @@ in `beforeEach`). Parallelism would require per-test server isolation
 
 ## What to Add
 
-### P0 — Live-update row-readability test (Playwright)
+### P0 — Live-update list-usability tests (Playwright) — **DONE, and the original
+### sketch of it would not have worked**
 
-**File:** `mockserver-ui/e2e/dashboard.spec.ts`
+**Status: shipped.** `mockserver-ui/e2e/scroll-anchor.pw.ts` (3 tests, harness) and
+`mockserver-ui/e2e/dashboard-live-scroll.spec.ts` (1 test, real server).
 
-Add one new test case covering the exact motivating-bug scenario:
+This section originally sketched a single test: fire one request, expand its log
+entry, fire 20 more, assert the entry is still visible and expanded. That test
+would have **passed against a fix that did nothing on a real server**, and the
+reasons are the useful part of this document.
 
-1. Navigate to `#/dashboard`.
-2. Wait for the WebSocket `connected` chip.
-3. Register an expectation via the API (`PUT /mockserver/expectation`).
-4. Fire a single request to generate one log entry and wait for it to appear in
-   the `role="log"` region.
-5. Click the log entry to expand it.
-6. Assert it is expanded (the JSON body or detail content is visible).
-7. Fire 20 more requests via the API in a tight loop to drive repeated WebSocket
-   pushes, changing `count` multiple times.
-8. Assert the previously-opened entry is **still visible and still expanded** —
-   it has not been closed or scrolled away.
+**Three requirements the original sketch missed.** Any test of this bug class must
+satisfy all of them, because the defect lives in their interaction:
 
-This is the invariant the jsdom test got right at the wrong layer: the entry
-must remain readable to a user, regardless of what the underlying store state
-holds.
+| Requirement | Why the sketch failed it | What the real bug needed |
+|---|---|---|
+| **The list must be at its cap** | It grows 1 → 21 rows, so `count` changes on every push | `DashboardWebSocketHandler` caps a panel at `DEFAULT_LOG_UPDATE_ITEM_LIMIT` (100) and evicts as it prepends. Past 100 the count is **constant forever**. A fix gated on the count rising is inert exactly when traffic is live — and one shipped. Seed past the cap first |
+| **The reader must be scrolled away from the top** | It expands an entry near the top | At the top, tail-following applies and anchoring does not. The reported symptom only occurs below the top, where prepends land *above* the viewport |
+| **Assert the row has not MOVED, not just that it exists** | "still visible and still expanded" | A row can stay mounted while drifting down and out of view. Assert its viewport position is unchanged (±few px), and assert the click actually expanded it — otherwise the test can pass by holding a *collapsed* row still |
 
-**What this catches that jsdom cannot:** the `scrollTop = 0` effect firing on
-`count` change (fixed in `b00228d8d`), virtualisation unmounting the row when
-the viewport scrolls, and any future regression in the auto-scroll / expand
-interaction.
+**A fourth, learned later:** also assert what happens on the way **back**.
+Scrolling to the top must leave the reader at the top. A stale anchor dragged the
+viewport to the bottom of the list, and none of the first three tests caught it
+because none of them scrolled back up.
 
-**Implementation note:** Use a uniquely timestamped path
-(`/e2e/expand-${Date.now()}`) so the target entry is unambiguous among the log
-entries. Poll with `expect.poll` rather than a hard wait. Assert the entry's
-detail text (the path) is visible, not just that a boolean is true.
+**Row identity is not row text.** The panel renders a display ordinal
+(`filtered.length - i`) that changes for the *same* request whenever a newer one
+arrives. Matching a row by its rendered text reports a present row as missing.
+Match on the request path.
+
+**Both layers are needed, and the harness alone is not enough.** The harness suite
+is fast and can drive exact scenarios; the server-backed suite cannot disagree
+with production about how the list behaves. The shipped fix was certified by a
+harness test that was green, degrade-confirmed red, on the right components — and
+still wrong, because the harness modelled a growing list while production's is
+permanently full. **A degrade test proves the code causes the behaviour the test
+measures; it says nothing about whether the test measures the situation the user
+is in.** Before trusting one, state the production invariant it assumes and go
+check it against the producer.
+
+**What only a real browser can see (unchanged from the analysis above):** the
+`scrollTop = 0` effect, virtualisation unmount, scroll anchoring, and the browser
+reducing `scrollTop` itself as estimated row heights are replaced by measured
+ones — that last one silently defeated a guard that compared scroll positions.
 
 ### P1 — Re-aim the existing jsdom auto-scroll test
 

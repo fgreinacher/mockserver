@@ -177,6 +177,17 @@ export default function ProgressiveList({
     const el = scrollParent;
     const anchor = anchorRef.current;
     if (!el || !anchor) return;
+    // The reader is at the top NOW, whatever the anchor says. This is not
+    // redundant with captureAnchor's own top check: a scroll event is delivered
+    // ASYNCHRONOUSLY, so when Panel's tail-following sets scrollTop = 0 a commit
+    // can land before the listener re-captures, leaving an anchor that points at
+    // wherever the reader used to be. Correcting towards it then throws them back
+    // down the list — observed on the live dashboard as scrolling to the top
+    // snapping the panel to the very bottom.
+    if (el.scrollTop <= ANCHOR_MIN_OFFSET_PX) {
+      anchorRef.current = null;
+      return;
+    }
     // Where did the anchor row end up? Its INDEX has changed (everything shifts
     // when rows are prepended), so find it by the caller's stable key, then ask
     // the virtualizer for that index's offset. `getOffsetForIndex(i, 'start')`
