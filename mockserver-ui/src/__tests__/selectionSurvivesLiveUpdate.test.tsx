@@ -134,108 +134,106 @@ describe('dashboard row expansion survives a live update (windowed)', () => {
   });
 });
 
-describe('Panel auto-scroll is tail-following', () => {
-  beforeEach(() => {
-    useDashboardStore.setState({ autoScroll: true });
-  });
-
-  function renderPanel(count: number) {
+describe('Panel following is console-style: it follows the BOTTOM', () => {
+  // These pin the CONSOLE model that replaced top-following.
+  //
+  // The panels render oldest-first with the newest appended at the BOTTOM, and
+  // following is an explicit choice (the Follow control) rather than something
+  // inferred from scroll position. That is what makes them stable to read: an
+  // arriving row lands BELOW the viewport, so a reader who is not following sees
+  // nothing move and no scroll compensation is needed. The previous design
+  // prepended above the reader and then scrolled to compensate, which kept the row
+  // under the eye but meant the panel was scrolling continuously.
+  function renderFollowing(
+    count: number,
+    follow: boolean,
+    onFollowChange: (follow: boolean) => void = () => {},
+  ) {
     return render(
-      <Panel title="Log Messages" count={count} searchValue="" onSearchChange={() => {}} liveRegion>
+      <Panel
+        title="Log Messages"
+        count={count}
+        follow={follow}
+        onFollowChange={onFollowChange}
+        searchValue=""
+        onSearchChange={() => {}}
+        liveRegion
+      >
         <div style={{ height: 5000 }}>rows</div>
       </Panel>,
     );
   }
 
-  // NOTE this one is a positive guard, not a differential one: it passes with the OLD
-  // unconditional-yank implementation too. It is kept because tail-following MUST still
-  // work for the common case, but the tests that actually distinguish the fix are the two
-  // below (no yank when scrolled down, and resuming once back at the top).
-  it('snaps to the top on new data when the user is already at the top', () => {
-    const { rerender } = renderPanel(10);
+  it('sticks to the BOTTOM on new data while following', () => {
+    const { rerender } = renderFollowing(10, true);
     const region = screen.getByRole('log');
-    // The user is parked at the top.
     region.scrollTop = 0;
-    fireEvent.scroll(region);
 
-    // A live push arrives (count grows). Tail-following should keep them at top.
-    region.scrollTop = 40; // simulate content shift; the effect should reset it
     rerender(
-      <Panel title="Log Messages" count={11} searchValue="" onSearchChange={() => {}} liveRegion>
+      <Panel
+        title="Log Messages"
+        count={11}
+        follow
+        onFollowChange={() => {}}
+        searchValue=""
+        onSearchChange={() => {}}
+        liveRegion
+      >
         <div style={{ height: 5000 }}>rows</div>
       </Panel>,
     );
-    expect(region.scrollTop).toBe(0);
+    // Pinned to the tail, where the newest row is.
+    expect(region.scrollTop).toBe(region.scrollHeight);
   });
 
-  it('never scrolls on new data when auto-scroll is switched off', () => {
-    // autoScroll is a user-accessible toggle. With it off, a live push must leave the
-    // viewport exactly where it is - whether the user is at the top or scrolled away.
-    useDashboardStore.setState({ autoScroll: false });
-
-    const { rerender } = renderPanel(10);
+  it('does not move the viewport on new data when NOT following', () => {
+    const { rerender } = renderFollowing(10, false);
     const region = screen.getByRole('log');
-    region.scrollTop = 900;
-    fireEvent.scroll(region);
-
-    rerender(
-      <Panel title="Log Messages" count={11} searchValue="" onSearchChange={() => {}} liveRegion>
-        <div style={{ height: 5000 }}>rows</div>
-      </Panel>,
-    );
-    expect(region.scrollTop).toBe(900);
-
-    // And at the top it must not re-assert scrollTop either - nothing should touch it.
-    region.scrollTop = 0;
-    fireEvent.scroll(region);
-    region.scrollTop = 40;
-    rerender(
-      <Panel title="Log Messages" count={12} searchValue="" onSearchChange={() => {}} liveRegion>
-        <div style={{ height: 5000 }}>rows</div>
-      </Panel>,
-    );
-    expect(region.scrollTop).toBe(40);
-  });
-
-  it('does NOT yank the viewport back to the top when the user has scrolled down', () => {
-    const { rerender } = renderPanel(10);
-    const region = screen.getByRole('log');
-    // The user scrolled down to inspect / open a row.
     region.scrollTop = 500;
-    fireEvent.scroll(region);
 
-    // A live push arrives (count grows). The opened row must stay put: the panel
-    // must NOT reset the scroll to the top.
     rerender(
-      <Panel title="Log Messages" count={11} searchValue="" onSearchChange={() => {}} liveRegion>
+      <Panel
+        title="Log Messages"
+        count={11}
+        follow={false}
+        onFollowChange={() => {}}
+        searchValue=""
+        onSearchChange={() => {}}
+        liveRegion
+      >
         <div style={{ height: 5000 }}>rows</div>
       </Panel>,
     );
+    // Untouched. This is the whole point of the console model: the reader is
+    // reading, and nothing is inserted above them to compensate for.
     expect(region.scrollTop).toBe(500);
   });
 
-  it('resumes tail-following once the user scrolls back to the top', () => {
-    const { rerender } = renderPanel(10);
+  it('turns Follow OFF when the reader scrolls away from the tail', () => {
+    const changes: boolean[] = [];
+    renderFollowing(10, true, (f: boolean) => { changes.push(f); });
     const region = screen.getByRole('log');
 
-    region.scrollTop = 500;
+    // jsdom has no layout, so give the element a scrollable shape explicitly.
+    Object.defineProperty(region, 'scrollHeight', { value: 5000, configurable: true });
+    Object.defineProperty(region, 'clientHeight', { value: 500, configurable: true });
+    region.scrollTop = 1000; // far from the bottom
     fireEvent.scroll(region);
-    rerender(
-      <Panel title="Log Messages" count={11} searchValue="" onSearchChange={() => {}} liveRegion>
-        <div style={{ height: 5000 }}>rows</div>
-      </Panel>,
-    );
-    expect(region.scrollTop).toBe(500); // stayed put while scrolled down
 
-    // User scrolls back to the top.
-    region.scrollTop = 0;
-    fireEvent.scroll(region);
-    region.scrollTop = 40;
-    rerender(
-      <Panel title="Log Messages" count={12} searchValue="" onSearchChange={() => {}} liveRegion>
-        <div style={{ height: 5000 }}>rows</div>
-      </Panel>,
-    );
-    expect(region.scrollTop).toBe(0); // tail-following resumed
+    expect(changes).toContain(false);
   });
+
+  it('turns Follow back ON when the reader returns to the tail', () => {
+    const changes: boolean[] = [];
+    renderFollowing(10, false, (f: boolean) => { changes.push(f); });
+    const region = screen.getByRole('log');
+
+    Object.defineProperty(region, 'scrollHeight', { value: 5000, configurable: true });
+    Object.defineProperty(region, 'clientHeight', { value: 500, configurable: true });
+    region.scrollTop = 4500; // scrollHeight - clientHeight: at the tail
+    fireEvent.scroll(region);
+
+    expect(changes).toContain(true);
+  });
+
 });

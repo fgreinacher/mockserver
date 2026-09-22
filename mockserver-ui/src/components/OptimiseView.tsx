@@ -345,24 +345,33 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
   const [state, setState] = useState<LoadState>('loading');
   const [error, setError] = useState<HumanError | null>(null);
 
-  // Track the live captured-traffic count so we can flag a displayed report as
-  // stale when new traffic arrives after it was fetched. The report is fetched
-  // once per mount/session-change; without this the cost/verdict silently lags
-  // behind newly captured calls. Kept in a ref so `load` need not depend on it
-  // (which would otherwise re-fetch on every WebSocket push).
+  // Flag a displayed report as stale when new traffic arrives after it was
+  // fetched. The obvious signal — the NUMBER of captured rows — is wrong here:
+  // proxiedRequests/recordedRequests are a capped live window (≤100 each), so
+  // their combined length SATURATES at the cap and stops moving, and the stale
+  // banner would then never fire again under sustained load. Instead track a
+  // signature built from each window's tail row. These store arrays are
+  // newest-FIRST (index 0 is the newest; the panels `.reverse()` only for
+  // display), so the tail (last element) is the OLDEST row still retained — but
+  // at saturation a fresh capture evicts that oldest row as it prepends the
+  // newest, so the tail key changes whenever new traffic lands either way. Kept
+  // in a ref so `load` need not depend on it (which would otherwise re-fetch on
+  // every push).
   const proxiedRequests = useDashboardStore((s) => s.proxiedRequests);
   const recordedRequests = useDashboardStore((s) => s.recordedRequests);
-  const liveTrafficCount = proxiedRequests.length + recordedRequests.length;
-  const liveTrafficCountRef = useRef(liveTrafficCount);
-  // Mirror the latest count into the ref via an effect rather than during render
-  // (mutating a ref in render is flagged by react-hooks/refs and is unsafe under
-  // concurrent rendering). The ref lets `load` read the current count without
-  // depending on it.
+  const liveTrafficSignature =
+    `${proxiedRequests.length}:${proxiedRequests[proxiedRequests.length - 1]?.key ?? ''}`
+    + `|${recordedRequests.length}:${recordedRequests[recordedRequests.length - 1]?.key ?? ''}`;
+  const liveTrafficSignatureRef = useRef(liveTrafficSignature);
+  // Mirror the latest signature into the ref via an effect rather than during
+  // render (mutating a ref in render is flagged by react-hooks/refs and is unsafe
+  // under concurrent rendering). The ref lets `load` read the current signature
+  // without depending on it.
   useEffect(() => {
-    liveTrafficCountRef.current = liveTrafficCount;
-  }, [liveTrafficCount]);
-  // Traffic count captured into the currently-displayed report (null until loaded).
-  const [loadedTrafficCount, setLoadedTrafficCount] = useState<number | null>(null);
+    liveTrafficSignatureRef.current = liveTrafficSignature;
+  }, [liveTrafficSignature]);
+  // Traffic signature captured into the currently-displayed report (null until loaded).
+  const [loadedTrafficSignature, setLoadedTrafficSignature] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<null | 'copy' | 'copyVerdict' | 'download'>(null);
   const [actionError, setActionError] = useState<HumanError | null>(null);
   const [copied, flashCopied] = useTransientFlag(false);
@@ -385,8 +394,8 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
           if (signal?.aborted) return;
           setReport(r);
           setState('ok');
-          // Snapshot the traffic count this report reflects so later captures mark it stale.
-          setLoadedTrafficCount(liveTrafficCountRef.current);
+          // Snapshot the traffic signature this report reflects so later captures mark it stale.
+          setLoadedTrafficSignature(liveTrafficSignatureRef.current);
         })
         .catch((e) => {
           if (signal?.aborted) return;
@@ -508,7 +517,7 @@ export default function OptimiseView({ connectionParams }: OptimiseViewProps) {
         <HumanErrorAlert error={actionError} sx={{ mb: 1.5 }} data-testid="optimise-action-error" onClose={() => setActionError(null)} />
       )}
 
-      {state === 'ok' && loadedTrafficCount !== null && liveTrafficCount !== loadedTrafficCount && (
+      {state === 'ok' && loadedTrafficSignature !== null && liveTrafficSignature !== loadedTrafficSignature && (
         <Alert
           severity="info"
           data-testid="optimise-stale-banner"

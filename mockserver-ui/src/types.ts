@@ -61,11 +61,19 @@ export interface JsonListItem {
   key: string;
   description?: Description;
   value: Record<string, unknown>;
+  /**
+   * When the entry was recorded, for the request sections. Shown in place of a
+   * row ordinal: these lists are a capped live window, so a position within one
+   * renumbers on every push and refers to nothing.
+   */
+  timestamp?: string;
 }
 
 export interface WebSocketMessage {
   logMessages: LogMessage[];
   activeExpectations: JsonListItem[];
+  /** Total expectations held by the server; `activeExpectations` is a capped page of them. */
+  activeExpectationsTotal?: number;
   recordedRequests: JsonListItem[];
   proxiedRequests: JsonListItem[];
   error?: string;

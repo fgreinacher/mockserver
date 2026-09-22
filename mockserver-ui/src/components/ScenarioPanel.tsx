@@ -22,6 +22,7 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight';
 import ConfirmDialog from './ConfirmDialog';
 import TruncatedText from './TruncatedText';
 import { humanizeError } from '../lib/errorMessage';
+import { useHeldItems } from '../hooks/useHeldItems';
 import { useDashboardStore } from '../store';
 import {
   buildScenarioGraphModel,
@@ -180,6 +181,18 @@ export default function ScenarioPanel({ connectionParams }: ScenarioPanelProps) 
   // expectation JSON pushed over the WebSocket, each carrying top-level
   // scenarioName / scenarioState / newScenarioState — no extra fetch needed.
   const activeExpectations = useDashboardStore((s) => s.activeExpectations);
+  // `activeExpectations` is a capped live window (≤100) that the server turns
+  // over as expectations change. The scenario-details list below is SELECTABLE —
+  // the user clicks Edit on a bound mock — so once they have a scenario selected
+  // and are about to act on it, hold the expectations that were on screen even
+  // if the window drops them, otherwise the row is deleted underneath the click.
+  // While no scenario is selected the live window passes straight through, so an
+  // idle panel stays light (see useHeldItems).
+  const heldExpectations = useHeldItems(
+    activeExpectations,
+    (e) => e.key,
+    scenarioName.trim() !== '',
+  );
   // Same hand-off ExpectationPanel uses: loads the expectation into the Composer
   // form and switches to view:'composer' (navigates from the standalone
   // Scenarios nav view; the Mocks view flips to its Compose tab, see below).
@@ -190,8 +203,8 @@ export default function ScenarioPanel({ connectionParams }: ScenarioPanelProps) 
   // state and surfaces scenarios that have no client-side expectation.
   const scenarioDetails = useMemo<ScenarioDetail[]>(() => {
     const currentStates = new Map(scenarios.map((s) => [s.scenarioName, s.currentState]));
-    return buildScenarioDetails(activeExpectations, currentStates);
-  }, [activeExpectations, scenarios]);
+    return buildScenarioDetails([...heldExpectations], currentStates);
+  }, [heldExpectations, scenarios]);
 
   // Build the Mermaid source for the selected scenario's state machine. Only the
   // observations for the selected scenario are shown.
@@ -705,7 +718,7 @@ function ScenarioDetailsSection({ details, selectedScenario, onEdit }: ScenarioD
                           sx={{ height: 18, fontSize: '0.6rem', fontFamily: 'monospace' }}
                         />
                         <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.6rem' }}>
-                          {group.expectations.length} mock{group.expectations.length === 1 ? '' : 's'}
+                          mocks
                         </Typography>
                       </Box>
                       {group.expectations.map((e) => (

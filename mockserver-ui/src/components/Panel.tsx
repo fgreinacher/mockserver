@@ -3,7 +3,6 @@ import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
-import { useDashboardStore } from '../store';
 import { transitions } from '../theme';
 import OperatorSearchField from './OperatorSearchField';
 
@@ -18,7 +17,12 @@ const AT_TOP_THRESHOLD_PX = 8;
 
 interface PanelProps {
   title: string;
-  count: number;
+  /**
+   * Total held by the SERVER, not the size of the page it sent. Omit entirely for
+   * a live feed whose page is capped: a number pinned at the cap is worse than no
+   * number, because it silently stops being a count.
+   */
+  count?: number;
   /** When a filter or search is active, pass the filtered count to show "N / total". */
   filteredCount?: number;
   searchValue: string;
@@ -52,11 +56,15 @@ interface PanelProps {
    */
   onScrolledAwayChange?: (scrolledAway: boolean) => void;
   /**
-   * True when the reader has a row open. Tail-following is suppressed while it is
-   * set: someone reading an entry is reading it wherever they opened it, and that
-   * includes at the very top of the list.
+   * Console mode: rows are in oldest-first order with the newest appended at the
+   * BOTTOM, and the panel offers a Follow control that pins the view to the tail.
+   * This is what makes the panel stable to read — a new row lands BELOW the
+   * viewport, so nothing the reader is looking at moves and no scroll
+   * compensation is needed. Omit for a list that is not a time-ordered feed
+   * (Active Expectations is a set, not a stream).
    */
-  hasOpenItem?: boolean;
+  follow?: boolean;
+  onFollowChange?: (follow: boolean) => void;
   children: ReactNode;
 }
 
@@ -71,34 +79,26 @@ export default function Panel({
   headerActions,
   liveRegion,
   onScrolledAwayChange,
-  hasOpenItem = false,
+  follow,
+  onFollowChange,
   children,
 }: PanelProps) {
-  const autoScroll = useDashboardStore((s) => s.autoScroll);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Whether the user is currently parked at the very top of the list. Auto-scroll
-  // only "follows the tail" when this is true, so a new push never yanks the
-  // viewport away from a row the user has scrolled down to and opened.
+  // Kept for the at-top signal some callers still use; following is driven by the
+  // explicit Follow control, not inferred from this.
   const atTopRef = useRef(true);
+  // Console tail-following: stick to the BOTTOM, where the newest row is.
+  //
+  // This replaces snapping to the top on every update. The difference is not
+  // cosmetic — with newest-at-bottom, arrivals land below the viewport, so a
+  // reader who has scrolled up sees nothing move at all and needs no scroll
+  // compensation. Following is an explicit choice (the Follow control) rather
+  // than something inferred from scroll position, so it never fights the reader.
   useLayoutEffect(() => {
-    // Tail-following, and nothing else. Holding the reader's position against
-    // rows arriving ABOVE them is scroll ANCHORING, and it lives in
-    // ProgressiveList: once the list is windowed, the row the reader is looking
-    // at can be unmounted by the very update we are trying to compensate for, so
-    // it cannot be located in the DOM afterwards. Only the virtualizer knows
-    // where it went, because it measures every row whether or not it is mounted.
-    // `!hasOpenItem` is the part that was missing, and it is the whole bug a
-    // reader actually hits. Opening a row does not require scrolling first: click
-    // one near the top, and tail-following pins scrollTop at 0 while new rows
-    // prepend ABOVE it, walking the row down the screen and then off it.
-    // Measured on a real server at ~10 req/s, an entry opened without scrolling
-    // went top=657 -> 853 -> 1049 -> gone in four seconds, with scrollTop stuck
-    // at 0 throughout. Holding the ROWS was not enough; the view has to stop
-    // chasing the tail as soon as the reader is reading something.
-    if (autoScroll && atTopRef.current && !hasOpenItem && scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
+    if (follow && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [count, autoScroll, hasOpenItem]);
+  }, [count, follow, children]);
 
   return (
     <Paper
@@ -131,15 +131,31 @@ export default function Panel({
         }}
       >
         <Typography variant="subtitle2">{title}</Typography>
-        {count > 0 && (
+        {count != null && count > 0 && (
           <Chip
             label={
               filteredCount != null && filteredCount !== count
-                ? `${filteredCount > 999 ? '999+' : filteredCount} / ${count > 999 ? '999+' : count}`
-                : count > 999 ? '999+' : count
+                ? `${filteredCount > 999 ? '999+' : filteredCount} / ${count > 9999 ? '9999+' : count}`
+                : count > 9999 ? '9999+' : count
             }
             color="primary"
             size="small"
+            sx={{ height: 18, fontSize: '0.65rem', '& .MuiChip-label': { px: 0.75 } }}
+          />
+        )}
+        {follow !== undefined && onFollowChange && (
+          <Chip
+            label={follow ? 'Following' : 'Follow'}
+            size="small"
+            color={follow ? 'primary' : 'default'}
+            variant={follow ? 'filled' : 'outlined'}
+            clickable
+            onClick={() => onFollowChange(!follow)}
+            title={
+              follow
+                ? 'Following the newest entries. Scroll up to stop and read — nothing will move.'
+                : 'Paused while you read. Click to jump to the newest entries and resume following.'
+            }
             sx={{ height: 18, fontSize: '0.65rem', '& .MuiChip-label': { px: 0.75 } }}
           />
         )}
@@ -159,15 +175,17 @@ export default function Panel({
       <Box
         ref={scrollRef}
         onScroll={(e) => {
-          // Treat "within a few px of the top" as at-top so a hair of momentum
-          // scroll or a sub-pixel offset does not switch off tail-following.
-          const atTop = e.currentTarget.scrollTop <= AT_TOP_THRESHOLD_PX;
-          if (atTop !== atTopRef.current) {
-            atTopRef.current = atTop;
-            // Only on a transition, so this does not fire a state update on every
-            // scroll event.
-            onScrolledAwayChange?.(!atTop);
+          const el = e.currentTarget;
+          // Within a few px of the bottom counts as "at the tail": absorbs
+          // sub-pixel offsets on HiDPI and a little inertial overshoot.
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_TOP_THRESHOLD_PX;
+          atTopRef.current = el.scrollTop <= AT_TOP_THRESHOLD_PX;
+          if (onFollowChange && follow !== undefined && follow !== atBottom) {
+            // Scrolling away from the tail stops following; scrolling back to it
+            // resumes. The reader never has to reach for the control to read.
+            onFollowChange(atBottom);
           }
+          onScrolledAwayChange?.(!atBottom);
         }}
         {...(liveRegion ? { role: 'log', 'aria-live': 'polite' as const, 'aria-relevant': 'additions' as const } : {})}
         sx={{

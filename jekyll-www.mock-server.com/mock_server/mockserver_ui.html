@@ -109,9 +109,9 @@ sitemap:
 
 <p>The dashboard defaults to dark mode. Click the sun/moon icon in the title bar to switch between dark and light themes. Your preference is saved in the browser's local storage.</p>
 
-<h3>Auto-Scroll</h3>
+<h3>Following New Entries</h3>
 
-<p>By default, panels auto-scroll to show the most recent items as they arrive. Click the pause/play button in the title bar to toggle auto-scroll.</p>
+<p>Panels show entries oldest-first, with the newest appended at the bottom — like a console in a build pipeline. Each panel has a <strong>Follow</strong> button: when Follow is on, the panel scrolls automatically as new entries arrive; when it is off, the view stays where you left it so you can read without the content moving. Scrolling away from the bottom turns Follow off for that panel; scrolling back to the bottom turns it back on. The toolbar also has a master <strong>Follow new entries</strong> / <strong>Stop following new entries</strong> switch that controls all panels at once.</p>
 
 <h3>Clear and Reset</h3>
 
@@ -232,11 +232,11 @@ sitemap:
         <tr><th>Area</th><th>Description</th></tr>
     </thead>
     <tbody>
-        <tr><td><strong>Title Bar</strong></td><td>Shows connection status, keyboard shortcuts, and action buttons (auto-scroll, dark/light mode, clear/reset)</td></tr>
+        <tr><td><strong>Title Bar</strong></td><td>Shows connection status, keyboard shortcuts, and action buttons (Follow new entries, dark/light mode, clear/reset)</td></tr>
         <tr><td><strong>Request Filter</strong></td><td>Collapsible filter panel — filter all panels by HTTP method, path, headers, query parameters, or cookies</td></tr>
         <tr><td><strong>Log Messages</strong> (top-left)</td><td>All log events, grouped by request correlation ID, with color-coded types</td></tr>
         <tr><td><strong>Active Expectations</strong> (top-right)</td><td>Currently registered expectations in priority order</td></tr>
-        <tr><td><strong>Received Requests</strong> (bottom-left)</td><td>All HTTP requests received, most recent first, with their matched responses</td></tr>
+        <tr><td><strong>Received Requests</strong> (bottom-left)</td><td>All HTTP requests received, oldest first with newest at the bottom, with their matched responses</td></tr>
         <tr><td><strong>Proxied Requests</strong> (bottom-right)</td><td>Forwarded requests with their actual responses from destination servers</td></tr>
     </tbody>
 </table>
@@ -263,7 +263,7 @@ sitemap:
 
 <h2>Log Messages</h2>
 
-<p>The Log Messages panel lists all log events recorded by MockServer. Events are displayed in reverse chronological order (most recent first) and are color-coded by type:</p>
+<p>The Log Messages panel lists all log events recorded by MockServer. Events are displayed oldest first, with the most recent appended at the bottom, and are color-coded by type:</p>
 
 <table class="table">
     <thead>
@@ -302,7 +302,7 @@ sitemap:
 
 <h2>Received Requests</h2>
 
-<p>The Received Requests panel shows all HTTP requests received by MockServer in reverse chronological order (most recent first). This includes requests that matched a mock expectation, requests that were proxied, and requests that received a default 404 response. Each item shows the method and path. Click to expand and see the full request details including headers, query parameters, and body, together with the response that MockServer returned.</p>
+<p>The Received Requests panel shows all HTTP requests received by MockServer, oldest first with the newest appended at the bottom. This includes requests that matched a mock expectation, requests that were proxied, and requests that received a default 404 response. Each item shows the method and path. Click to expand and see the full request details including headers, query parameters, and body, together with the response that MockServer returned.</p>
 
 <a id="ui_proxied_requests_section" class="anchor" href="#ui_proxied_requests_section">&nbsp;</a>
 

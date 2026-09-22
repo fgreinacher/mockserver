@@ -536,16 +536,25 @@ describe('TrafficInspector — compare two requests (diff)', () => {
 
     await user.click(screen.getByRole('button', { name: /Compare requests/i }));
 
-    const checkboxes = screen.getAllByRole('checkbox');
-    expect(checkboxes).toHaveLength(2);
+    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
 
     // Diff button disabled until exactly two are picked.
     const diffButton = screen.getByRole('button', { name: /Diff \(/ });
     expect(diffButton).toBeDisabled();
 
-    await user.click(checkboxes[0]!);
+    // Pick by request identity, not row position: the list renders in console
+    // order (oldest first, newest at the bottom), so a positional checkbox[0]/[1]
+    // pick would select a different pair than intended. The diff maps the FIRST
+    // pick to `expected` and the SECOND to `actual`, so pick req-a (GET) first,
+    // then req-b (POST), to assert that ordering below.
+    const checkboxForMethod = (method: string) => {
+      const row = screen.getByText(method).closest('div');
+      return within(row!).getByRole('checkbox');
+    };
+
+    await user.click(checkboxForMethod('GET'));
     expect(screen.getByRole('button', { name: /Diff \(1\/2\)/ })).toBeDisabled();
-    await user.click(checkboxes[1]!);
+    await user.click(checkboxForMethod('POST'));
 
     const ready = screen.getByRole('button', { name: /Diff \(2\/2\)/ });
     expect(ready).toBeEnabled();
@@ -1368,7 +1377,7 @@ describe('TrafficInspector — masked secrets flow into the Diff/Compare view', 
 
     await user.click(screen.getByRole('button', { name: /Compare requests/i }));
     const checkboxes = screen.getAllByRole('checkbox');
-    await user.click(checkboxes[0]!); // first row = /api/plain (newest at top) — order not important
+    await user.click(checkboxes[0]!); // console order (oldest first) — order not important here, both editors are checked below
     await user.click(checkboxes[1]!);
     await user.click(screen.getByRole('button', { name: /Diff \(2\/2\)/ }));
 
@@ -1478,9 +1487,12 @@ describe('TrafficInspector — bulk select + clear', () => {
     await user.click(screen.getByRole('button', { name: /Select requests/i }));
 
     // Per-row checkboxes (3) + the header "select all" checkbox = 4, none capped/disabled.
-    const rowCheckboxes = screen.getAllByRole('checkbox').filter(
-      (c) => c.getAttribute('aria-label')?.startsWith('Select request'),
-    );
+    // Per-row labels are keyed on request identity (method + path), e.g.
+    // "Select GET /a", not a live-window ordinal — so exclude the "select all" one.
+    const rowCheckboxes = screen.getAllByRole('checkbox').filter((c) => {
+      const label = c.getAttribute('aria-label');
+      return !!label && label.startsWith('Select ') && label !== 'Select all requests';
+    });
     expect(rowCheckboxes).toHaveLength(3);
     await user.click(rowCheckboxes[0]!);
     await user.click(rowCheckboxes[1]!);
@@ -1697,7 +1709,7 @@ describe('TrafficInspector — unmatched requests', () => {
   });
   afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-  it('shows an "N unmatched" badge that opens the Explain Unmatched dialog', async () => {
+  it('shows an "unmatched" badge that opens the Explain Unmatched dialog', async () => {
     const user = userEvent.setup();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -1706,7 +1718,10 @@ describe('TrafficInspector — unmatched requests', () => {
 
     renderTrafficInspector();
 
-    const badge = screen.getByText('1 unmatched');
+    // The badge carries no count: the unmatched tally is derived from the capped
+    // live window, so a number there would pin at the cap rather than count
+    // captured traffic. It's just a labelled entry point to the explain dialog.
+    const badge = screen.getByText('unmatched');
     expect(badge).toBeInTheDocument();
 
     await user.click(badge);

@@ -154,7 +154,10 @@ describe('OnboardingPanel', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    expect(screen.getByText(/This server has 1 active mock and 2 recorded requests/i)).toBeInTheDocument();
+    // The mock count is the server's TOTAL (activeExpectationsTotal), and recorded
+    // requests are reported as PRESENCE, not a number: that array is a capped live
+    // window, so a count of it pins at the cap and the sentence becomes false.
+    expect(screen.getByText(/This server has 1 active mock and has recorded requests/i)).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: /Open Dashboard/i }));
     expect(useDashboardStore.getState().view).toBe('dashboard');

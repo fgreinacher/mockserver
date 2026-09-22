@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, useRef, memo } from 'react';
+import { useMemo, useState, useCallback, useRef, useLayoutEffect, memo } from 'react';
 import { useTransientFlag } from '../hooks/useTransientFlag';
 import type { ReactNode } from 'react';
 import Box from '@mui/material/Box';
@@ -86,7 +86,9 @@ import { replayRequests } from '../lib/replay';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import HumanErrorAlert from './HumanErrorAlert';
 import { monospaceFontFamily, transitions } from '../theme';
+import { formatRowTime } from '../lib/logEntryTime';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
+import { useFollow } from '../hooks/useFollow';
 import {
   summarizeTraffic,
   extractBodyContent,
@@ -656,6 +658,19 @@ interface TrafficRowProps {
   graphql?: GraphqlOperation | null;
   /** Stable identity of the request this row renders; passed back to the handlers. */
   itemKey: string;
+  /**
+   * When this request was recorded (server log timestamp). Shown as the row's
+   * leading column in place of an ordinal: this list is a capped live window, so
+   * a position within it renumbers on every push and refers to nothing, whereas
+   * the timestamp is stable and lines up with the Log Messages panel.
+   */
+  timestamp?: string;
+  /**
+   * Fallback ordinal, used only when `timestamp` is absent. NOT part of the
+   * row's accessible name — a value that renumbers on every push makes an
+   * unstable label — so identity-based aria labels are derived from the summary
+   * instead.
+   */
   index: number;
   selected: boolean;
   /** Stable handler — receives this row's `itemKey`. */
@@ -685,6 +700,7 @@ function TrafficRowImpl({
   summary,
   graphql,
   itemKey,
+  timestamp,
   index,
   selected,
   onSelect,
@@ -709,6 +725,13 @@ function TrafficRowImpl({
     () => onSelectToggle?.(itemKey),
     [onSelectToggle, itemKey],
   );
+
+  // Accessible name keyed on request IDENTITY (method + path), not the row
+  // ordinal: the list is a capped live window that renumbers on every push, so an
+  // ordinal makes an unstable label that names a different request moment to
+  // moment. Falls back to the stable item key when the summary has neither.
+  const identityLabel =
+    [summary.method, summary.path].filter(Boolean).join(' ').trim() || itemKey;
 
   return (
     <Box
@@ -736,7 +759,7 @@ function TrafficRowImpl({
           disabled={!compareChecked && compareDisabled}
           onClick={(e) => e.stopPropagation()}
           onChange={handleCompareToggle}
-          slotProps={{ input: { 'aria-label': `Select request ${index} to compare` } }}
+          slotProps={{ input: { 'aria-label': `Select ${identityLabel} to compare` } }}
           sx={{ p: 0.25, flexShrink: 0 }}
         />
       )}
@@ -746,15 +769,20 @@ function TrafficRowImpl({
           checked={!!selectChecked}
           onClick={(e) => e.stopPropagation()}
           onChange={handleSelectToggle}
-          slotProps={{ input: { 'aria-label': `Select request ${index}` } }}
+          slotProps={{ input: { 'aria-label': `Select ${identityLabel}` } }}
           sx={{ p: 0.25, flexShrink: 0 }}
         />
       )}
       <Typography
         variant="caption"
-        sx={{ fontFamily: monospaceFontFamily, color: 'text.secondary', minWidth: 24, flexShrink: 0 }}
+        title={timestamp ?? undefined}
+        sx={{ fontFamily: monospaceFontFamily, color: 'text.secondary', minWidth: 24, flexShrink: 0, whiteSpace: 'nowrap' }}
       >
-        {index}
+        {/* The time it happened, not a position in the list. This section is a
+            capped live window, so an ordinal renumbers on every push and refers
+            to nothing; the timestamp is stable and lines up with the Log Messages
+            panel. Falls back to the ordinal only when no timestamp is present. */}
+        {timestamp ? formatRowTime(timestamp) : index}
       </Typography>
       <Chip
         label={kindLabel(summary.parsed)}
@@ -888,7 +916,7 @@ function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
           : <ChevronRightIcon sx={{ fontSize: '0.9rem' }} />}
         <DnsIcon sx={{ fontSize: '0.85rem', color: 'text.secondary' }} />
         <Typography variant="caption" sx={{ fontWeight: 600 }}>
-          Hosts ({hosts.length})
+          Hosts
         </Typography>
         {pinnedHost && (
           <Typography
@@ -902,7 +930,7 @@ function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
       </Box>
       <Collapse in={expanded} unmountOnExit>
         <Box sx={{ maxHeight: 140, overflowY: 'auto', pb: 0.5 }}>
-          {hosts.map(({ host, count }) => {
+          {hosts.map(({ host }) => {
             const active = host === pinnedHost;
             return (
               <Box
@@ -910,7 +938,11 @@ function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
                 component="button"
                 type="button"
                 aria-pressed={active}
-                aria-label={`Filter traffic by host ${host} (${count} request${count === 1 ? '' : 's'})`}
+                // No request count here either. It would be the count within the
+                // at-most-100-row update window, not the host's traffic, so it pins at
+                // the cap under load -- and a wrong number read out to a screen reader is
+                // no better for being invisible on screen.
+                aria-label={`Filter traffic by host ${host}`}
                 onClick={() => onPin(active ? null : host)}
                 sx={{
                   display: 'flex',
@@ -942,12 +974,7 @@ function HostTree({ hosts, pinnedHost, onPin }: HostTreeProps) {
                 >
                   {host}
                 </Typography>
-                <Chip
-                  label={count}
-                  size="small"
-                  variant="outlined"
-                  sx={{ height: 16, fontSize: '0.6rem', '& .MuiChip-label': { px: 0.5 } }}
-                />
+
               </Box>
             );
           })}
@@ -2326,10 +2353,40 @@ export default function TrafficInspector() {
   // it worse here than on the panels: a selected key that leaves the data takes
   // the detail pane with it. Held while the reader is scrolled away from the top,
   // has a row selected, or has rows checked for compare.
-  const [listScrolledAway, setListScrolledAway] = useState(false);
-  const interacting =
-    listScrolledAway || selectedKey !== null || selectedKeys.size > 0;
-  const filtered = useHeldItems(filteredLive, trafficKeyOf, interacting);
+  // Console order: oldest first, newest appended at the BOTTOM, so an arriving row
+  // lands below the viewport and nothing being read moves.
+  const displayOrder = useMemo(() => [...filteredLive].reverse(), [filteredLive]);
+  // Following = watching the tail. Not following, or holding a selection, means
+  // reading — and then rows evicted from the top must be held or the list
+  // collapses upward. Selection matters here more than on the panels: a selected
+  // row leaving the feed takes the detail pane with it.
+  const [follow, setFollow] = useFollow();
+  const interacting = !follow || selectedKey !== null || selectedKeys.size > 0;
+  const filtered = useHeldItems(displayOrder, trafficKeyOf, interacting);
+
+  // Console tail-following: pin the scroll container to the BOTTOM, where the
+  // newest row is, whenever the reader is following. This mirrors Panel.tsx's
+  // tail pin exactly — and is the piece that was missing here. Without it the
+  // container sat at scrollTop 0 (the OLDEST row in console order) with nothing
+  // ever writing scrollTop, so a reader in the default following state watched
+  // the top rows evict and the list collapse upward: the original bug, on this
+  // page. `onScroll` below is only a READER of scroll position; this is the
+  // WRITER. The scroll Box (ProgressiveList's scroll ancestor) rolls its own
+  // container here rather than going through Panel, so the effect lives here too.
+  //
+  // Gated on `follow` alone, like Panel. Selecting a row opens a SEPARATE detail
+  // pane (not an inline expansion), so pinning the list to the tail never moves
+  // what the reader is reading; and selection already sets `interacting`, which
+  // holds the rows so nothing the reader might re-find in the list is evicted.
+  // There is therefore no "the row I opened scrolled away" hazard to suppress —
+  // the concern that made Panel's inline-expansion world need an open-item signal
+  // does not arise here.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (follow && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [filtered, follow]);
 
   // Host facet. Derived from the UNFILTERED summaries so pinning a host does not
   // collapse the facet to the single host just pinned (which would leave no way
@@ -2556,10 +2613,31 @@ export default function TrafficInspector() {
               sx={{ height: 18, fontSize: '0.65rem', '& .MuiChip-label': { px: 0.75 } }}
             />
           )}
+          {/* Follow control, mirroring Panel's. A reader who scrolls up to read
+              turns following off (via onScroll below) and needs a visible way to
+              resume; a reader parked at the tail sees it lit. Clicking it jumps
+              back to the newest rows and resumes following (the tail-pin effect
+              runs on the next render). */}
+          <Chip
+            label={follow ? 'Following' : 'Follow'}
+            size="small"
+            color={follow ? 'primary' : 'default'}
+            variant={follow ? 'filled' : 'outlined'}
+            clickable
+            onClick={() => setFollow((prev) => !prev)}
+            title={
+              follow
+                ? 'Following the newest requests. Scroll up to stop and read — nothing will move.'
+                : 'Paused while you read. Click to jump to the newest requests and resume following.'
+            }
+            sx={{ height: 18, fontSize: '0.65rem', '& .MuiChip-label': { px: 0.75 } }}
+          />
           {unmatchedCount > 0 && (
             <Tooltip title="Show why these requests didn't match any expectation">
               <Chip
-                label={`${unmatchedCount > 999 ? '999+' : unmatchedCount} unmatched`}
+                // No number: unmatchedCount is over the capped live window, not over
+                // captured traffic, so it silently becomes the cap rather than a count.
+                label="unmatched"
                 color="warning"
                 size="small"
                 onClick={() => setExplainOpen(true)}
@@ -2681,10 +2759,14 @@ export default function TrafficInspector() {
           <HostTree hosts={hosts} pinnedHost={pinnedHost} onPin={handlePinHost} />
         )}
         <Box
+          ref={scrollRef}
+          data-testid="traffic-scroll-region"
           sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}
           onScroll={(e) => {
-            const away = e.currentTarget.scrollTop > TRAFFIC_AT_TOP_THRESHOLD_PX;
-            setListScrolledAway((prev) => (prev === away ? prev : away));
+            const el = e.currentTarget;
+            const atBottom =
+              el.scrollHeight - el.scrollTop - el.clientHeight <= TRAFFIC_AT_TOP_THRESHOLD_PX;
+            setFollow((prev) => (prev === atBottom ? prev : atBottom));
           }}
         >
           {filtered.length === 0 ? (
@@ -2740,10 +2822,14 @@ export default function TrafficInspector() {
                   <TrafficRow
                     itemKey={item.key}
                     summary={summary}
+                    timestamp={item.timestamp}
                     // Memoised on the request reference, so this is a stable prop
                     // and the row stays skippable by React.memo.
                     graphql={graphqlOperationOf(item.value)}
-                    index={filtered.length - i}
+                    // Oldest-first ordinal (matches RequestPanel), used only as a
+                    // fallback when a row carries no timestamp. The timestamp is
+                    // the primary label — see TrafficRow.
+                    index={i + 1}
                     selected={
                       compareMode
                         ? validCompareKeys.includes(item.key)
@@ -2974,7 +3060,7 @@ export default function TrafficInspector() {
         />
       )}
 
-      {/* Explain unmatched dialog — opened from the "N unmatched" header badge.
+      {/* Explain unmatched dialog — opened from the "unmatched" header badge.
           Queries PUT /mockserver/explainUnmatched for the closest expectations. */}
       <ExplainUnmatchedDialog
         open={explainOpen}

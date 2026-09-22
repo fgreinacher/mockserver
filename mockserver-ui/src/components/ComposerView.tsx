@@ -3592,7 +3592,7 @@ function ExistingMocksList({
             color: 'text.secondary',
           }}
         >
-          Existing {label} mocks ({filtered.length})
+          Existing {label} mocks
         </Typography>
         {selectedKey && (
           <Button
@@ -4629,7 +4629,7 @@ export default function ComposerView({ connectionParams }: ComposerViewProps) {
                     color: 'text.secondary',
                   }}
                 >
-                  Existing LLM scenarios ({llmScenarios.length})
+                  Existing LLM scenarios
                 </Typography>
                 {llmScenarioName && (
                   <Button

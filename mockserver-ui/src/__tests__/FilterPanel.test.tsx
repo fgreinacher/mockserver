@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
@@ -179,6 +179,33 @@ describe('FilterPanel', () => {
     await user.click(screen.getByText('Request Filter'));
 
     expect(screen.queryByText('LLM Provider (expectations only)')).not.toBeInTheDocument();
+  });
+
+  it('keeps the LLM Provider filter visible after LLM expectations churn out of the capped window', async () => {
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      filterExpanded: false,
+      activeExpectations: [
+        { key: 'e1', value: { httpLlmResponse: { provider: 'ANTHROPIC' } } },
+      ],
+    });
+    renderFilterPanel();
+
+    await user.click(screen.getByText('Request Filter'));
+    expect(screen.getByText('LLM Provider (expectations only)')).toBeInTheDocument();
+
+    // The live window (≤100) turns over and no longer carries an LLM expectation.
+    // A window-derived boolean would flip false and hide the still-relevant
+    // filter; the latch keeps it visible for the session.
+    act(() => {
+      useDashboardStore.setState({
+        activeExpectations: [
+          { key: 'e2', value: { httpResponse: { statusCode: 200 } } },
+        ],
+      });
+    });
+
+    expect(screen.getByText('LLM Provider (expectations only)')).toBeInTheDocument();
   });
 });
 

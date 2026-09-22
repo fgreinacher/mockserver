@@ -60,3 +60,15 @@ export function formatAbsoluteTime(parsed: ParsedLogTime): string {
   if (!parsed.date) return parsed.raw;
   return parsed.date.toLocaleString();
 }
+
+// hh:mm:ss.mmm pulled straight out of the server's log timestamp string, matching
+// the Log Messages panel — a purely lexical extract (no Date parsing, no timezone
+// conversion) so what a request row shows lines up character-for-character with
+// the log. Returns the raw value unchanged if it is not in the expected shape:
+// better an odd-looking string than a row that silently shows nothing. Shared by
+// the dashboard request/expectation rows (JsonListItem) and the Traffic list, so
+// the "time it happened, not a position in the list" column is identical on both.
+export function formatRowTime(timestamp: string): string {
+  const m = /(\d{2}:\d{2}:\d{2}\.\d{3})/.exec(timestamp);
+  return m ? m[1]! : timestamp;
+}

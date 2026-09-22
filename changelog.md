@@ -328,28 +328,32 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
-- **An item you open in the dashboard now stays open, and stays put, however busy the server is.**
-  The panels show a live window of the most recent 100 entries, and the server drops the oldest as
-  new ones arrive. Under load that window turns over in seconds — measured at roughly ten requests a
-  second, an entry opened for reading was discarded from the feed after ten seconds and vanished from
-  the screen. While you are reading — scrolled away from the top, or with an entry open or selected —
-  the entries you are working with are now kept, even once the server has stopped sending them. New
-  entries still arrive above them, so nothing you are looking at moves, and they are already in place
-  when you scroll back to the top. Return to the top with nothing open and the panel goes back to the
-  plain live window, so an idle dashboard is no heavier than before. This applies to Log Messages,
-  Received Requests, Proxied Requests, Active Expectations, the Traffic inspector (where a selected
-  row leaving the feed also took the detail pane with it) and the Trace session view.
-- **An item you open in the dashboard now stays open while new data arrives.** Opening an entry in
-  Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
-  moment anything new came in, which made those panels effectively unusable for reading individual
-  entries on a busy server. Two separate things did it. Every update scrolled the panel back to the
-  top, so the open entry was scrolled out of view; panels now follow new data only while you are
-  already at the top, and scrolling back to the top resumes following. And because these lists are
-  newest-first, each new entry was inserted *above* what you were reading and pushed it down the
-  page until it left the viewport entirely. The panel now holds your position against those
-  insertions — including once the panel is full and each new entry replaces an old one, which is the
-  state a busy server is in almost all the time. What you are looking at stays where it is, and the
-  new entries are already there when you scroll back up.
+- **The dashboard's live panels are readable on a busy server.** Log Messages, Received Requests,
+  Proxied Requests, Active Expectations and the Traffic inspector were effectively unusable under
+  load: opening an entry or scrolling was undone the moment anything new arrived. Three things caused
+  it, and all three are fixed. The lists now run in **console order** — oldest first, newest appended
+  at the **bottom**, the way a build log reads — so an arriving entry lands below what you are reading
+  instead of pushing it down the page. Following the newest entry is now an explicit **Follow**
+  toggle rather than something inferred from your scroll position, so a panel you are reading does
+  not scroll at all; scrolling away from the newest entry turns Follow off, and returning to it turns
+  Follow back on. And because the panels show a live window of the most recent 100 entries with the
+  server dropping the oldest as new ones arrive — measured at roughly ten requests a second, that
+  whole window turns over in about ten seconds — the entries you are reading are **kept** even once
+  the server has stopped sending them, so the list cannot collapse out from under you. Resume
+  following and the panel returns to the plain live window, so an idle dashboard is no heavier than
+  before. Opening an entry also stops that panel following, so the entry you are reading can neither
+  be scrolled away nor dropped from the feed while you read it. Log Messages, Received Requests,
+  Proxied Requests and the Traffic inspector get all of this. Active Expectations and the Trace
+  session view are not streams you follow, so they keep their own order and gain only the part that
+  matters there: what you are reading is no longer dropped from under you.
+- **The dashboard no longer shows counts that were really the size of its update window.** The
+  Received Requests and Log Messages panels, the Traffic inspector's host list and unmatched badge,
+  and the Composer's existing-mocks list each displayed a total derived from the at-most-100 entries
+  the server sends per update. Those numbers pinned at 100 and stopped moving, describing the
+  transport window rather than the server. They have been removed. **Active Expectations now shows
+  the true number held by the server**, which is sent explicitly instead of being counted from the
+  window. Received Requests rows are also keyed by timestamp now rather than by a position in that
+  window, which renumbered itself as entries arrived.
 - **A dashboard filtering rapidly no longer makes the server re-scan the event log for every
   keystroke.** Each filter the dashboard sent triggered its own full scan, so a client could drive
   an unbounded rate of them. Bursts are now collapsed: the first filter after a pause is served

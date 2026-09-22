@@ -13,24 +13,6 @@ interface ProgressiveListProps {
   /** Extra rows rendered above/below the viewport so scrolling stays smooth. */
   overscan?: number;
   /**
-   * True when the reader has a row open. Anchoring then applies even at the very
-   * TOP of the list. Normally the top is exempt — a reader parked there wants new
-   * rows, and anchoring would push them down away from it. But a reader who opened
-   * a row near the top is READING, not watching: with the viewport pinned at 0 and
-   * new rows prepending above, their row walks down the list until it falls out of
-   * the virtual window and unmounts. Measured at ~10 req/s: top 657 -> 853 -> gone
-   * in six seconds, with scrollTop stuck at 0 the whole time.
-   */
-  anchorAtTop?: boolean;
-  /**
-   * The key of the row the reader has open. When set it becomes THE anchor, in
-   * place of "whatever row is at the top of the viewport". That distinction is
-   * the whole fix for reading a row near the top: at scrollTop 0 the viewport-top
-   * row is always row 0, so anchoring to it holds nothing while the opened row is
-   * pushed down by each prepend and eventually out of the window.
-   */
-  anchorKey?: string | null;
-  /**
    * Rows rendered on the very first paint, before the scroll viewport has been
    * discovered — enough to fill the visible area cheaply without mounting the
    * whole list. Once the viewport is known the list windows instead.
@@ -80,17 +62,18 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
-// Matches Panel's AT_TOP_THRESHOLD_PX. Below this offset the reader counts as
-// parked at the top, where following the newest rows is the wanted behaviour and
-// anchoring would work against it.
+// Matches Panel's AT_TOP_THRESHOLD_PX. Below this offset the reader is at the very
+// top of the list — its OLDEST rows — where there is nothing above the viewport for
+// the anchor to hold. Skipping anchoring here also avoids acting on a STALE anchor:
+// a fast scroll up to the top delivers its scroll event asynchronously, so a commit
+// can land before the anchor is re-captured, and restoring the old anchor would
+// then yank the reader back down into the middle of the list they just left.
 const ANCHOR_MIN_OFFSET_PX = 8;
 
 export default function ProgressiveList({
   count,
   getKey,
   renderRow,
-  anchorAtTop = false,
-  anchorKey = null,
   estimateSize = 56,
   overscan = 8,
   initial = 20,
@@ -117,24 +100,30 @@ export default function ProgressiveList({
     getItemKey: (index) => getKey(index),
   });
 
-  // --- Scroll anchoring on prepend ------------------------------------------
+  // --- Scroll anchoring against changes ABOVE the reader --------------------
   //
-  // These lists are newest-first, so a live update inserts rows at the FRONT.
-  // Every existing row's offset grows by the height of what arrived, while
-  // `scrollTop` does not — so the content the reader is looking at slides down
-  // and, once it leaves the window, unmounts. That reads as an opened item
-  // "closing", and it made the live panels unusable.
+  // These lists render in console order — oldest first, newest APPENDED at the
+  // bottom. An arrival lands below the viewport and shifts nothing the reader is
+  // looking at, so the common case needs no compensation at all.
+  //
+  // What still moves the reader is a change ABOVE their viewport-top row. The
+  // server caps a dashboard panel at 100 rows and evicts the OLDEST — the rows at
+  // the FRONT — as new ones arrive, so under load the list collapses upward; and
+  // rows above the reader are re-measured as they expand/collapse. Either way the
+  // total height above the reader changes while `scrollTop` does not, so the
+  // content they are reading slides up (or down) and, once it leaves the window,
+  // unmounts. That reads as an opened item "closing".
   //
   // Two properties of the real data make the obvious fixes wrong:
   //
-  //  * The list LENGTH does not change. The server caps a dashboard panel at 100
-  //    rows and evicts the oldest as it prepends the newest, so on any server
-  //    that has handled more than 100 entries the count is constant forever.
-  //    Anything gated on the count growing is inert exactly when traffic is live.
-  //  * The anchor row can be UNMOUNTED by the same update. After a prepend the
-  //    window is recomputed from the unchanged `scrollTop`, which now points at
-  //    different rows, so the row we want to hold onto is frequently not in the
-  //    DOM by the time a layout effect could measure it.
+  //  * The list LENGTH does not change. With the cap saturated the panel evicts
+  //    one row for every row it appends, so on any server that has handled more
+  //    than 100 entries the count is constant forever. Anything gated on the
+  //    count growing is inert exactly when traffic is live.
+  //  * The anchor row can be UNMOUNTED by the same update. After the window is
+  //    recomputed from the unchanged `scrollTop` it points at different rows, so
+  //    the row we want to hold onto is frequently not in the DOM by the time a
+  //    layout effect could measure it.
   //
   // So the anchor is resolved from the virtualizer's measurements instead of the
   // DOM: it measures every row, mounted or not, keyed by the caller's stable
@@ -153,12 +142,10 @@ export default function ProgressiveList({
       return;
     }
     const offset = el.scrollTop;
-    // At (or within a hair of) the top there is normally nothing to hold: the
-    // reader wants the newest rows, which is what arriving rows give them, and
-    // anchoring would push them DOWN away from the top on every update. That
-    // stops being true the moment they open a row — then they are reading, and
-    // the row must be followed wherever the prepends push it.
-    if (!anchorAtTop && offset <= ANCHOR_MIN_OFFSET_PX) {
+    // At (or within a hair of) the very top there is nothing above the viewport
+    // to hold, so there is no upward collapse to compensate for. Clearing the
+    // anchor here also avoids acting on a stale one — see ANCHOR_MIN_OFFSET_PX.
+    if (offset <= ANCHOR_MIN_OFFSET_PX) {
       anchorRef.current = null;
       return;
     }
@@ -168,17 +155,6 @@ export default function ProgressiveList({
     // private; reaching into it would work today and break silently on a library
     // bump — the same class of quiet failure this whole fix is about.)
     const measurements = virtualizer.measurementsCache;
-    // An explicitly anchored row wins: hold what the reader opened, wherever it
-    // currently sits, rather than whatever happens to be at the top edge.
-    if (anchorKey != null) {
-      for (let i = 0; i < measurements.length; i++) {
-        const m = measurements[i];
-        if (m && String(m.key) === anchorKey) {
-          anchorRef.current = { key: anchorKey, gap: m.start - offset };
-          return;
-        }
-      }
-    }
     for (let i = 0; i < measurements.length; i++) {
       const m = measurements[i];
       if (m && m.end > offset) {
@@ -189,7 +165,7 @@ export default function ProgressiveList({
       }
     }
     anchorRef.current = null;
-  }, [scrollParent, virtualizer, anchorAtTop, anchorKey]);
+  }, [scrollParent, virtualizer]);
 
   // The reader's own scrolling redefines the anchor: wherever they stopped is
   // the position the next update has to preserve.
@@ -204,16 +180,16 @@ export default function ProgressiveList({
   // Deliberately NO dependency array — this must run after EVERY commit, because
   // the update that shifts the reader's position need not change `count` (see
   // above). It runs before `Panel`'s tail-following effect (child effects run
-  // before parent effects), so a reader parked at the top is still snapped to 0
-  // by Panel and never fights this.
+  // before parent effects), so while the reader is following, Panel's pin to the
+  // BOTTOM (the tail) lands last and wins, and this anchor never fights it.
   useLayoutEffect(() => {
     const el = scrollParent;
     if (!el) return;
     // NOT `if (!anchor) return`. That was a chicken-and-egg: with no anchor yet the
     // effect returned before reaching captureAnchor() at the bottom, so no anchor
     // was ever created — and the only other caller is the scroll listener, which
-    // never fires for a reader who opens a row without scrolling. Anchoring at the
-    // top therefore did nothing at all, however correct the rest of it was.
+    // never fires for a reader who opens a row without scrolling. Anchoring
+    // therefore did nothing at all for such a reader, however correct the rest of it was.
     const anchor = anchorRef.current;
     if (!anchor) {
       // First pass (or just released): nothing to restore yet — establish the
@@ -222,31 +198,22 @@ export default function ProgressiveList({
       return;
     }
 
-    // The reader is at the top NOW, whatever the anchor says. This is not
+    // The reader is at the very top NOW, whatever the anchor says. This is not
     // redundant with captureAnchor's own top check: a scroll event is delivered
-    // ASYNCHRONOUSLY, so when Panel's tail-following sets scrollTop = 0 a commit
-    // can land before the listener re-captures, leaving an anchor that points at
-    // wherever the reader used to be. Correcting towards it then throws them back
-    // down the list — observed on the live dashboard as scrolling to the top
-    // snapping the panel to the very bottom.
-    //
-    // `anchorAtTop` exempts the case where the reader has a row OPEN. That stale
-    // anchor cannot arise then, because Panel stops tail-following while a row is
-    // open, so nothing is setting scrollTop to 0 behind the reader's back. And the
-    // exemption is required, not merely safe: without it this guard cleared the
-    // anchor on every commit at the top, so an opened row near the top was pushed
-    // down by each prepend and out of the window in about six seconds, with
-    // scrollTop pinned at 0 the whole time.
-    if (!anchorAtTop && el.scrollTop <= ANCHOR_MIN_OFFSET_PX) {
+    // ASYNCHRONOUSLY, so a fast scroll up to the top can land a commit before the
+    // listener re-captures, leaving an anchor that points at wherever the reader
+    // used to be. Correcting towards it would throw them back down into the middle
+    // of the list they just scrolled up out of, so drop the anchor instead.
+    if (el.scrollTop <= ANCHOR_MIN_OFFSET_PX) {
       anchorRef.current = null;
       return;
     }
     // Where did the anchor row end up? Its INDEX has changed (everything shifts
-    // when rows are prepended), so find it by the caller's stable key, then ask
-    // the virtualizer for that index's offset. `getOffsetForIndex(i, 'start')`
-    // is the public accessor and answers for any row, mounted or not — which is
-    // the whole point: after a prepend the anchor row is usually outside the
-    // window and therefore absent from the DOM.
+    // when the front is evicted or a row above changes height), so find it by the
+    // caller's stable key, then ask the virtualizer for that index's offset.
+    // `getOffsetForIndex(i, 'start')` is the public accessor and answers for any
+    // row, mounted or not — which is the whole point: after the window turns over
+    // the anchor row is usually outside the window and therefore absent from the DOM.
     let index = -1;
     for (let i = 0; i < count; i++) {
       if (getKey(i) === anchor.key) {

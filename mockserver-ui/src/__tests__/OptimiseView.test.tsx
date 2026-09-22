@@ -314,4 +314,34 @@ describe('OptimiseView — stale-traffic banner', () => {
     const banner = await screen.findByTestId('optimise-stale-banner');
     expect(within(banner).getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
   });
+
+  it('still flags staleness when the capped window is saturated (same length, new tail)', async () => {
+    stubFetch();
+    // The window is already full at the cap: a count-based signal would be pinned
+    // and could never move again, so new traffic would go unnoticed.
+    const full = Array.from({ length: 100 }, (_, i) => ({
+      key: `p-${i}`,
+      value: { httpRequest: { method: 'POST', path: '/v1/messages' }, httpResponse: { statusCode: 200 } },
+    }));
+    act(() => {
+      useDashboardStore.setState({ proxiedRequests: full, recordedRequests: [] });
+    });
+    renderView();
+
+    await screen.findByTestId('optimise-hero');
+    expect(screen.queryByTestId('optimise-stale-banner')).not.toBeInTheDocument();
+
+    // Window turns over: oldest dropped, a brand-new row appended at the tail —
+    // the length stays at 100 but the newest key changes.
+    act(() => {
+      const turned = full.slice(1).concat({
+        key: 'p-100',
+        value: { httpRequest: { method: 'POST', path: '/v1/messages' }, httpResponse: { statusCode: 200 } },
+      });
+      useDashboardStore.setState({ proxiedRequests: turned });
+    });
+
+    const banner = await screen.findByTestId('optimise-stale-banner');
+    expect(within(banner).getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
+  });
 });

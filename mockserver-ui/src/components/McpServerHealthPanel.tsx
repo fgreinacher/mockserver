@@ -64,14 +64,18 @@ function HealthRow({ row }: { row: McpServerHealth }) {
           )}
         </Box>
       </TableCell>
-      <TableCell align="right">{row.callCount.toLocaleString()}</TableCell>
+      <TableCell align="right">{/* No absolute count: this aggregates the capped live window, so it
+                  sums to at most the cap however much traffic ran. The rates and
+                  percentiles beside it are ratios over that sample and remain
+                  meaningful. */}
+                  —</TableCell>
       <TableCell align="right">
         <Typography
           component="span"
           variant="body2"
           sx={{ color: hasErrors ? 'error.main' : 'text.primary', fontWeight: hasErrors ? 600 : 400 }}
         >
-          {row.errorCount.toLocaleString()} ({formatPercent(row.errorRate)})
+          {formatPercent(row.errorRate)}
         </Typography>
       </TableCell>
       <TableCell align="right">{formatLatency(row.medianLatencyMs)}</TableCell>

@@ -34,6 +34,10 @@ import {
 import { diffRuns, type RunDiffResult, type RunDiffFilter } from '../lib/runDiff';
 import { humanizeError, type HumanError } from '../lib/errorMessage';
 import HumanErrorAlert from './HumanErrorAlert';
+import { useHeldItems } from '../hooks/useHeldItems';
+
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const compareRequestKeyOf = (r: { key: string }) => r.key;
 
 // ---------------------------------------------------------------------------
 // Props
@@ -371,18 +375,28 @@ export function CompareRunsBody() {
   const [serverError, setServerError] = useState<HumanError | null>(null);
   const [serverBusy, setServerBusy] = useState(false);
 
-  const allRequests = useMemo(
+  const liveRequests = useMemo(
     () => [...proxiedRequests, ...recordedRequests],
     [proxiedRequests, recordedRequests],
   );
+
+  const [runAKey, setRunAKey] = useState('');
+  const [runBKey, setRunBKey] = useState('');
+
+  // Hold the requests behind the two runs being compared. These arrays are the
+  // server's capped live window (100 per section), so under load the requests a
+  // run is built from are evicted within seconds — the selected run silently
+  // becomes null and the whole diff report disappears mid-read. Worse, a run that
+  // is merely THINNED still compares, producing a diff computed from a truncated
+  // trajectory with nothing to say so. Held from the moment either run is picked.
+  const comparing = runAKey !== '' || runBKey !== '';
+  const allRequests = useHeldItems(liveRequests, compareRequestKeyOf, comparing);
 
   const sessions = useMemo(
     () => groupBySession(allRequests, activeExpectations),
     [allRequests, activeExpectations],
   );
 
-  const [runAKey, setRunAKey] = useState('');
-  const [runBKey, setRunBKey] = useState('');
 
   const sessionKey = useCallback(
     (s: Session) => `${s.scenarioName}::${s.isolationKey}`,
@@ -394,8 +408,8 @@ export function CompareRunsBody() {
       const name = shortenScenarioName(s.scenarioName);
       const isUnscoped = s.scenarioName === '<unscoped>';
       return isUnscoped
-        ? `Unscoped (${s.requests.length} requests)`
-        : `${name} / ${s.isolationKey} (${s.requests.length} requests)`;
+        ? 'Unscoped'
+        : `${name} / ${s.isolationKey}`;
     },
     [],
   );

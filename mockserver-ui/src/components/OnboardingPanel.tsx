@@ -101,9 +101,18 @@ const OTHER_TABS: { view: ViewMode; label: string; description: string }[] = [
 export default function OnboardingPanel({ connectionParams }: OnboardingPanelProps) {
   const [openApiOpen, setOpenApiOpen] = useState(false);
   const setView = useDashboardStore((s) => s.setView);
-  const activeMockCount = useDashboardStore((s) => s.activeExpectations.length);
-  const recordedRequestCount = useDashboardStore((s) => s.recordedRequests.length);
-  const hasExistingState = activeMockCount > 0 || recordedRequestCount > 0;
+  // The server's TOTAL expectation count. Falls back to the page length when the
+  // server does not send a total — an older server, or the first frame before one
+  // has arrived — so the count degrades to the old (capped) behaviour rather than
+  // to a confident zero.
+  const activeMockCount = useDashboardStore(
+    (s) => s.activeExpectationsTotal || s.activeExpectations.length,
+  );
+  // Deliberately a PRESENCE flag, not a count. recordedRequests is a capped live
+  // window, so its length pins at the cap and a sentence asserting "this server
+  // has N recorded requests" becomes false on any busy server.
+  const hasRecordedRequests = useDashboardStore((s) => s.recordedRequests.length > 0);
+  const hasExistingState = activeMockCount > 0 || hasRecordedRequests;
 
   const go = (view: ViewMode) => () => setView(view);
 
@@ -203,8 +212,8 @@ export default function OnboardingPanel({ connectionParams }: OnboardingPanelPro
             </Button>
           }
         >
-          This server has {activeMockCount} active mock{activeMockCount === 1 ? '' : 's'} and{' '}
-          {recordedRequestCount} recorded request{recordedRequestCount === 1 ? '' : 's'}.
+          This server has {activeMockCount} active mock{activeMockCount === 1 ? '' : 's'}
+          {hasRecordedRequests ? ' and has recorded requests' : ''}.
         </Alert>
       )}
 

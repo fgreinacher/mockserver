@@ -54,6 +54,19 @@ function hostButtonNames(): string[] {
     .map((b) => b.getAttribute('aria-label') ?? '');
 }
 
+/**
+ * Host names alone, in the order the facet renders them (busiest first). The
+ * per-host count is no longer displayed — it was computed from the capped
+ * WebSocket window and so pinned at the cap under load — so assertions about
+ * ordering and membership read the host out of each button rather than its
+ * (now absent from the UI) count.
+ */
+function hostNamesInOrder(): string[] {
+  return hostButtonNames().map((name) =>
+    name.replace(/^Filter traffic by host /, ''),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // host: operator in the Traffic search
 // ---------------------------------------------------------------------------
@@ -117,7 +130,7 @@ describe('TrafficInspector — host facet', () => {
     ]);
     renderTrafficInspector();
 
-    expect(screen.queryByText(/^Hosts \(/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Hosts')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: /Filter traffic by host/ }),
     ).not.toBeInTheDocument();
@@ -127,18 +140,23 @@ describe('TrafficInspector — host facet', () => {
     seed([]);
     renderTrafficInspector();
 
-    expect(screen.queryByText(/^Hosts \(/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Hosts')).not.toBeInTheDocument();
   });
 
-  it('appears once traffic spans more than one host, with per-host counts busiest first', () => {
+  it('appears once traffic spans more than one host, busiest first', () => {
     seed(MULTI_HOST);
     renderTrafficInspector();
 
-    expect(screen.getByText('Hosts (3)')).toBeInTheDocument();
-    expect(hostButtonNames()).toEqual([
-      'Filter traffic by host api.example.com (3 requests)',
-      'Filter traffic by host cdn.example.com (1 request)',
-      'Filter traffic by host other.test (1 request)',
+    // The facet appears at all only because the traffic spans >1 host (the
+    // single-host and no-traffic cases above assert it stays hidden).
+    expect(screen.getByText('Hosts')).toBeInTheDocument();
+    // Busiest first: api.example.com has 3 rows, the other two 1 each. Ordering
+    // is asserted by the DOM order of the host entries, not by a count — the
+    // per-host count is no longer shown.
+    expect(hostNamesInOrder()).toEqual([
+      'api.example.com',
+      'cdn.example.com',
+      'other.test',
     ]);
   });
 
@@ -150,10 +168,12 @@ describe('TrafficInspector — host facet', () => {
     ]);
     renderTrafficInspector();
 
-    expect(screen.getByText('Hosts (2)')).toBeInTheDocument();
-    expect(hostButtonNames()).toEqual([
-      'Filter traffic by host api.example.com (1 request)',
-      'Filter traffic by host cdn.example.com (1 request)',
+    // The no-Host row (`/no-host`) contributes no host entry; only the two
+    // hosts that carried a Host header are listed. Asserted by host presence/
+    // absence rather than by a facet count.
+    expect(hostNamesInOrder()).toEqual([
+      'api.example.com',
+      'cdn.example.com',
     ]);
   });
 
@@ -171,8 +191,8 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     expect(hostButtonNames()).toEqual([
-      'Filter traffic by host api.example.com (1 request)',
-      'Filter traffic by host cdn.example.com (1 request)',
+      'Filter traffic by host api.example.com',
+      'Filter traffic by host cdn.example.com',
     ]);
   });
 
@@ -184,8 +204,8 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     expect(hostButtonNames()).toEqual([
-      'Filter traffic by host localhost:1080 (1 request)',
-      'Filter traffic by host localhost:1090 (1 request)',
+      'Filter traffic by host localhost:1080',
+      'Filter traffic by host localhost:1090',
     ]);
   });
 
@@ -214,7 +234,7 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     const both = screen.getByRole('button', {
-      name: 'Filter traffic by host API.Example.com (2 requests)',
+      name: 'Filter traffic by host API.Example.com',
     });
     await user.click(both);
 
@@ -244,7 +264,7 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     await user.click(
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (3 requests)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' }),
     );
 
     expect(useDashboardStore.getState().trafficSearch).toBe('host:api.example.com');
@@ -264,12 +284,19 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     await user.click(
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (3 requests)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' }),
     );
 
-    expect(screen.getByText('Hosts (3)')).toBeInTheDocument();
+    // Pinning one host must not prune the facet: every host stays listed so a
+    // different one can be picked. Asserted by the full host list still being
+    // present (busiest first), not by a facet count.
+    expect(hostNamesInOrder()).toEqual([
+      'api.example.com',
+      'cdn.example.com',
+      'other.test',
+    ]);
     await user.click(
-      screen.getByRole('button', { name: 'Filter traffic by host other.test (1 request)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host other.test' }),
     );
 
     expect(useDashboardStore.getState().trafficSearch).toBe('host:other.test');
@@ -283,7 +310,7 @@ describe('TrafficInspector — host facet', () => {
     renderTrafficInspector();
 
     const pin = () =>
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (3 requests)' });
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' });
 
     await user.click(pin());
     expect(pin()).toHaveAttribute('aria-pressed', 'true');
@@ -301,7 +328,7 @@ describe('TrafficInspector — host facet', () => {
 
     await user.type(screen.getByRole('textbox', { name: 'Search' }), 'method:GET');
     const pin = () =>
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (3 requests)' });
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' });
 
     await user.click(pin());
     expect(useDashboardStore.getState().trafficSearch).toBe('method:GET host:api.example.com');
@@ -321,7 +348,7 @@ describe('TrafficInspector — host facet', () => {
 
     await user.type(screen.getByRole('textbox', { name: 'Search' }), 'method:POST');
     await user.click(
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (2 requests)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' }),
     );
 
     expect(useDashboardStore.getState().trafficSearch).toBe('method:POST host:api.example.com');
@@ -336,7 +363,7 @@ describe('TrafficInspector — host facet', () => {
     const { unmount } = renderTrafficInspector();
 
     await user.click(
-      screen.getByRole('button', { name: 'Filter traffic by host api.example.com (3 requests)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host api.example.com' }),
     );
     unmount();
 
@@ -361,7 +388,7 @@ describe('TrafficInspector — host facet', () => {
 
     await user.click(screen.getByRole('button', { name: 'Expand hosts' }));
     expect(
-      screen.getByRole('button', { name: 'Filter traffic by host other.test (1 request)' }),
+      screen.getByRole('button', { name: 'Filter traffic by host other.test' }),
     ).toBeInTheDocument();
   });
 });

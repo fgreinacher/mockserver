@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { act, render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ThemeProvider } from '@mui/material/styles';
 import { buildTheme } from '../theme';
@@ -289,5 +289,43 @@ describe('ScenarioPanel — scenario details + Edit hand-off', () => {
 
     expect(editSpy).toHaveBeenCalledTimes(1);
     expect((editSpy.mock.calls[0]![0] as Record<string, unknown>)['scenarioName']).toBe('checkout');
+  });
+
+  it('holds a selected scenario in the details list when its expectations churn out of the capped window', async () => {
+    const user = userEvent.setup();
+    stubEmptyScenarioList();
+    useDashboardStore.setState({ activeExpectations: checkoutExpectations });
+
+    renderPanel();
+    await screen.findByText('Scenario Details');
+
+    // Select the scenario (populates the query field) — this is when the reader
+    // is about to act on its bound mocks, so the hold engages.
+    await user.type(screen.getByPlaceholderText('Scenario name'), 'checkout');
+    await user.click(await screen.findByRole('button', { name: 'Expand scenario' }));
+    expect(screen.getByText('POST /pay')).toBeInTheDocument();
+
+    // The live window (≤100) turns over and no longer carries the checkout mocks.
+    // Without a hold the expanded row would be deleted underneath the user; the
+    // held snapshot keeps it on screen.
+    act(() => {
+      useDashboardStore.setState({
+        activeExpectations: [
+          {
+            key: 'e-other',
+            value: {
+              id: 'e-other',
+              scenarioName: 'signup',
+              scenarioState: 'New',
+              httpRequest: { method: 'GET', path: '/other' },
+              httpResponse: { statusCode: 200 },
+            },
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByText('POST /pay')).toBeInTheDocument();
+    expect(screen.getByText('Started → PAID')).toBeInTheDocument();
   });
 });

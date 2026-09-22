@@ -449,6 +449,12 @@ function reconcileByKey<T extends { key: string }>(prev: T[], next: T[], cache: 
 interface DashboardState {
   logMessages: LogMessage[];
   activeExpectations: JsonListItem[];
+  /**
+   * How many expectations the SERVER holds, which is not the length of
+   * `activeExpectations` — that is a capped page. Sent alongside it so the panel
+   * can show a real count instead of one pinned at the cap.
+   */
+  activeExpectationsTotal: number;
   recordedRequests: JsonListItem[];
   proxiedRequests: JsonListItem[];
 
@@ -634,6 +640,7 @@ const initialWorkspaces = getInitialWorkspaces({ view: initialView, ...initialSe
 export const useDashboardStore = create<DashboardState>()((set) => ({
   logMessages: [],
   activeExpectations: [],
+  activeExpectationsTotal: 0,
   recordedRequests: [],
   proxiedRequests: [],
 
@@ -781,6 +788,10 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
         logMessages: message.logMessages !== undefined
           ? reconcileByKey(s.logMessages, message.logMessages, logMessagesCache)
           : s.logMessages,
+        activeExpectationsTotal:
+          message.activeExpectationsTotal !== undefined
+            ? message.activeExpectationsTotal
+            : s.activeExpectationsTotal,
         activeExpectations: message.activeExpectations !== undefined
           ? reconcileByKey(s.activeExpectations, message.activeExpectations, activeExpectationsCache)
           : s.activeExpectations,

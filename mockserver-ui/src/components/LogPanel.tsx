@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo, useState } from 'react';
+import { useCallback, memo, useRef, useMemo } from 'react';
 import Typography from '@mui/material/Typography';
 import { useDashboardStore } from '../store';
 import { isLogGroup } from '../types';
@@ -8,6 +8,7 @@ import LogGroup from './LogGroup';
 import ProgressiveList from './ProgressiveList';
 import { useExpansion } from '../hooks/useExpansion';
 import { useHeldItems } from '../hooks/useHeldItems';
+import { useFollow } from '../hooks/useFollow';
 import { matchesLogSearch, isForwardedLogEntry } from '../lib/searchMatcher';
 import { LOG_FILTER_OPTIONS } from '../lib/filterDSL';
 
@@ -39,18 +40,41 @@ function LogPanel() {
   // drops the oldest as new ones arrive, so under load an open or scrolled-to row
   // is DELETED from the feed within seconds. While the reader is mid-read those
   // rows are held; new rows still arrive and prepend above them.
-  const [scrolledAway, setScrolledAway] = useState(false);
-  const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
+  // Console order: oldest first, newest appended at the BOTTOM.
+  const displayOrder = useMemo(() => [...filtered].reverse(), [filtered]);
+  const [follow, setFollow] = useFollow();
+  const shown = useHeldItems(displayOrder, keyOf, !follow);
+
+  // Opening a row means the reader has stopped watching and started reading, so
+  // stop following. That single flag defuses BOTH hazards at once: the tail pin
+  // in Panel is gated on `follow`, so it can no longer scroll the opened row
+  // away, and `useHeldItems` is gated on `!follow`, so the row is held once the
+  // server stops sending it. Suppressing only the scroll would leave the row to
+  // be evicted; holding only the rows would leave it to be scrolled off screen.
+  //
+  // It also keeps the Follow control honest. Quietly not-following while the chip
+  // still reads "Following" would be one more instrument saying it does something
+  // it does not -- which is the defect this whole change exists to remove. The
+  // chip flips to "Follow", and one click resumes.
+  const openRow = useCallback(
+    (key: string) => {
+      if (!expansion.isExpanded(key)) setFollow(false);
+      expansion.toggle(key);
+    },
+    [expansion, setFollow],
+  );
+
 
   return (
     <Panel
       title="Log Messages"
-      count={logMessages.length}
-      filteredCount={(search || !showForwarded) ? filtered.length : undefined}
+      // No count: the server sends a capped window, so logMessages.length pins at
+      // the cap and stops being a count.
+      filteredCount={undefined}
       searchValue={search}
       onSearchChange={setSearch}
-      onScrolledAwayChange={setScrolledAway}
-      hasOpenItem={expansion.anyExpanded}
+      follow={follow}
+      onFollowChange={setFollow}
       searchInputRef={searchRef}
       searchFields={LOG_SEARCH_FIELDS}
       liveRegion
@@ -63,22 +87,20 @@ function LogPanel() {
         <ProgressiveList
           count={shown.length}
           getKey={(i) => shown[i]!.key}
-          anchorAtTop={expansion.anyExpanded}
-          anchorKey={expansion.expandedKey}
           renderRow={(i) => {
             const message = shown[i]!;
             return isLogGroup(message) ? (
               <LogGroup
                 group={message}
                 open={expansion.isExpanded(message.key)}
-                onToggleOpen={expansion.toggle}
+                onToggleOpen={openRow}
               />
             ) : (
               <LogEntry
                 entry={message.value}
                 entryKey={message.key}
                 expanded={expansion.isExpanded(message.key)}
-                onToggleExpand={expansion.toggle}
+                onToggleExpand={openRow}
                 divider
                 collapsible
               />

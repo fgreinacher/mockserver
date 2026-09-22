@@ -132,8 +132,8 @@ describe('CompareRunsDialog', () => {
     renderDialog();
 
     // Select the same captured trace for A and B.
-    await user.selectOptions(screen.getByLabelText('Trace A'), 'Unscoped (1 requests)');
-    await user.selectOptions(screen.getByLabelText('Trace B'), 'Unscoped (1 requests)');
+    await user.selectOptions(screen.getByLabelText('Trace A'), 'Unscoped');
+    await user.selectOptions(screen.getByLabelText('Trace B'), 'Unscoped');
 
     // Switch to server-diff mode and compute.
     await user.click(screen.getByRole('button', { name: 'Server Diff (Decoded Prompts)' }));
@@ -165,8 +165,8 @@ describe('CompareRunsDialog', () => {
 
     const user = userEvent.setup();
     renderDialog();
-    await user.selectOptions(screen.getByLabelText('Trace A'), 'Unscoped (1 requests)');
-    await user.selectOptions(screen.getByLabelText('Trace B'), 'Unscoped (1 requests)');
+    await user.selectOptions(screen.getByLabelText('Trace A'), 'Unscoped');
+    await user.selectOptions(screen.getByLabelText('Trace B'), 'Unscoped');
     await user.click(screen.getByRole('button', { name: 'Server Diff (Decoded Prompts)' }));
     await user.click(screen.getByRole('button', { name: 'Compute Server Diff' }));
 

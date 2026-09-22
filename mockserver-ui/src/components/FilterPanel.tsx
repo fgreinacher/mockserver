@@ -235,10 +235,25 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
   const logShowForwarded = useDashboardStore((s) => s.logShowForwarded);
   const setLogShowForwarded = useDashboardStore((s) => s.setLogShowForwarded);
 
-  const hasLlmExpectations = useMemo(
+  // `activeExpectations` is a capped live window (≤100), so a bare `.some(...)`
+  // over it is a boolean OF the window, not of the server: it silently flips
+  // FALSE — hiding the LLM Provider filter — once LLM expectations churn past
+  // the window even though they still exist server-side. Latch instead: once an
+  // LLM expectation has been seen this session, keep the filter available.
+  // (This still falls short when >100 non-LLM expectations sit ahead of the LLM
+  // ones from the very start — the window never contains one to observe; an
+  // accurate fix there needs a server-side signal, which does not exist today.)
+  const windowHasLlmExpectations = useMemo(
     () => activeExpectations.some((e) => 'httpLlmResponse' in e.value),
     [activeExpectations],
   );
+  const [everHadLlmExpectations, setEverHadLlmExpectations] = useState(windowHasLlmExpectations);
+  if (windowHasLlmExpectations && !everHadLlmExpectations) {
+    // Latch during render (React's "adjust state on a changed input" pattern) so
+    // the filter never blinks out for a frame between the push and an effect.
+    setEverHadLlmExpectations(true);
+  }
+  const hasLlmExpectations = everHadLlmExpectations || windowHasLlmExpectations;
 
   const [method, setMethod] = useState('');
   const [path, setPath] = useState('');

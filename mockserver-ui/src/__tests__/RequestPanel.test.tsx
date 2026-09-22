@@ -22,10 +22,15 @@ describe('RequestPanel', () => {
     expect(document.querySelectorAll('button').length).toBeGreaterThan(0);
   });
 
-  it('renders requests with reverse index based on filtered count', () => {
+  // Console order: the store's arrays are newest-first, and the panel renders them
+  // oldest-first so new rows append at the BOTTOM. An arriving row then lands
+  // below the viewport and nothing being read moves.
+  it('renders oldest first, so the newest is at the bottom', () => {
     const items = [
-      { key: 'r1', value: { method: 'GET', path: '/first' } },
-      { key: 'r2', value: { method: 'POST', path: '/second' } },
+      // Newest first, as the store holds them. `id` is rendered by the row, so it
+      // is what the assertion can see.
+      { key: 'r2', value: { id: 'SECOND', method: 'POST', path: '/second' } },
+      { key: 'r1', value: { id: 'FIRST', method: 'GET', path: '/first' } },
     ];
 
     render(
@@ -37,8 +42,29 @@ describe('RequestPanel', () => {
       />,
     );
 
-    const chip = document.querySelector('.MuiChip-label');
-    expect(chip).toHaveTextContent('2');
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('FIRST');
+    expect(text).toContain('SECOND');
+    // The OLDEST (r1/FIRST) renders above the newest, so arrivals append below.
+    expect(text.indexOf('FIRST')).toBeLessThan(text.indexOf('SECOND'));
+  });
+
+  // No count chip: the server sends a capped window, so items.length pins at the
+  // cap and silently stops being a count.
+  it('shows no count, because the feed is a capped window', () => {
+    const items = [{ key: 'r1', value: { method: 'GET', path: '/first' } }];
+
+    render(
+      <RequestPanel
+        title="Received Requests"
+        items={items}
+        searchValue=""
+        onSearchChange={() => {}}
+      />,
+    );
+
+    expect(screen.getByText('Received Requests')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\b1 \/ 1\b/);
   });
 
   it('filters by search term', async () => {
@@ -64,7 +90,7 @@ describe('RequestPanel', () => {
     expect(onChange).toHaveBeenCalled();
   });
 
-  it('shows title and count', () => {
+  it('shows its title', () => {
     const items = [
       { key: 'r1', value: { path: '/test' } },
     ];
@@ -79,7 +105,5 @@ describe('RequestPanel', () => {
     );
 
     expect(screen.getByText('Proxied Requests')).toBeInTheDocument();
-    const chip = document.querySelector('.MuiChip-label');
-    expect(chip).toHaveTextContent('1');
   });
 });

@@ -115,7 +115,15 @@ function assertNoActiveContent(svg: string): void {
   expect(offendingJsUrls).toEqual([]);
 }
 
-describe('mermaid render contract (real, unmocked installed library)', () => {
+// These import and drive the REAL mermaid bundle rather than a mock, which is the
+// point of the file — but it is hundreds of kB, and under a full-suite run it loads
+// while ~200 other test files compete for the same workers. The global 20s timeout
+// (vitest.config.ts) is sized for ordinary tests and this one has timed out under
+// that contention while passing in ~1s on its own. The timeout is raised rather
+// than the load mocked: what is being asserted here is a RENDER CONTRACT against
+// the installed library, not how fast it loads, so a clock is the wrong constraint
+// and a mock would delete the only thing the file proves.
+describe('mermaid render contract (real, unmocked installed library)', { timeout: 60000 }, () => {
   it('loads the real mermaid library and renders a genuine SVG (fail-closed)', async () => {
     const mermaid = await realMermaid();
     // These prove we have the real library, not a stand-in: an accidental mock

@@ -19,6 +19,7 @@ import JsonViewer from './JsonViewer';
 import DescriptionDisplay from './DescriptionDisplay';
 import PredicatePills from './PredicatePills';
 import { monospaceFontFamily, transitions } from '../theme';
+import { formatRowTime } from '../lib/logEntryTime';
 
 interface JsonListItemProps {
   item: JsonListItemType;
@@ -257,6 +258,7 @@ function extractChaosSummary(value: Record<string, unknown>): string | null {
   return parts.length > 0 ? parts.join(', ') : 'enabled';
 }
 
+
 function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onToggleExpand, onEdit, onDuplicate, onDelete, onTest, onSelectToggle, selected }: JsonListItemProps) {
   const [internalExpanded, setInternalExpanded] = useState(false);
   const expanded = expandedProp ?? internalExpanded;
@@ -332,9 +334,15 @@ function JsonListItem({ item, index, turnPosition, expanded: expandedProp, onTog
           </IconButton>
           <Box
             component="span"
-            sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8em', color: 'text.secondary', minWidth: 24 }}
+            title={item.timestamp ?? undefined}
+            sx={{ fontFamily: monospaceFontFamily, fontSize: '0.8em', color: 'text.secondary', minWidth: 24, whiteSpace: 'nowrap' }}
           >
-            {index}
+            {/* The time it happened, not a position in the list. These sections are
+                a capped live window, so an ordinal renumbers on every push and
+                cannot be referred to; the timestamp is stable and lines up with
+                the Log Messages panel. Falls back to the ordinal for lists that
+                carry no timestamp (expectations are a set, not a stream). */}
+            {item.timestamp ? formatRowTime(item.timestamp) : index}
           </Box>
           {typeof item.value['id'] === 'string' && (
             <Box

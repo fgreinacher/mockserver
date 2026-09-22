@@ -608,8 +608,12 @@ export default function AppBar({ onClearServer, onClearLogs, onClearExpectations
             <SettingsIcon fontSize="small" />
           </IconButton>
         </Tooltip>
-        <Tooltip title={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}>
-          <IconButton size="small" color="inherit" onClick={toggleAutoScroll} aria-label={autoScroll ? 'Pause auto-scroll' : 'Resume auto-scroll'}>
+        {/* Master switch over every panel's Follow control. The panels run in
+            console order and each owns whether it follows the newest entry, but
+            "stop everything moving" should not be four separate clicks. Toggling
+            this re-syncs them all; a panel may diverge again afterwards. */}
+        <Tooltip title={autoScroll ? 'Stop following new entries' : 'Follow new entries'}>
+          <IconButton size="small" color="inherit" onClick={toggleAutoScroll} aria-label={autoScroll ? 'Stop following new entries' : 'Follow new entries'}>
             {autoScroll ? <PauseIcon fontSize="small" /> : <PlayArrowIcon fontSize="small" />}
           </IconButton>
         </Tooltip>

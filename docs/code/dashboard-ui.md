@@ -398,6 +398,70 @@ When `loadGenerationEnabled=false` the panel renders a configuration prompt (pro
 | Received Requests | `RequestPanel` → `JsonListItem` | `recordedRequests` | All received HTTP requests with paired responses |
 | Proxied Requests | `RequestPanel` → `JsonListItem` | `proxiedRequests` | Forwarded requests with upstream responses |
 
+### Reading a Panel While It Streams — the Console Model
+
+**The bottom line.** The live panels render in **console order** — oldest first, newest appended at
+the **bottom** — following the tail is an explicit **Follow** control rather than something inferred
+from scroll position, and rows a reader is looking at are **held** even after the server stops
+sending them. Together those three make a panel readable on a busy server. Any one of them alone
+does not.
+
+**The defect they address.** Each update carries a *window*, not a delta: at most
+`DEFAULT_LOG_UPDATE_ITEM_LIMIT` (100) log rows and `EXPECTATION_UPDATE_ITEM_LIMIT` (100)
+expectations, with the oldest dropped as new ones arrive. Measured against a real server at roughly
+ten requests a second, the whole window turns over in about **ten seconds**. So there are two
+independent disruptions, and they need different remedies:
+
+| Disruption | Cause | Remedy |
+|---|---|---|
+| Arrival | a new row inserted *above* the reader pushes their row down the page | console order — the new row lands *below* the viewport |
+| Eviction | the server stops sending the row the reader is on, and it vanishes | `useHeldItems` — hold it client-side while they read |
+
+Console order does not fix eviction; it *moves* it. Oldest-first puts the rows being dropped at the
+**top**, so without a hold the list collapses upward and everything slides up the screen.
+
+```mermaid
+flowchart LR
+    A["Update arrives
+(window of <=100, oldest dropped)"] --> B{"Is this panel
+following?"}
+    B -->|"Yes"| C["Pin to the bottom
+show the plain live window"]
+    B -->|"No - the reader is reading"| D["useHeldItems:
+keep evicted rows at the front"]
+    D --> E["Nothing on screen moves"]
+```
+
+**Where the state lives.** `useFollow` (`src/hooks/useFollow.ts`) gives each panel its own follow
+state, with the toolbar control in `AppBar` (store field `autoScroll`) as a **master switch** over
+all of them: toggling it re-syncs every panel, and a panel may diverge again afterwards. Re-sync
+happens during render, not in an effect — an effect applies a render late, which is precisely the
+frame that scrolls the row out of view. `useHeldItems` (`src/hooks/useHeldItems.ts`) is active only
+while a panel is *not* following, so an idle dashboard is no heavier than before.
+
+### Counts Derived From the Update Window
+
+**Never compute a user-facing total from a live store field.** `logMessages`, `recordedRequests`,
+`proxiedRequests` and `activeExpectations` are all capped windows, so `someList.length` is the size
+of the transport window, not the quantity it appears to name — it pins at the cap and stops moving.
+The same trap applies to booleans (`list.some(...)` reads false once the interesting rows age out,
+silently hiding a feature) and to watermark signals (a saturating count can never differ from its
+stored snapshot again).
+
+| Surface | Before | Now |
+|---|---|---|
+| Active Expectations count | `activeExpectations.length` | **`activeExpectationsTotal`** — sent explicitly by the server, falling back to the list length for older servers |
+| Log Messages / Received Requests counts | list length | removed |
+| Traffic inspector: `Hosts (N)`, per-host chip and `aria-label`, `N unmatched` | window-derived | removed (including inside the `aria-label` — a wrong number read to a screen reader is no better for being invisible) |
+| Composer `Existing <kind> mocks (N)` | filtered window length | removed — a filtered subset has no accurate server-side total |
+| Received-request row ordinal | position in the window, renumbering on every push | **`timestamp`**, sent per entry and comparable with the log panel |
+| `OptimiseView` staleness | `proxied.length + recorded.length` vs a snapshot | a *signature* (tail row key + length), which changes even at saturation |
+| `FilterPanel` LLM filter | `activeExpectations.some(...)` | latched once observed (see the caveat below) |
+
+**Known residual gap.** `FilterPanel`'s latch cures churn-out but not a server holding more than 100
+non-LLM expectations *ahead* of its LLM ones — the window never contains one to observe. A correct
+fix needs a server-side flag alongside `activeExpectationsTotal`.
+
 ### Per-Expectation Delete and Edit
 
 Each row in `ExpectationPanel` exposes two inline actions (shown only when the row has an `expectationId`):
@@ -426,7 +490,9 @@ the Composer. The button is gated to unmatched entries only and hidden when no c
 
 Each collapsed item row has two lines:
 
-1. `[expand-chevron] [#] [expectationId-if-present]: METHOD …/right-aligned/path`
+1. `[expand-chevron] [timestamp-or-#] [expectationId-if-present]: METHOD …/right-aligned/path`
+   — requests carrying a `timestamp` show `hh:mm:ss.mmm`; the ordinal remains only as a
+   fallback for entries that have none (see *Counts Derived From the Update Window*)
 2. LLM badge chips (provider / model / `turn N of M` / stream / tool count / isolation key), indented to align with the expectation id column
 
 The expanded JSON tree also aligns with the id column. The `turn N of M` chip is computed from `scenarioName` + `scenarioState` ordering and is always present for LLM expectations, regardless of which predicate type the turn uses.

@@ -51,6 +51,8 @@ const keyOf = (e: { key: string }) => e.key;
 function ExpectationPanel() {
   const params = useConnectionParams();
   const expectations = useDashboardStore((s) => s.activeExpectations);
+  // The server's TOTAL, not the length of the capped page it sent.
+  const activeExpectationsTotal = useDashboardStore((s) => s.activeExpectationsTotal);
   const search = useDashboardStore((s) => s.expectationSearch);
   const setSearch = useDashboardStore((s) => s.setExpectationSearch);
   const filterEnabled = useDashboardStore((s) => s.filterEnabled);
@@ -117,6 +119,10 @@ function ExpectationPanel() {
   // drops the oldest as new ones arrive, so under load an open or scrolled-to row
   // is DELETED from the feed within seconds. While the reader is mid-read those
   // rows are held; new rows still arrive and prepend above them.
+  // Active Expectations is a SET of registered mocks, not a time-ordered stream,
+  // so it keeps its order and offers no Follow control. It still needs holding:
+  // the server sends a capped page and drops entries from it, which would delete
+  // rows under a reader.
   const [scrolledAway, setScrolledAway] = useState(false);
   const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
 
@@ -252,12 +258,12 @@ function ExpectationPanel() {
     <>
       <Panel
         title="Active Expectations"
-        count={expectations.length}
+        count={activeExpectationsTotal || expectations.length}
         filteredCount={filtered.length !== expectations.length ? filtered.length : undefined}
         searchValue={search}
         onSearchChange={setSearch}
         onScrolledAwayChange={setScrolledAway}
-        hasOpenItem={expansion.anyExpanded}
+
         headerActions={
           <>
             <Tooltip title="Sort by match priority (highest first)">
@@ -352,8 +358,6 @@ function ExpectationPanel() {
           <ProgressiveList
             count={shown.length}
             getKey={(i) => shown[i]!.key}
-            anchorAtTop={expansion.anyExpanded}
-            anchorKey={expansion.expandedKey}
             renderRow={(i) => {
               const item = shown[i]!;
               // Per-row actions are only meaningful for expectations that carry

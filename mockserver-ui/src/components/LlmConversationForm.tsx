@@ -48,6 +48,23 @@ export interface LlmConversationFormProps {
   initialScenarioName?: string;
 }
 
+
+/**
+ * Every expectation id belonging to `scenarioName`, read from the server's own
+ * authoritative expectation list rather than the dashboard's capped page.
+ */
+function idsForScenario(all: unknown[], scenarioName: string): string[] {
+  const ids: string[] = [];
+  for (const e of all) {
+    if (typeof e !== 'object' || e === null) continue;
+    const rec = e as Record<string, unknown>;
+    if (rec['scenarioName'] === scenarioName && typeof rec['id'] === 'string') {
+      ids.push(rec['id']);
+    }
+  }
+  return ids;
+}
+
 export default function LlmConversationForm({
   connectionParams,
   initialScenarioName,
@@ -84,16 +101,48 @@ export default function LlmConversationForm({
     setError(null);
     try {
       const baseUrl = buildBaseUrl(connectionParams);
+
+      // The ids to clear MUST come from the server, not from the dashboard's
+      // `activeExpectations`. That array is a capped page (100), so for a server
+      // holding more expectations than that, a scenario's turns can be partly
+      // outside it. Clearing only the visible ids and then registering the new
+      // turns would leave the invisible ones behind — the duplicate-scenario bug
+      // the clear below exists to prevent, reintroduced silently and only on
+      // busy servers.
+      let authoritativeIds = existingIds;
+      if (editingScenario) {
+        try {
+          const res = await fetch(`${baseUrl}/mockserver/retrieve?type=active_expectations&format=json`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: '{}',
+          });
+          if (res.ok) {
+            const all = (await res.json()) as unknown;
+            if (Array.isArray(all)) {
+              const ids = idsForScenario(all, editingScenario);
+              // Only trust a non-empty answer: an empty list here more likely
+              // means the shape was not what we expected than that the scenario
+              // has no turns, and clearing nothing is safer than clearing wrongly.
+              if (ids.length > 0) authoritativeIds = ids;
+            }
+          }
+        } catch {
+          // Fall back to the ids we can see. Registering with a partial clear is
+          // still better than refusing to save the user's edit.
+        }
+      }
+
       const idsToReuse =
-        editingScenario && existingIds.length === draft.turns.length
-          ? existingIds
+        editingScenario && authoritativeIds.length === draft.turns.length
+          ? authoritativeIds
           : undefined;
 
       // When editing an existing conversation and the turn count has changed,
       // the old expectations can't be reused 1:1. Clear them first so we don't
       // orphan a duplicate scenario with stale expectations.
-      if (editingScenario && existingIds.length > 0 && !idsToReuse) {
-        for (const oldId of existingIds) {
+      if (editingScenario && authoritativeIds.length > 0 && !idsToReuse) {
+        for (const oldId of authoritativeIds) {
           const clearRes = await fetch(`${baseUrl}/mockserver/clear?type=expectations`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
@@ -181,8 +230,15 @@ export default function LlmConversationForm({
               ? 'Registering…'
               : editingScenario
                 ? existingIds.length === draft.turns.length
-                  ? `Update ${existingIds.length} expectation${existingIds.length === 1 ? '' : 's'}`
-                  : `Replace conversation (${existingIds.length} → ${draft.turns.length} turns)`
+                  // Count the TURNS being written, not `existingIds.length`. The
+                  // latter is the dashboard's capped page of visible ids (≤100),
+                  // which under-counts a scenario on a busy server; the update
+                  // writes one expectation per draft turn, so that is the real
+                  // count. In this branch the two are equal by the guard above,
+                  // so this is the same number sourced correctly rather than from
+                  // the window.
+                  ? `Update ${draft.turns.length} expectation${draft.turns.length === 1 ? '' : 's'}`
+                  : `Replace conversation (${draft.turns.length} turns)`
                 : 'Register on server'}
           </Button>
           {editingScenario ? (

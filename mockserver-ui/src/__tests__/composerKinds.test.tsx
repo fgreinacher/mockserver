@@ -632,17 +632,23 @@ describe('Existing mocks list', () => {
     const httpList = screen.getByTestId('existing-mocks-list');
     expect(within(httpList).getByText(/GET \/health/)).toBeInTheDocument();
     expect(within(httpList).queryByText(/ns\.example\.com/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Existing HTTP mocks \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Existing HTTP mocks/)).toBeInTheDocument();
 
     // On DNS kind: only DNS mock visible
     await user.click(screen.getByLabelText('DNS'));
     const dnsList = screen.getByTestId('existing-mocks-list');
     expect(within(dnsList).getByText(/ns\.example\.com/)).toBeInTheDocument();
     expect(within(dnsList).queryByText(/GET \/health/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Existing DNS mocks \(1\)/)).toBeInTheDocument();
+    expect(screen.getByText(/Existing DNS mocks/)).toBeInTheDocument();
   });
 
-  it('list header shows the count of filtered mocks', () => {
+  // The header used to carry a count of the filtered mocks. It was removed because
+  // the dashboard WebSocket sends at most EXPECTATION_UPDATE_ITEM_LIMIT (100)
+  // expectations and drops the rest, so the number was the size of the transport
+  // window rather than the number of mocks on the server -- it pinned at 100 and
+  // stopped moving. What the count was standing in for is asserted directly here
+  // instead: every mock in the window is listed, none silently dropped.
+  it('lists every mock of the selected kind', () => {
     useDashboardStore.setState({
       activeExpectations: [
         {
@@ -672,7 +678,10 @@ describe('Existing mocks list', () => {
       ],
     });
     renderComposer();
-    expect(screen.getByText(/Existing HTTP mocks \(3\)/)).toBeInTheDocument();
+    const list = screen.getByTestId('existing-mocks-list');
+    expect(within(list).getByText(/GET \/a/)).toBeInTheDocument();
+    expect(within(list).getByText(/POST \/b/)).toBeInTheDocument();
+    expect(within(list).getByText(/PUT \/c/)).toBeInTheDocument();
   });
 });
 

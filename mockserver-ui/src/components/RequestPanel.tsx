@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from 'react';
+import { useCallback, memo, useMemo } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
@@ -11,6 +11,7 @@ import CopyButton from './CopyButton';
 import { useExpansion } from '../hooks/useExpansion';
 import { useHeldItems } from '../hooks/useHeldItems';
 import { useConnectionParams } from '../hooks/useConnectionParams';
+import { useFollow } from '../hooks/useFollow';
 import { matchesItemSearch } from '../lib/searchMatcher';
 import { monospaceFontFamily } from '../theme';
 
@@ -164,20 +165,47 @@ function RequestPanel({
   // is DELETED from the feed within seconds — measured at ~10s on a real server.
   // While the reader is mid-read those rows are held; new rows still arrive and
   // prepend above them.
-  const [scrolledAway, setScrolledAway] = useState(false);
-  const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
+  // Console order: oldest first, newest appended at the BOTTOM. An arriving row
+  // then lands below the viewport, so nothing a reader is looking at moves and no
+  // scroll compensation is needed.
+  const displayOrder = useMemo(() => [...filtered].reverse(), [filtered]);
+  // Following = watching the tail. Not following = reading, and then rows evicted
+  // from the top must be held or the list collapses upward beneath the reader.
+  const [follow, setFollow] = useFollow();
+  const shown = useHeldItems(displayOrder, keyOf, !follow);
+
+  // Opening a row means the reader has stopped watching and started reading, so
+  // stop following. That single flag defuses BOTH hazards at once: the tail pin
+  // in Panel is gated on `follow`, so it can no longer scroll the opened row
+  // away, and `useHeldItems` is gated on `!follow`, so the row is held once the
+  // server stops sending it. Suppressing only the scroll would leave the row to
+  // be evicted; holding only the rows would leave it to be scrolled off screen.
+  //
+  // It also keeps the Follow control honest. Quietly not-following while the chip
+  // still reads "Following" would be one more instrument saying it does something
+  // it does not -- which is the defect this whole change exists to remove. The
+  // chip flips to "Follow", and one click resumes.
+  const openRow = useCallback(
+    (key: string) => {
+      if (!expansion.isExpanded(key)) setFollow(false);
+      expansion.toggle(key);
+    },
+    [expansion, setFollow],
+  );
+
   const connectionParams = useConnectionParams();
   const curlExample = `curl -x http://${connectionParams.host}:${connectionParams.port} http://example.com`;
 
   return (
     <Panel
       title={title}
-      count={items.length}
-      filteredCount={searchValue ? filtered.length : undefined}
+      // No count: the server sends a capped window, so items.length pins at the
+      // cap and stops being a count. A wrong number is worse than none.
+      filteredCount={undefined}
       searchValue={searchValue}
       onSearchChange={onSearchChange}
-      onScrolledAwayChange={setScrolledAway}
-      hasOpenItem={expansion.anyExpanded}
+      follow={follow}
+      onFollowChange={setFollow}
     >
       {shown.length === 0 ? (
         items.length === 0 ? (
@@ -215,14 +243,12 @@ function RequestPanel({
         <ProgressiveList
           count={shown.length}
           getKey={(i) => shown[i]!.key}
-          anchorAtTop={expansion.anyExpanded}
-          anchorKey={expansion.expandedKey}
           renderRow={(i) => (
             <RequestRow
               item={shown[i]!}
-              index={shown.length - i}
+              index={i + 1}
               expanded={expansion.isExpanded(shown[i]!.key)}
-              onToggleExpand={expansion.toggle}
+              onToggleExpand={openRow}
             />
           )}
         />
