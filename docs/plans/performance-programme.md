@@ -2326,7 +2326,15 @@ cache. Now bounded-cached (1,024 entries, keyed on the verbatim header so `chars
 isolated ~960. The same change wraps `parameters` in `Collections.unmodifiableMap` — `getParameters()`
 had been handing callers the internal mutable `TreeMap`, which a shared cache would have turned from
 a latent aliasing bug into a live one. XPath re-parsing the XML DOM per candidate expectation shipped
-in `92b1c8f79`.
+in `92b1c8f79` — **but its parsed-DOM cache was REVERTED, because it was a shipped correctness bug on
+every transport.** `clearBodyParseCache()` had ZERO production callers and sixteen test call sites, so
+the cached mutable `Document` was never evicted on any request path, while the tests cleared it between
+cases and therefore maintained an invariant production never did. A `Document` is mutable and not
+thread-safe (unlike the `JsonNode` that makes the JSON matcher's cache safe), and both Netty event-loop
+threads and servlet workers are long-lived and reused — so a stale DOM could survive into an unrelated
+request and make a valid XPath matcher return a spurious non-match. The WAR integration test was simply
+the only coverage that tripped it. The timeout hardening, which was the actual headline of that commit,
+is retained; only the cache is gone.
 
 *Rejected — a measured negative.* Making the body decode lazy would save nothing at the default
 settings. At `logLevel` INFO the decoded body `String` is materialised per request **anyway**, for the
