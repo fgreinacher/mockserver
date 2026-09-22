@@ -3174,6 +3174,47 @@ old and new hardware into one median silently. The `<0.2%` hardware-insensitivit
 earlier in this document does not cover this: it compared JMH single-op microbenchmarks, which are
 core-count insensitive, not the under-load sweep.
 
+## The resize fixed contention, not capacity — the client is still on six cores
+
+**Build 397, the first run on c5.12xlarge, 2026-09-22.** The contention is gone and the numbers did
+not improve. Both halves of that sentence matter.
+
+```
+--- core-pinning enabled (48 logical cpus): server=0-5 upstream=6 k6=8-13
+--- verified: server / upstream / k6 occupy 13 distinct physical cores, none shared
+--- rig_valid_peak_achieved_rps=4000.3 saturation_rps=4000 (client pin=600%, cores=6)
+```
+
+**`k6=8-13`.** The box grew from 8 physical cores to 24 and the cpuset defaults were never widened, so
+the load generator is running on exactly what it had before: six cores, a 600% pin. Only the rungs up
+to 4,000 rps came back rig-valid. Above that k6 shed iterations at an accelerating rate — 203 at 8,000,
+3,908 at 16,000, 103,558 at 32,000, 343,971 at 48,000, 558,068 at 64,000 — because it could not deliver
+the offered rate, not because the server refused it.
+
+| offered | old, c5.4xlarge (contended) | new, c5.12xlarge (clean cores) | delta |
+|---|---|---|---|
+| 32,000 | 26,020 | 25,096.5 | **-3.5%** |
+| 48,000 | 28,533 | 24,958.3 | **-12.5%** |
+| 64,000 | 25,488 | 25,529.1 | +0.2% |
+
+**Neither column measures the server.** The old one was contended *and* client-limited; the new one is
+clean *and* client-limited. Comparing them answers no question worth asking, which is why the published
+figures were NOT updated from this run. (The website's `peak_achieved_rps` of 36,323.8 carries
+`source.instance_type: "not recorded"` — it predates self-describing results, so we cannot even say
+what produced it.)
+
+**A correction to how the resize was framed here.** It was described as the change that would let the
+36k knee be measured. It is not, on its own. It is a correctness fix — the measurement is no longer
+contaminated by the load generator sitting in the server's cores — and that was worth doing for its own
+sake. But the client was always the binding limit and it still is. Fixing contention without fixing
+capacity produces an honest measurement of the wrong ceiling.
+
+**What is actually left, and it is small.** With 24 physical cores the server takes 0-5 and the upstream
+takes 6, leaving seventeen free. Widening `PERF_K6_CPUS` from `8-13` to something like `8-19` gives the
+client twelve cores instead of six and still passes the disjointness guard. That plus the multi-process
+harness — one k6 process serialises internally regardless of how many cores it is handed — is the
+remaining work. Neither needs new hardware.
+
 ## The rolling baseline has no hardware term, so a resize would hide its own effect
 
 **Found 2026-09-22, while preparing the instance change the contention finding above calls for.**
