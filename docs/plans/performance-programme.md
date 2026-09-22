@@ -3033,10 +3033,41 @@ result now says WHY it is flat instead of merely being flat. Its own smoke test 
 very capability: `docker stats` fails the whole call if any named container is absent, which would have
 reported null CPU and looked like no data rather than a broken probe.
 
+## The 36,000 rps knee — NOT MEASURABLE on this rig, and the instrument said so itself
+
+**Build 384, 2026-09-22, clean-tier and baseline-eligible** (`jvm_diagnostics=standard
+baseline_eligible=true`) — the run this item asked for. The ladder produced:
+
+| offered | 8,000 | 16,000 | 32,000 | 48,000 | 64,000 |
+|---|---|---|---|---|---|
+| achieved | 7,980 | 15,327 | 18,999 | 19,322 | 19,287 |
+
+A plateau at roughly 19,000 from 32,000 offered upward. **It is not the server's knee.**
+`rig_valid_peak_achieved_rps` came back **0** and every single rung was excluded, with these reasons:
+
+- 500, 32,000, 48,000, 64,000 — **k6 client CPU 599.5%, 613.1%, 605.6%, 602.6% against a 600% pin**,
+  i.e. the six-core client was pegged;
+- 1,000 through 16,000 — dropped iterations, the client VU-starved.
+
+So the client was the bottleneck at EVERY rung, including the lowest. The published 36,000 is neither
+confirmed nor refuted: this rig cannot offer enough load to find out.
+
+**The honest instrument earned its keep.** Rather than publish 19,322 as a server peak, the harness
+reported "every sweep rung was excluded, so no server throughput figure is trustworthy" and gave the
+per-rung reason for each. That is precisely the machinery the `rig_valid_peak_achieved_rps` rename
+existed to protect, doing its job unprompted.
+
+**It also validates the drop-tolerance change** awaiting review. `rig_valid` is CPU-headroom AND
+no-drops AND low-error, so forgiving a small drop fraction can never admit a CPU-starved rung — these
+rungs would still be excluded on the headroom term alone.
+
+**This item and item 18 are now the same question**, approached from opposite ends and agreeing: the
+client is the limit. Both wait on hardware, not analysis.
+
 ## What remains
 
-**Four things are outstanding: one can be settled from the repo, and three need a run, a bigger
-rig, or an external system to report something.** The newest is not a measurement gap at all but a
+**Three things are outstanding: one can be settled from the repo, one needs a bigger client rig,
+and one needs an external system to report something.** The newest is not a measurement gap at all but a
 **usability regression this programme caused** — the dashboard panels became unusable for clicking
 while live data arrives. It leads the table deliberately: a panel that will not let you open an item
 is a worse outcome than the rendering cost the change was optimising, and the whole point of the
@@ -3053,8 +3084,8 @@ flowchart TD
   delete its false continuity claim"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
-  right --> h["The 36,000 rps knee,
-  clean-tier"]
+  right --> h["A client rig that can
+  saturate the server"]
   right --> k["Canceled-child reporting on a
   native trigger step"]
 ```
@@ -3063,6 +3094,7 @@ flowchart TD
 
 | | What is owed | Detail |
 |---|---|---|
+| **A client rig that can saturate the server** | Enough client CPU to push past ~19,000 rps | **This is now the single blocker for BOTH the 36,000 knee and item 18, which have collapsed into one question.** Build 384 (clean-tier, baseline-eligible) shows k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so the ~19,000 plateau is the client's ceiling and `rig_valid_peak_achieved_rps` is 0 - the harness correctly refuses to report a server figure. The multi-process generator (`multi-process-sweep.sh`) already broke the single-process ceiling locally (5,561 to 8,528 rps) and then hit its own client-CPU pins. So the need is hardware: more client cores, or a second client host (the harness accepts `PERF_MULTI_TARGET_URL`). No amount of analysis substitutes |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 
 ### Needs a run, or an external system
@@ -3072,8 +3104,6 @@ that is merely undone.
 
 | | What it needs | Why it is stuck here |
 |---|---|---|
-| **Item 18: saturate the server** | A rig with enough client CPU to push past ~8,500 rps | **The generator now exists** (`mockserver-performance-test/scripts/multi-process-sweep.sh`) and a first local run already broke the flat ceiling: peak went **5,561 rps at N=1 to 8,528 at N=2**. But every client process sat at **200%/200% of its 2-core pin**, so the harness is now limited by its own client CPU allocation rather than by the server. What remains is a rig with more cores per client process, or a second client host — the harness already supports an external target via `PERF_MULTI_TARGET_URL`. Note N=4 came in at 7,738, BELOW N=2, which is what client-CPU starvation looks like once the pins are oversubscribed |
-| **The 36,000 rps knee** | A clean-tier run on an image carrying the corrected heap cap | Build 290 ruled out one possibility and recorded a shape — 15,475 achieved at 16,000 offered, **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000, error rate 0 at every rung with the losses all `dropped_iterations`. That is a genuine knee near 32,000 with a collapse beyond it, a server-side congestion signature rather than a client ceiling. It does **not** settle the published 36,000: build 290 was a deep-tier run (JFR + NMT depress throughput by design, `baseline_eligible:false`), so 26,020 is a floor, not a refutation |
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 ### `peak_achieved_rps` measures the client, not the server
