@@ -59,13 +59,35 @@ STEPS=""
 # (23c51bab8, 553784bf3); DO NOT "simplify" it into an unconditional native
 # trigger or you will silently break every bot PR again.
 #
+# The hazard above is about the build's AUTHOR, but this gate used to test only
+# whether the build was a PR — and a merged Dependabot PR is neither. It lands on
+# master as a PUSH build (BUILDKITE_PULL_REQUEST="false") still authored by
+# dependabot[bot], so it took the native path and walked straight into the trap
+# the comment describes. Observed on orchestrator builds 7357, 7358, 7359 and
+# 7361: every one authored by dependabot[bot] with `creator: None`, and on each
+# of them the SAME six trigger steps (Java, Go, .NET, Rust, PHP, Infra) failed in
+# under half a second with `triggered_build: null` and no child build created,
+# while the human-authored build 7356 created all thirteen. Those commits were
+# reported red having never run a test.
+#
+# So gate on the thing that actually matters — is there an authenticated
+# Buildkite user behind this build whose permissions the child build can inherit?
+# BUILDKITE_BUILD_CREATOR is empty exactly when the REST API reports
+# `creator: None`, which is the condition under which a native trigger is
+# refused. The author check is a belt-and-braces second signal for a bot identity
+# that somehow does carry a creator.
+#
 # BUILDKITE_PULL_REQUEST is the literal string "false" on push builds and the
 # PR number otherwise. We take the native path ONLY on an explicit "false"; a
 # PR number OR an unset/empty value both fall through to the safe command
 # path (the conservative direction — worst case is an agent held, never a
-# silently-skipped build).
+# silently-skipped build). The same conservative direction applies to both new
+# conditions: when in doubt, use the command path, which authenticates with the
+# pipeline's own API token and therefore cannot be refused for want of a user.
 USE_NATIVE_TRIGGER=false
-if [ "${BUILDKITE_PULL_REQUEST:-}" = "false" ]; then
+if [ "${BUILDKITE_PULL_REQUEST:-}" = "false" ] \
+    && [ -n "${BUILDKITE_BUILD_CREATOR:-}" ] \
+    && case "${BUILDKITE_BUILD_AUTHOR:-}" in *'[bot]') false ;; *) true ;; esac; then
   USE_NATIVE_TRIGGER=true
 fi
 
