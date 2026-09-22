@@ -1,34 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-echo "--- :buildkite: Downloading shaded JAR artifact"
-buildkite-agent artifact download "mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar" .
+# The container-integration harness (integration_tests.sh -> build_docker) builds
+# docker/Dockerfile with --build-arg source=copy, staging whatever it finds at
+# mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar.
+# docker/Dockerfile is the public download-mode REFERENCE image: its source=download
+# path fetches the DEFAULT fat jar from Maven Central, and its jarprep stage trims and
+# then ASSERTS default-fat-jar native contents (every platform's tcnative present, and
+# NO quiche - HTTP/3 ships in the separate -http3 classifier). For the copy smoke test
+# to exercise the same thing the download path ships, it MUST be fed the SAME artifact:
+# the default mockserver-netty jar-with-dependencies.
+#
+# NOT the shaded mockserver-netty-no-dependencies jar: that relocates netty, carries NO
+# tcnative under the stock name and DOES carry quiche, so it fails jarprep's tcnative and
+# quiche assertions. The shaded jar is what docker/local consumes and is exercised by the
+# ":docker: build and push :snapshot" step (java-docker-push-snapshot.sh), not here. This
+# matches how helm-integration-test.sh already stages the default fat jar for docker/clustered.
+echo "--- :buildkite: Downloading default fat JAR artifact"
+buildkite-agent artifact download "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar" .
 
 shopt -s nullglob
-SHADED_JAR=""
-for f in mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar; do
-  case "$(basename "$f")" in
-    *-sources.jar|*-javadoc.jar|original-*) continue ;;
-  esac
-  SHADED_JAR="$f"
+FAT_JAR=""
+for f in mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar; do
+  FAT_JAR="$f"
   break
 done
 shopt -u nullglob
-if [ -z "$SHADED_JAR" ]; then
-  echo "Error: shaded JAR not found after artifact download"
+if [ -z "$FAT_JAR" ]; then
+  echo "Error: default fat JAR (mockserver-netty-*-jar-with-dependencies.jar) not found after artifact download — the upstream :maven: build step must upload it"
   exit 1
 fi
-
-echo "--- :package: Copying shaded JAR as jar-with-dependencies"
-JAR_DIR="mockserver/mockserver-netty/target"
-mkdir -p "$JAR_DIR"
-VERSION=$(basename "$SHADED_JAR" | sed -E 's/^mockserver-netty-no-dependencies-(.+)\.jar$/\1/')
-if [ -z "$VERSION" ] || [ "$VERSION" = "$(basename "$SHADED_JAR")" ]; then
-  echo "Error: could not extract version from $SHADED_JAR"
-  exit 1
-fi
-JAR_NAME="mockserver-netty-${VERSION}-jar-with-dependencies.jar"
-cp "$SHADED_JAR" "$JAR_DIR/$JAR_NAME"
+echo "Default fat JAR present: $FAT_JAR"
+# Already at the exact path+name integration_tests.sh globs, so no re-stage is needed.
 
 # The docker_compose_war_tomcat case deploys the WAR into a Tomcat container.
 # The WAR is built by the reactor in the ":maven: build" step and uploaded as an

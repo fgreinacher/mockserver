@@ -71,6 +71,15 @@ steps:
       # Download + extract to browse the rich coverage UI.
       - "mockserver/jacoco-html-reports.tar.gz"
       - "mockserver/mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*.jar"
+      # The DEFAULT fat jar (assembly output). Consumed by the ":docker: container
+      # integration tests" step (container-tests-run.sh), which builds docker/Dockerfile
+      # with --build-arg source=copy and whose jarprep stage asserts default-fat-jar native
+      # contents (tcnative present, no quiche). The shaded no-dependencies jar above is a
+      # DIFFERENT artifact (docker/local's, for the snapshot-push step) and fails those
+      # assertions, so this default jar must be uploaded for the container-tests step to stage.
+      # The glob matches only the plain jar-with-dependencies; the -http3 / -linux-<arch>
+      # classifier variants end in different suffixes and are intentionally not uploaded.
+      - "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar"
       - "mockserver/mockserver-k8s-webhook/target/mockserver-k8s-webhook-*-jar-with-dependencies.jar"
       # The WAR built by the reactor, consumed by the container-tests step's
       # docker_compose_war_tomcat case (container-tests-run.sh downloads it).
