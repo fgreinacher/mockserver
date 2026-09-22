@@ -3174,6 +3174,48 @@ old and new hardware into one median silently. The `<0.2%` hardware-insensitivit
 earlier in this document does not cover this: it compared JMH single-op microbenchmarks, which are
 core-count insensitive, not the under-load sweep.
 
+## The rolling baseline has no hardware term, so a resize would hide its own effect
+
+**Found 2026-09-22, while preparing the instance change the contention finding above calls for.**
+Fixing the rig would have silently corrupted the control that watches it.
+
+`perf-test-compare.sh` stores each run at `runs/<branch>/<iso>__<sha>.json` and takes the rolling
+median over the last `PERF_BASELINE_N` (10) keys by name. **Branch and commit only — nothing about the
+machine.** `instance_type` appears in the script exactly once, inside an annotation string; it is
+never compared. So moving the perf queue to a bigger box would blend two hardware generations in one
+median for ten runs.
+
+That is not a cosmetic concern, because of what the resize does. Removing the load generator from the
+server's cores makes the server genuinely faster, so the blend would contain a real step change: a
+regression landing in that window could hide inside the speed-up, or a phantom regression be flagged
+as the older, slower runs age out. The control would be least trustworthy exactly when the hardware
+beneath it moved.
+
+**The window is already blended, before any resize.** Pulling the actual ten objects from S3:
+
+| runs | `agent.instance_type` | schema |
+|---|---|---|
+| 7 | `c5.4xlarge` | v3 |
+| 3 | *absent* | v1 |
+
+Three of the ten predate the self-describing result and record no hardware at all. The existing
+`PRE_CONFIG_COUNT` check notices them and **warns in the annotation while still folding them into the
+median** — flagging incomparability without acting on it.
+
+**The fix is to drop rather than flag.** A prior run counts toward the baseline only if it can be
+shown to have run on the same machine type; anything else — a different type, or a run too old to say
+— is excluded, and the existing `warming up` path then reports honestly that there is no baseline on
+this hardware yet. Verified against those real ten objects: today it keeps 7 and drops 3, which is
+still above `PERF_MIN_BASELINE` (5) so gating continues uninterrupted; after a resize it keeps 0 and
+restarts. Five runs of warm-up is the true cost of changing hardware, and it is worth paying — the
+alternative is a green comparison that has stopped meaning anything.
+
+**Worth noting about the order of discovery.** The contention bug and this one are the same mistake at
+two layers: the run script assumed logical CPUs were cores, and the compare script assumed runs are
+comparable if they share a branch. Both encode an assumption that was true when written and neither
+re-checks it. Fixing only the first would have produced faster, more honest numbers measured against a
+baseline that had quietly stopped being a baseline.
+
 ## The perf baseline cannot be refreshed either, for the same reason
 
 **Discovered 2026-09-22 while trying to fix `mockserver-infra`'s baseline-freshness failure.** The
