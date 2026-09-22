@@ -914,7 +914,7 @@ reader (`k6/tools/sse-fidelity-reader.py`) times inter-token gaps idle (client-j
 positive control) then under load; `perf-test-run.sh` samples heap-per-open-stream. All
 `streaming.*` budgets are notify-only.
 
-#### 13. Clustered state under load — **[harness landed `648780a33`; NOT MEASURING — the clustered image is never provisioned on the perf queue, so every run takes the absent-image skip and emits zero metrics]**
+#### 13. Clustered state under load — **[harness landed `648780a33`; image provisioning wired so it actually measures]**
 
 *Serves: D1, D2, D4 / profile C. Cost: about a week.*
 

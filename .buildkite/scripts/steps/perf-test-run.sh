@@ -56,6 +56,18 @@ STREAM_SUT="mockserver-perf-stream-sut-${RUN_ID}"
 CLU_CTRL="mockserver-perf-clu-ctrl-${RUN_ID}"
 CLU_A="mockserver-perf-clu-a-${RUN_ID}"
 CLU_B="mockserver-perf-clu-b-${RUN_ID}"
+# The clustered image is a MUTABLE snapshot tag published by the SAME job that
+# publishes the SUT image (java-docker-push-snapshot.sh), from the same shaded jar
+# and the same SOURCE_COMMIT stamp. Resolved HERE, next to MOCKSERVER_IMAGE, rather
+# than inside the clustered block ~1700 lines below, because it is pulled UP FRONT
+# with the SUT image (see the pull block): pulling both within seconds of each other
+# is what keeps the two revision labels paired — a pull deferred to the clustered
+# phase ~40 min into the run could pick up a NEWER master snapshot than the SUT
+# being measured. Locally, point this at the container-tests
+# `mockserver/mockserver:integration_testing_clustered` image and set
+# PERF_CLUSTERED_REQUIRE_MATCHING_REVISION=false (that image carries no revision
+# label), or set PERF_CLUSTERED=false to skip the A/B entirely.
+CLU_IMAGE="${PERF_CLUSTERED_IMAGE:-mockserver/mockserver:mockserver-snapshot-clustered}"
 SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # Hard memory bound for the SUT (item: measure growth against a realistic heap).
 # Unbounded on a 32 GB box, MaxRAMPercentage=75 yields a ~24 GB heap that barely
@@ -657,6 +669,33 @@ if [ "${PERF_PULL_IMAGE:-true}" = "true" ]; then
     || echo "WARNING: 'docker pull $MOCKSERVER_IMAGE' failed — proceeding with the cached image if present; the provenance check is the backstop" >&2
 else
   echo "--- PERF_PULL_IMAGE=false — using the cached/local $MOCKSERVER_IMAGE (provenance check still applies)"
+fi
+
+# --- item 13: pull the CLUSTERED image here too, beside the SUT pull -----------
+# THE FIX for a harness that never measured: the clustered A/B block guards on
+# `docker image inspect "$CLU_IMAGE"`, and NOTHING in the perf flow ever pulled or
+# built that image — so on a scale-to-zero perf agent (a fresh box every run) the
+# inspect always failed and the block took its absent-image skip on every single
+# run. The image is now published as a mutable snapshot tag by the same job that
+# publishes the SUT image, so it is obtained the same way the SUT is: one pull of a
+# mutable tag, up front, once.
+#
+# WHY UP HERE and not in the clustered block: the run is ATTRIBUTED to the SUT
+# image's revision label, and the clustered arm is only meaningful if it executed the
+# SAME commit's code. Both tags move together on a master merge, so pulling them
+# seconds apart keeps them paired; pulling the clustered tag ~40 min later (where the
+# A/B runs) would let a merge landing mid-run hand us a NEWER clustered image than the
+# SUT — a mismatch that produces an arithmetically fine ratio filed under the wrong
+# commit. The revision equality check in the clustered block is the backstop that
+# catches it either way; this placement just makes the mismatch rare.
+#
+# Best-effort, exactly like the SUT pull: a failed pull leaves whatever is cached, and
+# the absent-image / revision-mismatch guards below decide what to do. It must NOT
+# abort the run — the clustered A/B is notify-only and the k6/growth result is not.
+if [ "${PERF_CLUSTERED:-true}" = "true" ] && [ "${PERF_PULL_IMAGE:-true}" = "true" ]; then
+  echo "--- pulling clustered image $CLU_IMAGE (item 13 A/B; paired with the SUT pull above)"
+  docker pull "$CLU_IMAGE" \
+    || echo "WARNING: 'docker pull $CLU_IMAGE' failed — the item-13 clustered A/B will fall back to a cached image if present, else SKIP (notify-only)" >&2
 fi
 
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
@@ -2131,10 +2170,16 @@ fi
 # perf-test-compare.sh.
 #
 # REUSE, DON'T REBUILD: PERF_CLUSTERED_IMAGE defaults to the snapshot-clustered
-# image; locally point it at the container-tests `integration_testing_clustered`
-# image, which is assembled from the SAME clustered-libs jars the container-tests
-# pipeline already builds (netty fat jar + /libs/* = Infinispan + JGroups). We do
-# NOT build Infinispan a second time here.
+# image, which java-docker-push-snapshot.sh publishes on every master merge from
+# the SAME shaded jar, the SAME commit and the SAME job as the SUT image — so it is
+# PULLED here (up front, beside the SUT pull), never built. Locally point it at the
+# container-tests `integration_testing_clustered` image, which is assembled from the
+# SAME clustered-libs jars the container-tests pipeline already builds (netty fat
+# jar + /libs/* = Infinispan + JGroups), and set
+# PERF_CLUSTERED_REQUIRE_MATCHING_REVISION=false because that image carries no
+# revision label. We do NOT build Infinispan a second time here, and we do NOT run
+# Maven on the measurement box — a multi-module reactor build on the serialized perf
+# agent immediately before measuring would perturb the very thing being measured.
 #
 # WHAT THE HOT PATH ACTUALLY TOUCHES (why the ratio is what it is): seedRegression
 # seeds every expectation with times:{unlimited:true}, so there is NO per-request
@@ -2175,17 +2220,67 @@ fi
 # not cross, or a null ratio) makes the `clustered_metrics_present` validity check
 # FALSE and REDS the build (loud), while PERF_CLUSTERED=false or an absent image
 # stays a green skip.
+#
+# WHY A SKIP IS NOW A REAL SIGNAL: the clustered image is published on every master
+# merge and pulled up front, so it SHOULD be present on every run. A skip therefore
+# means something broke (the publish, the pull, or the commit pairing) rather than
+# "not wired yet", and `clustered_skip_reason` names WHICH — it rides the result so
+# the compare annotation can say why instead of guessing "probably not published".
 CLUSTERED_JSON='{}'
 CLUSTERED_ATTEMPTED=false
+# "" once attempted; otherwise one of: disabled | image_absent | revision_mismatch.
+CLUSTERED_SKIP_REASON="disabled"
+CLU_IMAGE_REVISION=""
 CLU_CTRL_BEHAVIOURS='{}'
 CLU_CAND_BEHAVIOURS='{}'
+# --- gate: decide whether the A/B can honestly run, and record WHY not ---------
+# Two independent reasons to skip, each with its own reason token. Kept SEPARATE
+# from the measurement block below (a flat decision, then one guarded body) so the
+# detection logic stays readable and the body keeps its original nesting.
 if [ "${PERF_CLUSTERED:-true}" = "true" ]; then
-  CLU_IMAGE="${PERF_CLUSTERED_IMAGE:-mockserver/mockserver:mockserver-snapshot-clustered}"
-  if ! docker image inspect "$CLU_IMAGE" >/dev/null 2>&1; then
-    echo "WARNING: clustered image '$CLU_IMAGE' not present — clustered A/B SKIPPED (notify-only)." >&2
-    echo "         Set PERF_CLUSTERED_IMAGE to the container-tests clustered image (built from the" >&2
-    echo "         clustered-libs jars), or PERF_CLUSTERED=false to disable. NOT counted as attempted." >&2
+  CLUSTERED_SKIP_REASON="image_absent"
+  if docker image inspect "$CLU_IMAGE" >/dev/null 2>&1; then
+    # Provenance pairing. The run is filed under the SUT image's revision
+    # ($IMAGE_REVISION, resolved far above), so a clustered image from a DIFFERENT
+    # commit would produce a perfectly well-formed ratio for code this run was not
+    # measuring — the stale-tag failure mode that makes a comparison silently
+    # meaningless. Both tags are pushed by the same job from the same commit, so a
+    # mismatch is an anomaly (a failed clustered push leaving the tag one merge
+    # behind, or a merge landing between the two pulls), not routine.
+    #
+    # A mismatch SKIPS rather than measures: an honest, counted gap is strictly
+    # better than a number filed against code that never ran. It does NOT red the
+    # build (this block is notify-only throughout) but it is reported distinctly.
+    # Empty == label absent, exactly as the SUT provenance check treats it. When the
+    # SUT itself is unlabelled there is nothing to pair against, so the check stands
+    # down and the SUT's own provenance verdict governs.
+    CLU_IMAGE_REVISION="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CLU_IMAGE" 2>/dev/null || true)"
+    if [ "$CLU_IMAGE_REVISION" = "<no value>" ]; then CLU_IMAGE_REVISION=""; fi
+    if [ "${PERF_CLUSTERED_REQUIRE_MATCHING_REVISION:-true}" = "true" ] \
+       && [ -n "${IMAGE_REVISION:-}" ] && [ "$CLU_IMAGE_REVISION" != "${IMAGE_REVISION:-}" ]; then
+      CLUSTERED_SKIP_REASON="revision_mismatch"
+      echo "WARNING: clustered image '$CLU_IMAGE' revision '${CLU_IMAGE_REVISION:-<absent>}' does NOT match the" >&2
+      echo "         SUT image revision '${IMAGE_REVISION}' this run is attributed to — clustered A/B SKIPPED" >&2
+      echo "         (notify-only). Measuring it would file a clustered/in-memory ratio under a commit whose" >&2
+      echo "         clustered code the measured binary never contained. Usual cause: the clustered push in" >&2
+      echo "         the ':docker: build and push :snapshot' step failed, leaving the tag a merge behind." >&2
+      echo "         Set PERF_CLUSTERED_REQUIRE_MATCHING_REVISION=false for a LOCAL run against an" >&2
+      echo "         unlabelled image. NOT counted as attempted." >&2
+    else
+      CLUSTERED_SKIP_REASON=""
+    fi
   else
+    echo "WARNING: clustered image '$CLU_IMAGE' not present — clustered A/B SKIPPED (notify-only)." >&2
+    echo "         This tag is published on every master merge by java-docker-push-snapshot.sh and" >&2
+    echo "         pulled up front by this script, so an absent image means the publish or the pull" >&2
+    echo "         failed — check the ':docker: build and push :snapshot' step and the pull WARNING" >&2
+    echo "         earlier in this log. Locally, set PERF_CLUSTERED_IMAGE to the container-tests" >&2
+    echo "         clustered image (plus PERF_CLUSTERED_REQUIRE_MATCHING_REVISION=false), or" >&2
+    echo "         PERF_CLUSTERED=false to disable. NOT counted as attempted." >&2
+  fi
+fi
+
+if [ -z "$CLUSTERED_SKIP_REASON" ]; then
     CLUSTERED_ATTEMPTED=true
     CLU_CPUS="${PERF_CLUSTERED_CPUS:-2}"
     CLU_MEM="${PERF_CLUSTERED_MEMORY:-2g}"
@@ -2403,7 +2498,7 @@ JGROUPS_XML
       --arg a_clustered "${A_CLUSTERED:-false}" --arg ctrl_clustered "${CTRL_CLUSTERED:-false}" \
       --arg state_crossed "$STATE_CROSSED" \
       --argjson cross_code "${CROSS_CODE:-0}" --argjson neg_code "${NEG_CODE:-0}" \
-      --arg image "$CLU_IMAGE" '
+      --arg image "$CLU_IMAGE" --arg image_revision "$CLU_IMAGE_REVISION" '
       # strip a trailing _<proto> to recover the arm op
       def op(k; p): (k | sub("_"+p+"$"; ""));
       ($ctrl | to_entries | map({key: op(.key; "clustered_control"), value: .value}) | from_entries) as $C |
@@ -2413,6 +2508,14 @@ JGROUPS_XML
         control_backend: "memory",
         candidate_backend: "infinispan",
         image: $image,
+        # The OWN commit of the clustered image. Recorded, not just checked, so a
+        # stored run can be audited later: the gate above refuses to measure unless
+        # this equals the SUT image revision the run is filed under, and a reader of
+        # the history can confirm that rather than take it on trust. Empty only for a
+        # deliberately-unlabelled local image (PERF_CLUSTERED_REQUIRE_MATCHING_REVISION=false).
+        # NB: no apostrophes in this jq program — it lives inside a single-quoted
+        # bash string, so one would terminate it and break the script.
+        image_revision: $image_revision,
         cluster: {
           member_count_node_a: $a_members,
           member_count_node_b: $b_members,
@@ -2452,7 +2555,6 @@ JGROUPS_XML
             crossing_arm: (.arms | to_entries | map(select(.value.crosses_network)) | from_entries | with_entries(.value |= {p50_ratio, p95_ratio, throughput_ratio})),
             membership_arms: (.arms | to_entries | map(select(.value.crosses_network|not)) | from_entries | with_entries(.value |= {p50_ratio, p95_ratio, throughput_ratio}))}' \
       <<<"$CLUSTERED_JSON" 2>/dev/null || echo "$CLUSTERED_JSON"
-  fi
 fi
 
 # --- derive resource slope ratios from the sample log -------------------------
@@ -2693,6 +2795,7 @@ jq -n \
   --argjson streaming "$STREAMING_JSON" \
   --argjson clustered_state "$CLUSTERED_JSON" \
   --argjson clustered_attempted "$CLUSTERED_ATTEMPTED" \
+  --arg clustered_skip_reason "$CLUSTERED_SKIP_REASON" \
   --argjson clu_ctrl "$CLU_CTRL_BEHAVIOURS" \
   --argjson clu_cand "$CLU_CAND_BEHAVIOURS" \
   --argjson validity "$VALIDITY_JSON" \
@@ -2767,6 +2870,13 @@ jq -n \
     # {} when the profile was disabled or the clustered image was absent.
     clustered_state: $clustered_state,
     clustered_attempted: $clustered_attempted,
+    # WHY the A/B did not run, when it did not: "" when attempted, else one of
+    # disabled | image_absent | revision_mismatch. clustered_attempted:false alone
+    # cannot distinguish "deliberately off" from "the image never arrived" from
+    # "the image was from the wrong commit", and compare.sh had to GUESS in its
+    # annotation. A skip that cannot say why is the same shape of defect as a skip
+    # nobody sees.
+    clustered_skip_reason: $clustered_skip_reason,
     growth: {
       duration_s: ($growth.duration_s // null),
       p95_ms: ($growth.p95_ms // null),

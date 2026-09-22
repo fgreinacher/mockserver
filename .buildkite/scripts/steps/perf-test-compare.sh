@@ -1054,14 +1054,21 @@ fi
 
 # item 13 — SURFACE a skipped clustered A/B (the reviewer's MAJOR: a dark skip
 # reads as a clean pass). compare is head-driven, so when the run took the
-# absent-image / disabled skip branch it emits ZERO clustered_state metrics and no
-# other signal — item 13 could then skip on every run for months with the build
-# green and only a buried stderr WARNING. This does NOT fail the build (the
-# clustered image is not yet published to the perf queue; failing would permanently
-# red the gate on an unpublished image) — it annotates. The attempted-but-produced-
-# nothing case is a DIFFERENT gate: it is caught by the run's clustered_metrics_present
-# validity check, which REDs before this step. Only fires for the NEW producer's
-# explicit skip (clustered_attempted:false); a pre-feature run (key absent) is exempt.
+# absent-image / revision-mismatch / disabled skip branch it emits ZERO
+# clustered_state metrics and no other signal — item 13 could then skip on every run
+# for months with the build green and only a buried stderr WARNING. It does NOT fail
+# the build — it annotates. The attempted-but-produced-nothing case is a DIFFERENT
+# gate: it is caught by the run's clustered_metrics_present validity check, which REDs
+# before this step. Only fires for the NEW producer's explicit skip
+# (clustered_attempted:false); a pre-feature run (key absent) is exempt.
+#
+# WHAT CHANGED, and what it means for this note: the clustered image IS now published
+# on every master merge (java-docker-push-snapshot.sh) and PULLED up front by
+# perf-test-run.sh, so "not yet published to the perf queue" is no longer the expected
+# state — a skip now means a real breakage. The run therefore emits
+# `clustered_skip_reason` and this note REPORTS it instead of guessing. It is still
+# notify-only: see the STILL-NOTIFY-ONLY note below for why, and what would have to
+# be true to make it gate.
 CLU_NOTE=""
 CLU_ATTEMPTED_HEAD="$(jq -r 'if has("clustered_attempted") then (.clustered_attempted|tostring) else "absent" end' "$RESULT" 2>/dev/null || echo absent)"
 CLU_ROWS="$(printf '%s' "$RESULT_CMP" | jq '[.rows[]?.name | select(startswith("clustered_state."))] | length' 2>/dev/null || echo 0)"
@@ -1078,9 +1085,22 @@ if [ "$CLU_ATTEMPTED_HEAD" = "false" ] && [ "${CLU_ROWS:-0}" -eq 0 ]; then
     "$WORK/baseline.json" 2>/dev/null || echo 0)"
   CLU_SKIP_SUFFIX=""
   [ "${CLU_SKIPS:-0}" -gt 0 ] && CLU_SKIP_SUFFIX=" It has now skipped **${CLU_SKIPS} consecutive** run(s) since the profile last measured — if this keeps growing, the clustered image is not reaching the perf agent."
+  # Report the reason the RUN recorded rather than restating the old default guess.
+  # "absent" covers a run produced before clustered_skip_reason existed.
+  CLU_REASON="$(jq -r 'if has("clustered_skip_reason") then (.clustered_skip_reason // "" | if . == "" then "unrecorded" else . end) else "absent" end' "$RESULT" 2>/dev/null || echo absent)"
+  case "$CLU_REASON" in
+    image_absent)
+      CLU_WHY="the clustered image (\`PERF_CLUSTERED_IMAGE\`, default \`mockserver/mockserver:mockserver-snapshot-clustered\`) was **not present on the perf agent**. That tag is published on every master merge by the \`:docker: build and push :snapshot\` step and pulled up front by \`perf-test-run.sh\`, so this means the **publish or the pull failed** — check both." ;;
+    revision_mismatch)
+      CLU_WHY="the clustered image was present but its \`org.opencontainers.image.revision\` did **not match the SUT image commit this run is filed under**, so the harness refused to measure it. Running it anyway would have filed a clustered/in-memory ratio against code the measured binary never contained. Usual cause: the **clustered push failed on a recent merge**, leaving \`mockserver-snapshot-clustered\` a commit behind \`mockserver-snapshot-graaljs\`." ;;
+    disabled)
+      CLU_WHY="the profile was **explicitly disabled** for this run (\`PERF_CLUSTERED=false\`)." ;;
+    *)
+      CLU_WHY="the run did not record a reason (\`clustered_skip_reason\`: \`${CLU_REASON}\`) — it predates that field, or the producer changed." ;;
+  esac
   CLU_NOTE="
 
-:information_source: **Clustered state A/B (item 13) did NOT run this build** — \`clustered_attempted\` is \`false\` and no \`clustered_state.*\` metrics were emitted, so the clustered/in-memory ratio is UNMEASURED this run. The usual cause is the clustered image (\`PERF_CLUSTERED_IMAGE\`, default \`mockserver/mockserver:mockserver-snapshot-clustered\`) not being present on the perf agent, so the run took the absent-image skip branch (or the profile was disabled with \`PERF_CLUSTERED=false\`). This does NOT fail the build — the image is not yet published to the perf queue — but item 13 stays unanswered until the container-tests clustered image is wired into the perf pipeline (or \`PERF_CLUSTERED_IMAGE\` points at a present image).${CLU_SKIP_SUFFIX}"
+:information_source: **Clustered state A/B (item 13) did NOT run this build** — \`clustered_attempted\` is \`false\` and no \`clustered_state.*\` metrics were emitted, so the clustered/in-memory ratio is UNMEASURED this run. Reason: ${CLU_WHY} This does NOT fail the build (the whole clustered family is notify-only), but item 13 is unanswered for this commit — a persistent skip means the measurement is not happening at all.${CLU_SKIP_SUFFIX}"
 fi
 
 # Fold the provenance line, the pre-config-baseline warning, and the microbench +

@@ -65,6 +65,24 @@ FROM gcr.io/distroless/java17:nonroot@sha256:6457ce026c1733d9693b65a4dbb45459d71
 # maintainer details
 LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
 
+# Source provenance (OCI convention). revision = the git commit this image was
+# BUILT from; created = the RFC-3339 build time. Both are stamped by the build via
+# --build-arg (java-docker-push-snapshot.sh for the snapshot tags), and are EMPTY
+# on a plain `docker build` (forks/self-hosters) so the label is simply absent
+# rather than wrong. Mirrors docker/local + docker/graaljs.
+#
+# WHY THIS IMAGE NEEDS IT TOO: the perf harness runs the item-13 clustered A/B
+# against THIS image while the run itself is attributed to the SUT (graaljs) image's
+# revision. Without a revision here there is no way to prove the two came from the
+# same commit, and a stale `mockserver-snapshot-clustered` tag would file a clustered
+# ratio under a commit whose clustered code it never executed — a silently meaningless
+# comparison. perf-test-run.sh compares this label with the SUT's and refuses to
+# measure on a mismatch.
+ARG SOURCE_COMMIT=
+ARG BUILD_DATE=
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"
+LABEL org.opencontainers.image.created="${BUILD_DATE}"
+
 # expose ports.
 EXPOSE 1080
 

@@ -81,6 +81,17 @@ steps:
       # classifier variants end in different suffixes and are intentionally not uploaded.
       - "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar"
       - "mockserver/mockserver-k8s-webhook/target/mockserver-k8s-webhook-*-jar-with-dependencies.jar"
+      # The Infinispan /libs classpath for the `-clustered` image variant, staged by
+      # the `-P clustered-libs` profile in scripts/buildkite_quick_build.sh (the module
+      # jar is copied in alongside its runtime deps there, so this ONE directory is the
+      # image's /libs verbatim). Consumed by the ":docker: build and push :snapshot"
+      # step to build `mockserver/mockserver:mockserver-snapshot-clustered` from the
+      # SAME commit and the SAME shaded jar as the other snapshot images. That
+      # same-commit pairing is load-bearing: the perf harness runs the item-13
+      # clustered A/B against this tag while attributing the run to the graaljs SUT
+      # image's commit, so a clustered image from a different commit would file a
+      # clustered ratio under code it never ran. ~160 jars / ~85 MB.
+      - "mockserver/mockserver-state-infinispan/target/clustered-libs/*.jar"
       # The WAR built by the reactor, consumed by the container-tests step's
       # docker_compose_war_tomcat case (container-tests-run.sh downloads it).
       # Buildkite steps do NOT share a filesystem, so it must be uploaded here.
@@ -313,7 +324,11 @@ steps:
   - label: ":docker: build and push :snapshot"
     if: "build.branch == 'master'"
     command: ".buildkite/scripts/steps/java-docker-push-snapshot.sh"
-    timeout_in_minutes: 30
+    # 30 -> 45: the step now publishes a FOURTH multi-arch image, the ~620 MB
+    # `-clustered` variant (Infinispan/JGroups under /libs), on top of local,
+    # graaljs and webhook. Two platforms of the largest image is the biggest
+    # single addition this step has taken; 45m keeps headroom under registry noise.
+    timeout_in_minutes: 45
     retry:
       automatic:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)

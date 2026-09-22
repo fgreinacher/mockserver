@@ -33,9 +33,40 @@ set +e
 # interactive transfer-progress monitor emits one dot per line, flooding the build
 # log. These flags are applied here (CI-scoped) rather than in .mvn/maven.config so
 # local developer `./mvnw` keeps its live download progress.
-./mvnw -B --no-transfer-progress -T 1C clean install ${1:-} -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
+# -P clustered-libs activates a package-bound `dependency:copy-dependencies` in
+# mockserver-state-infinispan that stages that module's Infinispan runtime classpath
+# (Infinispan, JGroups, ProtoStream, ...) into target/clustered-libs — the /libs/*
+# classpath the `-clustered` Docker image mounts. It is activated HERE, inside the
+# reactor build, for the reason the profile's own pom comment gives: copy-dependencies
+# works on the ALREADY-RESOLVED dependency set, so the org.mock-server siblings come
+# from the in-session reactor and nothing is resolved against ~/.m2. A later standalone
+# `-pl mockserver-state-infinispan` invocation would need a populated ~/.m2 and fails
+# closed on a clean agent. Cost is a file copy of ~160 already-resolved jars (seconds);
+# it is inert for every other module. The staged directory is uploaded as a Buildkite
+# artifact (pipeline-java.yml) and consumed by java-docker-push-snapshot.sh to build
+# the `mockserver-snapshot-clustered` image from the SAME commit as the other snapshot
+# images — which is what lets the perf harness's item-13 clustered A/B run at all.
+./mvnw -B --no-transfer-progress -T 1C clean install ${1:-} -P clustered-libs -Dmockserver.testOutput=quiet -DredirectTestOutputToFile=true -Dmockserver.testLogLevel=INFO "-Dmockserver.testArgLine=-Dmockserver.maxLogEntries=10000 -Dmockserver.maxExpectations=5000"
 MVN_EXIT=$?
 log_debug "Maven exited with code=$MVN_EXIT"
+
+# Complete the clustered /libs hand-off: copy-dependencies deliberately EXCLUDES
+# org.mock-server, so the module's own jar is not in clustered-libs. Add it, exactly as
+# container-tests-build-images.sh and build_clustered_docker() do, so the uploaded
+# clustered-libs/ directory IS the image's /libs and the consumer needs no second glob.
+# Never fails the build: an absent jar is caught downstream by the push step's own
+# fail-closed lib-count check, and turning a green reactor red here would be wrong.
+if [ "$MVN_EXIT" -eq 0 ]; then
+    CLUSTERED_LIBS_DIR="$PWD/mockserver-state-infinispan/target/clustered-libs"
+    if [ -d "$CLUSTERED_LIBS_DIR" ]; then
+        for j in mockserver-state-infinispan/target/mockserver-state-infinispan-*.jar; do
+            case "$(basename "$j")" in *-sources.jar|*-javadoc.jar|*-tests.jar|original-*) continue ;; esac
+            [ -f "$j" ] && cp "$j" "$CLUSTERED_LIBS_DIR/" && log_debug "  staged $(basename "$j") into clustered-libs"
+        done
+    else
+        log_debug "  WARNING: $CLUSTERED_LIBS_DIR absent - the clustered snapshot image cannot be built from this build"
+    fi
+fi
 
 # ──────────────────────────────────────────────────────────────────────
 # Whole-reactor configuration-reachability guard (ConfigurationCallSiteGuardTest).

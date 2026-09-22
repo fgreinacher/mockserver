@@ -232,3 +232,82 @@ if [[ -n "$WEBHOOK_JAR" ]]; then
 else
   echo "WARNING: Webhook fat jar not found — skipping webhook snapshot image push"
 fi
+
+# ---------------------------------------------------------------------------
+# :snapshot-clustered — the Infinispan/JGroups image variant.
+#
+# WHY IT IS PUSHED HERE, from THIS job, rather than built where it is consumed:
+# the daily perf run's item-13 clustered A/B (perf-test-run.sh) measures the
+# clustered/in-memory state-backend ratio. The run is ATTRIBUTED to the SUT
+# (graaljs) image's own org.opencontainers.image.revision, so the clustered image
+# MUST come from the same commit or the ratio is filed under code it never ran —
+# a silently meaningless comparison, which is exactly the defect class the perf
+# programme exists to avoid. Building it in the SAME job as the SUT image, from
+# the SAME $SHADED_JAR and the SAME $SOURCE_COMMIT stamp, makes that pairing a
+# property of the build rather than a coincidence of two pipelines; perf-test-run.sh
+# then VERIFIES it by comparing the two images' revision labels and refuses to
+# measure on a mismatch. The perf agent obtains it exactly as it obtains the SUT
+# image — `docker pull` of a mutable snapshot tag — so nothing new is invented.
+# (Before this, NOTHING pulled or built mockserver-snapshot-clustered and the
+# block took its absent-image skip on every scale-to-zero perf agent.)
+#
+# The image composition mirrors the RELEASE clustered image exactly
+# (scripts/release/components/docker.sh): the shaded jar as /mockserver-netty-
+# jar-with-dependencies.jar plus the module jar + its runtime deps under /libs.
+# Those libs are staged by the reactor build's `-P clustered-libs` profile
+# (scripts/buildkite_quick_build.sh) and handed here as Buildkite artifacts, so
+# this step does NO Maven work — same jars-not-images hand-off shape as the
+# container-tests clustered image.
+#
+# HARD-FAIL, like the release's clustered push and unlike the error-isolated webhook
+# push. That is exactly why this block is LAST in the step: everything that must not
+# be starved by a clustered failure (main, graaljs, webhook) has already been pushed.
+# A swallowed failure here reappears months later as a perf annotation counting
+# consecutive skips; the main + graaljs images are already published by this point,
+# so failing surfaces the real problem without costing the primary artefacts.
+echo "--- :docker: Building and pushing mockserver/mockserver:snapshot-clustered (multi-arch)"
+CLUSTERED_LIBS_DIR="mockserver/mockserver-state-infinispan/target/clustered-libs"
+buildkite-agent artifact download "$CLUSTERED_LIBS_DIR/*.jar" .
+
+CLUSTERED_LIB_COUNT=0
+if [ -d "$CLUSTERED_LIBS_DIR" ]; then
+  CLUSTERED_LIB_COUNT=$(find "$CLUSTERED_LIBS_DIR" -name '*.jar' -type f | wc -l | tr -d ' ')
+fi
+if [ "$CLUSTERED_LIB_COUNT" -eq 0 ]; then
+  echo "ERROR: no clustered /libs jars found under $CLUSTERED_LIBS_DIR after artifact download." >&2
+  echo "       The reactor build must run with -P clustered-libs and upload" >&2
+  echo "       mockserver/mockserver-state-infinispan/target/clustered-libs/*.jar (pipeline-java.yml)." >&2
+  echo "       Failing closed: publishing no clustered snapshot silently would disable the" >&2
+  echo "       perf item-13 clustered A/B on every subsequent run." >&2
+  exit 1
+fi
+# Sanity-check that the module jar itself made it in (copy-dependencies excludes
+# org.mock-server, so buildkite_quick_build.sh copies it in separately). Without it
+# /libs holds only third-party jars and MOCKSERVER_STATE_BACKEND=infinispan would
+# fail to resolve the backend at RUNTIME — a working image that cannot cluster.
+if ! find "$CLUSTERED_LIBS_DIR" -name 'mockserver-state-infinispan-*.jar' -type f | grep -q .; then
+  echo "ERROR: $CLUSTERED_LIBS_DIR has $CLUSTERED_LIB_COUNT jar(s) but NOT the mockserver-state-infinispan module jar." >&2
+  echo "       The image would start but could not resolve the infinispan StateBackend. Failing closed." >&2
+  exit 1
+fi
+echo "    staging $CLUSTERED_LIB_COUNT jar(s) into docker/clustered/libs"
+cp docker/local/mockserver-netty-jar-with-dependencies.jar docker/clustered/mockserver-netty-jar-with-dependencies.jar
+rm -rf docker/clustered/libs && mkdir -p docker/clustered/libs
+cp "$CLUSTERED_LIBS_DIR"/*.jar docker/clustered/libs/
+# Same CA-bundle staging as graaljs: the alpine tcnative stage COPYs ca-bundle.pem
+# and trusts it when non-empty. Empty file in CI is a no-op.
+rm -f docker/clustered/ca-bundle.pem
+docker/ensure-ca-bundle.sh docker/clustered >/dev/null
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --push \
+  --build-arg SOURCE_COMMIT="$SOURCE_COMMIT" \
+  --build-arg BUILD_DATE="$BUILD_DATE" \
+  --tag mockserver/mockserver:snapshot-clustered \
+  --tag mockserver/mockserver:mockserver-snapshot-clustered \
+  --tag "${ECR_REPO}:snapshot-clustered" \
+  --tag "${ECR_REPO}:mockserver-snapshot-clustered" \
+  docker/clustered
+# Leave no build-context residue for a later step / a re-used agent workspace.
+rm -rf docker/clustered/libs
+rm -f docker/clustered/mockserver-netty-jar-with-dependencies.jar docker/clustered/ca-bundle.pem
