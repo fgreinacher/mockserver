@@ -209,7 +209,23 @@ describe('Panel following is console-style: it follows the BOTTOM', () => {
     expect(region.scrollTop).toBe(500);
   });
 
-  it('turns Follow OFF when the reader scrolls away from the tail', () => {
+  // Stopping is driven by the GESTURE, not by the scroll event it produces.
+  // Against a live server a scroll event turned out to be no evidence at all of
+  // who caused it: these lists are virtualized, so rows being measured reflow the
+  // content constantly, and a handler that read "not at the bottom" as "the
+  // reader scrolled away" switched Follow off about a second after it was
+  // switched on. A wheel-up, by contrast, can only have come from a person.
+  it('turns Follow OFF when the reader wheels up, away from the tail', () => {
+    const changes: boolean[] = [];
+    renderFollowing(10, true, (f: boolean) => { changes.push(f); });
+    const region = screen.getByRole('log');
+
+    fireEvent.wheel(region, { deltaY: -400 });
+
+    expect(changes).toContain(false);
+  });
+
+  it('does NOT turn Follow off for a scroll with no gesture behind it', () => {
     const changes: boolean[] = [];
     renderFollowing(10, true, (f: boolean) => { changes.push(f); });
     const region = screen.getByRole('log');
@@ -217,10 +233,12 @@ describe('Panel following is console-style: it follows the BOTTOM', () => {
     // jsdom has no layout, so give the element a scrollable shape explicitly.
     Object.defineProperty(region, 'scrollHeight', { value: 5000, configurable: true });
     Object.defineProperty(region, 'clientHeight', { value: 500, configurable: true });
-    region.scrollTop = 1000; // far from the bottom
+    // Exactly what the virtualizer does when it measures a row: the content moves
+    // under a reader who did nothing. This must not be mistaken for them leaving.
+    region.scrollTop = 1000;
     fireEvent.scroll(region);
 
-    expect(changes).toContain(false);
+    expect(changes).not.toContain(false);
   });
 
   it('turns Follow back ON when the reader returns to the tail', () => {
@@ -231,6 +249,9 @@ describe('Panel following is console-style: it follows the BOTTOM', () => {
     Object.defineProperty(region, 'scrollHeight', { value: 5000, configurable: true });
     Object.defineProperty(region, 'clientHeight', { value: 500, configurable: true });
     region.scrollTop = 4500; // scrollHeight - clientHeight: at the tail
+    // Resuming needs downward intent, for the mirror-image reason: eviction
+    // shrinks the content, which can leave a motionless reader at the bottom.
+    fireEvent.wheel(region, { deltaY: 400 });
     fireEvent.scroll(region);
 
     expect(changes).toContain(true);

@@ -2,6 +2,16 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNo
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface ProgressiveListProps {
+  /**
+   * True while the panel is pinned to the tail (Following). Anchoring exists to
+   * hold a READING position against rows being evicted above it; when the view is
+   * pinned to the bottom that is exactly the wrong thing to do, and the two fight:
+   * the panel pins to the tail, this effect restores the old anchor offset, and
+   * the list never actually follows. Measured against a live server, following
+   * sat ~3,300px short of the bottom indefinitely because of this. So while
+   * pinned, anchoring stands down entirely.
+   */
+  pinnedToTail?: boolean;
   /** Number of rows. */
   count: number;
   /** Stable React key for the row at `index`. */
@@ -71,6 +81,7 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
 const ANCHOR_MIN_OFFSET_PX = 8;
 
 export default function ProgressiveList({
+  pinnedToTail = false,
   count,
   getKey,
   renderRow,
@@ -190,6 +201,13 @@ export default function ProgressiveList({
     // was ever created — and the only other caller is the scroll listener, which
     // never fires for a reader who opens a row without scrolling. Anchoring
     // therefore did nothing at all for such a reader, however correct the rest of it was.
+    if (pinnedToTail) {
+      // Following: the tail pin owns scrollTop. Drop any anchor so that resuming
+      // a read later starts from where the reader actually is, not from a stale
+      // position captured before they were following.
+      anchorRef.current = null;
+      return;
+    }
     const anchor = anchorRef.current;
     if (!anchor) {
       // First pass (or just released): nothing to restore yet — establish the

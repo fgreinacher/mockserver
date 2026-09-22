@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
 import Chip from '@mui/material/Chip';
+import { useTailFollow } from '../hooks/useTailFollow';
 import { transitions } from '../theme';
 import OperatorSearchField from './OperatorSearchField';
 
@@ -83,7 +84,6 @@ export default function Panel({
   onFollowChange,
   children,
 }: PanelProps) {
-  const scrollRef = useRef<HTMLDivElement>(null);
   // Kept for the at-top signal some callers still use; following is driven by the
   // explicit Follow control, not inferred from this.
   const atTopRef = useRef(true);
@@ -94,11 +94,16 @@ export default function Panel({
   // reader who has scrolled up sees nothing move at all and needs no scroll
   // compensation. Following is an explicit choice (the Follow control) rather
   // than something inferred from scroll position, so it never fights the reader.
+  // Pinning, re-pinning as the virtualizer measures, and user-intent detection
+  // all live in useTailFollow — see that hook for why a `scroll` event alone
+  // cannot be trusted to mean "the reader scrolled away".
+  const { scrollRef, handleScroll, pinToTail } = useTailFollow(follow, onFollowChange);
+
+  // New rows arriving are a content change, not a user action, so re-pin --
+  // through pinToTail, which declines while the reader is mid-gesture.
   useLayoutEffect(() => {
-    if (follow && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [count, follow, children]);
+    pinToTail();
+  }, [count, follow, children, pinToTail]);
 
   return (
     <Paper
@@ -176,16 +181,11 @@ export default function Panel({
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
-          // Within a few px of the bottom counts as "at the tail": absorbs
-          // sub-pixel offsets on HiDPI and a little inertial overshoot.
-          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= AT_TOP_THRESHOLD_PX;
           atTopRef.current = el.scrollTop <= AT_TOP_THRESHOLD_PX;
-          if (onFollowChange && follow !== undefined && follow !== atBottom) {
-            // Scrolling away from the tail stops following; scrolling back to it
-            // resumes. The reader never has to reach for the control to read.
-            onFollowChange(atBottom);
-          }
-          onScrolledAwayChange?.(!atBottom);
+          handleScroll(el);
+          onScrolledAwayChange?.(
+            el.scrollHeight - el.scrollTop - el.clientHeight > AT_TOP_THRESHOLD_PX,
+          );
         }}
         {...(liveRegion ? { role: 'log', 'aria-live': 'polite' as const, 'aria-relevant': 'additions' as const } : {})}
         sx={{

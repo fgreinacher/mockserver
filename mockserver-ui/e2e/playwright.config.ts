@@ -47,7 +47,17 @@ const config: PlaywrightTestConfig = {
   projects: [
     {
       name: 'chromium',
-      use: { ...devices['Desktop Chrome'], viewport: { width: 1600, height: 1000 } },
+      use: {
+        ...devices['Desktop Chrome'],
+        viewport: { width: 1600, height: 1000 },
+        // Normally Playwright's own bundled Chromium. Behind a TLS-inspection
+        // proxy `playwright install` cannot download it, so allow pointing at an
+        // installed browser instead (E2E_BROWSER_CHANNEL=chrome). Unset in CI,
+        // which uses the bundled build.
+        ...(process.env.E2E_BROWSER_CHANNEL
+          ? { channel: process.env.E2E_BROWSER_CHANNEL }
+          : {}),
+      },
     },
   ],
 };

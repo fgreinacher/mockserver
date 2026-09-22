@@ -241,6 +241,7 @@ function RequestPanel({
         )
       ) : (
         <ProgressiveList
+          pinnedToTail={follow}
           count={shown.length}
           getKey={(i) => shown[i]!.key}
           renderRow={(i) => (

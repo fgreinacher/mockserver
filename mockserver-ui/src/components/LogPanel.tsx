@@ -85,6 +85,7 @@ function LogPanel() {
         </Typography>
       ) : (
         <ProgressiveList
+          pinnedToTail={follow}
           count={shown.length}
           getKey={(i) => shown[i]!.key}
           renderRow={(i) => {

@@ -59,10 +59,6 @@ import OperatorSearchField from './OperatorSearchField';
 import ProgressiveList from './ProgressiveList';
 import { useHeldItems } from '../hooks/useHeldItems';
 
-// Matches Panel's AT_TOP_THRESHOLD_PX: absorbs HiDPI sub-pixel offsets and a few
-// pixels of inertial overshoot, so a reader parked at the top stays recognised as
-// being there.
-const TRAFFIC_AT_TOP_THRESHOLD_PX = 8;
 // Stable key accessor for useHeldItems — module scope, so its identity never changes.
 const trafficKeyOf = (e: { item: { key: string } }) => e.item.key;
 import CopyButton from './CopyButton';
@@ -89,6 +85,7 @@ import { monospaceFontFamily, transitions } from '../theme';
 import { formatRowTime } from '../lib/logEntryTime';
 import type { ConnectionParams } from '../hooks/useConnectionParams';
 import { useFollow } from '../hooks/useFollow';
+import { useTailFollow } from '../hooks/useTailFollow';
 import {
   summarizeTraffic,
   extractBodyContent,
@@ -2381,12 +2378,13 @@ export default function TrafficInspector() {
   // There is therefore no "the row I opened scrolled away" hazard to suppress —
   // the concern that made Panel's inline-expansion world need an open-item signal
   // does not arise here.
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Same machinery as Panel, for the same reasons: a bare `scroll` handler cannot
+  // tell a reader's gesture from the virtualizer re-measuring, and an unguarded
+  // pin undoes the reader's scroll. See useTailFollow.
+  const { scrollRef, handleScroll, pinToTail } = useTailFollow(follow, setFollow);
   useLayoutEffect(() => {
-    if (follow && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [filtered, follow]);
+    pinToTail();
+  }, [filtered, follow, pinToTail]);
 
   // Host facet. Derived from the UNFILTERED summaries so pinning a host does not
   // collapse the facet to the single host just pinned (which would leave no way
@@ -2762,12 +2760,7 @@ export default function TrafficInspector() {
           ref={scrollRef}
           data-testid="traffic-scroll-region"
           sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            const atBottom =
-              el.scrollHeight - el.scrollTop - el.clientHeight <= TRAFFIC_AT_TOP_THRESHOLD_PX;
-            setFollow((prev) => (prev === atBottom ? prev : atBottom));
-          }}
+          onScroll={(e) => handleScroll(e.currentTarget)}
         >
           {filtered.length === 0 ? (
             allRequests.length === 0 ? (
@@ -2813,6 +2806,7 @@ export default function TrafficInspector() {
             // not by mounted rows, so a selected row scrolled out of view keeps
             // its state. Guarded by `perf-domWeight.test.tsx`.
             <ProgressiveList
+          pinnedToTail={follow}
               count={filtered.length}
               estimateSize={40}
               getKey={(i) => filtered[i]!.item.key}

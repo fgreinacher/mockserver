@@ -346,6 +346,13 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   Proxied Requests and the Traffic inspector get all of this. Active Expectations and the Trace
   session view are not streams you follow, so they keep their own order and gain only the part that
   matters there: what you are reading is no longer dropped from under you.
+- **The Follow control on a dashboard panel now actually follows.** It pinned to the newest entry
+  and then switched itself off about a second later, so in practice the panels could not be made to
+  track live output at all. The panels are virtualised, so rows are measured after they are drawn
+  and the content keeps changing height for a moment; each of those changes looks exactly like a
+  scroll, and a scroll was being read as "you have scrolled away". Following now changes only when
+  you act -- scrolling up stops it and it stays stopped, and Follow resumes it -- and it holds the
+  newest entry however much the content moves underneath. This also covers the Traffic inspector.
 - **The dashboard no longer shows counts that were really the size of its update window.** The
   Received Requests and Log Messages panels, the Traffic inspector's host list and unmatched badge,
   and the Composer's existing-mocks list each displayed a total derived from the at-most-100 entries
