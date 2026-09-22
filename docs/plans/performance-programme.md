@@ -3129,6 +3129,51 @@ rungs would still be excluded on the headroom term alone.
 **This item and item 18 are now the same question**, approached from opposite ends and agreeing: the
 client is the limit. Both wait on hardware, not analysis.
 
+## The load generator has been sharing the server's physical cores all along
+
+**Found 2026-09-22, while costing the client rig.** The rig pins the server, the upstream and k6 to
+cpusets it calls disjoint. They are disjoint in vCPU numbering and **cannot possibly be disjoint in
+physical cores**, and that is arithmetic, not inference.
+
+`perf-test-run.sh:437` pins `server=0-5`, `upstream=6`, `k6=8-13` — six cores for the server, one for
+the upstream, six for the load generator, thirteen in all. The perf queue runs `c5.4xlarge`, which the
+EC2 API reports as **16 vCPU across 8 physical cores** at 2 threads per core. Thirteen demanded, eight
+available. The overlap is unavoidable however the vCPUs happen to be enumerated, so no assumption
+about hyperthread sibling numbering is needed to establish it. (Under the standard AWS enumeration,
+where vCPU *N* and *N+8* are siblings, the overlap is total: k6's `8-13` are the sibling threads of
+the server's `0-5` — the same six physical cores, every one of them.)
+
+The header comment at `perf-test-run.sh:16` states the opposite, and states it as the thing that
+matters most: *"core-pinned to disjoint cpusets so they don't steal cycles (the single biggest factor
+in number quality)"*. The intent is right, the arithmetic was never done, and the configuration
+achieves precisely what the comment promises to avoid. Same shape as every other defect in this
+document: complete in the descriptive layer, contradicted by the operative one.
+
+**What it means for the numbers.** Every server throughput figure this rig has produced was measured
+with the load generator contending for the same physical cores as the system under test. That does not
+make the figures worthless — they are reproducible and the regression control still detects change —
+but it does mean they are **not** measurements of the server on six cores. They are measurements of a
+server and a load generator sharing six cores.
+
+**It also explains the "client saturates first" finding**, which has blocked the knee and the baseline
+for days. k6 was never given six cores; it was given six *threads* of cores the server was already
+using. Reading 599.5-613.1% against a 600% pin is what a process does when it is pinned to siblings of
+a busy neighbour. The client ceiling is real, but a meaningful part of it is this, not k6.
+
+**Why it could not have been configured any other way on this box.** Eight physical cores, of which the
+server takes six and the upstream one, leaves exactly **one** free. A non-contending six-core client
+does not fit. The pinning was not a careless choice — there was no correct choice available. That
+turns the instance-size question from a throughput upgrade into a **correctness** fix for the
+measurement: it is the smallest change that lets the server be measured without its own load generator
+inside its cores.
+
+**Before trusting any figure from a resized rig**, note that removing this contention will make the
+server measurably faster, so the baseline must be **re-derived, not continued** — and the rolling
+median keys on branch and commit only, with no instance-type term, so a resize would otherwise blend
+old and new hardware into one median silently. The `<0.2%` hardware-insensitivity finding recorded
+earlier in this document does not cover this: it compared JMH single-op microbenchmarks, which are
+core-count insensitive, not the under-load sweep.
+
 ## The perf baseline cannot be refreshed either, for the same reason
 
 **Discovered 2026-09-22 while trying to fix `mockserver-infra`'s baseline-freshness failure.** The
