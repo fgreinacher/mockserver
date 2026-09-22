@@ -13,7 +13,7 @@
 
 ## Getting Started
 
-> **Node version:** build and develop with **Node 22** (CI and the Maven `build-ui` profile both use v22.14.0; see `.nvmrc` and `package.json` `engines`). With [nvm](https://github.com/nvm-sh/nvm) just run `nvm use` in this directory. Newer majors (e.g. Node 26 from Homebrew) have historically broken the Vite/rolldown build with a cryptic `@mui/x-charts` `MISSING_EXPORT` error — pin to Node 22 to avoid it.
+> **Node version:** build and develop with **Node 22** (CI and the Maven `build-ui` profile both use v22.23.1; see `.nvmrc` and `package.json` `engines`). With [nvm](https://github.com/nvm-sh/nvm) just run `nvm use` in this directory. Newer majors (e.g. Node 26 from Homebrew) have historically broken the Vite/rolldown build with a cryptic `@mui/x-charts` `MISSING_EXPORT` error — pin to Node 22 to avoid it.
 
 This node module is built using [Vite](https://vitejs.dev/) and TypeScript. It is not intended to be used standalone (except for development) and is bundled into [MockServer](https://mock-server.com/) on path `/mockserver/dashboard`, for example:
 ```

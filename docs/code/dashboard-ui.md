@@ -1199,7 +1199,7 @@ The UI is built from source during the Maven build via the `build-ui` profile in
 
 | Step | Plugin | Phase | Action |
 |------|--------|-------|--------|
-| Install Node | `frontend-maven-plugin` | `generate-resources` | Downloads Node v22.14.0 |
+| Install Node | `frontend-maven-plugin` | `generate-resources` | Downloads Node v22.23.1 |
 | Install dependencies | `frontend-maven-plugin` | `generate-resources` | Runs `npm ci` |
 | Build UI | `frontend-maven-plugin` | `generate-resources` | Runs `npm run build` (tsc + vite) |
 | Copy to classpath | `maven-resources-plugin` | `process-resources` | Copies `mockserver-ui/build/` to `target/classes/org/mockserver/dashboard/` |
