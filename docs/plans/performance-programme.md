@@ -3310,13 +3310,38 @@ flowchart TD
 
 ### Still owed, and what closed
 
-The first row needs hardware and cannot be closed by editing this repo. The second is kept because it
-records what the `peak_achieved_rps` work actually changed, and that record is quoted elsewhere — but
-it is **done**, not owed.
+**The hardware arrived, 2026-09-22.** The perf queue is now `c5.12xlarge` — 48 vCPU across **24
+physical cores** — applied and verified live (launch template and ASG both updated, `min_size` and
+desired capacity still 0, so scale-to-zero is intact). For the first time the server's six cores are
+its own: the previous `c5.4xlarge` had eight physical cores against the run's thirteen-core cpusets,
+so the load generator was inside the machine it was measuring.
+
+Three things landed with it, and the order they were found in matters more than the change itself:
+
+1. **The resize.** A correctness fix for the measurement, not a throughput upgrade — on the old box
+   there was no correct configuration available.
+2. **A guard that fails the run when the cpusets overlap physical cores** (`perf-test-run.sh`). It
+   resolves real topology from `/sys` rather than assuming an enumeration, so it holds whatever the
+   sibling mapping turns out to be. Two defects were found in the guard *while building it*, both of
+   the class it targets: `local -A` needs bash 4, so on macOS it errored instead of checking; and a
+   reversed range expanded to nothing, so a role was skipped silently and the rest reported disjoint.
+3. **Hardware-aware baselining** (`perf-test-compare.sh`). Without it the first runs on the new box
+   would have been compared against `c5.4xlarge` history — see
+   [the baseline has no hardware term](#the-rolling-baseline-has-no-hardware-term-so-a-resize-would-hide-its-own-effect).
+
+**What the first run on the new hardware will tell us, beyond the numbers.** The guard prints how many
+distinct physical cores the three roles occupy. **13** means vCPUs enumerate as core *N* then its
+sibling at *N+24* (the standard mapping), and the server genuinely has six cores. **7** would mean
+siblings are adjacent pairs and the server actually has three physical cores with both threads — still
+contention-free, still a valid measurement, but not the six-core configuration the ladder assumes. The
+guard checks disjointness, not that each role received the number of cores intended, so that second
+case would pass while meaning something different. Read the count before trusting the first figures.
+
+The rows below are what remains.
 
 | | Status | Detail |
 |---|---|---|
-| **A client rig that can saturate the server** | **OWED** — enough client CPU to produce a ladder of valid runs | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. This needs client cores, not analysis |
+| **A client rig that can saturate the server** | **HARDWARE DONE, MEASUREMENT OWED** — the box is now c5.12xlarge with 24 physical cores; what is still owed is a ladder of valid rungs actually produced on it, plus wiring the multi-process k6 harness, since one k6 process serialises internally and will not reach 40k however many cores it is given | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. This needs client cores, not analysis |
 | **`peak_achieved_rps`** | **DONE.** Renamed in all three namespaces that name the rig-valid quantity. The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Done** (`84f6c293e`): the absolute zero-drop threshold now forgives a drop fraction within `PERF_SWEEP_DROP_TOL` (default 1%), but **only** on a rung that also had VU-pool headroom — so a genuinely starved rig is still excluded on the headroom term and a 0.4% blip no longer voids a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 
 ### Needs a run, or an external system
