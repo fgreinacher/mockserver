@@ -2894,9 +2894,62 @@ closed as historical.
 It is small enough to upload within the existing cap and would have named the culprit here, where a
 2.4 GB heap dump was produced and thrown away.
 
+## The `-Xmx512m` sidecar — ANSWERED: not enough, and now we know what fills it
+
+**Measured 2026-09-22, Buildkite `mockserver-performance-test` build 378.** The recipe was run for
+real: `PERF_SERVER_JAVA_OPTS=-Xmx512m` with `PERF_JVM_DIAGNOSTICS=deep`, the latter mandatory because
+`baseline_eligible` is only forced false at deep tier — a plain 512m run at standard tier would have
+silently persisted a crippled measurement into the rolling baseline. The run confirms
+`heap_max=536870912` and `baseline_eligible=false`, so the safeguard did its job.
+
+**The answer is no.** The SUT died with `ExitCode: 3`, `OOMKilled: false` — the same signature as build
+272: the JVM self-terminating on `-XX:+ExitOnOutOfMemoryError`, not a cgroup kill. A 512 MiB heap does
+not survive the sustained-load profile.
+
+**And unlike build 272, we know WHAT filled it**, because deep tier extracts a class histogram (the
+diagnostic that build's post-mortem lacked). Dominant retainers in the 512m SUT arm:
+
+| rank | shallow bytes | instances | class |
+|---|---|---|---|
+| 1 | 125,975,760 | 2,099,596 | `java.util.LinkedHashMap$Entry` |
+| 2 | 123,579,968 | 848,993 | `[Ljava.util.HashMap$Node;` |
+| 3 | 102,364,708 | 1,214,952 | `byte[]` |
+| 4 | 66,820,950 | 824,950 | `java.util.LinkedHashMap` |
+| 5 | 57,325,608 | 2,388,567 | Jackson `TextNode` |
+
+So it is not one runaway structure but map-and-node overhead across the retained objects, with body
+bytes third. The INFO-log-level arm has a different shape entirely — **350 MB of `byte[]` alone** —
+which independently corroborates the G6 finding that at INFO the body is materialised and retained
+per request regardless of whether any matcher reads it.
+
+## `alloc_bytes_per_op` agent-independence — ANSWERED from existing data, no builds spent
+
+**Settled 2026-09-22.** It is agent-independent, so item 16's per-merge allocation gate running on the
+`default` queue is sound and needs no per-queue floor adjustment.
+
+**No builds were spent, and the reason is worth keeping.** The obvious approach — run the perf
+pipeline five times per queue — **cannot answer this question at all**: every perf step hardcodes
+`queue: perf` and no `bk` flag overrides it, so ten runs would have produced ten `perf`-queue results,
+zero `default`-queue results, and burned roughly 25 hours of serialised agent time. Both arms were
+already running in production: `perf-alloc-gate.sh` on `default` in every master Java build, and the
+daily microbench on `perf`. The gate prints the MEASURED bytes/op, not merely a pass/fail against a
+floor, so its history is recoverable.
+
+On the shared commit `08bebc299c`, 8-vCPU m5.2xlarge (`default`) against 16-vCPU c5.4xlarge (`perf`):
+
+| benchmark | default | perf | delta |
+|---|---|---|---|
+| MatchingBenchmark EXACT/100 | 1,497,937 | 1,500,363.5 | 0.162% |
+| InboundDecode bodySize=16384 | 37,552 | 37,560.0 | 0.021% |
+| ResponseWrite 16384 | 36,489 | 36,489.8 | 0.002% |
+
+The between-queue gap is the same magnitude as within-queue run-to-run spread (~0.16%), and across
+instance types inside the `default` queue m5 vs m6a differ by 0.02%. Hardware contributes under ~0.2%,
+indistinguishable from noise, and the committed floors sit 19-23% above measured values — dwarfing it.
+
 ## What remains
 
-**Seven things are outstanding: two can be settled from the repo, and five need a run, a bigger
+**Five things are outstanding: two can be settled from the repo, and three need a run, a bigger
 rig, or an external system to report something.** The newest is not a measurement gap at all but a
 **usability regression this programme caused** — the dashboard panels became unusable for clicking
 while live data arrives. It leads the table deliberately: a panel that will not let you open an item
@@ -2918,9 +2971,6 @@ flowchart TD
   that can saturate the server"]
   right --> h["The 36,000 rps knee,
   clean-tier"]
-  right --> i["-Xmx512m sidecar under load"]
-  right --> j["alloc_bytes_per_op
-  agent-independence"]
   right --> k["Canceled-child reporting on a
   native trigger step"]
 ```
@@ -2941,8 +2991,6 @@ that is merely undone.
 |---|---|---|
 | **Item 18's experiment** | A load generator that can saturate the server — several k6 processes, several client hosts, or a different generator | The per-core instrument works and the curve is flat at 6,000 rps for C = 1, 2, 4 and 8 (build #364, 2026-09-20). Neither side is CPU-bound: SUT CPU is ~one core's worth at every C, and k6 used ~2 of its 7-14 disjoint cores. A native re-run refuted the virtualisation half of the explanation (30,704 rps native against 27,651 in Docker — containerisation costs ~10%, not 5x) and killed the event-log hypothesis (disabling logging changed peak throughput not at all). **What is still open is why k6 drops iterations with three quarters of its VU pool unused.** Not another ladder |
 | **The 36,000 rps knee** | A clean-tier run on an image carrying the corrected heap cap | Build 290 ruled out one possibility and recorded a shape — 15,475 achieved at 16,000 offered, **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000, error rate 0 at every rung with the losses all `dropped_iterations`. That is a genuine knee near 32,000 with a collapse beyond it, a server-side congestion signature rather than a client ceiling. It does **not** settle the published 36,000: build 290 was a deep-tier run (JFR + NMT depress throughput by design, `baseline_eligible:false`), so 26,020 is a floor, not a refutation |
-| **The `-Xmx512m` sidecar** | Its own run under sustained load | The general form was answered on 2026-09-18 and the answer was no: peak RSS **2,271 MiB** against a **1,536 MiB** heap plus 133 MiB of metaspace and code cache — ~735 MiB of non-heap and native, dominated by Netty's pooled direct buffers, which scale with concurrency and body size and not with heap at all. A **1.48x** ratio against the 1.33x the old `MaxRAMPercentage=75.0` assumed; default lowered to 60.0 in `ec2373d86`. The specific 512 MiB claim is untested, and the sizing rule says it is the size most likely to be killed: the overhead is **additive and load-driven**, not a fixed multiple, so it gets proportionally worse as the container shrinks |
-| **`alloc_bytes_per_op` agent-independence** | Same commit, five runs on each queue | One cheap experiment, never run. Item 16's per-merge allocation gate rests on the answer |
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 ### `peak_achieved_rps` measures the client, not the server
