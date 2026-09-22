@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo } from 'react';
+import { memo, useRef, useMemo, useState } from 'react';
 import Typography from '@mui/material/Typography';
 import { useDashboardStore } from '../store';
 import { isLogGroup } from '../types';
@@ -7,6 +7,7 @@ import LogEntry from './LogEntry';
 import LogGroup from './LogGroup';
 import ProgressiveList from './ProgressiveList';
 import { useExpansion } from '../hooks/useExpansion';
+import { useHeldItems } from '../hooks/useHeldItems';
 import { matchesLogSearch, isForwardedLogEntry } from '../lib/searchMatcher';
 import { LOG_FILTER_OPTIONS } from '../lib/filterDSL';
 
@@ -15,6 +16,9 @@ import { LOG_FILTER_OPTIONS } from '../lib/filterDSL';
 // leaving the full vocabulary advertised) is what turns a typed `status:>=400`
 // into a visible "not supported here" instead of a silent empty list.
 const LOG_SEARCH_FIELDS = LOG_FILTER_OPTIONS.fields ?? [];
+
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const keyOf = (e: { key: string }) => e.key;
 
 function LogPanel() {
   const logMessages = useDashboardStore((s) => s.logMessages);
@@ -31,6 +35,12 @@ function LogPanel() {
   }, [logMessages, search, showForwarded]);
 
   const expansion = useExpansion();
+  // Hold what the reader is reading. The live window is capped at 100 rows and
+  // drops the oldest as new ones arrive, so under load an open or scrolled-to row
+  // is DELETED from the feed within seconds. While the reader is mid-read those
+  // rows are held; new rows still arrive and prepend above them.
+  const [scrolledAway, setScrolledAway] = useState(false);
+  const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
 
   return (
     <Panel
@@ -39,20 +49,21 @@ function LogPanel() {
       filteredCount={(search || !showForwarded) ? filtered.length : undefined}
       searchValue={search}
       onSearchChange={setSearch}
+      onScrolledAwayChange={setScrolledAway}
       searchInputRef={searchRef}
       searchFields={LOG_SEARCH_FIELDS}
       liveRegion
     >
-      {filtered.length === 0 ? (
+      {shown.length === 0 ? (
         <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
           {logMessages.length === 0 ? 'No log messages yet — server activity appears here as requests are handled.' : 'No matching log messages'}
         </Typography>
       ) : (
         <ProgressiveList
-          count={filtered.length}
-          getKey={(i) => filtered[i]!.key}
+          count={shown.length}
+          getKey={(i) => shown[i]!.key}
           renderRow={(i) => {
-            const message = filtered[i]!;
+            const message = shown[i]!;
             return isLogGroup(message) ? (
               <LogGroup
                 group={message}

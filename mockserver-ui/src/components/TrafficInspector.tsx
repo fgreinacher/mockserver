@@ -57,6 +57,14 @@ import PromoteRecordingsDialog from './PromoteRecordingsDialog';
 import RepeatAdvancedDialog from './RepeatAdvancedDialog';
 import OperatorSearchField from './OperatorSearchField';
 import ProgressiveList from './ProgressiveList';
+import { useHeldItems } from '../hooks/useHeldItems';
+
+// Matches Panel's AT_TOP_THRESHOLD_PX: absorbs HiDPI sub-pixel offsets and a few
+// pixels of inertial overshoot, so a reader parked at the top stays recognised as
+// being there.
+const TRAFFIC_AT_TOP_THRESHOLD_PX = 8;
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const trafficKeyOf = (e: { item: { key: string } }) => e.item.key;
 import CopyButton from './CopyButton';
 import { clearLoggedRequest, requestDefinitionOf } from '../lib/traffic';
 import { parseSearchTerm, matchesItemSearch } from '../lib/searchMatcher';
@@ -2303,13 +2311,25 @@ export default function TrafficInspector() {
   }, [trafficSearch]);
 
   // Filter by search
-  const filtered = useMemo(
+  const filteredLive = useMemo(
     () =>
       trafficSearch
         ? summaries.filter(({ item, summary }) => matchesSearch(item, summary, trafficSearch))
         : summaries,
     [summaries, trafficSearch],
   );
+
+  // Hold what the reader is working with. This list is fed by the same
+  // server-capped live window as the dashboard panels — at most 100 rows, oldest
+  // dropped as new ones arrive — so under load a row being read, selected, or
+  // compared is DELETED from the feed within seconds. Selection and compare make
+  // it worse here than on the panels: a selected key that leaves the data takes
+  // the detail pane with it. Held while the reader is scrolled away from the top,
+  // has a row selected, or has rows checked for compare.
+  const [listScrolledAway, setListScrolledAway] = useState(false);
+  const interacting =
+    listScrolledAway || selectedKey !== null || selectedKeys.size > 0;
+  const filtered = useHeldItems(filteredLive, trafficKeyOf, interacting);
 
   // Host facet. Derived from the UNFILTERED summaries so pinning a host does not
   // collapse the facet to the single host just pinned (which would leave no way
@@ -2660,7 +2680,13 @@ export default function TrafficInspector() {
         {hosts.length > 1 && (
           <HostTree hosts={hosts} pinnedHost={pinnedHost} onPin={handlePinHost} />
         )}
-        <Box sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}>
+        <Box
+          sx={{ flex: 1, overflowY: 'auto', bgcolor: 'background.default' }}
+          onScroll={(e) => {
+            const away = e.currentTarget.scrollTop > TRAFFIC_AT_TOP_THRESHOLD_PX;
+            setListScrolledAway((prev) => (prev === away ? prev : away));
+          }}
+        >
           {filtered.length === 0 ? (
             allRequests.length === 0 ? (
               <Box sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>

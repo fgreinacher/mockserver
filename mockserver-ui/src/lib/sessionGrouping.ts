@@ -224,8 +224,11 @@ export function shortenScenarioName(name: string): string {
  * derived from active expectations.
  */
 export function groupBySession(
-  proxiedRequests: JsonListItem[],
-  activeExpectations: JsonListItem[],
+  // readonly: this groups its inputs, it does not mutate them. The callers now
+  // pass a held list (see useHeldItems), which is readonly because it may be a
+  // snapshot shared across renders.
+  proxiedRequests: readonly JsonListItem[],
+  activeExpectations: readonly JsonListItem[],
 ): Session[] {
   // 1. Collect isolation sources from expectations.
   // `scenarioName` lives at the top level of the expectation payload

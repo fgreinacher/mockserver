@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useEffect } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Tabs from '@mui/material/Tabs';
@@ -32,6 +32,14 @@ import {
 import AgentRunGraph from './AgentRunGraph';
 import { CompareRunsBody } from './CompareRunsDialog';
 import { monospaceFontFamily, transitions } from '../theme';
+import { useHeldItems } from '../hooks/useHeldItems';
+
+// Matches Panel's AT_TOP_THRESHOLD_PX: absorbs HiDPI sub-pixel offsets and a few
+// pixels of inertial overshoot, so a reader parked at the top stays recognised as
+// being there.
+const SESSION_AT_TOP_THRESHOLD_PX = 8;
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const sessionRequestKeyOf = (r: { key: string }) => r.key;
 
 // ---------------------------------------------------------------------------
 // Status colour for request chips
@@ -289,6 +297,8 @@ function formatCost(usd: number): string {
 interface SessionLaneProps {
   session: Session;
   connectionParams: { host: string; port: string; secure: boolean };
+  /** Reports whether this lane currently has a request expanded. */
+  onOpenChange?: (open: boolean) => void;
 }
 
 // Map a parsed-traffic kind to the LLM Provider enum name explain_agent_run expects.
@@ -300,8 +310,17 @@ const KIND_TO_PROVIDER: Record<string, string> = {
   ollama: 'OLLAMA',
 };
 
-function SessionLane({ session, connectionParams }: SessionLaneProps) {
+function SessionLane({ session, connectionParams, onOpenChange }: SessionLaneProps) {
   const [expandedRequest, setExpandedRequest] = useState<number | null>(null);
+
+  // Tell the parent whether this lane has a request open. The parent needs it to
+  // HOLD the underlying requests: sessions are DERIVED from the live
+  // recorded/proxied arrays, which the server caps at 100 rows and evicts from as
+  // new traffic arrives, so a session being read can lose its requests — or vanish
+  // outright — while the reader is looking at it.
+  useEffect(() => {
+    onOpenChange?.(expandedRequest !== null);
+  }, [expandedRequest, onOpenChange]);
 
   const displayName = shortenScenarioName(session.scenarioName);
   const isUnscoped = session.scenarioName === '<unscoped>';
@@ -481,10 +500,31 @@ export default function SessionInspector({ connectionParams }: SessionInspectorP
   const [search, setSearch] = useState('');
   const [tab, setTab] = useState(0);
 
-  const allRequests = useMemo(
+  const liveRequests = useMemo(
     () => [...proxiedRequests, ...recordedRequests],
     [proxiedRequests, recordedRequests],
   );
+
+  // Hold the requests a reader is working with. Sessions are DERIVED from these
+  // arrays, which are the same server-capped live window the dashboard panels use
+  // — at most 100 rows, oldest evicted as new traffic arrives. Under load a
+  // session being read loses its requests, and can disappear entirely, while the
+  // reader is looking at it. Held while the reader has scrolled the lane list away
+  // from the top or has a request open in any lane.
+  const [listScrolledAway, setListScrolledAway] = useState(false);
+  const [openLanes, setOpenLanes] = useState<ReadonlySet<string>>(() => new Set());
+  const interacting = listScrolledAway || openLanes.size > 0;
+  const allRequests = useHeldItems(liveRequests, sessionRequestKeyOf, interacting);
+
+  const handleLaneOpenChange = useCallback((laneKey: string, open: boolean) => {
+    setOpenLanes((prev) => {
+      if (open === prev.has(laneKey)) return prev;
+      const next = new Set(prev);
+      if (open) next.add(laneKey);
+      else next.delete(laneKey);
+      return next;
+    });
+  }, []);
   const sessions = useMemo(
     () => groupBySession(allRequests, activeExpectations),
     [allRequests, activeExpectations],
@@ -560,7 +600,13 @@ export default function SessionInspector({ connectionParams }: SessionInspectorP
             </Box>
 
             {/* Session lanes */}
-            <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            <Box
+              sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
+              onScroll={(e) => {
+                const away = e.currentTarget.scrollTop > SESSION_AT_TOP_THRESHOLD_PX;
+                setListScrolledAway((prev) => (prev === away ? prev : away));
+              }}
+            >
               {!hasLlmTraffic ? (
                 <Box sx={{ textAlign: 'center', py: 4 }}>
                   <Typography variant="body2" color="text.secondary">
@@ -580,6 +626,9 @@ export default function SessionInspector({ connectionParams }: SessionInspectorP
                     key={`${session.scenarioName}::${session.isolationKey}`}
                     session={session}
                     connectionParams={connectionParams}
+                    onOpenChange={(open) =>
+                      handleLaneOpenChange(`${session.scenarioName}::${session.isolationKey}`, open)
+                    }
                   />
                 ))
               )}

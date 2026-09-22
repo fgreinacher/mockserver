@@ -17,6 +17,7 @@ import ConfirmDialog from './ConfirmDialog';
 import MatcherPlaygroundDialog from './MatcherPlaygroundDialog';
 import OpenApiImportDialog from './OpenApiImportDialog';
 import { useExpansion } from '../hooks/useExpansion';
+import { useHeldItems } from '../hooks/useHeldItems';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { applyClientFilters } from '../lib/clientFilters';
 import { matchesItemSearch } from '../lib/searchMatcher';
@@ -43,6 +44,9 @@ export function duplicateValueWithoutId(value: Record<string, unknown>): Record<
   delete copy['id'];
   return copy;
 }
+
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const keyOf = (e: { key: string }) => e.key;
 
 function ExpectationPanel() {
   const params = useConnectionParams();
@@ -109,6 +113,12 @@ function ExpectationPanel() {
   }, [searched, sortByPriority]);
 
   const expansion = useExpansion();
+  // Hold what the reader is reading. The live window is capped at 100 rows and
+  // drops the oldest as new ones arrive, so under load an open or scrolled-to row
+  // is DELETED from the feed within seconds. While the reader is mid-read those
+  // rows are held; new rows still arrive and prepend above them.
+  const [scrolledAway, setScrolledAway] = useState(false);
+  const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
 
   const handleEdit = useCallback(
     (item: JsonListItem) => {
@@ -246,6 +256,7 @@ function ExpectationPanel() {
         filteredCount={filtered.length !== expectations.length ? filtered.length : undefined}
         searchValue={search}
         onSearchChange={setSearch}
+        onScrolledAwayChange={setScrolledAway}
         headerActions={
           <>
             <Tooltip title="Sort by match priority (highest first)">
@@ -318,7 +329,7 @@ function ExpectationPanel() {
             </Button>
           </Box>
         )}
-        {filtered.length === 0 ? (
+        {shown.length === 0 ? (
           expectations.length === 0 ? (
             <Typography variant="body2" color="text.secondary" sx={{ p: 2, textAlign: 'center' }}>
               No active expectations —{' '}
@@ -338,10 +349,10 @@ function ExpectationPanel() {
           )
         ) : (
           <ProgressiveList
-            count={filtered.length}
-            getKey={(i) => filtered[i]!.key}
+            count={shown.length}
+            getKey={(i) => shown[i]!.key}
             renderRow={(i) => {
-              const item = filtered[i]!;
+              const item = shown[i]!;
               // Per-row actions are only meaningful for expectations that carry
               // an id (every Active Expectations row does); guard anyway so a
               // malformed row never offers a no-op delete.

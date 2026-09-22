@@ -43,6 +43,14 @@ interface PanelProps {
    * appended rows are read out. Used by the Log panel.
    */
   liveRegion?: boolean;
+  /**
+   * Called when the reader scrolls away from the top, or back to it. The panel
+   * uses this (combined with whether anything is expanded) to HOLD the rows being
+   * read, so the live window cannot delete them mid-read — see `useHeldItems`.
+   * Scroll position alone cannot live in the panel, because this component owns
+   * the scroll container.
+   */
+  onScrolledAwayChange?: (scrolledAway: boolean) => void;
   children: ReactNode;
 }
 
@@ -56,6 +64,7 @@ export default function Panel({
   searchFields,
   headerActions,
   liveRegion,
+  onScrolledAwayChange,
   children,
 }: PanelProps) {
   const autoScroll = useDashboardStore((s) => s.autoScroll);
@@ -139,7 +148,13 @@ export default function Panel({
         onScroll={(e) => {
           // Treat "within a few px of the top" as at-top so a hair of momentum
           // scroll or a sub-pixel offset does not switch off tail-following.
-          atTopRef.current = e.currentTarget.scrollTop <= AT_TOP_THRESHOLD_PX;
+          const atTop = e.currentTarget.scrollTop <= AT_TOP_THRESHOLD_PX;
+          if (atTop !== atTopRef.current) {
+            atTopRef.current = atTop;
+            // Only on a transition, so this does not fire a state update on every
+            // scroll event.
+            onScrolledAwayChange?.(!atTop);
+          }
         }}
         {...(liveRegion ? { role: 'log', 'aria-live': 'polite' as const, 'aria-relevant': 'additions' as const } : {})}
         sx={{

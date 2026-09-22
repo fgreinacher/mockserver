@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import Box from '@mui/material/Box';
 import Chip from '@mui/material/Chip';
 import Tooltip from '@mui/material/Tooltip';
@@ -9,6 +9,7 @@ import JsonListItemComponent from './JsonListItem';
 import ProgressiveList from './ProgressiveList';
 import CopyButton from './CopyButton';
 import { useExpansion } from '../hooks/useExpansion';
+import { useHeldItems } from '../hooks/useHeldItems';
 import { useConnectionParams } from '../hooks/useConnectionParams';
 import { matchesItemSearch } from '../lib/searchMatcher';
 import { monospaceFontFamily } from '../theme';
@@ -143,6 +144,9 @@ const RequestRow = memo(function RequestRow({
   );
 });
 
+// Stable key accessor for useHeldItems — module scope, so its identity never changes.
+const keyOf = (e: { key: string }) => e.key;
+
 function RequestPanel({
   title,
   items,
@@ -155,6 +159,13 @@ function RequestPanel({
   );
 
   const expansion = useExpansion();
+  // Hold what the reader is reading. The live window is capped at 100 rows and
+  // drops the oldest as new ones arrive, so under load an open or scrolled-to row
+  // is DELETED from the feed within seconds — measured at ~10s on a real server.
+  // While the reader is mid-read those rows are held; new rows still arrive and
+  // prepend above them.
+  const [scrolledAway, setScrolledAway] = useState(false);
+  const shown = useHeldItems(filtered, keyOf, scrolledAway || expansion.anyExpanded);
   const connectionParams = useConnectionParams();
   const curlExample = `curl -x http://${connectionParams.host}:${connectionParams.port} http://example.com`;
 
@@ -165,8 +176,9 @@ function RequestPanel({
       filteredCount={searchValue ? filtered.length : undefined}
       searchValue={searchValue}
       onSearchChange={onSearchChange}
+      onScrolledAwayChange={setScrolledAway}
     >
-      {filtered.length === 0 ? (
+      {shown.length === 0 ? (
         items.length === 0 ? (
           <Box sx={{ p: 2, textAlign: 'center', color: 'text.secondary' }}>
             <Typography variant="body2" sx={{ mb: 1 }}>No requests yet.</Typography>
@@ -200,13 +212,13 @@ function RequestPanel({
         )
       ) : (
         <ProgressiveList
-          count={filtered.length}
-          getKey={(i) => filtered[i]!.key}
+          count={shown.length}
+          getKey={(i) => shown[i]!.key}
           renderRow={(i) => (
             <RequestRow
-              item={filtered[i]!}
-              index={filtered.length - i}
-              expanded={expansion.isExpanded(filtered[i]!.key)}
+              item={shown[i]!}
+              index={shown.length - i}
+              expanded={expansion.isExpanded(shown[i]!.key)}
               onToggleExpand={expansion.toggle}
             />
           )}

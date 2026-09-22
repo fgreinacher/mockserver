@@ -328,6 +328,17 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **An item you open in the dashboard now stays open, and stays put, however busy the server is.**
+  The panels show a live window of the most recent 100 entries, and the server drops the oldest as
+  new ones arrive. Under load that window turns over in seconds — measured at roughly ten requests a
+  second, an entry opened for reading was discarded from the feed after ten seconds and vanished from
+  the screen. While you are reading — scrolled away from the top, or with an entry open or selected —
+  the entries you are working with are now kept, even once the server has stopped sending them. New
+  entries still arrive above them, so nothing you are looking at moves, and they are already in place
+  when you scroll back to the top. Return to the top with nothing open and the panel goes back to the
+  plain live window, so an idle dashboard is no heavier than before. This applies to Log Messages,
+  Received Requests, Proxied Requests, Active Expectations, the Traffic inspector (where a selected
+  row leaving the feed also took the detail pane with it) and the Trace session view.
 - **An item you open in the dashboard now stays open while new data arrives.** Opening an entry in
   Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
   moment anything new came in, which made those panels effectively unusable for reading individual

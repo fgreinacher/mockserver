@@ -17,6 +17,12 @@ import { useCallback, useMemo, useState } from 'react';
 export interface Expansion {
   isExpanded: (key: string) => boolean;
   toggle: (key: string) => void;
+  /**
+   * True when ANY row is expanded. The panels combine this with "scrolled away
+   * from the top" to decide whether the reader is mid-read and the live window
+   * must not be allowed to delete what they are looking at (see `useHeldItems`).
+   */
+  anyExpanded: boolean;
 }
 
 export function useExpansion(): Expansion {
@@ -32,6 +38,7 @@ export function useExpansion(): Expansion {
   }, []);
 
   const isExpanded = useCallback((key: string) => keys.has(key), [keys]);
+  const anyExpanded = keys.size > 0;
 
-  return useMemo(() => ({ isExpanded, toggle }), [isExpanded, toggle]);
+  return useMemo(() => ({ isExpanded, toggle, anyExpanded }), [isExpanded, toggle, anyExpanded]);
 }
