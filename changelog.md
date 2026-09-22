@@ -334,13 +334,9 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
-- **XPath body matchers could stop matching after the server had been running for a while.** A
-  request whose body should have matched an XPath expectation could instead fall through to a 404.
-  The XML document parsed for one request was being cached per worker thread and never cleared, so a
-  later, unrelated request could be matched against a stale document — and because both the Netty and
-  servlet deployments reuse long-lived worker threads, this affected the JAR, the Docker images and
-  the WAR alike. The body is now parsed fresh for each evaluation. Introduced in 8.0.1-SNAPSHOT and
-  never released.
+- **XPath body matchers could stop matching.** A request whose body should have matched an XPath
+  expectation could instead fall through to a 404. Introduced in 8.0.1-SNAPSHOT and never released;
+  the change responsible has been reverted in full.
 - **The dashboard no longer jumps back to the top while you are reading an item.** Opening an entry
   in Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
   moment new data arrived: every update scrolled the panel back to the top, which scrolled the open
