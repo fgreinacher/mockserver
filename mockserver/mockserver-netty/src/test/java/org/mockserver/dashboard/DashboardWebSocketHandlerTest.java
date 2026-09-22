@@ -246,6 +246,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]\n" +
             "    }\n" +
             "  } ],\n" +
+            "  \"activeExpectationsTotal\" : 0,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -253,7 +254,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathTwo\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(10).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(10).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(10).getTimestamp() + "\"\n" +
             "  }, {\n" +
             "    \"description\" : \"  /somePathOne\",\n" +
             "    \"value\" : {\n" +
@@ -261,7 +263,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathOne\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(8).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(8).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(8).getTimestamp() + "\"\n" +
             "  }, {\n" +
             "    \"description\" : \"  /somePathOne\",\n" +
             "    \"value\" : {\n" +
@@ -269,7 +272,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathOne\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(6).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(6).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(6).getTimestamp() + "\"\n" +
             "  } ]\n" +
             "}";
 
@@ -424,6 +428,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]\n" +
             "    }\n" +
             "  } ],\n" +
+            "  \"activeExpectationsTotal\" : 0,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -431,7 +436,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathTwo\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(5).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(5).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(5).getTimestamp() + "\"\n" +
             "  }, {\n" +
             "    \"description\" : \"  /somePathOne\",\n" +
             "    \"value\" : {\n" +
@@ -439,7 +445,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathOne\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(4).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(4).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(4).getTimestamp() + "\"\n" +
             "  }, {\n" +
             "    \"description\" : \"  /somePathOne\",\n" +
             "    \"value\" : {\n" +
@@ -447,7 +454,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathOne\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(3).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(3).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(3).getTimestamp() + "\"\n" +
             "  } ]\n" +
             "}";
 
@@ -519,6 +527,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]\n" +
             "    }\n" +
             "  } ],\n" +
+            "  \"activeExpectationsTotal\" : 0,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -526,7 +535,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"/somePathTwo\"\n" +
             "      }\n" +
             "    },\n" +
-            "    \"key\" : \"" + logEntries.get(5).id() + "_request\"\n" +
+            "    \"key\" : \"" + logEntries.get(5).id() + "_request\",\n" +
+            "    \"timestamp\" : \"" + logEntries.get(5).getTimestamp() + "\"\n" +
             "  } ]\n" +
             "}";
 
@@ -564,7 +574,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"unlimited\" : true" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 1" + NEW_LINE +
             "}";
 
         // then
@@ -641,7 +652,8 @@ public class DashboardWebSocketHandlerTest {
                 "        \"value\" : \"\\\"argumentTwo\\\"\"" + NEW_LINE +
                 "      } ]" + NEW_LINE +
                 "    }" + NEW_LINE +
-                "  } ]" + NEW_LINE +
+                "  } ]," + NEW_LINE +
+                "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
                 "}"};
 
         // then
@@ -710,7 +722,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"value\" : \"\\\"argumentTwo\\\"\"" + NEW_LINE +
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
             "}";
 
         // then
@@ -798,7 +811,8 @@ public class DashboardWebSocketHandlerTest {
             "        } ]" + NEW_LINE +
             "      }" + NEW_LINE +
             "    } ]" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
             "}";
 
         // then
@@ -916,7 +930,8 @@ public class DashboardWebSocketHandlerTest {
             "        } ]" + NEW_LINE +
             "      }" + NEW_LINE +
             "    } ]" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
             "}";
 
         // then
@@ -1025,7 +1040,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"paddingTop\" : \"4px\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
             "}";
 
         // then
@@ -1123,6 +1139,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
             "  \"recordedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"   four\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1130,7 +1147,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"four\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(3).id() + "_request\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(3).id() + "_request\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(3).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"  three\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1138,7 +1156,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"three\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(2).id() + "_request\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(2).id() + "_request\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(2).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"    two\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1146,7 +1165,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"two\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(1).id() + "_request\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(1).id() + "_request\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(1).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"    one\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1154,7 +1174,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"one\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(0).id() + "_request\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(0).id() + "_request\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(0).getTimestamp() + "\"" + NEW_LINE +
             "  } ]" + NEW_LINE +
             "}";
 
@@ -1220,6 +1241,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
             "  \"recordedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"  two\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1227,7 +1249,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"two\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(1).id() + "_request\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(1).id() + "_request\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(1).getTimestamp() + "\"" + NEW_LINE +
             "  } ]" + NEW_LINE +
             "}";
 
@@ -1398,6 +1421,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
             "  \"proxiedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"   four\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1410,7 +1434,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"body\" : \"four\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(3).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(3).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(3).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"  three\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1423,7 +1448,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"body\" : \"three\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(2).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(2).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(2).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"    two\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1436,7 +1462,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"body\" : \"two\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(1).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(1).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(1).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"    one\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1449,7 +1476,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"body\" : \"one\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(0).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(0).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(0).getTimestamp() + "\"" + NEW_LINE +
             "  } ]" + NEW_LINE +
             "}";
 
@@ -1541,6 +1569,7 @@ public class DashboardWebSocketHandlerTest {
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
             "  \"proxiedRequests\" : [ {" + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
             "      \"httpResponse\" : {" + NEW_LINE +
@@ -1549,7 +1578,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"body\" : \"two\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(1).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(1).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(1).getTimestamp() + "\"" + NEW_LINE +
             "  }, {" + NEW_LINE +
             "    \"description\" : \"  one\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1557,7 +1587,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"path\" : \"one\"" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }," + NEW_LINE +
-            "    \"key\" : \"" + logEntries.get(0).id() + "_proxied\"" + NEW_LINE +
+            "    \"key\" : \"" + logEntries.get(0).id() + "_proxied\"," + NEW_LINE +
+            "    \"timestamp\" : \"" + logEntries.get(0).getTimestamp() + "\"" + NEW_LINE +
             "  } ]" + NEW_LINE +
             "}";
 
@@ -1637,7 +1668,8 @@ public class DashboardWebSocketHandlerTest {
             "        \"unlimited\" : true" + NEW_LINE +
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
-            "  } ]" + NEW_LINE +
+            "  } ]," + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 3" + NEW_LINE +
             "}";
 
         // then
@@ -1820,6 +1852,42 @@ public class DashboardWebSocketHandlerTest {
         assertThat("activeExpectations capped at UI_UPDATE_ITEM_LIMIT", countOccurrences(frame, "\"key\" : \"id-"), is(100));
         awaitFrame(fixture, request());
         assertThat("a warm capped set re-serialises nothing", fixture.handler.activeExpectationSerialisationCountForTesting(), is(warm));
+    }
+
+    @Test
+    public void shouldReportTrueActiveExpectationsTotalAboveTheCap() throws Exception {
+        // The list the dashboard renders is capped at EXPECTATION_UPDATE_ITEM_LIMIT, but the
+        // activeExpectationsTotal carried alongside it must be the TRUE number of matchers the server
+        // holds. Below the cap the two are trivially equal and prove nothing; the boundary is the whole
+        // point, so register MORE than the limit and assert the list is capped while the total is the
+        // real registered count -- NOT pinned at the cap. The limit is read from the class so this test
+        // crosses whatever the real boundary is and cannot silently drift if the limit changes.
+        int limit = expectationUpdateItemLimit();
+        int registered = limit + 37; // safely above the cap
+        List<Expectation> many = new java.util.ArrayList<>();
+        for (int i = 0; i < registered; i++) {
+            many.add(new Expectation(request("/path" + i)).withId(String.format("id-%04d", i)).thenRespond(response("body" + i)));
+        }
+        Fixture fixture = newFixture(many);
+        quiesce(fixture.handler);
+
+        String frame = awaitFrame(fixture, request());
+        JsonNode tree = ObjectMapperFactory.createObjectMapper().readTree(frame);
+
+        assertThat("the rendered activeExpectations list is capped at EXPECTATION_UPDATE_ITEM_LIMIT",
+            tree.get("activeExpectations").size(), is(limit));
+        assertThat("activeExpectationsTotal is the true registered count",
+            tree.get("activeExpectationsTotal").asInt(), is(registered));
+        assertThat("activeExpectationsTotal is emphatically NOT the cap",
+            tree.get("activeExpectationsTotal").asInt(), is(not(limit)));
+    }
+
+    // Read the (private) cap straight from the class so the boundary-crossing test above tracks the
+    // real limit rather than a hard-coded 100 that would silently drift out of step with production.
+    private static int expectationUpdateItemLimit() throws Exception {
+        java.lang.reflect.Field field = DashboardWebSocketHandler.class.getDeclaredField("EXPECTATION_UPDATE_ITEM_LIMIT");
+        field.setAccessible(true);
+        return field.getInt(null);
     }
 
     private static int countOccurrences(String haystack, String needle) {
@@ -2590,6 +2658,45 @@ public class DashboardWebSocketHandlerTest {
         // so the UI can never be left showing results for a superseded filter (no lost update).
         assertThat("the last filter the client sent is the one finally served",
             handler.lastPullFilterDispatchedForTesting(), is(sameInstance((RequestDefinition) last)));
+    }
+
+    @Test
+    public void shouldCarryLogEntryTimestampOnRecordedAndProxiedRequests() throws Exception {
+        // Every recorded (RECEIVED_REQUEST) and proxied (FORWARDED_REQUEST) row must carry the log
+        // entry's OWN timestamp - the dashboard shows it in place of an ordinal, which renumbered on
+        // every push. Both sections are covered: the proxied one is a separate branch behind its own
+        // "if (!value.isEmpty())" guard, so it is asserted explicitly, not assumed to follow from the
+        // recorded one. Each entry is pinned to a fixed, distinct epoch well in the past (2020), so the
+        // expected timestamp is deterministic AND is provably the entry's own time rather than the time
+        // the frame was built. The expected string is captured BEFORE the entry is added to the log,
+        // because the async event log publishes a copy and then CLEARS the source entry (epochTime=-1).
+        LogEntry recordedEntry = received("/recorded-request").setEpochTime(1_600_000_000_123L);
+        LogEntry proxiedEntry = forwarded("/proxied-request").setEpochTime(1_600_000_222_456L);
+        String expectedRecordedTimestamp = recordedEntry.getTimestamp();
+        String expectedProxiedTimestamp = proxiedEntry.getTimestamp();
+        DashboardWebSocketHandler handler = newSeededHandler(Arrays.asList(recordedEntry, proxiedEntry));
+        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        handler.getClientRegistry().put(ctx, request());
+
+        ScanResult result = singleScan(handler, ctx, request());
+        assertThat("a frame was produced", result.frame, is(not(nullValue())));
+
+        JsonNode tree = ObjectMapperFactory.createObjectMapper().readTree(result.frame);
+        assertTimestampOnEveryRow(tree.get("recordedRequests"), expectedRecordedTimestamp, "recordedRequests");
+        assertTimestampOnEveryRow(tree.get("proxiedRequests"), expectedProxiedTimestamp, "proxiedRequests");
+    }
+
+    // Assert the section is present and non-empty, and every row carries a non-null, non-blank
+    // timestamp equal to the log entry's own timestamp.
+    private static void assertTimestampOnEveryRow(JsonNode section, String expectedTimestamp, String name) {
+        assertThat(name + " section is present", section, is(notNullValue()));
+        assertThat(name + " section is non-empty", section.size(), is(not(0)));
+        for (JsonNode entry : section) {
+            JsonNode timestamp = entry.get("timestamp");
+            assertThat(name + " row carries a timestamp", timestamp, is(notNullValue()));
+            assertThat(name + " row timestamp is non-empty", timestamp.asText().isEmpty(), is(false));
+            assertThat(name + " row timestamp is the log entry's own timestamp", timestamp.asText(), is(expectedTimestamp));
+        }
     }
 
     public static class MockChannelHandlerContext extends EmbeddedChannel {

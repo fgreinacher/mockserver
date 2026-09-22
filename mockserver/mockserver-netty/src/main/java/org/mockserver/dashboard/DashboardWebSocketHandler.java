@@ -909,8 +909,17 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     return new DashboardLogEntryDTO(logEntry, configuration);
                 },
                 reverseLogEventsStream -> {
-                    List<ImmutableMap<String, Object>> activeExpectations = requestMatchers
-                        .retrieveRequestMatchers(httpRequest)
+                    // Retrieve ONCE: the dashboard needs both the capped page it renders and the
+                    // TRUE total, and calling retrieveRequestMatchers twice would be two walks of
+                    // the matcher store per connected dashboard per update.
+                    List<? extends HttpRequestMatcher> allRequestMatchers =
+                        requestMatchers.retrieveRequestMatchers(httpRequest);
+                    // The count the dashboard shows is the number of expectations the SERVER holds,
+                    // not the size of the page it was sent. Those differ the moment there are more
+                    // than EXPECTATION_UPDATE_ITEM_LIMIT of them, and a count pinned at exactly the
+                    // limit reads as a bug — it silently stops being a count and becomes the cap.
+                    int activeExpectationsTotal = allRequestMatchers.size();
+                    List<ImmutableMap<String, Object>> activeExpectations = allRequestMatchers
                         .stream()
                         .limit(EXPECTATION_UPDATE_ITEM_LIMIT)
                         .map(requestMatcher -> {
@@ -937,6 +946,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     sendMessage(ctx, httpRequest, ImmutableMap.of(
                         "logMessages", logMessages,
                         "activeExpectations", activeExpectations,
+                        "activeExpectationsTotal", activeExpectationsTotal,
                         "recordedRequests", recordedRequests,
                         "proxiedRequests", proxiedRequests // reverse
                     ), retryCount);
@@ -1024,6 +1034,11 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                                 }
                                 entry.put("value", value);
                                 entry.put("key", logEntryDTO.getId() + "_request");
+                                // When the request was received. The dashboard shows this instead of
+                                // an ordinal: the list is a capped window, so a position within it
+                                // renumbers on every push and corresponds to nothing the reader can
+                                // refer to. A timestamp is stable and comparable with the log panel.
+                                entry.put("timestamp", logEntryDTO.getTimestamp());
                                 recordedRequests.add(entry);
                             }
                         }
@@ -1044,6 +1059,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         entry.put("value", value);
                         entry.put("key", logEntryDTO.getId() + "_proxied");
                         if (!value.isEmpty()) {
+                            entry.put("timestamp", logEntryDTO.getTimestamp());
                             proxiedRequests.add(entry);
                         }
                     }
