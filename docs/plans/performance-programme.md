@@ -3174,6 +3174,50 @@ old and new hardware into one median silently. The `<0.2%` hardware-insensitivit
 earlier in this document does not cover this: it compared JMH single-op microbenchmarks, which are
 core-count insensitive, not the under-load sweep.
 
+## Widening the client worked, and moved the limit from cores to the VU pool
+
+**Build 398, the first run with `k6=8-19` (twelve cores), 2026-09-22.** Doubling the client's cores
+raised achieved throughput by half at the top of the ladder and, for the first time, made the knee
+visible.
+
+| offered | 397, k6 on 6 cores | 398, k6 on 12 cores | delta |
+|---|---|---|---|
+| 8,000 | 7,986.5 | 7,964.7 | -0.3% |
+| 16,000 | 15,739.5 | 15,955.4 | +1.4% |
+| 32,000 | 25,096.5 | **31,117.1** | **+24.0%** |
+| 48,000 | 24,958.3 | **35,170.4** | **+40.9%** |
+| 64,000 | 25,529.1 | **38,111.4** | **+49.3%** |
+
+The shape is the point, not the peak. Below 16,000 the two runs agree — the server was never the limit
+there. From 32,000 the curves separate, and 398 keeps climbing where 397 was flat at ~25,000. A flat
+line was the client's ceiling being mistaken for the server's. The new curve bends between 48,000 and
+64,000 — 35,170 then 38,111 — which is the first direct sight of a knee, and it sits where the
+programme long believed it would, around the mid-30-thousands.
+
+**The remaining limit is no longer CPU, and the exclusion reason says so exactly:**
+
+```
+"k6_cpu_pct": 52.5,
+"reason": "k6 dropped 29 iterations = 0.2% of offered with VU pool exhausted
+           (vus_active_max 96 >= pool 96, client-limited)"
+```
+
+Fifty-two percent CPU with the **VU pool** pinned at its ceiling. `rig_valid_peak_achieved_rps` is
+therefore still low (1,999.5) even though the run achieved 38,111 — the harness is right to refuse to
+certify rungs where the client ran out of virtual users, because a rung that cannot offer its rate is
+not a measurement of the server.
+
+**Why the pool runs out is worth understanding before tuning it.** `poolForRate` sizes each rung at
+`rate * vuPerRps`, clamped between a floor and `vuCeiling`. At 1,000 rps that gave 96 VUs, which by
+Little's Law is ample for a 0.5 ms median — 1,000 x 0.0006 is under one VU. The pool is not exhausted
+by average load; it is exhausted by the **tail**. A single multi-millisecond stall holds its VU for the
+whole stall, and enough concurrent stalls drain a 96-VU pool while average utilisation stays near zero.
+So the fix is not simply a bigger number: `vuPerRps` is a latency assumption in disguise, and it should
+be derived from the observed tail rather than the median.
+
+**Still true, and worth repeating:** none of this changed the server. It changed what the rig can see.
+The published figures stay as they are until a run is rig-valid at the rungs that matter.
+
 ## The resize fixed contention, not capacity — the client is still on six cores
 
 **Build 397, the first run on c5.12xlarge, 2026-09-22.** The contention is gone and the numbers did
