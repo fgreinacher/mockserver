@@ -2989,6 +2989,36 @@ intolerable. Virtualisation converted a mild annoyance into an unusable panel wi
 code at fault — so "did we cause it?" and "did we make it matter?" are different questions, and only
 the second one predicts what a user will report.
 
+## Item 18 — the ceiling was the client, and multi-process broke it
+
+**Built and first-run 2026-09-22.** The per-core curve was flat at ~6,000 rps for C = 1, 2, 4 and 8
+with NEITHER side CPU-bound, which is the signature of a coordination limit rather than a capacity
+one. A single k6 process was the suspect, and splitting the offer across independent processes
+confirms it.
+
+| processes | peak rps | client CPU at peak | verdict |
+|---|---|---|---|
+| 1 | 5,561 | 200.5% of a 200% pin | `client_cpu` |
+| 2 | 8,528 | 198.7% of 200% | `shared_path_or_coordination` |
+| 4 | 7,738 | 197.3% of 200% | `shared_path_or_coordination` |
+
+**The flat ~6,000 ceiling was never the server.** Two processes reached 8,528 rps — past it — while the
+SUT drew at most 163.6% of its own 400% pin, i.e. under half. So the single-process figure was a
+per-process client limit, exactly as the evidence suggested.
+
+**What the run also shows is that this rig cannot finish the job.** Every client process pinned at
+~200% of its 2-core allocation at every N, so the harness is now bounded by its own client CPU rather
+than by the server, and N=4 regressing to 7,738 is what oversubscribed pins look like. The next step is
+more cores per client process or a second client host, not more processes on this box.
+
+**The instrument closes the gap that made the original curve uninformative.** Client CPU headroom at
+the ceiling had only ever been ASSERTED — inferred from an idle VU pool — never measured. This harness
+records CPU for both sides at every rung and emits a per-N `limited_by` verdict
+(`client_cpu` / `server_cpu` / `shared_path_or_coordination` / `not_saturated_raise_rates`), so a flat
+result now says WHY it is flat instead of merely being flat. Its own smoke test caught a bug in that
+very capability: `docker stats` fails the whole call if any named container is absent, which would have
+reported null CPU and looked like no data rather than a broken probe.
+
 ## What remains
 
 **Four things are outstanding: one can be settled from the repo, and three need a run, a bigger
@@ -3028,7 +3058,7 @@ that is merely undone.
 
 | | What it needs | Why it is stuck here |
 |---|---|---|
-| **Item 18's experiment** | A load generator that can saturate the server — several k6 processes, several client hosts, or a different generator | The per-core instrument works and the curve is flat at 6,000 rps for C = 1, 2, 4 and 8 (build #364, 2026-09-20). Neither side is CPU-bound: SUT CPU is ~one core's worth at every C, and k6 used ~2 of its 7-14 disjoint cores. A native re-run refuted the virtualisation half of the explanation (30,704 rps native against 27,651 in Docker — containerisation costs ~10%, not 5x) and killed the event-log hypothesis (disabling logging changed peak throughput not at all). **What is still open is why k6 drops iterations with three quarters of its VU pool unused.** Not another ladder |
+| **Item 18: saturate the server** | A rig with enough client CPU to push past ~8,500 rps | **The generator now exists** (`mockserver-performance-test/scripts/multi-process-sweep.sh`) and a first local run already broke the flat ceiling: peak went **5,561 rps at N=1 to 8,528 at N=2**. But every client process sat at **200%/200% of its 2-core pin**, so the harness is now limited by its own client CPU allocation rather than by the server. What remains is a rig with more cores per client process, or a second client host — the harness already supports an external target via `PERF_MULTI_TARGET_URL`. Note N=4 came in at 7,738, BELOW N=2, which is what client-CPU starvation looks like once the pins are oversubscribed |
 | **The 36,000 rps knee** | A clean-tier run on an image carrying the corrected heap cap | Build 290 ruled out one possibility and recorded a shape — 15,475 achieved at 16,000 offered, **26,020 at 32,000**, then 23,463 at 48,000 and 19,517 at 64,000, error rate 0 at every rung with the losses all `dropped_iterations`. That is a genuine knee near 32,000 with a collapse beyond it, a server-side congestion signature rather than a client ceiling. It does **not** settle the published 36,000: build 290 was a deep-tier run (JFR + NMT depress throughput by design, `baseline_eligible:false`), so 26,020 is a floor, not a refutation |
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
