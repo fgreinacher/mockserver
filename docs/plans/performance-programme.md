@@ -3089,6 +3089,23 @@ because it is truthful.
 The corollary is that `assert perf baseline is fresh` will stay red until one valid run exists, and no
 amount of re-triggering on this rig will produce one.
 
+**Decision, 2026-09-22 — WAIT FOR THE HARDWARE.** Three workarounds were put to the repo owner and all
+were declined in favour of leaving the signal honest:
+
+| Option | Why it was rejected |
+|---|---|
+| Cap the CI ladder to rungs the rig can drive (<= 8,000) | Would restore valid runs and a working regression control, but stops attempting the measurement rather than fixing the rig |
+| Merge the blocked Dependabot PRs anyway | Merges against a known-red required check |
+| Widen `PERF_PRODUCER_MAX_AGE_HOURS` past 30h | Silences the alarm without restoring the measurement; the script's own comment says there is no legitimate multi-day gap |
+
+So `assert perf baseline is fresh` stays RED, and the five Dependabot PRs stay OPEN and unmerged, until
+a client rig exists that can produce one valid run. **Do not close those PRs** — closing a Dependabot
+PR makes it skip that version permanently, and nothing is wrong with them; they fail only by inheriting
+this check.
+
+The cost is accepted deliberately: a red control that means something beats a green one that does not.
+That is the same trade the whole programme has been making, applied to itself.
+
 ## What remains
 
 **Three things are outstanding: one can be settled from the repo, one needs a bigger client rig,
