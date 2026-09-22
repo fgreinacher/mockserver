@@ -3239,7 +3239,38 @@ that is merely undone.
 
 | | What it needs | Why it is stuck here |
 |---|---|---|
-| **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
+| **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). A **third** case has since been observed and is NOT safe — see below. See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
+
+**A child that is never created at all, observed 2026-09-22.** This question was framed around how a
+child build's *outcome* is reported. There is a case where there is no child to have an outcome: a
+native `trigger` step whose child Buildkite refuses to create fails in **under half a second** with
+`triggered_build: null`, `soft_failed: false`, no agent, no `exit_status`, and an **empty job log**.
+Nothing in that shape says what went wrong, and the step is indistinguishable at a glance from a test
+failure — which is how it went misread as one for several builds.
+
+The cause is the build's **author**, not its content. A native trigger creates the child as the parent
+build's author and inherits that author's Buildkite permissions; a `dependabot[bot]`-authored build has
+no Buildkite user at all (`creator: None`), and the pipelines that do not grant build permission to
+that identity refuse outright. The natural experiment is unusually clean — three adjacent master
+commits, same thirteen target pipelines, minutes apart:
+
+| Orchestrator build | Author | `creator` | Children created |
+|---|---|---|---|
+| 7356 (`db653540e`) | `jamesdbloom` | James Bloom | **all 13** |
+| 7359 (`9aab78afb`) | `dependabot[bot]` | `None` | 4 of 10 — Java, Go, .NET, Rust, PHP, Infra all refused |
+| 7361 (`2b2ed49c1`) | `dependabot[bot]` | `None` | same 4, same 6 refused |
+| 7362 (`633333399`) | `jamesdbloom` | James Bloom | **all 10** |
+
+`generate-pipeline.sh` documents this exact hazard in a sixteen-line comment that warns against
+"simplifying" the hybrid and cites two previous reverts — and then gates on
+`BUILDKITE_PULL_REQUEST = "false"` alone. A **merged** Dependabot PR is neither a PR nor human: it
+arrives as a push build still authored by the bot, passes the guard, and lands in the trap the comment
+describes. The control was complete in the descriptive layer and half-present in the operative one,
+which is the same shape as every other false-green in this document.
+
+The fix is to gate on whether an authenticated user exists at all (`BUILDKITE_BUILD_CREATOR` is empty
+exactly when the API reports `creator: None`) and fall through to the token-authenticated command path
+otherwise, which cannot be refused for want of a user.
 
 ### `peak_achieved_rps` measures the client, not the server
 
