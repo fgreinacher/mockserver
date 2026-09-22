@@ -976,16 +976,81 @@ avoid re-render storms and keep interaction smooth:
 | Reference-stable reconciliation | `store` `reconcileByKey` (in `applyMessage`) | Each push reuses the previous object reference for any row whose content is unchanged (matched by stable `key`, structural compare), so memoized rows and their `useMemo([item.value])` hooks stay valid across pushes |
 | Row memoization | `React.memo` on `LogEntry`, `JsonListItem` | Unchanged rows skip re-rendering entirely on each push |
 | Deferred expand body | `useDeferredValue(expanded)` in `LogEntry` / `JsonListItem` | The chevron/layout reacts to the click immediately; the expensive expanded JSON tree (`@uiw/react-json-view`) builds in a non-blocking follow-up render |
-| Progressive rendering | `ProgressiveList` (used by `LogPanel`, `ExpectationPanel`, `RequestPanel`) | Mounts an initial batch (~visible rows) on first paint, then appends the rest in batches during browser idle time (`requestIdleCallback`, `setTimeout` fallback). The full list ends up laid out, so native scrolling stays smooth with no per-scroll work |
+| Viewport windowing | `ProgressiveList` (used by `LogPanel`, `ExpectationPanel`, `RequestPanel` and `TrafficInspector`) | Only the rows in or near the visible area are mounted, however long the list is (200 rows went from 2,234 DOM elements to 145, and that figure no longer grows with the dataset). Heights vary as rows expand, so they are measured with `measureElement` rather than assumed. First paint renders just `initial` rows before the scroll ancestor is resolved; where there is no scrollable ancestor or the viewport measures 0px — jsdom, or a panel laid out at zero height — it falls back to rendering every row so nothing becomes unreachable |
+| Scroll anchoring on prepend | `ProgressiveList` (`src/components/ProgressiveList.tsx`) | The lists are newest-first, so a live push inserts rows *above* the viewport and shifts everything below it down; windowing then unmounts whatever the reader had open. The list remembers which row was at the top of the viewport and restores its position after each update, resolved from the virtualizer's measurements so it works even when that row is no longer mounted. See [Panel scroll behaviour](#panel-scroll-behaviour) |
 | Lifted expand state | `useExpansion` hook (per panel) | Expand/collapse state is held in the panel keyed by row key, passed to rows as controlled `expanded`/`onToggle` props (with an uncontrolled fallback for standalone use), so it survives independently of any row remount |
 | Monaco code-split | `JsonEditorLazy` / `JsonDiffViewerLazy` (`src/components/`) | `monaco-editor` and its web-worker bundles are multi-MB; both components wrap the real editor in `React.lazy()` so Monaco is only fetched when an editor is first rendered, reducing the initial bundle from ~4.66 MB to ~912 kB |
 | `LogGroup` collapse | `LogGroup.tsx` — `<Collapse unmountOnExit>` | Log-entry children within a collapsed group are unmounted from the DOM rather than hidden with CSS, eliminating the DOM pressure from large numbers of collapsed log groups |
 
-An earlier attempt used true windowing (`@tanstack/react-virtual`) but was
-reverted: it rendered the full list then re-rendered windowed (slower first
-paint) and its JS-driven per-scroll re-measuring made scrolling janky.
-Progressive rendering keeps the fast-first-paint benefit without the
-scroll-time cost.
+`ProgressiveList` windows with `@tanstack/react-virtual`. An earlier iteration
+mounted the whole list progressively during browser idle time instead; that kept
+first paint cheap but left DOM weight growing with the dataset, so it was
+replaced. The cheap-first-paint property is preserved by the `initial` phase:
+the list renders only a screenful until its scroll ancestor is resolved in a
+layout effect, then windows.
+
+#### Panel scroll behaviour
+
+Two behaviours pull in opposite directions when data is live, and they are owned
+by different components:
+
+- **Tail-following** — `Panel` (`src/components/Panel.tsx`). A reader parked at
+  the very top wants new entries to appear there, so `Panel` snaps back to
+  `scrollTop = 0` on new data — but *only* while `atTopRef` says the reader is
+  already within `AT_TOP_THRESHOLD_PX` of the top. Scroll down and following
+  stops; scroll back up and it resumes.
+- **Scroll anchoring** — `ProgressiveList` (`src/components/ProgressiveList.tsx`).
+  Once the reader has scrolled away from the top, new rows are inserted above
+  them; every existing row's offset grows while `scrollTop` does not, so the
+  content under their eye slides down and, once it leaves the window, unmounts.
+  `ProgressiveList` remembers which row was at the top of the viewport and how
+  far its top sat above it, and restores that relationship after each update.
+
+Two properties of the real data rule out the obvious implementations, and both
+were learned the hard way:
+
+- **The list length does not change.** `DashboardWebSocketHandler` caps a panel
+  at `DEFAULT_LOG_UPDATE_ITEM_LIMIT` (100) rows and evicts the oldest as it
+  prepends the newest, so on any server that has handled more than 100 entries
+  the count is constant for the rest of the session. Anything gated on the row
+  count growing — an effect keyed on `count`, or a height delta — is inert
+  exactly when traffic is live and the reader most needs their position held.
+- **The anchor row can be unmounted by the same update.** After a prepend the
+  window is recomputed from the unchanged `scrollTop`, which now addresses
+  different rows, so the row being held is frequently gone from the DOM before
+  any layout effect could measure it.
+
+Together those force the anchor to be resolved from the **virtualizer's
+measurements** rather than from the DOM, because the virtualizer knows where
+every row sits whether or not it is mounted. Two public accessors do it:
+`virtualizer.measurementsCache` to find the row at the top of the viewport on
+capture, and `virtualizer.getOffsetForIndex(index, 'start')` to ask where that
+row has moved to on restore, located by the caller's stable `getKey`. Note
+`getMeasurements()` is typed **private** — it would work today and go silently
+inert on a library bump, which is the same class of quiet failure this fix
+exists to correct. The anchor effect deliberately has **no dependency array** — it must
+run after every commit, because the update that moves the reader need not change
+anything `count`-shaped. Anchoring is skipped while the reader is within
+`ANCHOR_MIN_OFFSET_PX` of the top, where following the newest rows is the wanted
+behaviour, so it never fights `Panel`'s tail-following (child effects run before
+parent effects, so `Panel` gets the last word there anyway).
+
+CSS `overflow-anchor` cannot substitute for any of this: the virtualizer's rows
+are `position: absolute`, which browsers exclude from native scroll anchoring,
+and windowed rows leave the DOM entirely.
+
+`TrafficInspector` renders `ProgressiveList` directly rather than through
+`Panel`, so it gets the anchoring but not the tail-following, and its list is not
+capped at 100 the way the WebSocket-fed panels are.
+
+Both behaviours are guarded by `mockserver-ui/e2e/scroll-anchor.pw.ts`, real
+browser (Playwright) tests over the harness in `mockserver-ui/e2e/anchor-harness/`
+that render the actual `Panel` + `ProgressiveList`. One covers the initial growth
+phase; the other covers the steady state, where rows are evicted as fast as they
+arrive and the length never moves. They **cannot** be jsdom/vitest tests: jsdom
+has no layout engine, so `scrollTop`, `scrollHeight` and `offsetHeight` are always
+0, the list never windows, and the prepend shift cannot occur. Run them with
+`npm run test:e2e:anchor` from `mockserver-ui`.
 
 ### Copy to Clipboard
 

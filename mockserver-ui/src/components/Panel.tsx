@@ -1,4 +1,4 @@
-import { useRef, useEffect, type ReactNode } from 'react';
+import { useRef, useLayoutEffect, type ReactNode } from 'react';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
 import Typography from '@mui/material/Typography';
@@ -64,14 +64,16 @@ export default function Panel({
   // only "follows the tail" when this is true, so a new push never yanks the
   // viewport away from a row the user has scrolled down to and opened.
   const atTopRef = useRef(true);
-
-  useEffect(() => {
-    // Snap to the top on new data ONLY when the user is already at the top
-    // (tail-following). If they have scrolled down to inspect or expand a row,
-    // leave their position alone — otherwise every ~1/sec push scrolls that row
-    // out of view (and virtualization then unmounts it), which reads as the
-    // opened item "closing" and made the live panels unusable.
+  useLayoutEffect(() => {
+    // Tail-following, and nothing else. Holding the reader's position against
+    // rows arriving ABOVE them is scroll ANCHORING, and it lives in
+    // ProgressiveList: once the list is windowed, the row the reader is looking
+    // at can be unmounted by the very update we are trying to compensate for, so
+    // it cannot be located in the DOM afterwards. Only the virtualizer knows
+    // where it went, because it measures every row whether or not it is mounted.
     if (autoScroll && atTopRef.current && scrollRef.current) {
+      // Only when the reader is already at the very top, so a push never yanks
+      // the viewport away from a row they scrolled down to and opened.
       scrollRef.current.scrollTop = 0;
     }
   }, [count, autoScroll]);

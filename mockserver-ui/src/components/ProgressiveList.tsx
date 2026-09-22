@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 
 interface ProgressiveListProps {
@@ -62,6 +62,11 @@ function findScrollParent(el: HTMLElement | null): HTMLElement | null {
   return null;
 }
 
+// Matches Panel's AT_TOP_THRESHOLD_PX. Below this offset the reader counts as
+// parked at the top, where following the newest rows is the wanted behaviour and
+// anchoring would work against it.
+const ANCHOR_MIN_OFFSET_PX = 8;
+
 export default function ProgressiveList({
   count,
   getKey,
@@ -90,6 +95,115 @@ export default function ProgressiveList({
     estimateSize: () => estimateSize,
     overscan,
     getItemKey: (index) => getKey(index),
+  });
+
+  // --- Scroll anchoring on prepend ------------------------------------------
+  //
+  // These lists are newest-first, so a live update inserts rows at the FRONT.
+  // Every existing row's offset grows by the height of what arrived, while
+  // `scrollTop` does not — so the content the reader is looking at slides down
+  // and, once it leaves the window, unmounts. That reads as an opened item
+  // "closing", and it made the live panels unusable.
+  //
+  // Two properties of the real data make the obvious fixes wrong:
+  //
+  //  * The list LENGTH does not change. The server caps a dashboard panel at 100
+  //    rows and evicts the oldest as it prepends the newest, so on any server
+  //    that has handled more than 100 entries the count is constant forever.
+  //    Anything gated on the count growing is inert exactly when traffic is live.
+  //  * The anchor row can be UNMOUNTED by the same update. After a prepend the
+  //    window is recomputed from the unchanged `scrollTop`, which now points at
+  //    different rows, so the row we want to hold onto is frequently not in the
+  //    DOM by the time a layout effect could measure it.
+  //
+  // So the anchor is resolved from the virtualizer's measurements instead of the
+  // DOM: it measures every row, mounted or not, keyed by the caller's stable
+  // `getKey`. We remember which row was at the top of the viewport and how far
+  // its top sat above it, then restore that relationship after the update.
+  //
+  // CSS `overflow-anchor` cannot do this: the rows are `position: absolute`,
+  // which browsers exclude from native scroll anchoring, and windowed rows leave
+  // the DOM entirely.
+  const anchorRef = useRef<{ key: string; gap: number } | null>(null);
+
+  const captureAnchor = useCallback(() => {
+    const el = scrollParent;
+    if (!el) {
+      anchorRef.current = null;
+      return;
+    }
+    const offset = el.scrollTop;
+    // At (or within a hair of) the top there is nothing to hold: the reader
+    // wants the newest rows, which is what arriving rows give them. Anchoring
+    // here would push them DOWN away from the top on every update.
+    if (offset <= ANCHOR_MIN_OFFSET_PX) {
+      anchorRef.current = null;
+      return;
+    }
+    // `measurementsCache` is the public measurement surface and covers EVERY row,
+    // not just the mounted window, so a capture taken immediately after a fast
+    // scroll still finds the row now at the top. (`getMeasurements()` is typed
+    // private; reaching into it would work today and break silently on a library
+    // bump — the same class of quiet failure this whole fix is about.)
+    const measurements = virtualizer.measurementsCache;
+    for (let i = 0; i < measurements.length; i++) {
+      const m = measurements[i];
+      if (m && m.end > offset) {
+        // `gap` is negative when the row is partly scrolled off the top, which
+        // is the common case and is exactly what we want to preserve.
+        anchorRef.current = { key: String(m.key), gap: m.start - offset };
+        return;
+      }
+    }
+    anchorRef.current = null;
+  }, [scrollParent, virtualizer]);
+
+  // The reader's own scrolling redefines the anchor: wherever they stopped is
+  // the position the next update has to preserve.
+  useEffect(() => {
+    const el = scrollParent;
+    if (!el) return;
+    const onScroll = () => captureAnchor();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, [scrollParent, captureAnchor]);
+
+  // Deliberately NO dependency array — this must run after EVERY commit, because
+  // the update that shifts the reader's position need not change `count` (see
+  // above). It runs before `Panel`'s tail-following effect (child effects run
+  // before parent effects), so a reader parked at the top is still snapped to 0
+  // by Panel and never fights this.
+  useLayoutEffect(() => {
+    const el = scrollParent;
+    const anchor = anchorRef.current;
+    if (!el || !anchor) return;
+    // Where did the anchor row end up? Its INDEX has changed (everything shifts
+    // when rows are prepended), so find it by the caller's stable key, then ask
+    // the virtualizer for that index's offset. `getOffsetForIndex(i, 'start')`
+    // is the public accessor and answers for any row, mounted or not — which is
+    // the whole point: after a prepend the anchor row is usually outside the
+    // window and therefore absent from the DOM.
+    let index = -1;
+    for (let i = 0; i < count; i++) {
+      if (getKey(i) === anchor.key) {
+        index = i;
+        break;
+      }
+    }
+    if (index === -1) {
+      // The anchor row was evicted from the list entirely. There is nothing to
+      // hold onto, so leave the position alone and re-anchor below.
+      captureAnchor();
+      return;
+    }
+    const offsetInfo = virtualizer.getOffsetForIndex(index, 'start');
+    if (offsetInfo) {
+      const want = offsetInfo[0] - anchor.gap;
+      if (Math.abs(want - el.scrollTop) > 0.5) {
+        el.scrollTop = want;
+      }
+    }
+    captureAnchor();
   });
 
   // The probe sits at the top of the list in every branch so findScrollParent

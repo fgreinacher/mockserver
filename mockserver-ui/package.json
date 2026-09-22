@@ -16,6 +16,7 @@
     "bench": "vitest bench --run",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
+    "test:e2e:anchor": "playwright test --config e2e/scroll-anchor.config.ts",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "demo": "bash scripts/launch-with-demo-data.sh",

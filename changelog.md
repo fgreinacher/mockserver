@@ -59,13 +59,6 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   proxied requests moved — including the Expectations panel, whose data had not changed. Each panel
   now re-renders only when its own data changes, cutting the work per update by about **20%**.
   Nothing displayed changes.
-- **Matching an XML body with XPath no longer re-parses it once per expectation.** A request body
-  checked against several XPath expectations was parsed into a DOM separately for each one. It is
-  now parsed once and reused: **8,629 → 640 microseconds** for a large body against 20 expectations,
-  and a single expectation got slightly faster too. Separately, the parse is now covered by
-  `xpathMatchingTimeoutMillis` — it previously ran outside that budget, so a pathological body could
-  occupy a matching thread for as long as it liked. The timeout message now says whether it was the
-  body or the expression that took too long.
 - **The first request on every connection no longer scans your whole expectation store.** MockServer
   checks each new connection for an expectation configured with `respondBeforeBody`, and that check
   walked every registered expectation — even though almost nobody uses the feature, so the walk
@@ -334,15 +327,17 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
-- **XPath body matchers could stop matching.** A request whose body should have matched an XPath
-  expectation could instead fall through to a 404. Introduced in 8.0.1-SNAPSHOT and never released;
-  the change responsible has been reverted in full.
-- **The dashboard no longer jumps back to the top while you are reading an item.** Opening an entry
-  in Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
-  moment new data arrived: every update scrolled the panel back to the top, which scrolled the open
-  entry out of view. Panels now follow new data only while you are already at the top, so scrolling
-  down to read something keeps you there. Scroll back to the top and it resumes following. Panels
-  were effectively unusable for reading individual entries on a busy server.
+- **An item you open in the dashboard now stays open while new data arrives.** Opening an entry in
+  Log Messages, Received Requests, Proxied Requests or Active Expectations used to be undone the
+  moment anything new came in, which made those panels effectively unusable for reading individual
+  entries on a busy server. Two separate things did it. Every update scrolled the panel back to the
+  top, so the open entry was scrolled out of view; panels now follow new data only while you are
+  already at the top, and scrolling back to the top resumes following. And because these lists are
+  newest-first, each new entry was inserted *above* what you were reading and pushed it down the
+  page until it left the viewport entirely. The panel now holds your position against those
+  insertions — including once the panel is full and each new entry replaces an old one, which is the
+  state a busy server is in almost all the time. What you are looking at stays where it is, and the
+  new entries are already there when you scroll back up.
 - **A dashboard filtering rapidly no longer makes the server re-scan the event log for every
   keystroke.** Each filter the dashboard sent triggered its own full scan, so a client could drive
   an unbounded rate of them. Bursts are now collapsed: the first filter after a pause is served
