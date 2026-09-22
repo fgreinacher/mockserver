@@ -481,6 +481,46 @@ fi
 # --- 4. compare (median + MAD) ------------------------------------------------
 jq -s '.' "$BASE_DIR"/*.json > "$WORK/baseline.json"
 
+# Hardware provenance, for the annotation only — the baseline is NOT filtered
+# here. Metrics whose value moves with the machine are routed to a
+# same-instance-type subset inside the comparison (see $bmapAllHw and the `hw`
+# flag in perf-budgets.json); allocation counts, allocation ratios and error rates
+# keep the FULL baseline because they are properties of the code path rather than
+# the machine. Note the classification has THREE categories, not two: THREAD counts
+# are neither timings nor code-path properties, but resource counts that track the
+# core count (actionHandlerThreadCount defaults to max(5, availableProcessors), and
+# the GC and JIT pools scale too), so they are marked `hw` as well.
+#
+# Not every count is core-driven, and the distinction is the whole point:
+# `laptop.*.tcp_sockets` is an lsof line count of listen + established sockets
+# (InJvmParallelBench.tcpSocketCount), so it tracks INSTANCES AND CONNECTIONS, not
+# cores. It stays hardware-independent. "It is a count" is not the test; "does it
+# move when the core count moves" is.
+#
+# Filtering the whole baseline at this point was tried first and was wrong:
+# dropping non-matching runs drives BASE_COUNT to zero on a hardware change,
+# which trips the global `warming up` early-exit ABOVE and skips every metric.
+# Of the four gating metrics THIS script evaluates, three are hardware-independent
+# — microbench.*.alloc_bytes_per_op, forward.error_rate and
+# churn.alloc_ratio_index_n15000 (the other four gating budget entries,
+# premerge_alloc.*, belong to perf-alloc-gate.sh and never reach this code). So
+# filtering wholesale would switch off three quarters of this control's gating
+# during precisely the migration when a regression is most likely.
+HEAD_INSTANCE="$(jq -r '.agent.instance_type // "" ' "$RESULT" 2>/dev/null || echo "")"
+HW_NOTE=""
+if [ -n "$HEAD_INSTANCE" ]; then
+  HW_MISMATCH="$(jq --arg hi "$HEAD_INSTANCE" '[ .[] | select((.agent.instance_type // "") != $hi) ] | length' "$WORK/baseline.json" 2>/dev/null || echo 0)"
+  if [ "${HW_MISMATCH:-0}" -gt 0 ]; then
+    HW_NOTE="
+
+:desktop_computer: **${HW_MISMATCH} of ${BASE_COUNT} baseline run(s) are from a different (or unrecorded) machine type.** Hardware-sensitive metrics — timings, saturation throughput and thread counts — compare only against runs from \`${HEAD_INSTANCE}\` and report \`no-baseline\` until ${MIN_BASELINE} of those exist. Metrics that are properties of the code path rather than the machine keep comparing across the change, so the gating floors stay live."
+  fi
+else
+  HW_NOTE="
+
+:warning: **This run records no instance type**, so hardware-sensitive metrics cannot be matched to same-machine history and report \`no-baseline\` rather than compare across an unknown machine."
+fi
+
 # Honest history (item: handle the existing history honestly). Every run stored
 # before the self-describing-result change has no `config` block (schema_version
 # < 2) and an unusable instance_type, so we CANNOT confirm it was configured like
@@ -790,6 +830,7 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 # GraalJS jars are inert for non-JS paths (loaded lazily only when a JS template
 # renders): growth.* and rig_valid_peak_achieved_rps are non-gating, and forward.error_rate
 # (gating) is a connection-pool guard the template engine cannot influence.
+| (.agent.instance_type // "") as $headinstance
 | ((.behaviours // {}) | keys | sort) as $headarms
 | $baseline as $ballruns
 | [ $ballruns[] | select((.config.jmh // null) == $headjmh) ] as $bmicroruns
@@ -797,6 +838,34 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 | bmapof($ballruns) as $bmapAll
 | bmapof($bmicroruns) as $bmapMicro
 | bmapof($bk6runs) as $bmapK6
+# Hardware-matched subsets, for metrics whose VALUE moves with the machine.
+# A timing figure from a different instance type is not a comparable sample, and a
+# rolling median that spans a hardware change absorbs the step change instead of
+# reporting it. Metrics marked `hw` in perf-budgets.json compare only against runs
+# from the same instance type; everything else — allocation bytes, allocation
+# ratios, error rates — keeps the FULL baseline, because those are properties of
+# the code path rather than the machine.
+#
+# There are THREE categories here, not two, and missing the third is easy: THREAD
+# counts are neither timings nor code-path properties. They track the core count
+# (actionHandlerThreadCount defaults to max(5, availableProcessors), and the GC and
+# JIT pools scale too), so a 16 -> 48 vCPU move shifts them and they are marked
+# `hw` as well.
+#
+# But do not generalise that to every count. `laptop.*.tcp_sockets` is an lsof line
+# count of listen + established sockets, driven by instances and connections rather
+# than cores, so it is deliberately NOT marked. The test is "does this move when the
+# core count moves", not "is this a count".
+#
+# The split matters because three of the four gating metrics this script evaluates
+# are hardware-INdependent, so filtering the whole baseline would have blinded most
+# of its gating during a migration — exactly when a regression is most likely.
+| [ $ballruns[] | select(((.agent.instance_type // "") == $headinstance) and ($headinstance != "")) ] as $bhwruns
+| [ $bmicroruns[] | select(((.agent.instance_type // "") == $headinstance) and ($headinstance != "")) ] as $bmicrohwruns
+| [ $bk6runs[] | select(((.agent.instance_type // "") == $headinstance) and ($headinstance != "")) ] as $bk6hwruns
+| bmapof($bhwruns) as $bmapAllHw
+| bmapof($bmicrohwruns) as $bmapMicroHw
+| bmapof($bk6hwruns) as $bmapK6Hw
 | ([ [ . | metrics ][] | select(.value != null) ]) as $headmetrics
 # FAIL CLOSED: any run metric with a non-null value whose budget key is absent
 # from the committed perf-budgets.json is reported as `missing` (the bash caller
@@ -816,13 +885,19 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
       | ($budgets[$m0.bkey]) as $b
       # gating is OPTIONAL in a budget entry: an omitted `gating` means notify-only
       # (a flag annotates but does not fail the build), so default it to false.
-      | ($m0 + {dir:$b.dir, min_pct:$b.min_pct, floor:$b.floor, gating:($b.gating // false)}) as $m
+      | ($m0 + {dir:$b.dir, min_pct:$b.min_pct, floor:$b.floor, gating:($b.gating // false), hw:($b.hw // false)}) as $m
       # microbench(_extra) compare only against JMH-config-matching baselines;
       # behaviours (k6 arms) compare only against k6-fingerprint-matching baselines
       # (same image + arm set). growth/sweep/forward keep the full baseline.
-      | (if ($m.bkey|startswith("microbench")) then ($bmapMicro[$m.name] // [])
-         elif ($m.bkey|startswith("behaviours")) then ($bmapK6[$m.name] // [])
-         else ($bmapAll[$m.name] // []) end) as $bv
+      | (if $m.hw then
+           (if ($m.bkey|startswith("microbench")) then ($bmapMicroHw[$m.name] // [])
+            elif ($m.bkey|startswith("behaviours")) then ($bmapK6Hw[$m.name] // [])
+            else ($bmapAllHw[$m.name] // []) end)
+         else
+           (if ($m.bkey|startswith("microbench")) then ($bmapMicro[$m.name] // [])
+            elif ($m.bkey|startswith("behaviours")) then ($bmapK6[$m.name] // [])
+            else ($bmapAll[$m.name] // []) end)
+         end) as $bv
       # Minimum comparable runs before a THRESHOLD is computed. A config/fingerprint
       # reset leaves the filtered baseline with 1..MIN_BASELINE-1 points, where MAD~0
       # collapses the threshold to median*(1+min_pct) and a single >min_pct excursion
@@ -833,7 +908,8 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
       # BASE_COUNT warm-up (which keys off the UNFILTERED baseline and so does NOT
       # cover these filtered subsets). The remaining metrics (growth/sweep/forward)
       # are never fingerprint-filtered and keep the existing >=1 behaviour.
-      | (if ($m.bkey|startswith("microbench")) then $minbaseline
+      | (if $m.hw then $minbaseline
+         elif ($m.bkey|startswith("microbench")) then $minbaseline
          elif ($m.bkey|startswith("behaviours")) then $minbaseline
          else 1 end) as $minreq
       | if ($bv|length) < $minreq then {name:$m.name, head:$m.value, gating:$m.gating, status:"no-baseline"}
@@ -1012,7 +1088,7 @@ fi
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}"
+${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did

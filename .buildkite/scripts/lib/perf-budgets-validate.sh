@@ -86,8 +86,8 @@ validate_perf_budgets() {
         # default -- and the default for `gating` is notify-only, i.e. a typo
         # turns a build-failing metric into one that only annotates. The value
         # checks cannot see that; only the key set can.
-        elif (($v | keys) - ["dir","min_pct","floor","gating","provisional"] | length) > 0 then
-          "\($k): unrecognised key(s) \((($v | keys) - ["dir","min_pct","floor","gating","provisional"]) | tojson) -- a misspelled key does not error, it silently reverts that setting to its default (a typo of `gating` makes a build-failing metric notify-only)"
+        elif (($v | keys) - ["dir","min_pct","floor","gating","provisional","hw"] | length) > 0 then
+          "\($k): unrecognised key(s) \((($v | keys) - ["dir","min_pct","floor","gating","provisional","hw"]) | tojson) -- a misspelled key does not error, it silently reverts that setting to its default (a typo of `gating` makes a build-failing metric notify-only)"
         elif (($v | has("dir")) and ($v | has("min_pct")) and ($v | has("floor"))) | not then
           ((["dir","min_pct","floor"] - ($v | keys)) as $missing
            | "\($k): missing required key(s) \($missing | tojson) -- absence is not a usable default"
@@ -104,6 +104,8 @@ validate_perf_budgets() {
           "\($k): gating is \($v.gating | tojson), expected true or false"
         elif (($v | has("provisional")) and (($v.provisional | type) != "boolean")) then
           "\($k): provisional is \($v.provisional | tojson), expected true or false"
+        elif (($v | has("hw")) and (($v.hw | type) != "boolean")) then
+          "\($k): hw is \($v.hw | tojson), expected true or false -- jq treats ANY non-null, non-false value as true, so the string \"false\" would mark the metric hardware-sensitive and silently stop it comparing across machines"
         else empty end
     ] | .[]' "$file" 2>&1)"
 
@@ -140,6 +142,19 @@ _perf_budgets_self_test() {
     '{"budgets":{"a.b.c":{"dir":"up","min_pct":0.1,"floor":"5000"}}}'
   _expect_reject "quoted min_pct" \
     '{"budgets":{"a.b.c":{"dir":"up","min_pct":"0.1","floor":5000}}}'
+  # `hw` routes a metric to a same-instance-type baseline. jq treats ANY
+  # non-null, non-false value as true, so a quoted "false" would mark the metric
+  # hardware-sensitive and silently stop it comparing across machines -- the
+  # metric would sit at `no-baseline` looking like a warm-up rather than a typo.
+  _expect_reject "quoted hw (silently marks the metric hardware-sensitive)" \
+    '{"budgets":{"a.b.c":{"dir":"up","min_pct":0.1,"floor":5000,"hw":"false"}}}'
+  # Honest about what this one proves: `hwe` is caught by the generic unknown-key
+  # branch whether or not `hw` exists, so it does NOT discriminate the hw feature.
+  # It is kept as a regression check on the allow-list EDIT itself — that widening
+  # the permitted set to include `hw` did not accidentally stop unknown keys being
+  # rejected.
+  _expect_reject "unknown key still rejected after widening the allow-list for hw" \
+    '{"budgets":{"a.b.c":{"dir":"up","min_pct":0.1,"floor":5000,"hwe":true}}}'
   _expect_reject "missing dir (silently takes the down branch)" \
     '{"budgets":{"a.b.c":{"min_pct":0.1,"floor":5000}}}'
   _expect_reject "misspelled dir" \
@@ -172,6 +187,8 @@ _perf_budgets_self_test() {
   }
   _expect_accept "null floor (MAD band only)" \
     '{"budgets":{"a.b.c":{"dir":"up","min_pct":0.1,"floor":null,"gating":false}}}'
+  _expect_accept "well-formed hw:true (the real shape this change adds)" \
+    '{"budgets":{"a.b.c":{"dir":"up","min_pct":0.1,"floor":5000,"hw":true}}}'
   _expect_accept "comment entry holding an array" \
     '{"budgets":{"_comment_x":["prose","more prose"],"a.b.c":{"dir":"down","min_pct":0,"floor":1}}}'
 

@@ -192,18 +192,18 @@
     "  drift — the failure mode item 16 exists to catch."
   ],
   "budgets": {
-    "behaviours.*.p95_ms":              { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false },
-    "behaviours.*.p99_ms":              { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false },
+    "behaviours.*.p95_ms":              { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "hw": true },
+    "behaviours.*.p99_ms":              { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "hw": true },
     "behaviours.*.error_rate":          { "dir": "up",   "min_pct": 0,    "floor": 0.005, "gating": false },
     "growth.cpu_ratio":                 { "dir": "up",   "min_pct": 0.10, "floor": 1.30,  "gating": false },
     "growth.heap_ratio":                { "dir": "up",   "min_pct": 0.10, "floor": 1.30,  "gating": false },
     "growth.live_set_bytes":            { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false },
     "growth.p95_ratio":                 { "dir": "up",   "min_pct": 0.10, "floor": 2.0,   "gating": false },
-    "microbench.*.time_per_op":         { "dir": "up",   "min_pct": 0.05, "floor": null,  "gating": true },
+    "microbench.*.time_per_op":         { "dir": "up",   "min_pct": 0.05, "floor": null,  "gating": true, "hw": true },
     "microbench.*.alloc_bytes_per_op":  { "dir": "up",   "min_pct": 0.05, "floor": null,  "gating": true },
-    "microbench_extra.*.time_per_op":        { "dir": "up",   "min_pct": 0.05, "floor": null },
+    "microbench_extra.*.time_per_op":        { "dir": "up",   "min_pct": 0.05, "floor": null, "hw": true },
     "microbench_extra.*.alloc_bytes_per_op": { "dir": "up",   "min_pct": 0.05, "floor": null },
-    "rig_valid_peak_achieved_rps":      { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false },
+    "rig_valid_peak_achieved_rps":      { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false, "hw": true },
     "forward.error_rate":               { "dir": "up",   "min_pct": 0,    "floor": 0.01,  "gating": true },
 
     "_comment_g1_churn": [
@@ -280,25 +280,25 @@
       "saturation_rps knee is ladder-quantised and recorded but, like its ERROR twin,",
       "NOT budgeted here."
     ],
-    "info_behaviours.*.p95_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true },
-    "info_behaviours.*.p99_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true },
+    "info_behaviours.*.p95_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true, "hw": true },
+    "info_behaviours.*.p99_ms":         { "dir": "up",   "min_pct": 0.10, "floor": null,  "gating": false, "provisional": true, "hw": true },
     "info_behaviours.*.error_rate":     { "dir": "up",   "min_pct": 0,    "floor": 0.005, "gating": false, "provisional": true },
-    "info_rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false, "provisional": true },
+    "info_rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.15, "floor": null,  "gating": false, "provisional": true, "hw": true },
 
-    "laptop.*.ready_ms":                { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.cold_ready_ms":           { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "laptop.*.ready_ms":                { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
+    "laptop.*.cold_ready_ms":           { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "laptop.*.rss_mb":                  { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.threads":                 { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "laptop.*.threads":                 { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "laptop.*.compressed_bytes":        { "dir": "up",   "min_pct": 0.25, "floor": null },
     "laptop.*.heap_used_mb":            { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.threads_per_instance":    { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.total_threads":           { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "laptop.*.threads_per_instance":    { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
+    "laptop.*.total_threads":           { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "laptop.*.tcp_sockets":             { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.load_p95_median_ms":      { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.load_p99_max_ms":         { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "laptop.*.load_p95_median_ms":      { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
+    "laptop.*.load_p99_max_ms":         { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "laptop.*.agg_rss_mb":              { "dir": "up",   "min_pct": 0.25, "floor": null },
     "laptop.*.rss_mb_per_container":    { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "laptop.*.threads_per_container":   { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "laptop.*.threads_per_container":   { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
 
     "_comment_tls_handshake_rate": [
       "WHY keep-up is budgeted on the SCALE-FREE delivery_ratio (AUTHORITATIVE), why",
@@ -359,11 +359,11 @@
       "MAD-derived floor be set. offered_rps + delivery_ratio are emitted in the",
       ".tls_handshake block for anyone auditing these floors."
     ],
-    "tls_handshake.*.handshake_p50_ms":       { "dir": "up",   "min_pct": 0.25, "floor": null },
-    "tls_handshake.*.handshake_p95_ms":       { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "tls_handshake.*.handshake_p50_ms":       { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
+    "tls_handshake.*.handshake_p95_ms":       { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "tls_handshake.*.handshakes_per_s":       { "dir": "down", "min_pct": 0,    "floor": 1 },
     "tls_handshake.*.delivery_ratio":         { "dir": "down", "min_pct": 0,    "floor": 0.90 },
-    "tls_handshake.*.cpu_ms_per_handshake":   { "dir": "up",   "min_pct": 0.25, "floor": null },
+    "tls_handshake.*.cpu_ms_per_handshake":   { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "tls_handshake.*.alloc_kb_per_handshake": { "dir": "up",   "min_pct": 0.25, "floor": null },
     "tls_handshake.*.error_rate":             { "dir": "up",   "min_pct": 0,    "floor": 0.02 },
 
@@ -381,14 +381,14 @@
       "heap_bytes_per_stream is an UPPER bound - it includes streamed bodies still",
       "retained in the count-bounded event-log ring, not just per-stream state."
     ],
-    "streaming.match_baseline_p95_ms":         { "dir": "up", "min_pct": 0.25, "floor": null },
-    "streaming.match_under_stream_p95_ms":     { "dir": "up", "min_pct": 0.25, "floor": null },
+    "streaming.match_baseline_p95_ms":         { "dir": "up", "min_pct": 0.25, "floor": null, "hw": true },
+    "streaming.match_under_stream_p95_ms":     { "dir": "up", "min_pct": 0.25, "floor": null, "hw": true },
     "streaming.match_p95_ratio":               { "dir": "up", "min_pct": 0.25, "floor": null },
     "streaming.match_under_stream_error_rate": { "dir": "up", "min_pct": 0,    "floor": 0.01 },
     "streaming.stream_error_rate":             { "dir": "up", "min_pct": 0,    "floor": 0.01 },
-    "streaming.intertoken_error_idle_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
-    "streaming.intertoken_error_load_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
-    "streaming.intertoken_error_load_p99_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null },
+    "streaming.intertoken_error_idle_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null, "hw": true },
+    "streaming.intertoken_error_load_p95_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null, "hw": true },
+    "streaming.intertoken_error_load_p99_ms":  { "dir": "up", "min_pct": 0.5,  "floor": null, "hw": true },
     "streaming.intertoken_error_p95_ratio":    { "dir": "up", "min_pct": 0.5,  "floor": null },
     "streaming.heap_bytes_per_stream":         { "dir": "up", "min_pct": 0.5,  "floor": null },
     "_comment_clustered_state": [
@@ -454,9 +454,9 @@
       "The per-rung ladder, spread, pinning proof (available_processors), skipped rungs",
       "and retention arithmetic are recorded in the artifact but NOT budgeted here."
     ],
-    "serving_percore.*.healthy_ceiling_rps":    { "dir": "down", "min_pct": 0.25, "floor": null },
-    "serving_percore.*.rps_per_core":           { "dir": "down", "min_pct": 0.25, "floor": null },
-    "serving_percore.*.rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.25, "floor": null },
-    "serving_percore.*.healthy_ceiling_p50_ms": { "dir": "up",   "min_pct": 0.25, "floor": null }
+    "serving_percore.*.healthy_ceiling_rps":    { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
+    "serving_percore.*.rps_per_core":           { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
+    "serving_percore.*.rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
+    "serving_percore.*.healthy_ceiling_p50_ms": { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true }
   }
 }

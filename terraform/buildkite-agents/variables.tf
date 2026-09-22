@@ -104,6 +104,19 @@ variable "perf_instance_types" {
   # Single-socket, so the server stays in one NUMA domain, and the same c5 (Cascade
   # Lake) microarchitecture as before, which keeps cross-hardware drift to a minimum.
   # c5.18xlarge and above are dual-socket — do not go there without re-checking NUMA.
+  #
+  # CHANGING THIS VALUE REQUIRES RE-REVIEWING THE `hw` FLAGS in
+  # mockserver-performance-test/perf-budgets.json. Metrics marked `hw` compare only
+  # against runs from the same instance type, so they reset their baseline here and
+  # sit at `no-baseline` until MIN_BASELINE runs exist on the new box. A metric that
+  # SHOULD be marked and is not will instead compare straight across the change —
+  # silently, because an absent `hw` is legal and means hardware-independent. The
+  # validator cannot catch that omission, and no low-false-positive mechanical rule
+  # can either: hw-mixed metric families are the norm, not the exception (behaviours
+  # p95 is hw but error_rate is not; laptop threads are but tcp_sockets are not), so
+  # both sibling-consistency and name-suffix rules would fire constantly on correct
+  # entries. This note is the control instead — a review triggered at the one moment
+  # it matters, with no false positives the rest of the time.
   default = "c5.12xlarge"
 }
 
