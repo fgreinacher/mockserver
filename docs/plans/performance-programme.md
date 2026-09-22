@@ -2993,10 +2993,75 @@ changing: a static dataset never changes `count`. So the windowing work did not 
 **made a latent behaviour visible**, by converting "your row is still there, just scrolled away" into
 "your row is gone".
 
-**The fix is tail-following**: snap to top only when the user is already there (within 8px, which
-absorbs HiDPI sub-pixel offsets and inertial overshoot). Someone watching the newest entries still
-gets them; someone who scrolled down to read one is left alone. The windowing is untouched, and the
-DOM-weight tests confirm the 2,234-to-145 flat-in-dataset property still holds.
+**The fix has two halves, and shipping only the first was not enough.**
+
+*Half one — tail-following* (`b00228d8d`): snap to top only when the user is already there (within
+8px, which absorbs HiDPI sub-pixel offsets and inertial overshoot). Someone watching the newest
+entries still gets them; someone who scrolled down to read one is left alone.
+
+The repo owner retested and reported it "slightly improved then before but it still isn't usable".
+That report was right, and the reason is a second, independent mechanism the first fix never touched.
+
+*Half two — scroll anchoring on prepend*: the lists are newest-first, so a live push inserts rows
+**above** the viewport. Every existing row's offset grows while `scrollTop` does not — so the content
+under the reader's eye slides down, and once it leaves the window the virtualizer unmounts it.
+`ProgressiveList` now remembers which row was at the top of the viewport and how far its top sat above
+it, and restores that relationship after every update.
+
+**Two properties of the real data killed the two obvious implementations, and both were found by
+testing rather than by reasoning.**
+
+*The list length never changes.* `DashboardWebSocketHandler` caps a panel at
+`DEFAULT_LOG_UPDATE_ITEM_LIMIT` (100) rows and evicts the oldest as it prepends the newest. On any
+server that has handled more than 100 entries the count is constant for the rest of the session. The
+first anchoring attempt fired on `count` rising and added back `scrollHeight - baseline` — and both
+halves of that are inert in the steady state: the count does not rise, and when one row arrives at the
+front while one leaves the back, the total height barely moves even though everything the reader is
+looking at has still shifted down. It passed a growing-list test and would have done nothing at all on
+a busy server. An adversarial review caught it; a second test, which prepends and evicts at the same
+rate, now pins it.
+
+*The anchor row is unmounted by the very update being compensated for.* The natural fix — measure the
+row's position in the DOM after the commit — cannot work: the window is recomputed from the unchanged
+`scrollTop`, which now addresses different rows, so the row being held is usually gone. That is why
+the logic sits in `ProgressiveList` rather than `Panel`. Only the virtualizer can locate it, because
+it knows where every row sits whether or not it is mounted: `measurementsCache` finds the row at the
+top of the viewport on capture, and `getOffsetForIndex(index, 'start')` says where it moved to on
+restore, located by the caller's stable `getKey`. Both are public; `getMeasurements()`, which reads
+more naturally, is typed **private** and would have gone silently inert on a library bump — the same
+failure class as everything else in this entry. `Panel` keeps tail-following; `ProgressiveList` owns
+anchoring.
+
+The anchor effect deliberately has **no dependency array**, for the first reason above: the update that
+moves the reader need not change anything `count`-shaped.
+
+CSS `overflow-anchor` is not an option: the virtualizer's rows are `position: absolute`, which browsers
+exclude from native scroll anchoring, and windowed rows leave the DOM entirely.
+
+The windowing is untouched — the DOM-weight tests confirm the 2,234-to-145 flat-in-dataset property
+still holds. The regression guard is `mockserver-ui/e2e/scroll-anchor.pw.ts`, two real-Chromium
+Playwright tests over a harness that renders the actual `Panel` + `ProgressiveList`
+(`npm run test:e2e:anchor`) — one for the growth phase, one for the steady state. They **cannot** be
+jsdom tests: jsdom has no layout engine, so `scrollTop`/`scrollHeight`/`offsetHeight` are always 0, the
+list never windows, and the prepend shift cannot occur. Degrade-confirmed: with the correction disabled
+**both** tests fail, the opened row unmounting exactly as reported.
+
+**Two lessons, and the second is the sharper one.**
+
+*About half-fixes.* The first fix addressed the mechanism that was easy to see in the code (an explicit
+`scrollTop = 0`) and stopped there. The mechanism that actually dominated had no line of code to point
+at — an omission, not a statement. Nothing in the diff was wrong; what was wrong was declaring the bug
+fixed on the strength of having found *a* cause.
+
+*About tests that agree with your model instead of with production.* The second attempt shipped with a
+real-browser test, degrade-confirmed red, on the right component, testing the right symptom — and it
+still certified a fix that would have done nothing on a live server, because the harness modelled a
+list that GROWS and production has a list that is permanently FULL. The test and the code shared one
+false premise, so the test could not contradict the code. The generalisation: a degrade test proves the
+code causes the behaviour the test measures; it says nothing about whether the test measures the
+situation the user is in. Before trusting one, state the production invariant it assumes — here, "the
+row count rises when data arrives" — and go and check it against the producer. The server had capped
+that count at 100 for years.
 
 **The lesson worth keeping.** A perf change can be blameless and still be the reason a bug became
 intolerable. Virtualisation converted a mild annoyance into an unusable panel without touching the
@@ -3086,8 +3151,24 @@ red pipeline that accurately says "we cannot measure this right now" — which i
 programme spent its whole length trying to engineer, arriving in a form that is inconvenient precisely
 because it is truthful.
 
-The corollary is that `assert perf baseline is fresh` will stay red until one valid run exists, and no
-amount of re-triggering on this rig will produce one.
+The corollary is that `assert perf baseline is fresh` stays red until one valid run exists.
+
+**CORRECTION, 2026-09-22 — the rig is marginal, not incapable, and the baseline is no longer stale.**
+The sentence that stood here said no amount of re-triggering on this rig would produce a valid run.
+That was wrong, and it was disproved within the hour: the scheduled daily run, build **391** (04:00),
+produced a valid run and its `persist + compare baseline` job **passed** — the baseline was written
+and `mockserver-infra` #2051 now reports freshness as passing.
+
+The distinction matters more than the correction. "This rig can never measure it" and "this rig
+measures it only sometimes" call for opposite responses: the first justifies waiting for hardware and
+nothing else, the second says the signal is real but intermittent, and an intermittent control needs
+a retry policy and a flake budget, not a purchase order. The evidence available at the time — one
+failed run — supported the second reading at most; the first was an over-generalisation from a single
+observation, stated with a certainty it had not earned.
+
+The hardware decision below still stands on its own merits: a rig that yields a valid run only
+sometimes cannot settle the 36k knee (item 18), which needs a ladder of valid rungs, not one lucky
+one. But the Dependabot PRs blocked purely on baseline freshness are no longer blocked.
 
 **Decision, 2026-09-22 — WAIT FOR THE HARDWARE.** Three workarounds were put to the repo owner and all
 were declined in favour of leaving the signal honest:
@@ -3098,46 +3179,58 @@ were declined in favour of leaving the signal honest:
 | Merge the blocked Dependabot PRs anyway | Merges against a known-red required check |
 | Widen `PERF_PRODUCER_MAX_AGE_HOURS` past 30h | Silences the alarm without restoring the measurement; the script's own comment says there is no legitimate multi-day gap |
 
-So `assert perf baseline is fresh` stays RED, and the five Dependabot PRs stay OPEN and unmerged, until
-a client rig exists that can produce one valid run. **Do not close those PRs** — closing a Dependabot
-PR makes it skip that version permanently, and nothing is wrong with them; they fail only by inheriting
-this check.
-
-The cost is accepted deliberately: a red control that means something beats a green one that does not.
+The cost was accepted deliberately: a red control that means something beats a green one that does not.
 That is the same trade the whole programme has been making, applied to itself.
+
+**Outcome, later the same day.** The wait was short. Build 391 produced a valid run, the baseline was
+persisted, `assert perf baseline is fresh` went green, and the Dependabot PRs that failed only by
+inheriting that check were unblocked and merged (#2719, #2721, #2722; #2717 and #2718 rebased and
+pending). The standing rule they were held under is unchanged and still applies to the next one:
+**do not close a blocked Dependabot PR** — closing it makes Dependabot skip that version permanently,
+and a PR that fails only by inheriting a red required check has nothing wrong with it.
 
 ## What remains
 
-**Three things are outstanding: one can be settled from the repo, one needs a bigger client rig,
-and one needs an external system to report something.** The newest is not a measurement gap at all but a
-**usability regression this programme caused** — the dashboard panels became unusable for clicking
-while live data arrives. It leads the table deliberately: a panel that will not let you open an item
-is a worse outcome than the rendering cost the change was optimising, and the whole point of the
-data-plane-first rule is that we do not trade a user's daily experience for a number. — those six need a run on real hardware, or an external system to report something.
+**Two things are outstanding: one can be settled from the repo, one needs a bigger client rig.**
+
+The dashboard usability bug that previously led this section is **fixed** (see *The dashboard "closes
+the item I clicked" bug* above) — both halves of it, guarded by a real-browser regression test. It led
+the list deliberately while it was open, because a panel that will not let you open an item is a worse
+outcome than the rendering cost the change was optimising, and the data-plane-first rule exists so we
+do not trade a user's daily experience for a number.
+
 Everything else in this document is history, kept only where it records a measured figure that is
 quoted elsewhere, a decision and its reasoning, or a trap that would otherwise be rediscovered the
 hard way.
 
 ```mermaid
 flowchart TD
-  left["Settleable from the repo"]
   right["Needs a run, or an external system"]
-  left --> c["Rename peak_achieved_rps,
-  delete its false continuity claim"]
   right --> f["Item 18: a load generator
   that can saturate the server"]
   right --> h["A client rig that can
-  saturate the server"]
+  saturate the server, repeatably"]
   right --> k["Canceled-child reporting on a
   native trigger step"]
+  done["Settled from the repo"]
+  done --> c["Renamed peak_achieved_rps
+  in all three namespaces"]
+  done --> d["Zero-drop tolerance,
+  gated on VU headroom"]
+  done --> e["Dashboard panels:
+  tail-follow plus prepend anchoring"]
 ```
 
-### Settleable from the repo
+### Still owed, and what closed
 
-| | What is owed | Detail |
+The first row needs hardware and cannot be closed by editing this repo. The second is kept because it
+records what the `peak_achieved_rps` work actually changed, and that record is quoted elsewhere — but
+it is **done**, not owed.
+
+| | Status | Detail |
 |---|---|---|
-| **A client rig that can saturate the server** | Enough client CPU to produce ONE valid run | **Now blocking three things, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` keeps failing. Every control behaved correctly; the rig simply cannot measure the server. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. This needs client cores, not analysis |
-| **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
+| **A client rig that can saturate the server** | **OWED** — enough client CPU to produce a ladder of valid runs | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. This needs client cores, not analysis |
+| **`peak_achieved_rps`** | **DONE.** Renamed in all three namespaces that name the rig-valid quantity. The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Done** (`84f6c293e`): the absolute zero-drop threshold now forgives a drop fraction within `PERF_SWEEP_DROP_TOL` (default 1%), but **only** on a rung that also had VU-pool headroom — so a genuinely starved rig is still excluded on the headroom term and a 0.4% blip no longer voids a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 
 ### Needs a run, or an external system
 
