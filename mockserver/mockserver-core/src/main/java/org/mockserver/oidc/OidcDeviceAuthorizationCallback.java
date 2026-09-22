@@ -59,7 +59,7 @@ public class OidcDeviceAuthorizationCallback implements ExpectationResponseCallb
         Map<String, String> form = parseFormBody(request.getBodyAsString());
         String scope = emptyToNull(form.get("scope"));
 
-        String deviceCode = "mock-device-code-" + UUIDService.getNonSecureUUID();
+        String deviceCode = "mock-device-code-" + UUIDService.getUUID();
         String userCode = generateUserCode();
         store.putDeviceCode(deviceCode, new OidcAuthorizationStore.DeviceCode(
             userCode, scope, Math.max(0, provider.config.getDeviceCodePendingPolls())));

@@ -212,7 +212,7 @@ public class OidcTokenMinter {
             // Opaque access token: a random reference (not a JWT). Real IdPs frequently issue opaque
             // tokens whose only validation path is introspection — store the token + its claims so the
             // /introspect endpoint can resolve them (RFC 7662).
-            accessToken = "mock-opaque-" + UUIDService.getNonSecureUUID();
+            accessToken = "mock-opaque-" + UUIDService.getUUID();
             Map<String, Object> introspectionClaims = new LinkedHashMap<String, Object>(accessTokenClaims);
             OidcAuthorizationStore.getInstance().putOpaqueToken(
                 accessToken, new OidcAuthorizationStore.OpaqueToken(introspectionClaims, exp));
@@ -245,7 +245,7 @@ public class OidcTokenMinter {
         response.put("expires_in", config.getTokenExpirySeconds());
         response.put("scope", scopeString);
         if (includeRefresh) {
-            response.put("refresh_token", "mock-refresh-" + UUIDService.getNonSecureUUID());
+            response.put("refresh_token", "mock-refresh-" + UUIDService.getUUID());
         }
         return serializeToJson(response);
     }

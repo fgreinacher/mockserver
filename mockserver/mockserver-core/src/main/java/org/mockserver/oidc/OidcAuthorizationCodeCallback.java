@@ -55,7 +55,7 @@ public class OidcAuthorizationCodeCallback implements ExpectationResponseCallbac
                 .withBody("{\"error\":\"server_error\",\"error_description\":\"no OIDC provider registered for this authorize endpoint\"}");
         }
 
-        String code = "mock-auth-code-" + UUIDService.getNonSecureUUID();
+        String code = "mock-auth-code-" + UUIDService.getUUID();
         store.putCode(code, new OidcAuthorizationStore.AuthorizationCode(
             redirectUri, codeChallenge, codeChallengeMethod, scope, nonce
         ));

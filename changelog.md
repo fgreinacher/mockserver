@@ -283,8 +283,9 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   response scoring and unseeded `new Random()` in the random embedding-vector fallback, and moved the
   content ids in mocked SAML IdP and OIDC provider responses. Throughout, ids whose unguessability is
   a **security** property — session ids, callback and breakpoint correlation ids, TLS keystore file
-  names, certificate serials, the QUIC source-address token secret, OIDC signing-key ids, and
-  device-flow user-codes — are unchanged and still use the secure generator. All ids remain standard
+  names, certificate serials, the QUIC source-address token secret, OIDC signing-key ids, device-flow
+  user-codes, and the OIDC `access_token` / `refresh_token` / authorization code / `device_code` — are
+  unchanged and still use the secure generator. All ids remain standard
   version-4 UUIDs; trace ids remain 32- and 16-character lowercase hex as the W3C `traceparent`
   contract requires — format and uniqueness are unchanged. **One user-visible semantic change:** the
   CRUD data-plane resource id (minted on a `POST` to a CRUD-backed data collection) is now
