@@ -19,6 +19,7 @@ regressions hide and stale claims get published.
 | `MatchingBenchmark` JMH | Matcher hot-path time/op and allocation/op | Daily (perf queue) | Yes — `time_per_op` + `alloc_bytes_per_op` |
 | `CandidateIndexBenchmark` JMH | Index vs scan scaling | Daily (perf queue) | No |
 | Promoted dark benchmarks (7 classes, see below) | Various hot paths | Daily (perf queue) | No — notify-only |
+| Proxy-path benchmarks (`RelayByteCopyBenchmark`, `SocksHandshakeBenchmark`) | CONNECT/relay byte cost; SOCKS handshake cost | Daily (perf queue) | No — notify-only |
 | `Http2StreamChannelBenchmark` JMH | HTTP/2 streams-per-connection throughput and latency | Daily (perf queue) | No — by explicit design |
 | `Http2ConnectionMemoryBenchmark` JMH | Retained heap per established connection | Daily (perf queue) | No — by explicit design |
 | `load.js` | p95 / p99 gate, ramping 50 -> 500 rps | Opt-in (manual / scheduled) | Yes — k6 thresholds |
@@ -33,7 +34,7 @@ regressions hide and stale claims get published.
 flowchart TD
   guard["perf-test-guard.sh\nonly dispatches if master moved"]
   run["perf-test-run.sh\nregression.js HTTP + HTTPS/H2\nforward.js\nproxy.js forward mode\nproxy.js handshake mode\nsweep.js\nstreaming.js\nclustered_crossing.js\ngrowth.js + resource sampler"]
-  micro["perf-test-microbench.sh\nMatchingBenchmark 2 forks\nCandidateIndexBenchmark\n7 promoted dark benchmarks"]
+  micro["perf-test-microbench.sh\nMatchingBenchmark 2 forks\nCandidateIndexBenchmark\n7 promoted dark benchmarks\n2 proxy-path benchmarks (9b/9c)"]
   h2["perf-test-h2multiplex.sh\nHttp2StreamChannelBenchmark\nHttp2ConnectionMemoryBenchmark"]
   cmp["perf-test-compare.sh\nrolling median + MAD vs last 10 runs\ngating metrics fail the build\nnotify-only metrics annotate only"]
   s3["S3 bucket\nmockserver-ci-perf-results"]
@@ -65,6 +66,7 @@ Everything else is reported in the Buildkite annotation but does not change the 
 - `sweep.js` `rig_valid_peak_achieved_rps` (extended from 16k to 64k in the current code)
 - `growth.js` ratios and `live_set_bytes`
 - All promoted dark benchmark metrics
+- The proxy-path benchmark metrics (`RelayByteCopyBenchmark`, `SocksHandshakeBenchmark` — items 9b/9c), which share the `microbench_extra.*` budgets
 
 ## What Each Harness Actually Measures
 
@@ -157,6 +159,29 @@ These classes existed but were run by no CI step before the performance programm
 They are promoted into `perf-test-microbench.sh`'s second JMH invocation and land in
 `microbench_extra.*`. All are notify-only (no gating flag) until each has enough history to
 derive a budget.
+
+### The proxy-path benchmarks (items 9b, 9c)
+
+Proxying was the largest request-path area the programme's mandate named that had no
+measurement (`ForwardPathBenchmark`, despite the name, measures the load generator — see the
+note below). Two JMH classes close it, run in a **third, param-pinned** JMH invocation in
+`perf-test-microbench.sh` (on the same classpath — no extra module build) and **merged into the
+same `microbench_extra.*` result object**, so they inherit the existing notify-only
+`microbench_extra.*.{time_per_op,alloc_bytes_per_op}` budgets with no new budget key:
+
+| Class | What it measures | Item |
+|---|---|---|
+| `RelayByteCopyBenchmark` | The CONNECT/relay **response leg** — HTTP decode → the real relay aggregator → re-encode — as bytes/s and allocation per relayed message. The relay handlers copy nothing; the per-message cost lives in the flanking codecs and is per-fragment, not per-byte. | 9c |
+| `SocksHandshakeBenchmark` | The per-connection **SOCKS4/5 handshake** codec cost (the only uncovered SOCKS cost: k6 has no SOCKS transport, and the SOCKS steady-state relay is already `RelayByteCopyBenchmark`'s territory). Ships with two controls — `detect` (allocation-free front-door floor) and `channelPlumbingOnly` (per-op `EmbeddedChannel` construction share). | 9b |
+
+Both benchmarks declare large default `@Param` cartesians (relay 2×3×4 = 24, socks 3×3 = 9) for
+on-demand characterisation via their own `run-*`/`run.sh`. The daily invocation **pins** each to
+one representative cell — relay at a 256 KiB body in 1460-byte fragments, socks at
+`SOCKS5_PASSWORD` (the heaviest handshake) — so the daily step emits exactly **5 rows** and stays
+inside the microbench step's 70 min budget rather than doubling it. That fixed count is asserted
+by the step's `EXTRA_EXPECTED` fail-closed row guard (now 37 = 32 dark + 5 proxy); a rename, a
+crashed fork, **or a `-p` pin that stopped applying** (which would re-expand to the full
+cartesian) all red the build.
 
 **`ForwardPathBenchmark` does not measure proxying.** It measures the work
 `LoadScenarioOrchestrator.RunningScenario.render()` performs before handing a request to the

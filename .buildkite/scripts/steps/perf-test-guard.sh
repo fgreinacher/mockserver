@@ -171,6 +171,10 @@ steps:
     # +8 min). Cloud agents run JMH ~2-3x slower, so that ~10 min laptop delta is
     # ~20-25 min on the box; 70m keeps the two module builds + all three JMH runs
     # inside budget under cloud noise.
+    # Items 9b/9c: a FOURTH JMH invocation (the proxy-path benchmarks — RelayByteCopy +
+    # SocksHandshake) runs on the SAME classpath (NO third module build). It is PINNED to
+    # 5 representative combos (not the ~33-combo full cartesian, precisely to stay in
+    # budget), adding only ~2 min laptop / ~5-6 min box — the 70m cap still has headroom.
     timeout_in_minutes: 70
     agents:
       queue: "perf"

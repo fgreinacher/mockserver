@@ -314,7 +314,8 @@ by hand at a point in time and never since; **dark** = the code exists but nothi
 | **D3 Proxy** | all | continuous (partial) | Forward **action** latency at 200 rps | daily | median + MAD |
 | **D3** | C | **continuous** | Forward connection-pool exhaustion at 1,500 rps. **Wired in `19686f9f1`** — it had never executed and was not even linted | daily | `forward_guard.error_rate`; infra failure now announces itself |
 | **D3** | all | continuous | **CONNECT tunnel** — `proxy.js` `forward_connect` arm, landed with item 9a. Notify-only under the `behaviours.*` budgets; the row below is what remains uncovered | daily | notify-only `behaviours.forward_connect_proxy.*` |
-| **D3** | all | **none** | SOCKS4/5; transparent proxy; binary proxying; HTTP/2 relay; upstream-proxy chaining; proxy MITM TLS | — | — |
+| **D3** | C | **continuous** | **SOCKS4/5 handshake** codec cost (`SocksHandshakeBenchmark`, item 9b) + **CONNECT/relay HTTP/1.1 byte cost** (`RelayByteCopyBenchmark`, item 9c) — JMH, daily microbench step's promoted set | daily | notify-only `microbench_extra.*.{time_per_op,alloc_bytes_per_op}` |
+| **D3** | all | **none** | transparent proxy; raw/opaque CONNECT-tunnel byte pumping; SSE/HTTP/2 relay legs; upstream-proxy chaining; proxy MITM TLS | — | — |
 | D4 CPU | L | none | Idle-instance CPU floor | — | — |
 | D4 | C | continuous | CPU start/end/peak/ratio over a 6-minute growth run | daily | ratio vs median + MAD, floor 1.30 |
 | D4 Memory | L | none | Per-instance RSS; idle heap floor; whether the documented `-Xmx512m` sidecar recipe works | — | the 512 MB recipe is **prose only, never measured** |
@@ -761,13 +762,39 @@ while catching a total AppCDS loss, so it is a backstop, not the signal.
   `.behaviours` (covered by the existing `behaviours.*` budgets, resetting the k6 arm
   set once, as intended). `setup()` fails loud if the CONNECT tunnel carried no TLS
   handshake at all (it measures the proxy CONNECT path; MockServer may itself
-  terminate the tunnel TLS with a generated cert). 9b (SOCKS5) and 9c (JMH relay) remain.
+  terminate the tunnel TLS with a generated cert). 9b (SOCKS5) and 9c (JMH relay) followed.
 - **9b:** a SOCKS5 rung. k6 supports an HTTP proxy but not SOCKS, so this needs a small
   driver or a SOCKS-aware sidecar; if awkward, downgrade to a JMH benchmark of the handshake
   handlers rather than skipping the dimension.
+  **Shipped:** the plan's sanctioned downgrade was taken — a JMH benchmark, not a k6 rung —
+  and it is the *right* route, not merely the easy one: the SOCKS steady-state relay is
+  already 9c's territory (`SocksConnectHandler extends RelayConnectHandler`), so the only
+  uncovered SOCKS cost is the per-connection handshake, which JMH measures well.
+  `org.mockserver.benchmark.SocksHandshakeBenchmark` drives the real Netty SOCKS4/5 codecs
+  (`Socks5InitialRequestDecoder` → `Socks5PasswordAuthRequestDecoder` → `Socks5CommandRequestDecoder`,
+  and the SOCKS4 pair) exactly as `PortUnificationHandler.enableSocks4/5` installs them, with a
+  `scenario` sweep (`SOCKS4` < `SOCKS5_NO_AUTH` < `SOCKS5_PASSWORD`, the mechanism discriminator)
+  and two validity controls (`detect` = allocation-free front-door floor; `channelPlumbingOnly` =
+  per-op `EmbeddedChannel` construction share, the 9c-lesson rival-variable control).
 - **9c (JMH):** a relay benchmark measuring bytes/s and allocation per relayed KB. The relay
   is byte-copy dominated and nothing like matching, so the matcher backstop says nothing
   about it.
+  **Shipped:** `org.mockserver.benchmark.RelayByteCopyBenchmark` drives the exact CONNECT-relay
+  response codecs (`HttpResponseDecoder` → the real relay-mode `StreamingAwareHttpObjectAggregator`
+  → `HttpResponseEncoder`) fed like a socket in `readSize`-byte fragments, over a `bodySize` ×
+  `readSize` sweep. Its own measurement DISPROVES the naive "byte-copy" model: the relay handlers
+  copy nothing (they `writeAndFlush` by reference and the aggregator assembles a `CompositeByteBuf`
+  by reference), so the cost is **per-fragment object churn, not per-byte** — the `readSize` sweep at
+  fixed `bodySize` is the decisive control, and `fragmentWrappersOnly` isolates the wrapper share.
+- **Wired (both):** promoted into the daily `perf-test-microbench.sh` step as a **third,
+  param-pinned** JMH invocation (same classpath, no extra build), merged into the existing
+  `microbench_extra.*` result object so they inherit the notify-only
+  `microbench_extra.*.{time_per_op,alloc_bytes_per_op}` budgets (**no new budget key**;
+  `time_per_op` is `hw:true`, `alloc_bytes_per_op` is machine-independent and is not). Each is
+  pinned to one representative cell daily (relay: 256 KiB body / 1460-byte fragments; socks:
+  `SOCKS5_PASSWORD`), so the step emits exactly **5 proxy rows**; the step's `EXTRA_EXPECTED`
+  fail-closed row guard rose 32 → 37 and now also catches a `-p` pin that silently stopped
+  applying. The full cartesians stay available on demand via each benchmark's `run.sh`.
 
 **Naming trap:** `ForwardPathBenchmark` does **not** benchmark proxying — it measures the
 *load generator's* outbound render path. Do not assume proxying is covered because that file

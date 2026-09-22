@@ -71,11 +71,57 @@ JMH_ARGS_EXTRA="${JMH_ARGS_EXTRA:--f 2 -wi 2 -i 3 -r 2 -w 2 -bm avgt -prof gc}"
 #                                                         explicit-charset reuse path from
 #                                                         the implicit-charset control)
 #   Http3RequestBridge 1 method x 2 protocol x 3 bodySize = 6   (item 20a H3-vs-H2 A/B)
-#                                             total  = 32
+#                                          subtotal  = 32
+# PLUS the item 9b/9c proxy-path benchmarks, run in a SEPARATE pinned invocation
+# (JMH_INCLUDE_PROXY / JMH_ARGS_PROXY below) but MERGED into this same
+# perf-microbench-extra.json, so this ONE guard covers both invocations:
+#   RelayByteCopy   2 methods x 1 bodySize x 1 readSize (pinned) = 2   (9c relay leg)
+#   SocksHandshake  3 methods x 1 scenario            (pinned)   = 3   (9b handshake)
+#                                          subtotal  =  5
+#                                             total  = 37
 # Overridable so a narrowed local include/args run can set its own expected count;
 # any change to the benchmark surface (a new @Param, a new @Benchmark) is a
 # deliberate, reviewed bump of this number, not a silent row-count drift.
-EXTRA_EXPECTED="${EXTRA_EXPECTED:-32}"
+EXTRA_EXPECTED="${EXTRA_EXPECTED:-37}"
+
+# --- items 9b + 9c: proxy-path benchmarks -------------------------------------
+# The largest genuinely uncovered area the mandate names (performance-programme
+# item 9). Two JMH classes, promoted here so they emit through the SAME notify-only
+# microbench_extra path as the item-15b dark set (the existing
+# `microbench_extra.*.{time_per_op,alloc_bytes_per_op}` budgets cover them with NO
+# new budget key; time_per_op carries hw:true, alloc_bytes_per_op does not — the
+# correct classification, since a relayed-byte timing moves with the box but
+# bytes/op is machine-independent):
+#   9c RelayByteCopyBenchmark  — the CONNECT/relay response leg (decode -> relay
+#      aggregator -> re-encode); the matcher backstop says nothing about a byte-copy-
+#      dominated path.
+#   9b SocksHandshakeBenchmark — the per-connection SOCKS4/5 handshake codecs (the
+#      plan's sanctioned downgrade from a k6 SOCKS arm: k6 has no SOCKS transport, and
+#      the SOCKS steady-state relay is already 9c's territory, so the handshake is the
+#      only uncovered SOCKS cost).
+# WHY a SEPARATE invocation rather than appending both to JMH_INCLUDE_EXTRA:
+#   (1) COST. Their full default @Param cartesians are RelayByteCopy 2x3x4=24 +
+#       Socks 3x3=9 = 33 combos. At the guard's own ~1 min/combo-on-the-box budget
+#       (see perf-test-guard.sh) that ~doubles the extra set and blows the 70m step
+#       cap. A daily regression trend needs ONE representative cell per method, not
+#       the full characterisation sweep (the same reason the PRIMARY MatchingBenchmark
+#       run pins -p expectationCount=100). The full sweeps stay available on demand via
+#       the benchmarks' own run.sh (documented in each class's javadoc).
+#   (2) PARAM COLLISION. JMH_ARGS_EXTRA is shared and UNPINNED; adding `-p bodySize=...`
+#       there would ALSO pin InboundDecodeBenchmark (which has a bodySize @Param),
+#       collapsing its 3 rows to 1 and half-dropping that gated-adjacent metric. A
+#       dedicated args string keeps the pin off the shared classes.
+# The pinned cell: relay at a 256 KiB body fed in 1460-byte (MTU-sized) fragments — a
+# ~180-fragment large-response relay, where the per-fragment object churn 9c measures
+# is clearly visible and a regression would move alloc_bytes_per_op; SOCKS5_PASSWORD —
+# the heaviest handshake (greeting + password-auth + command, two decoder swaps), with
+# its own two controls (detect = allocation-free front-door floor; channelPlumbingOnly
+# = the per-op EmbeddedChannel construction share) riding along for free. JMH applies
+# each -p only to the class that declares it (bodySize/readSize -> relay, scenario ->
+# socks; the other shows N/A) — verified: the combined invocation exits 0 and emits
+# exactly the 5 rows above. Same classpath as the runs above (no extra module build).
+JMH_INCLUDE_PROXY="${JMH_INCLUDE_PROXY:-org\.mockserver\.benchmark\.(RelayByteCopyBenchmark|SocksHandshakeBenchmark)\.}"
+JMH_ARGS_PROXY="${JMH_ARGS_PROXY:--f 2 -wi 2 -i 3 -r 2 -w 2 -bm avgt -prof gc -p bodySize=262144 -p readSize=1460 -p scenario=SOCKS5_PASSWORD}"
 
 # -f 2 (item 15c): scaling sweep gets the same 2-fork/trimmed-iteration treatment
 # (defined here, not in the scaling section below, so the JMH-config fingerprint
@@ -85,6 +131,7 @@ JMH_ARGS_SCALING="${JMH_ARGS_SCALING:--f 2 -wi 2 -i 3 -r 2 -w 2}"
 
 RESULT_RAW="mockserver/mockserver-benchmark/target/jmh-result.json"
 EXTRA_RAW="mockserver/mockserver-benchmark/target/jmh-result-extra.json"
+PROXY_RAW="mockserver/mockserver-benchmark/target/jmh-result-proxy.json"
 OUT_JSON="$REPO_ROOT/perf-microbench.json"
 EXTRA_JSON="$REPO_ROOT/perf-microbench-extra.json"
 
@@ -121,6 +168,8 @@ echo "--- building mockserver-netty + upstream (the benchmark's compile deps), t
   -e "JMH_INCLUDE=$JMH_INCLUDE" \
   -e "JMH_ARGS_EXTRA=$JMH_ARGS_EXTRA" \
   -e "JMH_INCLUDE_EXTRA=$JMH_INCLUDE_EXTRA" \
+  -e "JMH_ARGS_PROXY=$JMH_ARGS_PROXY" \
+  -e "JMH_INCLUDE_PROXY=$JMH_INCLUDE_PROXY" \
   -- -c '
     set -euo pipefail
     cd /build/mockserver                       # the Maven reactor root (pom.xml lives here, not /build)
@@ -145,6 +194,11 @@ echo "--- building mockserver-netty + upstream (the benchmark's compile deps), t
     # item 15b: the promoted dark benchmarks, same classpath, one extra invocation.
     # shellcheck disable=SC2086
     java -cp "$CP" org.openjdk.jmh.Main "$JMH_INCLUDE_EXTRA" $JMH_ARGS_EXTRA -rf json -rff target/jmh-result-extra.json
+    # items 9b + 9c: the proxy-path benchmarks, same classpath, a SEPARATE pinned
+    # invocation (its -p pins must NOT reach the shared extra classes above — see the
+    # JMH_ARGS_PROXY comment). Merged into perf-microbench-extra.json below.
+    # shellcheck disable=SC2086
+    java -cp "$CP" org.openjdk.jmh.Main "$JMH_INCLUDE_PROXY" $JMH_ARGS_PROXY -rf json -rff target/jmh-result-proxy.json
   '
 
 if [ ! -f "$REPO_ROOT/$RESULT_RAW" ]; then
@@ -165,6 +219,16 @@ fi
 # self-describing config block; the jq -s '*' merge in compare deep-merges it beside
 # the SUT config fields. Recorded as the exact arg strings so ANY methodology change
 # (fork/warmup/measurement) changes the fingerprint — conservatively self-invalidating.
+#
+# NOTE: JMH_ARGS_PROXY (items 9b/9c) is DELIBERATELY NOT part of this fingerprint.
+# The proxy benchmarks run in their own JVM forks AFTER the primary MatchingBenchmark
+# has finished and written jmh-result.json, so they cannot shift the matcher timings,
+# and their own rows are NEW keys that self-start no-baseline regardless. Adding
+# args_proxy here would, on first deploy and on any later proxy-only fork/iter tweak,
+# needlessly reset the GATING microbench.*.time_per_op matcher baseline (the one real
+# gate in this step) via the whole-fingerprint match below — a real loss of gating
+# window for zero benefit. Keep it out; the proxy metrics are notify-only, so at worst
+# a future proxy-arg change causes a harmless notify-only annotation on those rows.
 jq --arg args "$JMH_ARGS" --arg argsExtra "$JMH_ARGS_EXTRA" --arg argsScaling "$JMH_ARGS_SCALING" \
    '[.[] | {
       key: (.params.matcherType + "_" + .params.expectationCount),
@@ -184,19 +248,28 @@ if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact upload "perf-microbench.json" || true
 fi
 
-# --- item 15b: reshape the promoted dark-benchmark results --------------------
-# Same shape as the microbench object above, but keyed by <ClassName>.<method>
-# plus any @Param values (these benchmarks have DIFFERENT params from Matching —
-# bodySize, mode/schemaComplexity, or none — so a benchmark+params key is used
-# instead of the matcherType_count key). Emitted under `microbench_extra`, which
-# perf-test-compare.sh consumes NON-GATING (notify-only until each has >=10 clean
-# runs of history to derive a budget from).
+# --- items 15b + 9b/9c: reshape the promoted extra benchmark results ----------
 if [ ! -f "$REPO_ROOT/$EXTRA_RAW" ]; then
   echo "ERROR: promoted dark benchmarks did not produce $EXTRA_RAW (JMH include matched nothing, or the run crashed)" >&2
   exit 1
 fi
+# items 9b + 9c: the proxy-path invocation must have produced its raw too. Its absence
+# is the same class of failure (include matched nothing / fork crashed) and must red
+# LOUDLY here — otherwise `jq -s add` over a missing file would iterate null below.
+if [ ! -f "$REPO_ROOT/$PROXY_RAW" ]; then
+  echo "ERROR: proxy-path benchmarks (items 9b/9c) did not produce $PROXY_RAW (JMH include matched nothing, or the run crashed)" >&2
+  exit 1
+fi
 
-jq '[.[] | {
+# Reshape BOTH the item-15b dark set AND the item-9b/9c proxy set into ONE
+# `microbench_extra` object. `jq -s add` slurps the two JMH result arrays and
+# concatenates them, so the single key/value shaping below is the one source of truth
+# for both invocations (keyed by <ClassName>.<method> plus any @Param values — these
+# benchmarks have DIFFERENT params from Matching, so a benchmark+params key is used
+# instead of the matcherType_count key). Emitted under `microbench_extra`, which
+# perf-test-compare.sh consumes NON-GATING (notify-only until each has >=10 clean runs
+# of history to derive a budget from).
+jq -s 'add | [.[] | {
       key: ((.benchmark | sub("^org\\.mockserver\\.benchmark\\.";""))
             + (if ((.params // {}) | length) > 0
                then "_" + ((.params) | to_entries | sort_by(.key) | map(.key + "-" + (.value|tostring)) | join("_"))
@@ -207,21 +280,23 @@ jq '[.[] | {
         alloc_bytes_per_op: (.secondaryMetrics["gc.alloc.rate.norm"].score // null)
       }
     }] | from_entries | {microbench_extra: .}' \
-  "$REPO_ROOT/$EXTRA_RAW" > "$EXTRA_JSON"
+  "$REPO_ROOT/$EXTRA_RAW" "$REPO_ROOT/$PROXY_RAW" > "$EXTRA_JSON"
 
-# Fail-closed guard (the whole point of item 15b): a benchmark that silently emits
-# NO — or FEWER — rows is exactly the failure mode this step exists to catch. Assert
-# the EXACT expected row count, not merely ">= 1": a total vanish (0 rows) AND a
-# PARTIAL drift (e.g. one of the five classes renamed in JMH_INCLUDE_EXTRA -> 16 rows
-# instead of 20) both fail LOUDLY here. A partial drift is otherwise invisible because
-# these metrics are non-gating, so compare would never flag the missing rows. The trap
-# surfaces this as a red build rather than shipping a green build that measured less
-# than it claims. (perf-test-compare.sh iterates head metrics only, so it cannot
-# detect a baseline-has-key-but-head-lacks-it drop — this producer-side count is where
-# partial drift MUST be caught.)
+# Fail-closed guard (the whole point of item 15b, now also covering the 9b/9c proxy
+# set merged in above): a benchmark that silently emits NO — or FEWER — rows is exactly
+# the failure mode this step exists to catch. Assert the EXACT expected row count, not
+# merely ">= 1": a total vanish (0 rows), a PARTIAL drift (e.g. one of the extra classes
+# renamed in JMH_INCLUDE_EXTRA/JMH_INCLUDE_PROXY -> fewer rows), AND a proxy -p pin that
+# stopped applying (which would multiply the relay/socks rows back to their full
+# cartesian) all fail LOUDLY here. A drift is otherwise invisible because these metrics
+# are non-gating, so compare would never flag the missing/extra rows. The trap surfaces
+# this as a red build rather than shipping a green build that measured other than it
+# claims. (perf-test-compare.sh iterates head metrics only, so it cannot detect a
+# baseline-has-key-but-head-lacks-it drop — this producer-side count is where drift MUST
+# be caught.)
 EXTRA_COUNT="$(jq '.microbench_extra | length' "$EXTRA_JSON")"
 if [ "${EXTRA_COUNT:-0}" -ne "$EXTRA_EXPECTED" ]; then
-  echo "ERROR: promoted dark benchmarks produced ${EXTRA_COUNT:-0} result rows in $EXTRA_JSON, expected ${EXTRA_EXPECTED} — benchmark rename/include drift, a crashed fork, or a deliberate surface change that did not bump EXTRA_EXPECTED." >&2
+  echo "ERROR: promoted extra benchmarks (item 15b dark set + item 9b/9c proxy set) produced ${EXTRA_COUNT:-0} result rows in $EXTRA_JSON, expected ${EXTRA_EXPECTED} — benchmark rename/include drift, a crashed fork, a proxy -p pin that stopped applying, or a deliberate surface change that did not bump EXTRA_EXPECTED." >&2
   echo "Rows actually emitted:" >&2
   jq -r '.microbench_extra | keys[] | "  - " + .' "$EXTRA_JSON" >&2 || true
   exit 1
