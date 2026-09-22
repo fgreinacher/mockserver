@@ -3064,6 +3064,31 @@ rungs would still be excluded on the headroom term alone.
 **This item and item 18 are now the same question**, approached from opposite ends and agreeing: the
 client is the limit. Both wait on hardware, not analysis.
 
+## The perf baseline cannot be refreshed either, for the same reason
+
+**Discovered 2026-09-22 while trying to fix `mockserver-infra`'s baseline-freshness failure.** The
+monitor fails because the last scheduled perf run did not persist a baseline. Build 384 was triggered
+clean-tier and baseline-eligible precisely to refresh it. Its measuring jobs all passed — run+sample,
+microbench, HTTP/2 multiplex — and then `persist + compare` **failed on purpose**:
+
+> This run's `validity` block is absent or false, so it was **not persisted to the baseline history and
+> not compared** — a compromised measurement must not poison the rolling median. **This fails the
+> build** so a run that could not measure anything is loud, not a green square that misrepresents it.
+
+The run was invalid because every sweep rung was excluded on client CPU. So the baseline freshness
+failure, the unmeasurable knee and item 18 are **one problem wearing three hats**: this rig's k6 client
+saturates before the server does.
+
+**Worth stating plainly: nothing is broken.** The sweep harness refused to publish a client-limited
+number as a server figure. Compare refused to persist an invalid run into the rolling median. The
+monitor correctly reports the baseline as stale. Three independent honest controls compounded into a
+red pipeline that accurately says "we cannot measure this right now" — which is the outcome this
+programme spent its whole length trying to engineer, arriving in a form that is inconvenient precisely
+because it is truthful.
+
+The corollary is that `assert perf baseline is fresh` will stay red until one valid run exists, and no
+amount of re-triggering on this rig will produce one.
+
 ## What remains
 
 **Three things are outstanding: one can be settled from the repo, one needs a bigger client rig,
@@ -3094,7 +3119,7 @@ flowchart TD
 
 | | What is owed | Detail |
 |---|---|---|
-| **A client rig that can saturate the server** | Enough client CPU to push past ~19,000 rps | **This is now the single blocker for BOTH the 36,000 knee and item 18, which have collapsed into one question.** Build 384 (clean-tier, baseline-eligible) shows k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so the ~19,000 plateau is the client's ceiling and `rig_valid_peak_achieved_rps` is 0 - the harness correctly refuses to report a server figure. The multi-process generator (`multi-process-sweep.sh`) already broke the single-process ceiling locally (5,561 to 8,528 rps) and then hit its own client-CPU pins. So the need is hardware: more client cores, or a second client host (the harness accepts `PERF_MULTI_TARGET_URL`). No amount of analysis substitutes |
+| **A client rig that can saturate the server** | Enough client CPU to produce ONE valid run | **Now blocking three things, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` keeps failing. Every control behaved correctly; the rig simply cannot measure the server. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. This needs client cores, not analysis |
 | **`peak_achieved_rps`** | **Rename done in all three namespaces that name the rig-valid quantity.** The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Still open:** reconsider the absolute zero-drop threshold — a fractional tolerance would still catch a genuinely starved rig without letting a 0.4% blip void a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 
 ### Needs a run, or an external system
