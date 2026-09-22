@@ -574,6 +574,33 @@
                         </configuration>
 
                     </execution>
+
+
+                    <execution>
+
+                        <!-- The third half of the guard: the DEFAULT jar-with-dependencies is the most-downloaded
+
+                             artifact and the one the Dockerfiles' source=download path fetches, yet nothing asserted
+
+                             its natives. It carries every platform's tcnative and Linux epoll, and NO quiche (that
+
+                             ships in the http3 classifier). A dropped platform native, or a re-added quiche, would
+
+                             build and publish silently. -->
+
+                        <id>assert-default-jar-natives</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <workingDirectory>${basedir}</workingDirectory>
+                            <executable>../mockserver-netty-no-dependencies/src/packaging/assert-default-jar-natives.sh</executable>
+                            <arguments>
+                                <argument>${project.build.directory}/${project.build.finalName}-jar-with-dependencies.jar</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
             <!-- make jar executable -->
