@@ -921,6 +921,27 @@ positive control) then under load; `perf-test-run.sh` samples heap-per-open-stre
 
 #### 13. Clustered state under load — **[harness landed `648780a33`; image provisioning wired so it actually measures]**
 
+**AND THE BASELINE PERSISTS AGAIN — build 412 passed end to end**, first green persist+compare
+since the chain of failures began: the h2 metadata jq (`b462b9ca9`), then this clustered-discovery
+bug underneath it. 9 regressions flagged, all notify-only, build not failed.
+
+**The published website figures are CONFIRMED on clean hardware, not corrected.** The publish step
+read `healthy_ceiling_rps=32000 peak_achieved_rps=37718.9` and emitted no patch: the committed
+figures are 6 days old against a 30-day window and the largest headline move is 5.7% against a 10%
+one. So the healthy ceiling is **unchanged at 32,000** and the peak moved 36,324 -> 37,719, +3.8%.
+
+That is worth stating because it refutes a reasonable-sounding worry rather than confirming it.
+The contention finding said every figure from the old rig was measured with the load generator
+inside the server's cores, which invited the inference that the published numbers were
+significantly conservative. On the clean rig they are essentially the same. The consumer page's
+"on six CPU cores ... about 32,000 requests/sec" needs no correction.
+
+**Hardware-aware baselining is visibly working too:** the run reported "6 of 10 baseline run(s)
+are from a different (or unrecorded) machine type", so hardware-sensitive metrics compare only
+against `c5.12xlarge` runs and report `no-baseline` until five have accrued. The resize cannot
+silently blend old and new hardware into one median - which is exactly what
+`f15c2de9e`'s hardware term was added to prevent.
+
 **FIXED `13bbaaad3`, confirmed on the rig by build 412.** The A/B now forms a real cluster and
 state genuinely crosses it: `candidate view members A=2 B=2 clustered(A)=true` and
 `state-crossed(A->B)=true (probe HTTP 222, negative-control HTTP 502)` — an expectation seeded
