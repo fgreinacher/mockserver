@@ -74,6 +74,37 @@ async function openPanel(page: import('@playwright/test').Page, title: string) {
   expect(tagged, `found the ${title} scroll box`).toBeTruthy();
 }
 
+// The Traffic inspector is a separate VIEW (#/traffic), not a panel on the
+// dashboard grid, and it does NOT use Panel: it rolls its own scroll container
+// (data-testid="traffic-scroll-region") and wires the shared useTailFollow hook
+// itself. That is a genuinely different code path from the panels above, and it
+// is the one that carried two of the original defects (follow wired to nothing,
+// and no Follow control rendered at all), so it needs its own cover. Tagging is
+// done off the testid rather than by hunting a heading, and it asserts the region
+// is actually scrollable — so a view that never rendered, or a testid that moved,
+// fails HERE as inconclusive harness setup, distinct from the product failing a
+// follow assertion later.
+async function openTraffic(page: import('@playwright/test').Page) {
+  await page.goto(`${BASE}/mockserver/dashboard/#/traffic`);
+  await page.waitForFunction(
+    () =>
+      !!document.querySelector('[data-testid="traffic-scroll-region"]') &&
+      document.querySelectorAll('[data-vrow]').length > 5,
+    undefined,
+    { timeout: 60_000 },
+  );
+  const tagged = await page.evaluate(() => {
+    const box = document.querySelector<HTMLElement>('[data-testid="traffic-scroll-region"]');
+    if (!box || box.scrollHeight <= box.clientHeight + 1) return false;
+    const paper = box.closest('.MuiPaper-root');
+    if (!paper) return false;
+    box.setAttribute('data-follow-scroller', '');
+    paper.setAttribute('data-follow-panel', '');
+    return true;
+  });
+  expect(tagged, 'found the Traffic inspector scroll region and it is scrollable').toBeTruthy();
+}
+
 const chipText = (page: import('@playwright/test').Page) =>
   page.evaluate(() => {
     const paper = document.querySelector('[data-follow-panel]');
@@ -190,3 +221,97 @@ for (const panel of ['Log Messages', 'Received Requests']) {
     }
   });
 }
+
+// The Traffic inspector (Observe -> Traffic). Same three properties as the panels
+// above, but against Traffic's own scroll container and its own useTailFollow
+// wiring — the surface that shipped broken twice and whose migration to the shared
+// hook had never been checked against a real browser.
+test.describe('Traffic inspector', () => {
+  // THE DEFAULT PATH, and the only one most users ever meet: autoScroll is true in
+  // the store, so Traffic is already following at mount with nobody clicking
+  // anything. It is a DIFFERENT path from clicking Follow — the pin fires from the
+  // layout effect as the view first renders, spanning ProgressiveList's swap from
+  // plain row divs to its virtualized sizing spacer — and it is exactly the path
+  // where Traffic had `follow` wired to nothing and never held the tail at all.
+  test('Traffic inspector: follows from mount, without anyone clicking Follow', async ({ page, request }) => {
+    for (let i = 0; i < SEED_REQUESTS; i++) await request.get(`${BASE}/seed/${i}`);
+    const stopTraffic = startTraffic(request);
+    try {
+      await openTraffic(page);
+      // Deliberately no click: whatever the store's default is, is what we test.
+      expect(await chipText(page), 'follows by default').toBe('Following');
+      for (let s = 0; s < 8; s++) {
+        await page.waitForTimeout(1000);
+        expect(await chipText(page), `still Following at t+${s + 1}s`).toBe('Following');
+        expect(await distanceFromTail(page), `held the tail at t+${s + 1}s`)
+          .toBeLessThanOrEqual(AT_TAIL_PX);
+      }
+    } finally {
+      await stopTraffic();
+    }
+  });
+
+  test('Traffic inspector: Follow stays following while traffic keeps arriving', async ({ page, request }) => {
+    for (let i = 0; i < SEED_REQUESTS; i++) await request.get(`${BASE}/seed/${i}`);
+    const stopTraffic = startTraffic(request);
+    try {
+      await openTraffic(page);
+      if ((await chipText(page)) === 'Following') {
+        await clickChip(page);
+        await page.waitForTimeout(500);
+      }
+      expect(await chipText(page)).toBe('Follow');
+
+      await clickChip(page); // the gesture under test
+
+      // The original Traffic defect: it pinned and then cancelled itself within
+      // about a second as the virtualizer measured rows and reflowed the content,
+      // each reflow firing a `scroll` event read as "the reader left".
+      for (let s = 0; s < 10; s++) {
+        await page.waitForTimeout(1000);
+        expect(await chipText(page), `still Following at t+${s + 1}s`).toBe('Following');
+        expect(await distanceFromTail(page), `pinned to the tail at t+${s + 1}s`)
+          .toBeLessThanOrEqual(AT_TAIL_PX);
+      }
+    } finally {
+      await stopTraffic();
+    }
+  });
+
+  test('Traffic inspector: scrolling up stops following, and it stays stopped', async ({ page, request }) => {
+    for (let i = 0; i < SEED_REQUESTS; i++) await request.get(`${BASE}/seed/${i}`);
+    const stopTraffic = startTraffic(request);
+    try {
+      await openTraffic(page);
+      if ((await chipText(page)) === 'Follow') {
+        await clickChip(page);
+        await page.waitForTimeout(800);
+      }
+      expect(await chipText(page)).toBe('Following');
+
+      // A real wheel gesture over the region — not a synthetic scrollTop write.
+      const box = await page.locator('[data-follow-scroller]').boundingBox();
+      expect(box).not.toBeNull();
+      await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+      await page.mouse.wheel(0, -600);
+      await page.waitForTimeout(800);
+
+      expect(await chipText(page), 'a real scroll stops following').toBe('Follow');
+
+      // And it must STAY stopped. Eviction shrinks the content, which once left a
+      // motionless reader at the bottom and switched following back on under them.
+      for (let s = 0; s < 5; s++) {
+        await page.waitForTimeout(1000);
+        expect(await chipText(page), `still stopped at t+${s + 1}s`).toBe('Follow');
+      }
+
+      // Pressing Follow again resumes and re-pins.
+      await clickChip(page);
+      await page.waitForTimeout(1200);
+      expect(await chipText(page)).toBe('Following');
+      expect(await distanceFromTail(page), 'resumed and re-pinned').toBeLessThanOrEqual(AT_TAIL_PX);
+    } finally {
+      await stopTraffic();
+    }
+  });
+});
