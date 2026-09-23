@@ -1011,7 +1011,7 @@ moves allocation reaches it only via the daily run.
 
 ### Tier 3 — research-shaped, schedule deliberately
 
-#### 17. N parallel instances on one host — **research, 1-2 weeks**
+#### 17. N parallel instances on one host — **[measured 2026-09-17; 17(a) wired notify-only 2026-09-21]**
 
 The real question behind "per test method on a laptop across lots of parallel tests". Launch
 N in {1, 4, 8, 16, 32} and measure aggregate RSS, thread count, ephemeral-port consumption,
@@ -1128,7 +1128,7 @@ needed first (compare is fail-closed on unbudgeted metrics): `laptop.*.heap_used
 `laptop.*.load_p95_median_ms`, `laptop.*.load_p99_max_ms`, `laptop.*.agg_rss_mb`,
 `laptop.*.rss_mb_per_container`, `laptop.*.threads_per_container` (all `dir:"up"`, `gating:false`).
 
-#### 18. req/s per core for the serving path — **research, about a week**
+#### 18. req/s per core for the serving path — **[harness shipped 2026-09-17; residual measured 2026-09-20 and closed 2026-09-22 — the ceiling was the client, not the server; the saturated ladder is still owed on the new hardware]**
 
 Pin the SUT to C in {1, 2, 4, 8, 16} cores and run the ladder at each, recording
 `rig_valid_peak_achieved_rps`, `healthy_ceiling_rps` and `rps_per_core`. **Prerequisite easy to miss:**
@@ -1201,7 +1201,7 @@ a patch every day. A stale page then becomes a waiting patch rather than invisib
 **fixed** `regression.js` only, never the pre-fix rig-artefact numbers. **Publish
 `healthy_ceiling_rps` with its latency, not `rig_valid_peak_achieved_rps` alone** — see Finding 1.
 
-#### 20. HTTP/3 and QUIC — **[20a landed `e219041ac`; 20b/20c remain research]**
+#### 20. HTTP/3 and QUIC — **[20a landed `e219041ac`; 20b deferred on evidence — 20a showed the opposite of what would justify it]**
 
 - **20a (do this):** a JMH benchmark of the HTTP/3 request bridge, compared **in the same
   run** against the HTTP/2 equivalent. In-process, deterministic, no driver needed, and it
@@ -1246,7 +1246,7 @@ on HTTP/3's relative cost**, and the absolute HTTP/3 figures are not production-
 something"; 20a showed the opposite of the thing that would have justified building an HTTP/3
 driver. Revisit only if a user reports an HTTP/3 throughput problem.
 
-#### 21. Connection-scaling ceiling — **research, lowest priority**
+#### 21. Connection-scaling ceiling — **[measured 2026-09-20 — no degradation found to 12,000 connections; the limit reached was the driver's]**
 
 Maximum concurrent established connections before latency degrades, separately for HTTP/1.1
 keep-alive, HTTP/2 and TLS (session state is the interesting axis). k6 is not suited to
@@ -1366,7 +1366,7 @@ would confuse "connections held" with "streams held".
 MockServer and the macOS one is silent: `performance.html` → *Concurrent connection limits are set
 by the OS and the JVM, not by MockServer*.
 
-#### 22. Startup for the instance-per-test pattern — **research, about a week**
+#### 22. Startup for the instance-per-test pattern — **[measured 2026-09-20, refuting this item's own framing; harness `a8a05662b`, warm `stop()` 108 ms -> 0 ms]**
 
 Requested 2026-09-20. Users create a MockServer per test method or per test class, sometimes many
 in parallel. That is not the profile the shipped startup work optimised — all of it targets a
@@ -1466,7 +1466,7 @@ here targets one-time class loading and per-instance construction, which is also
 light-footprint, low-request-volume deployment pays and never amortises — so a win here should
 help that profile too, and must be shown not to cost the long-lived server anything.
 
-#### 23. Container launch for Kubernetes and Testcontainers — **research, about a week**
+#### 23. Container launch for Kubernetes and Testcontainers — **[measured 2026-09-20 — on a cold node the pull is ~98% of wall-clock; image trim `e342089d5`, Helm probe `aeb453a83`]**
 
 Requested 2026-09-20, and the first question is **what the time is actually spent on**, because the
 plan has never measured that for a container.
