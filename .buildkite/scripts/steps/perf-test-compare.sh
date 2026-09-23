@@ -765,7 +765,14 @@ def metrics:
   # disabled/absent h2 step leaves .h2_connection_memory absent, so this emits ZERO metrics
   # rather than a fail-closed missing-budget error. (The harness self-validates and REDs its OWN
   # step on a bad measurement — distinct from "memory grew", which has no threshold here.)
-  ((.h2_connection_memory // {}) | to_entries[] | .key as $k | .value as $v |
+  # select(...): the block carries METADATA scalars beside the shape objects — `dated_utc` and
+  # `method` — and an unfiltered to_entries[] reaches them, so `$v.bytes_per_connection` becomes
+  # "Cannot index string with string" and jq exits 5, failing the whole compare step and taking
+  # the baseline persist with it. Filter on the shape rather than the key name, so another
+  # metadata field added later cannot reintroduce it.
+  ((.h2_connection_memory // {}) | to_entries[]
+     | select((.value | type) == "object" and (.value | has("bytes_per_connection")))
+     | .key as $k | .value as $v |
     ( {name:("h2_connection_memory."+$k+".bytes_per_connection"), value:$v.bytes_per_connection, bkey:"h2_connection_memory.*.bytes_per_connection"} ) ),
   # item 12 — LLM/SSE streaming under concurrency. The .streaming block is a FLAT
   # object (not per-arm), so a CURATED subset of its scalars is budgeted here with
