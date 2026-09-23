@@ -34,6 +34,47 @@ Active expectations"]
     RM -->|MockServerMatcherListener| DWSH
 ```
 
+## How the Dashboard Is Served, and How to Run a Local Build
+
+**The dashboard is bundled into the netty jar at build time.** It is not fetched, not served
+separately, and not carried by any editor plugin — `mockserver-ui` is built and its output packaged
+into the jar, which then serves it at `/mockserver/dashboard`. So the dashboard anyone sees is
+whatever was built into the server they are talking to.
+
+Two consequences that repeatedly cost time:
+
+**Rebuild the right module.** The runnable jar is produced by `mockserver-netty-no-dependencies`,
+not `mockserver-netty`. Building the latter alone leaves the runnable jar untouched, so a UI change
+silently does not appear and the natural conclusion — that the change did not work — is wrong.
+
+```bash
+cd mockserver && ./mvnw -q -pl mockserver-netty-no-dependencies -am -DskipTests -DskipITs package
+java -jar mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*-SNAPSHOT.jar -serverPort 1080
+```
+
+Confirm the jar really carries the change rather than assuming the build did what you meant:
+
+```bash
+unzip -p <jar> 'org/mockserver/dashboard/assets/*.js' | grep -c "<some string from your change>"
+```
+
+**For iterating on the UI, do not rebuild the jar at all.** Run the Vite dev server, which proxies
+the control plane and the WebSocket to a MockServer already running, and gives hot reload:
+
+```bash
+cd mockserver-ui && npx vite --port 3010   # MOCKSERVER_URL overrides the default http://localhost:1080
+```
+
+Rebuild the jar only when something must be verified against the *served* artefact — the e2e suite
+does exactly this (`e2e/start-mockserver.mjs` boots the real jar).
+
+**Editors embed this dashboard, they do not ship it.** The JetBrains plugin's tool window is a
+`JBCefBrowser` and the VS Code docked view is a `WebviewView` iframe, both pointed at
+`http://localhost:<port>/mockserver/dashboard` (see
+[editor-extensions.md](editor-extensions.md)). So testing an unreleased dashboard change in either
+editor needs a server on the new jar, not a new plugin build — and conversely, their dashboard
+screenshots go stale when the UI changes, with no plugin change involved.
+
 ## Request Flow
 
 ### 1. Initial Page Load

@@ -118,6 +118,18 @@ Beyond the command palette, the extension exposes its commands through:
 
 ### Docked dashboard
 
+> **Neither extension ships the dashboard.** Both point a browser engine at
+> `http://localhost:<port>/mockserver/dashboard`, which the SERVER serves from the copy bundled
+> into its jar at build time. So the dashboard version follows the server, never the extension: to
+> try an unreleased UI change in either editor, run a locally built jar and leave the extension on
+> its released version. The corollary is that the in-IDE dashboard screenshots
+> (`mockserver-jetbrains/docs/screenshots/intellij_dashboard_in_ide.png`) go stale when the UI
+> changes even though no extension code moved, and — unlike the website's dashboard screenshots,
+> which `mockserver-ui/scripts/capture-docs-screenshots.sh` regenerates — they are captured by
+> driving the IDE by hand. See
+> [dashboard-ui.md → How the Dashboard Is Served](dashboard-ui.md#how-the-dashboard-is-served-and-how-to-run-a-local-build).
+
+
 The live dashboard is a **`WebviewView` docked in the bottom Panel** (`viewsContainers.panel` id `mockserverDashboard` → view `mockserver.dashboard`, `"type": "webview"`), so it gets full editor width and is not mixed in with editor tabs — the analogue of the JetBrains JCEF dashboard tool window. `MockServerDashboardViewProvider.resolveWebviewView` sets `enableScripts` and the html from `client.buildDashboardWebviewHtml(...)` (a full-bleed `<iframe>` at `http://localhost:<port>/mockserver/dashboard`; the CSP allows `frame-src http://localhost:*`/127.0.0.1), registered with `retainContextWhenHidden: true`. `mockserver.openDashboardInEditor` (title "MockServer: Open Dashboard") now **reveals** this docked view via `mockserver.dashboard.focus` rather than opening an editor tab; `mockserver.openDashboard` still opens the external browser.
 
 ### JSONC support

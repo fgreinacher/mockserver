@@ -208,6 +208,38 @@ cd mockserver-jetbrains
 ./gradlew runIde
 ```
 
+## Testing dashboard changes that are not released yet
+
+**The plugin does not contain the dashboard.** The MockServerDashboard tool window is a
+`JBCefBrowser` pointed at `MockServerSettings.dashboardUrl()`, so the dashboard you see comes
+from whichever MockServer the plugin is configured to talk to — not from the plugin build.
+
+That distinction decides what you need to rebuild:
+
+| What you changed | What to rebuild |
+|------------------|-----------------|
+| Dashboard UI (`mockserver-ui/`) or anything else server-side | The **server jar**. The plugin can stay on the released version |
+| Plugin code (`mockserver-jetbrains/src/`) | The **plugin**, via `./gradlew runIde` |
+
+The dashboard is bundled into the netty jar at build time, so to point the plugin at unreleased
+UI work, build and run that jar:
+
+```bash
+# from the repo root — note it is the no-dependencies module that produces the runnable jar;
+# building mockserver-netty alone does NOT refresh it
+cd mockserver && ./mvnw -q -pl mockserver-netty-no-dependencies -am -DskipTests -DskipITs package
+java -jar mockserver-netty-no-dependencies/target/mockserver-netty-no-dependencies-*-SNAPSHOT.jar -serverPort 1080
+```
+
+Then open the dashboard tool window as usual. Point the plugin at a different port under
+Settings | Tools | MockServer if 1080 is taken.
+
+This is also how the `docs/screenshots/intellij_dashboard_in_ide.png` capture is refreshed: it
+shows the dashboard, so it goes stale when the **UI** changes, and reproducing it needs a server
+on new code rather than a new plugin. Unlike the website's dashboard screenshots, which
+`mockserver-ui/scripts/capture-docs-screenshots.sh` regenerates automatically, this one is
+captured by driving the IDE by hand.
+
 ## Running tests
 
 ```bash
