@@ -1593,21 +1593,48 @@ async rather than removing async from the default** — the same additive patter
 and nobody is broken by an upgrade. That inverts the risk onto whoever opts into the smaller
 artifact. Re-measure the saving against the CURRENT trimmed image before quoting any figure.
 
-#### 24. Published-artifact size for CI pipelines — **research + a shippable change**
+#### 24. Published-artifact size for CI pipelines — **[landed `c627a79c8`; the bulk of the win actually came from the HTTP/3 split `e5b076c4f`]**
 
 Requested 2026-09-20, and it shares most of its evidence with item 23. Build agents frequently start
 with an empty disk or pull through a remote cache, so the size of what we publish to Maven Central
 is a recurring cost for every pipeline using MockServer as a test dependency — not only for
 `docker pull`.
 
-**Measured composition of the fat jar** (43,856 entries, 249.4 MiB uncompressed, 91.4 MiB
-compressed-in-jar; it is 59% of the 155 MiB image download):
+> **RE-MEASURED 2026-09-23: the numbers below had drifted onto a different artifact.** The
+> `17.12 MiB / 19% / 249.4 MiB / 91.4 MiB / 43,856-entry` figures now describe the **opt-in
+> `-http3` variant**, not the default download. The HTTP/3 native split (`e5b076c4f`) moved the
+> quiche natives — about 11 MiB across five platforms, and the dominant term inside that "17 MiB
+> all-platforms" line — out of the default, and did so for EVERY consumer rather than only those
+> who opt into a classifier. Verified against jars built from `5bc040052`:
+>
+> | variant | compressed | `META-INF/native/` | native entries |
+> |---|---:|---:|---:|
+> | **default** `jar-with-dependencies` | **88.22 MiB** | **5.90 MiB (6.7%)** | 7 (tcnative ×4, epoll ×2) |
+> | `-linux-x86_64` / `-linux-aarch_64` slim | 83.66 / 83.57 MiB | ~1.34 MiB | 2 |
+> | `-http3` | 99.44 MiB | 17.12 MiB | 12 (+quiche ×5) |
+>
+> So the shipped slim jars now save **~4.6 MiB** against the current default, not the ~13 MiB that
+> was true when they shipped — the rest was already banked by the split. `~3.73 MiB usable by any
+> one target` is stale too: without quiche a single Linux target uses only ~1.34 MiB.
+>
+> **Recommendation: do not extend this further.** Do not add the remaining three platform
+> classifiers (each is another signed, staged, verified per-release path, and this repo has been
+> bitten by release-only faults), and do not classify `netty-tcnative` on our own artifacts — that
+> is the only path matching this item's stated premise, but it breaks mixed-OS teams sharing one
+> build config for a single-digit-MiB gain. Note also that the premise is narrower than written:
+> a consumer depending on `org.mock-server:mockserver-netty` never downloads the fat jar at all,
+> and MockServer's own Docker image takes the default jar and runs its own trim, so neither is
+> affected by a classifier on our fat jar.
+
+**Measured composition of the fat jar** — as measured 2026-09-20; see the note above for what each
+figure now refers to (43,856 entries, 249.4 MiB uncompressed, 91.4 MiB compressed-in-jar; it was
+then 59% of the 155 MiB image download):
 
 | component | compressed | note |
 |---|---:|---|
-| `META-INF/native/` — ALL platforms | **17.12 MiB (19% of the jar)** | only ~3.73 MiB is usable by any one target |
+| `META-INF/native/` — ALL platforms | **17.12 MiB (19% of the jar)** | now the `-http3` variant; the default is 5.90 MiB / 6.7% |
 | `org/apache/kafka` (+ snappy 2.31, protobuf 1.62) | 8.54 MiB | async-messaging; Kafka is isolated in `mockserver-async`, snappy and protobuf sit in `mockserver-core` |
-| both Jackson generations (`com/fasterxml` 2.13 + `tools/jackson` 2.23) | 4.36 MiB | J2/J3 coexistence, blocked upstream on swagger-parser |
+| both Jackson generations (`com/fasterxml` 2.17 + `tools/jackson` 2.23) | 4.40 MiB | J2/J3 coexistence, still blocked upstream on swagger-parser |
 
 **The foreign-platform natives are provably unusable, not merely unlikely to be used.** `file` on the
 extracted libraries: the macOS ones are **Mach-O**, the Windows one is **PE32+**, only the Linux ones
