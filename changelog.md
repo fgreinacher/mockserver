@@ -353,6 +353,14 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   scroll, and a scroll was being read as "you have scrolled away". Following now changes only when
   you act -- scrolling up stops it and it stays stopped, and Follow resumes it -- and it holds the
   newest entry however much the content moves underneath. This also covers the Traffic inspector.
+- **The MockServer Dashboard tool window opens again in recent IntelliJ IDEA versions.** On IDEA
+  2026.2 it failed with `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp` and the tool window
+  did not appear at all. The plugin asks whether the embedded browser is available before using it,
+  but on that platform the class behind the question is no longer reachable from the plugin, so
+  asking it was itself what failed. The check now survives the class being absent and falls back to
+  offering the dashboard in your normal browser, which is what it was always meant to do when the
+  embedded browser cannot be used. The LLM tool window's diagram view had the same fault and is
+  fixed with it.
 - **The dashboard's LLM Provider filter now appears on a busy server.** It was offered only if an LLM
   expectation happened to be inside the at-most-100 expectations the server sends per update, so a
   server holding more than that many other expectations ahead of its LLM ones never offered the

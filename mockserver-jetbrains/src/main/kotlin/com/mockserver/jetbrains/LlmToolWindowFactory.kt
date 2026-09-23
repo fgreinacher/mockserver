@@ -12,7 +12,6 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.content.ContentFactory
-import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
@@ -216,7 +215,7 @@ class LlmToolWindowPanel(private val project: Project) {
     }
 
     private fun showGraph(mermaidSource: String) {
-        if (JBCefApp.isSupported()) {
+        if (JcefSupport.isAvailable()) {
             val existing = browser
             val cefBrowser = existing ?: JBCefBrowser.createBuilder().build().also { browser = it }
             graphContainer.removeAll()

@@ -12,7 +12,6 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.content.ContentFactory
-import com.intellij.ui.jcef.JBCefApp
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.icons.AllIcons
 import org.cef.browser.CefBrowser
@@ -29,7 +28,7 @@ import javax.swing.JPanel
  * Tool window that embeds the live MockServer dashboard inside the IDE using the
  * bundled JCEF (Chromium) engine.
  *
- * When JCEF is available ([JBCefApp.isSupported]) it hosts a [JBCefBrowser] pointed
+ * When JCEF is available (see [JcefSupport]) it hosts a [JBCefBrowser] pointed
  * at [MockServerSettings.dashboardUrl] with Reload / Open-in-Browser controls. When
  * JCEF is unavailable (e.g. a JRE without the JCEF runtime, or a remote/headless
  * environment) it degrades gracefully to a panel offering the external browser.
@@ -42,7 +41,7 @@ class MockServerDashboardToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val dashboardUrl = MockServerSettings.getInstance().dashboardUrl()
-        val component = if (JBCefApp.isSupported()) {
+        val component = if (JcefSupport.isAvailable()) {
             createEmbeddedBrowser(toolWindow, dashboardUrl)
         } else {
             createUnsupportedPanel(dashboardUrl)
