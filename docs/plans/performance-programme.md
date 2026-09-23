@@ -1360,15 +1360,36 @@ Linux defaults are more generous (32768-60999 = 28,232) and `tcp_tw_reuse` lets 
 server's. Exceeding it needs more client *source addresses* (loopback aliases, or more
 load-generator hosts), not more server ports.
 
-**The harness can now do that (`cf028283b`), but the figure is still unmeasured.** Connections
+**MEASURED 2026-09-23 — 16,000 connections held, no degradation detectable, and the ~15,500 wall is crossed.** Connections
 round-robin across `CEILING_SOURCE_ADDRESSES`, each address contributing its own ephemeral range,
 with the per-address tally keyed on the address the OS actually assigned rather than the one
 requested, and a preflight that refuses to start if a configured address is not bindable — so a
 run that quietly used fewer addresses than asked cannot report the old wall as a raised ceiling.
-What is missing is root: creating the loopback aliases needs `sudo ifconfig lo0 alias`, so nothing
-above ~15,500 has been driven. The setup and teardown commands are in
-`mockserver/mockserver-benchmark/run-connection-ceiling.sh`. **Anyone quoting a number here must
-run the ladder first — the capability existing is not the measurement.**
+**No root was needed in the end.** The aliases are one way to get a second source address; this
+box already had another. `192.168.1.186` (the physical NIC) reaches loopback as a *source*, so the
+ladder ran with `CEILING_SOURCE_ADDRESSES=127.0.0.1,192.168.1.186` and no `ifconfig` at all.
+(`100.64.0.1`, a utun address, does NOT reach `127.0.0.1` — it times out.)
+
+| connections | established | server-confirmed | src addrs | p50 | vs its OWN baseline |
+|---:|---:|---:|---:|---:|---:|
+| 8,000 | 8,000 | 8,000 | 2 | 146.5 us | 0.90x |
+| 16,000 | 16,000 | 16,000 | 2 | 135.8 us | 1.13x |
+| 20,000 | 20,000 parked | - | - | - | rig exhausted (PORTS) |
+
+The 16,000 rung split **8,000 / 8,000** across the two addresses, read back from the addresses the
+OS actually bound rather than the ones requested, so the round-robin demonstrably used both.
+
+**The 1.13x is NOT degradation, and must not be quoted as any.** The baselines in this run ranged
+120.3-162.3 us and the first-to-last drift was -7.1%, so a 13% rise sits inside the spread - and
+the 8,000 rung came out *faster* than its own baseline, at 0.90x. This item has already shipped
+one apparent degradation curve that an independent repeat destroyed; the same restraint applies
+here. The supportable statement is **no degradation detectable up to 16,000 held connections**,
+extending the previous 12,000 and passing the ~15,511 single-address wall.
+
+*Caveat worth carrying:* half of these connections originate from the physical NIC address rather
+than loopback, which is not the identical path four loopback aliases would give. The result is
+strong evidence the wall was the driver's source-port range, not a weaker claim, but the aliases
+remain the cleaner experiment if anyone wants a like-for-like number.
 
 **And the aliases will work — macOS ephemeral CAPACITY is per source address, measured
 2026-09-23 on the laptop.** Worth recording because two cheaper tests said the opposite and were
