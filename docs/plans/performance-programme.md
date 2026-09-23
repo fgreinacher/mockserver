@@ -3268,8 +3268,23 @@ result. The SUT was at 147-280% of its own 400% pin throughout, i.e. never satur
 **So the next run is a narrower ladder, not a wider one.** Each k6 process had only
 `client_cores_each=2` and pegged at N=1 and N=2; the fix is more cores per process rather than
 more processes, plus a top rung the rig can actually offer. `PERF_MULTI_CLIENT_CORES_EACH=4` with
-`procs=2,4,8` and rates capped near 32,000 keeps every client block below cpu 24 (so the guard
+`procs=2,4` and rates capped near 32,000 keeps every client block below cpu 24 (so the guard
 still passes) while giving each process real headroom.
+
+**CHECK THE LADDER AGAINST THE TOPOLOGY BEFORE TRIGGERING — `procs=2,4,8` at 4 cores each does
+NOT fit, and the cost of finding out is the whole sweep.** Clients start at `CLIENT_BASE =
+SERVER_CORES` and run to `CLIENT_BASE + N*CLIENT_CORES_EACH - 1`, so N=8 at 4 cores reaches cpu
+**35**. On this box the sibling of cpu X is X+24, so cpus 24-27 are the siblings of the server's
+own 0-3 and the guard fires — correctly. The arithmetic to do first is simply
+`SERVER_CORES + N_max * CLIENT_CORES_EACH <= 24`.
+
+What makes the mistake expensive is *where* it fails: the guard runs per-N inside the loop and
+the emit block is after it, so an overlap at the LAST rung discards the rungs that already
+succeeded. Build 410 was cancelled for exactly this, having been triggered with `2,4,8` - N=2 and
+N=4 would have run and then been thrown away. The blast radius stops there, because
+`perf-test-run.sh` calls the sweep inside an `if ... else WARNING`, so the main regression run
+survives and only the multiproc block is lost. That trade (fail closed, lose the sweep) is
+deliberate and was accepted in review; it just moves the burden onto choosing the ladder.
 
 ## The load generator has been sharing the server's physical cores all along
 
