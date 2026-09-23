@@ -56,6 +56,10 @@ STREAM_SUT="mockserver-perf-stream-sut-${RUN_ID}"
 CLU_CTRL="mockserver-perf-clu-ctrl-${RUN_ID}"
 CLU_A="mockserver-perf-clu-a-${RUN_ID}"
 CLU_B="mockserver-perf-clu-b-${RUN_ID}"
+# Short, DNS-resolvable aliases for JGroups discovery - see start_clu.
+CLU_A_ALIAS="clu-a"
+CLU_B_ALIAS="clu-b"
+
 # The clustered image is a MUTABLE snapshot tag published by the SAME job that
 # publishes the SUT image (java-docker-push-snapshot.sh), from the same shaded jar
 # and the same SOURCE_COMMIT stamp. Resolved HERE, next to MOCKSERVER_IMAGE, rather
@@ -2272,6 +2276,38 @@ JGROUPS_XML
     # reason the main SUT does: these MB arms run here too, on a 1.5 GB clustered
     # heap. The budget is identical on control and cluster, so it evicts symmetrically
     # and cannot bias the within-run clustered/control ratio item 13 measures.
+    # The JGroups discovery string, and the guard that validates WHAT ACTUALLY GOES TO DNS.
+    #
+    # It must use the short network ALIASES, not the container names. The names are
+    # "mockserver-perf-clu-{a,b}-${RUN_ID}", and in CI RUN_ID carries a 36-char
+    # BUILDKITE_BUILD_ID plus a PID, putting them over the 63-character DNS label cap (RFC 1035).
+    # Docker's embedded DNS then cannot resolve them, TCPPING finds no peers, and each node forms
+    # a cluster of ONE - which reads downstream as a clustered A/B comparing two independent
+    # servers. (In LOCAL mode RUN_ID is "local-$$", short enough to resolve, so this reproduces
+    # only in CI - which is why it survived so long.) Reproduced both ways against the real
+    # clustered image: aliases give memberCount 2, the CI-length names give 1.
+    #
+    # The guard parses the ASSEMBLED string rather than checking the alias constants. Checking
+    # the constants would be checking the easy property: they are 5 characters and can never
+    # fail, while the regression this exists to catch is someone reverting this builder to
+    # ${CLU_A}[7800] - which the guard must see and reject.
+    clu_discovery_hosts() {
+      local hosts="${CLU_A_ALIAS}[7800],${CLU_B_ALIAS}[7800]" host
+      local IFS=','
+      for host in $hosts; do
+        host="${host%%\[*}"
+        if [ "${#host}" -gt 63 ]; then
+          echo "ERROR: JGroups discovery host '$host' is ${#host} characters. A DNS label caps at" >&2
+          echo "       63 (RFC 1035), so Docker's embedded DNS cannot resolve it: TCPPING would" >&2
+          echo "       find no peers and each node would form a cluster of one, which the" >&2
+          echo "       clustered_metrics_present gate then reds an entire run later." >&2
+          echo "       Use the short --network-alias names, not the container names." >&2
+          return 1
+        fi
+      done
+      printf '%s' "$hosts"
+    }
+
     start_clu() { # name  alias  backend(memory|infinispan)  cluster_name_or_empty
       local name="$1" alias="$2" backend="$3" cname="${4:-}"
       local extra=()
@@ -2280,7 +2316,13 @@ JGROUPS_XML
           -e MOCKSERVER_CLUSTER_ENABLED=true
           -e "MOCKSERVER_CLUSTER_NAME=$cname"
           -e MOCKSERVER_CLUSTER_TRANSPORT_CONFIG=/config/jgroups-tcp.xml
-          -e "JGROUPS_TCPPING_INITIAL_HOSTS=${CLU_A}[7800],${CLU_B}[7800]"
+          # Discovery uses the short NETWORK ALIASES, not the container names. The names are
+          # "mockserver-perf-clu-a-${RUN_ID}" = 65 characters, and a DNS label is capped at 63
+          # (RFC 1035), so Docker's embedded DNS cannot resolve them: TCPPING found no peers and
+          # each node formed a cluster of ONE. That is exactly the "two independent servers"
+          # false green the clustered_metrics_present gate exists to catch, and it caught it.
+          # Reproduced both ways locally - aliases give memberCount 2, the 65-char names give 1.
+          -e "JGROUPS_TCPPING_INITIAL_HOSTS=$(clu_discovery_hosts)"
           -v "$CLU_JG:/config/jgroups-tcp.xml:ro"
         )
       fi
@@ -2355,8 +2397,8 @@ JGROUPS_XML
       echo "--- clustered A/B: PERF_CLU_BREAK=cluster — node B joins '$CLU_B_NAME' (SELF-TEST: view must stay 1)" >&2
     fi
     echo "--- clustered A/B: starting CANDIDATE 2-node cluster (stateBackend=infinispan, JGroups TCPPING)"
-    start_clu "$CLU_A" clu-a infinispan "$CLU_NAME" || echo "WARNING: cluster node A did not start" >&2
-    start_clu "$CLU_B" clu-b infinispan "$CLU_B_NAME" || echo "WARNING: cluster node B did not start" >&2
+    start_clu "$CLU_A" "$CLU_A_ALIAS" infinispan "$CLU_NAME" || echo "WARNING: cluster node A did not start" >&2
+    start_clu "$CLU_B" "$CLU_B_ALIAS" infinispan "$CLU_B_NAME" || echo "WARNING: cluster node B did not start" >&2
     wait_ready "$CLU_A" || true
     wait_ready "$CLU_B" || true
     A_HP="$(clu_hostport "$CLU_A")"; B_HP="$(clu_hostport "$CLU_B")"
