@@ -12,6 +12,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import io.netty.handler.codec.http.websocketx.WebSocketServerHandshaker;
 import org.apache.commons.lang3.StringUtils;
+import org.junit.After;
 import org.junit.Test;
 import org.mockserver.log.MockServerEventLog;
 import org.mockserver.log.model.LogEntry;
@@ -70,6 +71,109 @@ import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.netty.unification.PortUnificationHandler.http2Enabled;
 
 public class DashboardWebSocketHandlerTest {
+
+    // Every test that stands up dashboard infrastructure registers what it creates here so a single
+    // @After can release it. Without this, each test leaks the MockServerEventLog disruptor consumer
+    // thread and its query pool (both daemon, "MockServer-EventLog*"), plus the handler's own
+    // throttle-refill and send executors (NON-daemon, "pool-N-thread-N"), for the life of the shared
+    // surefire JVM. Those threads accumulate across the class and starve later tests in this module.
+    private final List<Scheduler> trackedSchedulers = new ArrayList<>();
+    private final List<HttpState> trackedHttpStates = new ArrayList<>();
+    private final List<DashboardWebSocketHandler> trackedHandlers = new ArrayList<>();
+    private final List<io.netty.channel.embedded.EmbeddedChannel> trackedChannels = new ArrayList<>();
+
+    private Scheduler track(Scheduler scheduler) {
+        trackedSchedulers.add(scheduler);
+        return scheduler;
+    }
+
+    private HttpState track(HttpState httpState) {
+        trackedHttpStates.add(httpState);
+        return httpState;
+    }
+
+    private DashboardWebSocketHandler track(DashboardWebSocketHandler handler) {
+        trackedHandlers.add(handler);
+        return handler;
+    }
+
+    private <C extends io.netty.channel.embedded.EmbeddedChannel> C track(C channel) {
+        trackedChannels.add(channel);
+        return channel;
+    }
+
+    // The EmbeddedChannel tests all build the same async-scheduler-backed HttpState. Funnel that
+    // through one tracked factory so both the Scheduler thread pools and the event log get torn down.
+    private HttpState newAsyncHttpState() {
+        Scheduler scheduler = track(new Scheduler(configuration(), new MockServerLogger()));
+        return track(new HttpState(configuration(), new MockServerLogger(), scheduler));
+    }
+
+    @After
+    public void stopDashboardInfrastructure() {
+        // Order matters only in that we silence the handler's refill/send executors before stopping
+        // the event log, so no in-flight throttled send races the disruptor shutdown. Each teardown is
+        // guarded so one failure cannot suppress the rest.
+        for (DashboardWebSocketHandler handler : trackedHandlers) {
+            stopHandlerExecutors(handler);
+        }
+        for (io.netty.channel.embedded.EmbeddedChannel channel : trackedChannels) {
+            try {
+                // For pipeline-registered handlers this drives production handlerRemoved (which shuts
+                // the handler's executors) and releases any captured frames' buffers.
+                channel.finishAndReleaseAll();
+            } catch (Throwable ignore) {
+                // a bare EmbeddedChannel with no inbound/outbound may throw nothing; ignore either way
+            }
+        }
+        for (HttpState httpState : trackedHttpStates) {
+            try {
+                // HttpState.stop() shuts the MockServerEventLog disruptor and its query pool — the same
+                // call production uses, mirroring MockServerEventLogConcurrencyTest's teardown.
+                httpState.stop();
+            } catch (Throwable ignore) {
+                // best-effort: never let one test's cleanup failure mask another
+            }
+        }
+        for (Scheduler scheduler : trackedSchedulers) {
+            try {
+                scheduler.shutdown();
+            } catch (Throwable ignore) {
+                // best-effort
+            }
+        }
+        trackedHandlers.clear();
+        trackedChannels.clear();
+        trackedHttpStates.clear();
+        trackedSchedulers.clear();
+    }
+
+    // Shut the handler's two owned executors, mirroring production DashboardWebSocketHandler.handlerRemoved
+    // (scheduler.shutdown(), throttleExecutorService.shutdownNow()). Standalone handlers in the helper-based
+    // tests are never added to a channel pipeline, so handlerRemoved never fires for them; we reach the
+    // private fields by reflection, the same idiom this test already uses in expectationUpdateItemLimit().
+    private static void stopHandlerExecutors(DashboardWebSocketHandler handler) {
+        shutdownExecutorField(handler, "scheduler", false);
+        shutdownExecutorField(handler, "throttleExecutorService", true);
+    }
+
+    private static void shutdownExecutorField(DashboardWebSocketHandler handler, String fieldName, boolean now) {
+        try {
+            java.lang.reflect.Field field = DashboardWebSocketHandler.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            Object value = field.get(handler);
+            if (value instanceof java.util.concurrent.ExecutorService) {
+                java.util.concurrent.ExecutorService executor = (java.util.concurrent.ExecutorService) value;
+                if (now) {
+                    executor.shutdownNow();
+                } else {
+                    executor.shutdown();
+                }
+            }
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("could not shut down DashboardWebSocketHandler." + fieldName, e);
+        }
+    }
 
     @Test
     public void shouldSerialiseEventsAndIgnoreDeletedLogEvents() throws InterruptedException {
@@ -1991,14 +2095,14 @@ public class DashboardWebSocketHandlerTest {
 
     private Fixture newFixture(List<Expectation> initial) {
         MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
-        Scheduler scheduler = new Scheduler(configuration(), mockServerLogger, true);
-        HttpState httpState = new HttpState(configuration(), mockServerLogger, scheduler);
+        Scheduler scheduler = track(new Scheduler(configuration(), mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration(), mockServerLogger, scheduler));
         RequestMatchers requestMatchers = httpState.getRequestMatchers();
         if (!initial.isEmpty()) {
             requestMatchers.update(initial.toArray(new Expectation[0]), MockServerMatcherNotifier.Cause.API);
         }
-        DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, true).registerListeners();
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        DashboardWebSocketHandler handler = track(new DashboardWebSocketHandler(httpState, false, true)).registerListeners();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(ctx, request());
         return new Fixture(requestMatchers, handler, ctx);
     }
@@ -2065,8 +2169,8 @@ public class DashboardWebSocketHandlerTest {
     private void shouldRenderFilteredLogEntriesCorrectly(boolean contains, RequestDefinition requestFilter, List<LogEntry> logEntries, List<Expectation> expectations, String... renderListSections) throws InterruptedException {
         // given
         MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
-        Scheduler scheduler = new Scheduler(configuration(), mockServerLogger, true);
-        HttpState httpState = new HttpState(configuration(), mockServerLogger, scheduler);
+        Scheduler scheduler = track(new Scheduler(configuration(), mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration(), mockServerLogger, scheduler));
         new Scheduler.SchedulerThreadFactory("MockServer Test " + this.getClass().getSimpleName()).newThread(() -> {
             MockServerEventLog mockServerEventLog = httpState.getMockServerLog();
             for (LogEntry logEntry : logEntries) {
@@ -2079,9 +2183,9 @@ public class DashboardWebSocketHandlerTest {
         }).start();
         SECONDS.sleep(1);
         DashboardWebSocketHandler handler =
-            new DashboardWebSocketHandler(httpState, false, true)
+            track(new DashboardWebSocketHandler(httpState, false, true))
                 .registerListeners();
-        MockChannelHandlerContext mockChannelHandlerContext = new MockChannelHandlerContext();
+        MockChannelHandlerContext mockChannelHandlerContext = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(mockChannelHandlerContext, request());
 
         // when
@@ -2098,9 +2202,9 @@ public class DashboardWebSocketHandlerTest {
     @Test
     public void shouldRejectWebSocketUpgradeOverHttp2() {
         // given
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, true, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
         http2Enabled(channel);
         DefaultFullHttpRequest upgradeRequest = new DefaultFullHttpRequest(
             HttpVersion.HTTP_1_1, HttpMethod.GET, "/_mockserver_ui_websocket"
@@ -2121,10 +2225,10 @@ public class DashboardWebSocketHandlerTest {
     @Test
     public void shouldRejectWebSocketUpgradeWhenControlPlaneAuthEnabledAndNotAuthenticated() {
         // given - control-plane auth configured but the upgrade carries no/invalid credentials
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         httpState.setControlPlaneAuthenticationHandler(request -> false);
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         // when
         channel.writeInbound(webSocketUpgradeRequest());
@@ -2137,10 +2241,10 @@ public class DashboardWebSocketHandlerTest {
     @Test
     public void shouldAllowWebSocketUpgradeWhenControlPlaneAuthEnabledAndAuthenticated() {
         // given - control-plane auth configured and the upgrade is authenticated
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         httpState.setControlPlaneAuthenticationHandler(request -> true);
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         // when
         channel.writeInbound(webSocketUpgradeRequest());
@@ -2155,9 +2259,9 @@ public class DashboardWebSocketHandlerTest {
     @Test
     public void shouldAllowWebSocketUpgradeWhenNoControlPlaneAuthConfigured() {
         // given - default config: NO control-plane auth handler set, so the dashboard stays open
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         // when
         channel.writeInbound(webSocketUpgradeRequest());
@@ -2179,10 +2283,10 @@ public class DashboardWebSocketHandlerTest {
     public void shouldHoldHandshakerPerChannelForConcurrentDashboardUpgrades() {
         // given - ONE @Sharable handler instance serving two dashboard connections, exactly as
         // production wires it (a single handler added to every dashboard channel's pipeline)
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channelOne = new EmbeddedChannel(handler);
-        EmbeddedChannel channelTwo = new EmbeddedChannel(handler);
+        EmbeddedChannel channelOne = track(new EmbeddedChannel(handler));
+        EmbeddedChannel channelTwo = track(new EmbeddedChannel(handler));
 
         // when - both connections upgrade through the SAME handler instance, the second after the first
         channelOne.writeInbound(webSocketUpgradeRequest());
@@ -2248,9 +2352,9 @@ public class DashboardWebSocketHandlerTest {
     public void bareUpgradeUriStillUpgradesAndUsesDefaultLogLimit() {
         // Regression guard for the equality->path change: a bare URI (no query string), exactly as the
         // shipped UI sends, must still upgrade and resolve to the DEFAULT limit.
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket"));
 
@@ -2264,9 +2368,9 @@ public class DashboardWebSocketHandlerTest {
     public void upgradeUriWithLogLimitQueryUpgradesAndStoresRequestedLimit() {
         // A query string must NOT break the upgrade (the old exact-equality match would have rejected
         // it), and the in-range requested limit must be pinned to THIS channel.
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket?logLimit=250"));
 
@@ -2279,9 +2383,9 @@ public class DashboardWebSocketHandlerTest {
     public void upgradeUriWithExcessiveLogLimitQueryStoresClampedMaximum() {
         // An attacker-chosen huge value on the (unauthenticated-by-default) upgrade must be clamped at
         // the single choke point to the server maximum before it reaches the channel.
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         channel.writeInbound(webSocketUpgradeRequest("/_mockserver_ui_websocket?logLimit=100000"));
 
@@ -2295,9 +2399,9 @@ public class DashboardWebSocketHandlerTest {
     public void foreignPathIsNotTreatedAsDashboardUpgrade() {
         // The path comparison must NOT widen what counts as the dashboard upgrade path: a different
         // path is passed through un-upgraded (no limit pinned), even though it shares a prefix.
-        HttpState httpState = new HttpState(configuration(), new MockServerLogger(), new Scheduler(configuration(), new MockServerLogger()));
+        HttpState httpState = newAsyncHttpState();
         DashboardWebSocketHandler handler = new DashboardWebSocketHandler(httpState, false, false);
-        EmbeddedChannel channel = new EmbeddedChannel(handler);
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
 
         DefaultFullHttpRequest foreign = webSocketUpgradeRequest("/_mockserver_ui_websocket_evil");
         channel.writeInbound(foreign);
@@ -2436,13 +2540,13 @@ public class DashboardWebSocketHandlerTest {
     private DashboardWebSocketHandler newSeededHandler(List<LogEntry> entries) {
         MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
         Configuration configuration = configuration().maxLogEntries(50000);
-        Scheduler scheduler = new Scheduler(configuration, mockServerLogger, true);
-        HttpState httpState = new HttpState(configuration, mockServerLogger, scheduler);
+        Scheduler scheduler = track(new Scheduler(configuration, mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration, mockServerLogger, scheduler));
         MockServerEventLog eventLog = httpState.getMockServerLog();
         for (LogEntry entry : entries) {
             eventLog.add(entry);
         }
-        return new DashboardWebSocketHandler(httpState, false, true).registerListeners();
+        return track(new DashboardWebSocketHandler(httpState, false, true)).registerListeners();
     }
 
     private static final class ScanResult {
@@ -2563,7 +2667,7 @@ public class DashboardWebSocketHandlerTest {
             entries.add(received("/other-" + i));
         }
         DashboardWebSocketHandler handler = newSeededHandler(entries);
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         HttpRequest filter = request("/needle-.*");
         handler.getClientRegistry().put(ctx, filter);
 
@@ -2585,7 +2689,7 @@ public class DashboardWebSocketHandlerTest {
             entries.add(forwarded("/proxied-" + i));
         }
         DashboardWebSocketHandler handler = newSeededHandler(entries);
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(ctx, request());
 
         ScanResult result = singleScan(handler, ctx, request());
@@ -2598,7 +2702,7 @@ public class DashboardWebSocketHandlerTest {
     @Test
     public void emptyLogProducesEmptySections() throws Exception {
         DashboardWebSocketHandler handler = newSeededHandler(Collections.emptyList());
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(ctx, request());
 
         ScanResult result = singleScan(handler, ctx, request());
@@ -2620,9 +2724,9 @@ public class DashboardWebSocketHandlerTest {
         }
         DashboardWebSocketHandler handler = newSeededHandler(entries);
 
-        MockChannelHandlerContext unfiltered = new MockChannelHandlerContext();
+        MockChannelHandlerContext unfiltered = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(unfiltered, request());
-        MockChannelHandlerContext filtered = new MockChannelHandlerContext();
+        MockChannelHandlerContext filtered = track(new MockChannelHandlerContext());
         HttpRequest filter = request("/needle-.*");
         handler.getClientRegistry().put(filtered, filter);
 
@@ -2654,14 +2758,14 @@ public class DashboardWebSocketHandlerTest {
         // when - fill the registry to exactly the connection limit (100); none of these evicts
         List<MockChannelHandlerContext> connections = new ArrayList<>();
         for (int i = 0; i < 100; i++) {
-            MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+            MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
             connections.add(ctx);
             assertThat("no eviction while under the limit", handler.registerClient(ctx), is(nullValue()));
         }
         MockChannelHandlerContext oldest = connections.get(0);
 
         // ... then the 101st connection must evict the OLDEST
-        MockChannelHandlerContext overflow = new MockChannelHandlerContext();
+        MockChannelHandlerContext overflow = track(new MockChannelHandlerContext());
         ChannelOutboundInvoker evicted = handler.registerClient(overflow);
         oldest.runPendingTasks(); // flush the close task on the embedded event loop
 
@@ -2714,7 +2818,7 @@ public class DashboardWebSocketHandlerTest {
     public void pullPathCoalescesABurstOfInboundFramesIntoBoundedWalks() throws Exception {
         // given - a live pull connection on an otherwise-idle handler
         DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
 
         // when - a tight burst of 20 inbound pull requests, all well within one PULL_COALESCE window
         for (int i = 0; i < 20; i++) {
@@ -2733,7 +2837,7 @@ public class DashboardWebSocketHandlerTest {
     public void pullPathReflectsTheLastFilterAfterABurst() throws Exception {
         // given - a live pull connection
         DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
 
         // when - a burst whose FINAL filter differs from every superseded one in the middle
         HttpRequest last = request("/the-last-filter");
@@ -2768,7 +2872,7 @@ public class DashboardWebSocketHandlerTest {
         String expectedRecordedTimestamp = recordedEntry.getTimestamp();
         String expectedProxiedTimestamp = proxiedEntry.getTimestamp();
         DashboardWebSocketHandler handler = newSeededHandler(Arrays.asList(recordedEntry, proxiedEntry));
-        MockChannelHandlerContext ctx = new MockChannelHandlerContext();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(ctx, request());
 
         ScanResult result = singleScan(handler, ctx, request());
