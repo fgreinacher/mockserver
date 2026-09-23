@@ -1370,6 +1370,22 @@ above ~15,500 has been driven. The setup and teardown commands are in
 `mockserver/mockserver-benchmark/run-connection-ceiling.sh`. **Anyone quoting a number here must
 run the ladder first — the capability existing is not the measurement.**
 
+**And the aliases will work — macOS ephemeral CAPACITY is per source address, measured
+2026-09-23 on the laptop.** Worth recording because two cheaper tests said the opposite and were
+measuring the wrong property. Allocation ORDER comes from a single global counter: interleaving
+connects from two different source addresses yields one monotonic run (50809, 50810, 50811 …
+alternating between addresses), and two sequential batches show zero port-number collisions. Both
+readings look like "one shared pool", and both are about sequencing, not capacity. The capacity
+test settles it: filling from `127.0.0.1` stops at **16,175** with `EADDRNOTAVAIL` — the whole
+49152-65535 range — and a *second* source address then holds **9,860 more**, stopping on a socket
+timeout rather than on address exhaustion, so it had not reached its own limit either. Total
+26,035 against a single-address range of 16,384.
+
+So the counter is global and the capacity is not, and only the second fact bears on this item: N
+loopback aliases should give roughly N x 16,384 usable source ports. Measured with a standalone
+python socket harness, not `ConnectionCeilingBenchmark`, so it corroborates the mechanism rather
+than producing an item-21 figure.
+
 HTTP/2 is deliberately out of scope here — its
 connection axis is streams-per-connection, which item 11 measures on the memory axis; mixing them
 would confuse "connections held" with "streams held".
