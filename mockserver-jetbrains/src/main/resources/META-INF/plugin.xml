@@ -81,6 +81,20 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.json</depends>
+    <!--
+      OPTIONAL, and it must stay optional. JCEF backs the embedded dashboard and the LLM
+      diagram view. On IntelliJ 2026.2+ it is no longer part of the platform: it lives in
+      its own com.intellij.modules.jcef plugin, so its classes ship with the IDE but are
+      NOT in our classloader graph unless we declare them. Without this, touching JBCefApp
+      throws NoClassDefFoundError (see JcefSupport) and the dashboard can only ever offer
+      the external browser.
+
+      A REQUIRED depends would be wrong: on an IDE or runtime without JCEF the whole plugin
+      would fail to load, turning a degraded dashboard into no plugin at all. Optional gives
+      us the classpath where JCEF exists and costs nothing where it does not, and
+      JcefSupport still guards the call, because "declared" is not "present".
+    -->
+    <depends optional="true" config-file="mockserver-jcef.xml">com.intellij.modules.jcef</depends>
 
     <actions>
         <group id="MockServer.ActionGroup" text="MockServer" description="MockServer actions" popup="true">

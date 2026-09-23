@@ -1,0 +1,12 @@
+<!--
+  Loaded only when com.intellij.modules.jcef is present (see the optional <depends>
+  in plugin.xml). It contributes no extensions on purpose: its whole job is to make
+  the dependency declared, so the JCEF plugin's classloader becomes a parent of ours
+  and com.intellij.ui.jcef.JBCefApp is actually reachable.
+
+  Without it the embedded dashboard cannot work on IntelliJ 2026.2+, where JCEF moved
+  out of the platform into its own plugin: the classes ship with the IDE but are not
+  in any plugin's graph unless that plugin asks for them.
+-->
+<idea-plugin>
+</idea-plugin>

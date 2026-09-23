@@ -359,9 +359,11 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   which. They now read `MockServer Dashboard`, `MockServer Debugger` and `MockServer LLM`, which
   wrap onto two lines the way every other tool window does. Your existing window positions are
   unaffected.
-- **The MockServer Dashboard tool window opens again in recent IntelliJ IDEA versions.** On IDEA
+- **The MockServer Dashboard tool window works again in recent IntelliJ IDEA versions.** On IDEA
   2026.2 it failed with `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp` and the tool window
-  did not appear at all. The plugin asks whether the embedded browser is available before using it,
+  did not appear at all. The embedded browser it needs moved out of the IDE core into a separate
+  component, which the plugin now asks for, so the dashboard renders in the IDE again rather than
+  only offering your external browser. The plugin asks whether the embedded browser is available before using it,
   but on that platform the class behind the question is no longer reachable from the plugin, so
   asking it was itself what failed. The check now survives the class being absent and falls back to
   offering the dashboard in your normal browser, which is what it was always meant to do when the
