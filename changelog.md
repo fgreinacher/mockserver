@@ -14,8 +14,10 @@ MockServer could lose data and report nothing.
 **One change can stop a server that used to start.** If you set `http3Port`, read the `BREAKING`
 entry under *Changed* before upgrading: HTTP/3's native libraries now ship in a separate artifact,
 so a server configured for HTTP/3 without them refuses to start and tells you which artifact to
-use. This affects Docker images too, which previously served HTTP/3 out of the box. If you do not
-use HTTP/3 — the default — nothing changes except smaller downloads.
+use. This affects Docker images too, which previously served HTTP/3 out of the box: a container
+that sets `http3Port` will refuse to start until the extra artifact is mounted, and the `BREAKING`
+entry says exactly what to mount and where. If you do not use HTTP/3 — the default — nothing
+changes except smaller downloads.
 
 **Throughput and latency**
 
@@ -25,12 +27,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
 - **~114x faster** generation of internal ids at 32 threads. The shared secure PRNG behind every
   event-log, correlation, stream and trace id was the only material lock contention on the request
   path, serialising all worker event loops as request rate peaked.
-- **−904 bytes allocated per request with a body.** Every such request re-parsed its `Content-Type`
+- **about 900 fewer bytes allocated per request with a body.** Every such request re-parsed its `Content-Type`
   header from scratch, allocating about 960 bytes to reproduce one of a handful of values. Parsed
   types are now reused, taking the whole inbound decode path from 6,584 to 5,680 bytes per request.
-- **−37.9% allocation** when a JSON body does not match, at the default log level — a non-match is
+- **about 38% less allocation** when a JSON body does not match, at the default log level — a non-match is
   now proven before a full diff is built.
-- **3,486 → 86 bytes per comparison** when recording why a match failed; diffs are built only if
+- **about 3.5 KB → under 100 bytes per comparison** when recording why a match failed; diffs are built only if
   something actually reads them.
 - One internal thread hand-off removed per regular-expression match, for any pattern provably free
   of catastrophic backtracking.
@@ -51,7 +53,7 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   *because* the server is busy, which is exactly when you can least afford the overhead.
 - **The request list stays fast however much traffic you capture.** The Inspect view rendered every
   request it held — up to 200 rows — so the page got heavier as traffic accumulated. It now renders
-  only the rows near the viewport: **2,234 DOM elements became 145**, and that figure no longer grows
+  only the rows near the viewport: **around 2,200 DOM elements became about 150**, and that figure no longer grows
   with the number of requests. Selecting, comparing and filtering still work across the whole list,
   not just what is on screen. Rows scrolled out of view are no longer in the page, so your browser's
   own find-in-page only searches visible rows.
@@ -62,15 +64,15 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
 - **The first request on every connection no longer scans your whole expectation store.** MockServer
   checks each new connection for an expectation configured with `respondBeforeBody`, and that check
   walked every registered expectation — even though almost nobody uses the feature, so the walk
-  found nothing. It is now skipped outright unless such an expectation actually exists: **73.5
-  microseconds → 0.003** at 15,000 expectations, and it stops allocating entirely. If you do use
+  found nothing. It is now skipped outright unless such an expectation actually exists: **73.5 microseconds → under 0.01 microseconds**
+  at 15,000 expectations, and it stops allocating entirely. If you do use
   `respondBeforeBody`, nothing changes — the same check runs exactly as before.
 - **Clearing an expectation no longer scans every expectation you have registered.** Teardown between
   tests used to compare the clear against the whole store, so a suite sharing one long-lived server
   got slower at cleaning up as its expectations accumulated. A measured per-test cycle grew about
   6.8x between an empty store and 15,000 expectations, and `clear` was **59%** of that growth. Clears
-  that name a path (with or without a method) are now served from an index: **1,585 microseconds →
-  0.2** at 15,000 expectations, and flat across store size rather than linear. Clears that cannot be
+  that name a path (with or without a method) are now served from an index: **1,585 microseconds → under 1 microsecond**
+  at 15,000 expectations, and flat across store size rather than linear. Clears that cannot be
   narrowed safely — a regex path, a path with parameters, or a store running with `matchExactCase`
   enabled — fall back to the old full scan, so behaviour is identical in every case.
 
@@ -137,15 +139,10 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   is unchanged** -- if your team shares one Maven or Gradle configuration across macOS laptops and
   Linux CI, keep using it and nothing changes.
 
-- The default byte budget above was **derived from measurement, not chosen.** Its divisors were first
-  set while the weigher still counted only raw body bytes, and were not revisited when the weigher was
-  corrected mid-development — so they were re-derived against live-heap measurements before release.
-  Nothing here changes behaviour relative to the last published release, where this budget did not
-  exist; the re-derivation only means the value you get on upgrade is the measured one rather than the
-  interim guess. If you want the log to retain more history and have the heap headroom, set
-  `maxEventLogSizeInBytes` explicitly. Erring toward the smaller budget is deliberate: under-budgeting
-  evicts early and announces itself, while over-budgeting ends in the `OutOfMemoryError` the bound
-  exists to prevent.
+- The default byte budget above errs deliberately on the small side: under-budgeting evicts early and
+  says so, while over-budgeting ends in the `OutOfMemoryError` the bound exists to prevent. If you
+  want the log to keep more history and have the heap headroom, set `maxEventLogSizeInBytes`
+  explicitly.
 - Eight new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) covering both sites
   where the event log holds memory. Four cover the in-flight ring:
   `mock_server_event_log_ring_occupancy`, `_ring_capacity`, `_in_flight_bytes`, and
@@ -271,6 +268,15 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —
   which keeps the production dependency audit (`npm audit --omit=dev`) clean; the affected lodash functions are
   not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
+- **Having the dashboard open costs the server, and the browser, far less.** Three separate costs
+  were paid on every one-second update. The server re-read the whole event log to fill three panels,
+  examining about 4,200 entries where 201 would do. The browser rebuilt every panel whenever any
+  data changed, about 60,700 component rebuilds over a minute of watching where 267 were needed. And
+  the Inspect list rendered a DOM node per captured request, so it grew without bound — around 2,200
+  elements in a busy list, now about 150 and flat however much traffic accumulates. Panels now
+  request only what they show, re-render only when their own data moves, and render only the rows
+  near the viewport. This matters most when you watch the dashboard *because* the server is busy,
+  which is exactly when the overhead is least affordable.
 - Internal identifiers that need only to be **unique** are now generated from a fast, contention-free
   random source, completing a three-phase programme. The first phase covered event-log entry ids,
   per-request log-correlation ids, and internal gRPC/HTTP-3 stream ids — all minted 2–3 times per
@@ -289,10 +295,7 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   version-4 UUIDs; trace ids remain 32- and 16-character lowercase hex as the W3C `traceparent`
   contract requires — format and uniqueness are unchanged. **One user-visible semantic change:** the
   CRUD data-plane resource id (minted on a `POST` to a CRUD-backed data collection) is now
-  unique-but-guessable rather than unguessable — a deliberate trade-off for a test fixture. An
-  always-on CI guard (`check-shared-rng-hotpath.sh`) now fails the build when a new `Math.random()`,
-  unseeded `new Random()`, `UUID.randomUUID()`, or `new SecureRandom()` appears in the server-runtime
-  source without an allow-listed reason.
+  unique-but-guessable rather than unguessable — a deliberate trade-off for a test fixture.
 - Two event-log writer improvements that reduce CPU cost at high request rates. The writer thread no
   longer re-resolves `logLevelOverrides` on every log entry — past the saturation knee this was
   measured taking over 20% of the writer thread's time; the resolved overrides are now cached and
