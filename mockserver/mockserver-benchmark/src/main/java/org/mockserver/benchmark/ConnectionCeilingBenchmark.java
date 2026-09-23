@@ -377,7 +377,25 @@ public class ConnectionCeilingBenchmark {
                     + " holding what it claims to measure");
             }
 
-            Channel probe = connect(group, sslContext, host, ports[0]);
+            // The PROBE connect needs the same exhaustion guard as the parking loop above. A rung can
+            // park every connection it asked for and then fail on this ONE socket because the ephemeral
+            // range is spent — and an unguarded throw here kills the whole run, discarding the lower
+            // rungs that already completed. Those rungs are the result; losing them to a stack trace on
+            // the measuring socket is exactly the outcome the parking loop's handler exists to prevent.
+            Channel probe;
+            try {
+                probe = connect(group, sslContext, host, ports[0]);
+            } catch (Exception e) {
+                Wall.Kind kind = classify(e);
+                System.err.println("RIG EXHAUSTED opening the probe connection for rung " + connections
+                    + " (" + kind + ": " + describe(e) + "). The rung's " + connections + " parked"
+                    + " connections were established, but the probe that measures latency could not be"
+                    + " opened, so this rung reports no timing. This rung and every higher one are the"
+                    + " driver's limit, not the server's — the previous rungs are still valid.");
+                // No explicit close here: the finally below already closes every parked channel, the
+                // same way the parking loop's own exhaustion path relies on it.
+                return Rung.rigExhausted(connections, connections, kind);
+            }
             try {
                 OperatingSystemMXBean os = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
                 long cpuBefore = os.getProcessCpuTime();

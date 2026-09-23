@@ -84,16 +84,49 @@ SERVER_PID=$!
 trap 'kill "${SERVER_PID}" 2>/dev/null || true' EXIT
 
 FIRST_PORT="${PORTS%%,*}"
-for _ in $(seq 1 60); do
-    if [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://127.0.0.1:${FIRST_PORT}/mockserver/status" || true)" = "200" ]; then
-        break
-    fi
-    sleep 1
-done
+ALL_PORTS="$(printf '%s' "${PORTS}" | tr ',' ' ')"
+
 # Readiness is the control-plane 200, never a listening port — MockServer accepts and then resets while
 # it is still initialising, so a port probe reports ready before the server can serve.
-if [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://127.0.0.1:${FIRST_PORT}/mockserver/status" || true)" != "200" ]; then
-    echo "ERROR: server did not become ready on port ${FIRST_PORT}; see target/ceiling-server.log" >&2
+#
+# EVERY port, not just the first, and the server process must still be alive. Probing only
+# ${FIRST_PORT} made this harness report ready against a DIFFERENT server: an unrelated MockServer
+# had been left on 1080, ours could not bind, printed its usage text and exited, and the probe was
+# answered 200 by the stranger. The run then proceeded and failed on the first connection to 1081
+# with "Connection refused" — which the ladder reports as "RIG EXHAUSTED" and blames on the
+# file-descriptor limit, advice that has nothing to do with the actual fault.
+ready=false
+for _ in $(seq 1 60); do
+    if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+        echo "ERROR: the benchmark server exited during start-up. Last lines of target/ceiling-server.log:" >&2
+        tail -5 target/ceiling-server.log >&2
+        echo "HINT: if it printed its usage text, it could not bind one of ${PORTS} — something else is" >&2
+        echo "      probably holding one. Naming only the first port here would repeat the very mistake" >&2
+        echo "      this check exists to catch, so here is every one of them:" >&2
+        for p in ${ALL_PORTS}; do
+            # `|| true`: under `set -euo pipefail` an lsof that matches nothing exits non-zero and
+            # would kill the script here — inside the very handler whose job is to explain the
+            # failure, losing both the listing and the exit code the caller is checking for.
+            holder="$(lsof -nP -iTCP:"${p}" -sTCP:LISTEN 2>/dev/null | tail -1 || true)"
+            echo "      port ${p}: ${holder:-(nothing listening)}" >&2
+        done
+        echo "      Free the conflicting one, or pick another set with CEILING_SERVER_PORTS." >&2
+        exit 2
+    fi
+    all_ok=true
+    for p in ${ALL_PORTS}; do
+        if [ "$(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://127.0.0.1:${p}/mockserver/status" || true)" != "200" ]; then
+            all_ok=false; break
+        fi
+    done
+    if [ "${all_ok}" = true ]; then ready=true; break; fi
+    sleep 1
+done
+if [ "${ready}" != true ]; then
+    echo "ERROR: server did not become ready on ALL of ${PORTS}; see target/ceiling-server.log" >&2
+    for p in ${ALL_PORTS}; do
+        echo "    port ${p}: $(curl -s -o /dev/null -w '%{http_code}' -X PUT "http://127.0.0.1:${p}/mockserver/status" || true)" >&2
+    done
     exit 2
 fi
 
