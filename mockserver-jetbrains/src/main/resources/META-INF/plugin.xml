@@ -217,6 +217,12 @@
     </actions>
 
     <extensions defaultExtensionNs="com.intellij">
+        <!-- Tool-window icons: all four share the MockServer mark, with a KNOCKOUT BADGE
+             (white disc, dark outline, dark letter) distinguishing the three specialised
+             windows - D dashboard, B breakpoint-debugger, L llm. Chosen 2026-09-23 from three
+             candidates rendered at 13px, the real stripe size; see docs/icon-options/.
+             The badge keeps its own contrast rather than borrowing the background's, so the
+             _dark variants change only the MARK colour and leave the disc alone. -->
         <toolWindow id="MockServer"
                     factoryClass="com.mockserver.jetbrains.MockServerToolWindowFactory"
                     anchor="bottom"
@@ -226,19 +232,19 @@
                     factoryClass="com.mockserver.jetbrains.MockServerDashboardToolWindowFactory"
                     anchor="right"
                     canCloseContents="false"
-                    icon="/icons/mockserver.svg"/>
+                    icon="/icons/mockserver_dashboard.svg"/>
         <toolWindow id="MockServerDebugger"
                     factoryClass="com.mockserver.jetbrains.BreakpointDebuggerToolWindowFactory"
                     anchor="bottom"
                     secondary="true"
                     canCloseContents="false"
-                    icon="/icons/mockserver.svg"/>
+                    icon="/icons/mockserver_debugger.svg"/>
         <toolWindow id="MockServerLlm"
                     factoryClass="com.mockserver.jetbrains.LlmToolWindowFactory"
                     anchor="bottom"
                     secondary="true"
                     canCloseContents="false"
-                    icon="/icons/mockserver.svg"/>
+                    icon="/icons/mockserver_llm.svg"/>
         <notificationGroup id="MockServer Notifications"
                            displayType="BALLOON"
                            isLogByDefault="true"/>

@@ -44,7 +44,13 @@ mockserver_keystore.jks
 ._*
 .Spotlight-V100
 .Trashes
-Icon?
+# macOS custom-folder-icon resource file: "Icon" followed by a control character
+# (in practice only the carriage return, "Icon\r" - the class is broader than the one
+# filename that actually occurs, which is harmless since the rest are unreachable).
+# NOT `Icon?`: `?` is a single-character glob, and on a case-insensitive filesystem that
+# matches the directory `icons` - silently ignoring every NEW file under any icons/ folder
+# while already-tracked ones stay visible. That hid six plugin tool-window icons.
+Icon[[:cntrl:]]
 ehthumbs.db
 Thumbs.db
 
