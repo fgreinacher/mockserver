@@ -3220,6 +3220,36 @@ rungs would still be excluded on the headroom term alone.
 **This item and item 18 are now the same question**, approached from opposite ends and agreeing: the
 client is the limit. Both wait on hardware, not analysis.
 
+**First multi-process run on the new hardware — build 408, 2026-09-23. The WIRING works; the
+ladder did not.** `PERF_SERVING_MULTIPROC=true` with `procs=1,2,4,8` and aggregate rates
+8,000-64,000. Everything structural behaved: the shared `/sys` guard verified physical
+disjointness at every rung (`server / client0` 6 distinct cores at N=1, rising to 20 at N=8, "none
+shared" throughout), all four process counts produced points, none was skipped, and
+`serving-multiproc.json` uploaded.
+
+**The verdict is `insufficient_points`, because only ONE process count produced a valid aggregate
+ceiling** — it needs two to judge scaling. Two different limiters did it, and neither is the
+server:
+
+| procs | aggregate ceiling | client CPU peak (of 200% pin) | why excluded |
+|---:|---:|---:|---|
+| 1 | null | 200.8% | client pegged |
+| 2 | null | 200.7% | client pegged |
+| 4 | null | 137.6% | the top rungs returned **error_rate 1** |
+| 8 | **8,000** | 180.3% | — |
+
+**The 48,000 and 64,000 rungs collapse outright** rather than bending: 48,000 offered achieved
+**61 rps** and 64,000 achieved **181 rps**, both at 100% errors, on every process count that
+reached them. That is a rig falling over, not a knee — and worth recording precisely because a
+reader skimming "achieved 61" next to "offered 48,000" could mistake it for a catastrophic server
+result. The SUT was at 147-280% of its own 400% pin throughout, i.e. never saturated.
+
+**So the next run is a narrower ladder, not a wider one.** Each k6 process had only
+`client_cores_each=2` and pegged at N=1 and N=2; the fix is more cores per process rather than
+more processes, plus a top rung the rig can actually offer. `PERF_MULTI_CLIENT_CORES_EACH=4` with
+`procs=2,4,8` and rates capped near 32,000 keeps every client block below cpu 24 (so the guard
+still passes) while giving each process real headroom.
+
 ## The load generator has been sharing the server's physical cores all along
 
 **Found 2026-09-22, while costing the client rig.** The rig pins the server, the upstream and k6 to
