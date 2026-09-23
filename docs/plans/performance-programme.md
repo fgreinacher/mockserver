@@ -1358,7 +1358,19 @@ Linux defaults are more generous (32768-60999 = 28,232) and `tcp_tw_reuse` lets 
 
 **Not established:** anything above ~15,500 connections, which is the driver's limit and not the
 server's. Exceeding it needs more client *source addresses* (loopback aliases, or more
-load-generator hosts), not more server ports. HTTP/2 is deliberately out of scope here — its
+load-generator hosts), not more server ports.
+
+**The harness can now do that (`cf028283b`), but the figure is still unmeasured.** Connections
+round-robin across `CEILING_SOURCE_ADDRESSES`, each address contributing its own ephemeral range,
+with the per-address tally keyed on the address the OS actually assigned rather than the one
+requested, and a preflight that refuses to start if a configured address is not bindable — so a
+run that quietly used fewer addresses than asked cannot report the old wall as a raised ceiling.
+What is missing is root: creating the loopback aliases needs `sudo ifconfig lo0 alias`, so nothing
+above ~15,500 has been driven. The setup and teardown commands are in
+`mockserver/mockserver-benchmark/run-connection-ceiling.sh`. **Anyone quoting a number here must
+run the ladder first — the capability existing is not the measurement.**
+
+HTTP/2 is deliberately out of scope here — its
 connection axis is streams-per-connection, which item 11 measures on the memory axis; mixing them
 would confuse "connections held" with "streams held".
 
