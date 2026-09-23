@@ -72,17 +72,13 @@ set -euo pipefail
 #   PERF_MULTI_PROCS=2 PERF_MULTI_AGG_RATES=200,400 PERF_MULTI_STEP=4s \
 #     PERF_MULTI_WARMUP_DURATION=2s .../multi-process-sweep.sh /tmp/smoke.json
 #
-# CI WIRING (for the owner to add to the three files this change must NOT touch):
-#   * perf-test-run.sh: behind a NEW opt-in flag PERF_SERVING_MULTIPROC (mirror
-#     of PERF_SERVING_PERCORE), call this script writing multiproc.json, merge it
-#     into result.json under `.serving_multiproc`, and copy it out as the
-#     `serving-multiproc.json` artifact.
-#   * perf-test-compare.sh: read `serving_multiproc.*` NON-GATING on the full
-#     baseline, with a `serving_multiproc_attempted` presence gate (attempted-
-#     but-empty => RED), exactly as serving_percore is read.
-#   * perf-budgets.json: add the notify-only keys
-#     `serving_multiproc_aggregate_healthy_ceiling_rps` and
-#     `serving_multiproc_scales_with_procs` (boolean/annotation only).
+# CI WIRING — DONE (faebd742f). This script is called from perf-test-run.sh behind
+# the opt-in PERF_SERVING_MULTIPROC flag, merged into result.json under
+# `.serving_multiproc` and uploaded as the `serving-multiproc.json` artifact;
+# perf-test-compare.sh reads it NON-GATING with a `serving_multiproc_attempted`
+# presence gate; and perf-budgets.json declares the two notify-only keys
+# `serving_multiproc_aggregate_healthy_ceiling_rps` and
+# `serving_multiproc_scales_with_procs`. Do not re-add that wiring.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
