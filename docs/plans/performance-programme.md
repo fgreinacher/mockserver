@@ -3354,6 +3354,42 @@ first time this programme has seen the knee region with neither side CPU-bound. 
 to investigate next, and it is a *different* question from the published 36,000 figure, which
 this rig still does not reach.
 
+**EXTENDED TO 64,000 — build 413, 2026-09-23. Latency finally BENDS, and the bend brackets the
+published figure. But this is not a healthy-ceiling measurement, and the harness says so.**
+
+| offered | N=2 achieved | N=2 p50 | N=4 achieved | N=4 p50 | N=4 SUT CPU (of 400% pin) |
+|---:|---:|---:|---:|---:|---:|
+| 16,000 | 14,008 | 0.10 ms | 14,096 | 0.152 ms | 107% |
+| 32,000 | 23,910 | 0.11 ms | 24,100 | 0.111 ms | 189% |
+| 40,000 | 26,951 | 0.126 ms | 31,067 | 0.125 ms | 226% |
+| 48,000 | 30,722 | 0.163 ms | 36,473 | 0.160 ms | 250% |
+| 64,000 | 34,092 | **0.61 ms** | **42,330** | **1.005 ms** | **278%** |
+
+Three firsts. Peak achieved **42,330 rps**, past the published 36,000. p50 rises 4-6x between
+48,000 and 64,000 offered - the first genuine latency bend this programme has produced, after a
+year of curves that were the rig bending instead. And the SUT reached **278% of its 400% pin**,
+the closest it has come to saturation.
+
+**`aggregate_healthy_ceiling_rps` is `null` for BOTH process counts, so `scales_with_procs` is
+`null` too, and that is the honest headline.** The healthy ceiling requires
+`achieved >= 0.95 * offered`; the best ratio here is **0.881**, at the lowest rung. The ratios
+decline steadily - 0.875, 0.747, 0.674, 0.640, 0.533 at N=2 - while latency stays flat until the
+top rung. Declining delivery with flat latency is the client failing to OFFER, not the server
+failing to serve. The flat 128-VU pool avoids the connection storm and buys the bend, but it
+cannot satisfy the keep criterion at these rates.
+
+**So 413 brackets the knee rather than measuring it.** The bend lies between **36,473 and 42,330
+achieved**, which straddles the published ~36,000 and is consistent with a 32,000 healthy ceiling
+being right and slightly conservative. It does NOT license quoting 42,330 as a capability: that
+rung delivered 66% of what was offered with p50 already at 1 ms.
+
+**What this settles about the pool rule.** The two ends are now both measured: the per-rung rule
+(`0.08 * rate`, reaching 1,920 connections) storms past `SO_BACKLOG` and collapses; a flat 128
+under-offers and voids the ceiling metric. The fix is neither constant - bound the pool by the
+accept backlog AND by rate, e.g. `min(ceil(rate * 0.08), backlog_budget)` with the budget set
+below 1024, which would keep the ceiling metric meaningful while never storming. That is the one
+harness change worth making before this item is called finished.
+
 **CONFIRMED 2026-09-23, build 412 — the flat-pool experiment removed the cliff entirely, and the
 rig nearly doubled its reach.** Same ladder, same cores, same commit; the only change is
 `PERF_MULTI_PRE_VUS=128 PERF_MULTI_MAX_VUS=128`, which caps connections at 256 (N=2) / 512 (N=4)
