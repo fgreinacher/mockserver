@@ -24,6 +24,22 @@ vi.mock('../lib/conversationCodegen', () => ({
   listConversationScenarios: () => [],
 }));
 
+// These render the WHOLE Composer, which is a large component, and then drive it
+// through real user-event interactions. Two things follow, both of which have
+// failed in CI while passing in isolation locally:
+//
+//   TIME. The global 20s testTimeout (vitest.config.ts) is sized for ordinary
+//   tests; a full Composer mount competing with ~200 other files for workers can
+//   exceed it. What is under test is matcher UX, not how fast the Composer
+//   renders, so a clock is the wrong constraint.
+//
+//   IDENTITY. `getByLabelText` resolves synchronously against whatever is mounted
+//   at that instant. While the Composer is still settling the textarea can be
+//   replaced, and user-event then fails with "The element to be cleared could not
+//   be focused" -- acting on a node that has already left the document. Re-query
+//   immediately before interacting rather than holding a reference across awaits.
+const HEAVY_COMPOSER_TIMEOUT_MS = 60000;
+
 const params = { host: '127.0.0.1', port: '1080', secure: false };
 
 function renderComposer() {
@@ -39,7 +55,7 @@ function renderComposer() {
 
 afterEach(cleanup);
 
-describe('Composer — Test Matcher button', () => {
+describe('Composer — Test Matcher button', { timeout: HEAVY_COMPOSER_TIMEOUT_MS }, () => {
   beforeEach(() => {
     useDashboardStore.setState({ activeExpectations: [] });
   });
@@ -79,7 +95,7 @@ describe('Composer — Test Matcher button', () => {
   });
 });
 
-describe('Composer — matcher line-format validation', () => {
+describe('Composer — matcher line-format validation', { timeout: HEAVY_COMPOSER_TIMEOUT_MS }, () => {
   beforeEach(() => {
     useDashboardStore.setState({ activeExpectations: [] });
   });
@@ -88,13 +104,18 @@ describe('Composer — matcher line-format validation', () => {
     const user = userEvent.setup();
     renderComposer();
 
-    const headers = screen.getByLabelText('Headers (Name: value per line)');
+    const headers = await screen.findByLabelText('Headers (Name: value per line)');
     await user.type(headers, 'no-separator-here');
-    expect(screen.getByText(/1 line ignored/)).toBeTruthy();
+    expect(await screen.findByText(/1 line ignored/)).toBeTruthy();
 
-    // Correct the line — the warning disappears.
-    await user.clear(headers);
-    await user.type(headers, 'Accept: application/json');
+    // Correct the line — the warning disappears. Re-query rather than reusing the
+    // reference above: the Composer may have re-rendered during the awaits, and
+    // clearing a detached node fails with an unfocusable-element error.
+    await user.clear(await screen.findByLabelText('Headers (Name: value per line)'));
+    await user.type(
+      await screen.findByLabelText('Headers (Name: value per line)'),
+      'Accept: application/json',
+    );
     expect(screen.queryByText(/ignored/)).toBeNull();
   });
 
