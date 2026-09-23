@@ -353,6 +353,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   scroll, and a scroll was being read as "you have scrolled away". Following now changes only when
   you act -- scrolling up stops it and it stays stopped, and Follow resumes it -- and it holds the
   newest entry however much the content moves underneath. This also covers the Traffic inspector.
+- **The MockServer tool-window names in the IDE sidebar are readable again.** They were single
+  run-together words -- `MockServerDashboard`, `MockServerDebugger`, `MockServerLlm` -- and the
+  sidebar is too narrow for those, so they were cut off mid-word with no way to tell which was
+  which. They now read `MockServer Dashboard`, `MockServer Debugger` and `MockServer LLM`, which
+  wrap onto two lines the way every other tool window does. Your existing window positions are
+  unaffected.
 - **The MockServer Dashboard tool window opens again in recent IntelliJ IDEA versions.** On IDEA
   2026.2 it failed with `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp` and the tool window
   did not appear at all. The plugin asks whether the embedded browser is available before using it,

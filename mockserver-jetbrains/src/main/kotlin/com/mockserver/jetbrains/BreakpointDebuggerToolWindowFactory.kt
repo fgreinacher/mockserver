@@ -45,6 +45,13 @@ import javax.swing.ListSelectionModel
  * new Base64 payload), or Dropped.
  */
 class BreakpointDebuggerToolWindowFactory : ToolWindowFactory {
+    /**
+     * See MockServerDashboardToolWindowFactory.init for why this sets a spaced stripe title.
+     */
+     override fun init(toolWindow: ToolWindow) {
+        toolWindow.stripeTitle = "MockServer Debugger"
+    }
+
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = BreakpointDebuggerPanel(project)

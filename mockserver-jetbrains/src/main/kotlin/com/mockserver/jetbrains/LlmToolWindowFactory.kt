@@ -36,6 +36,13 @@ import javax.swing.JPanel
  *    falling back to the raw Mermaid source when JCEF or the CDN is unavailable.
  */
 class LlmToolWindowFactory : ToolWindowFactory {
+    /**
+     * See MockServerDashboardToolWindowFactory.init for why this sets a spaced stripe title.
+     */
+     override fun init(toolWindow: ToolWindow) {
+        toolWindow.stripeTitle = "MockServer LLM"
+    }
+
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = LlmToolWindowPanel(project)

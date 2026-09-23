@@ -38,6 +38,18 @@ import javax.swing.JPanel
  * and its memory leak).
  */
 class MockServerDashboardToolWindowFactory : ToolWindowFactory {
+    /**
+     * The stripe label must contain a SPACE or the platform cannot wrap it: the stripe is
+         * narrow, and an unbreakable CamelCase token like "MockServerDashboard" is simply clipped
+         * ("MockServerDash..."). Every neighbouring plugin wraps for this reason - "AI Chat",
+         * "Python Console", "Jupyter Variables". The tool window ID stays unchanged, because it is
+         * referenced in code and persisted in the user's window layout; renaming it would move
+         * their windows.
+     */
+     override fun init(toolWindow: ToolWindow) {
+        toolWindow.stripeTitle = "MockServer Dashboard"
+    }
+
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val dashboardUrl = MockServerSettings.getInstance().dashboardUrl()
