@@ -1188,11 +1188,15 @@ stopped short is the measurement box, not the method.
 
 *Cost: 2-3 days. Where: tail of the daily run, non-gating.*
 
-Regenerate the chart data and **open a pull request** — deliberately not a direct commit,
-because the figures are a customer-facing claim and a human should look at a 20% swing before
-it ships. Trigger only when the committed figure is more than 30 days old **or** has moved
-more than 10%, so it does not open a PR every day. A stale page then becomes an open PR
-rather than invisible rot. Requires item 0 for the provenance line. Finding 3 is now resolved
+Regenerate the chart data and **emit a ready-to-apply patch artifact** for a human to open the
+PR from — deliberately not a direct commit, because the figures are a customer-facing claim and
+a human should look at a 20% swing before it ships. As SHIPPED this emits `git format-patch`
+plus the regenerated files and instructions, rather than opening the PR itself: the perf queue's
+IAM role carries only the S3 perf-results policy and no git or gh credentials, and the original
+open-a-PR path killed build 325 at `git push`. The intent — a human reviews a customer-facing
+swing before it ships — is preserved, arguably more conservatively. Trigger only when the
+committed figure is more than 30 days old **or** has moved more than 10%, so it does not produce
+a patch every day. A stale page then becomes a waiting patch rather than invisible rot. Requires item 0 for the provenance line. Finding 3 is now resolved
 (2026-09-16), so per-behaviour percentiles are publishable — but publish figures from the
 **fixed** `regression.js` only, never the pre-fix rig-artefact numbers. **Publish
 `healthy_ceiling_rps` with its latency, not `rig_valid_peak_achieved_rps` alone** — see Finding 1.
