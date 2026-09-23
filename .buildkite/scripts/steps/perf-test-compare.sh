@@ -196,11 +196,14 @@ if [ -f "$WORK/perf-churn.json" ]; then
   jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-churn.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
 fi
 # HTTP/2 multiplex benchmark (issue #2669). Persisted into the S3 run history for
-# trend visibility only — NOTIFY-ONLY, NO baseline comparison or pass/fail gate
-# (its own harness self-validation already fails the run step loudly on a bad
-# measurement; run-to-run variance on real agents is not yet known, so setting a
-# regression threshold now would be guessing). The `metrics` jq below intentionally
-# does not read `.h2_multiplex`, so it is recorded but never flagged.
+# trend visibility. NOTIFY-ONLY on both axes (its own harness self-validation already
+# fails the run step loudly on a bad measurement; run-to-run variance on real agents
+# is not yet known, so setting a build-FAILING threshold now would be guessing). The
+# TWO axes are consumed differently by the `metrics` jq below: the THROUGHPUT axis
+# (.h2_multiplex) is recorded but NOT read there, so it never flags; the PER-CONNECTION
+# MEMORY axis (.h2_connection_memory, item 11) IS read there (surfaced notify-only per
+# run against its h2_connection_memory.*.bytes_per_connection budget), so it annotates
+# a move but — being non-gating — cannot fail the build.
 if [ -f "$WORK/perf-h2-multiplex.json" ]; then
   jq -s '.[0] * .[1]' "$RESULT" "$WORK/perf-h2-multiplex.json" > "$WORK/merged.json" && mv "$WORK/merged.json" "$RESULT"
 fi
@@ -694,6 +697,27 @@ def metrics:
       {name:($k+".cpu_ms_per_handshake"),  value:$v.cpu_ms_per_handshake,  bkey:"tls_handshake.*.cpu_ms_per_handshake"},
       {name:($k+".alloc_kb_per_handshake"),value:$v.alloc_kb_per_handshake,bkey:"tls_handshake.*.alloc_kb_per_handshake"},
       {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
+  # item 11 — HTTP/2 per-connection heap-delta (org.mockserver.benchmark.Http2Connection-
+  # MemoryBenchmark), merged into the run under .h2_connection_memory by the h2-multiplex
+  # step and keyed by shape: conn_1x1, conn_10x10, conn_100x10 (N connections x M concurrent
+  # in-flight streams). The figure is bytes_per_connection = (loaded heap - baseline heap) / N,
+  # with the event log cleared before sampling so it measures connection + stream child-channel
+  # state, not logged bodies. A wildcard bkey (h2_connection_memory.*.bytes_per_connection)
+  # covers every shape, exactly as serving_percore.* / clustered_state.* / tls_handshake.* do
+  # for their arm sets. This is an ALLOCATION / heap-delta figure — a property of the code path
+  # and JVM object layout, not of CPU speed or core count (allocation is bytes, reproducible
+  # across amd64/arm64 under the same JVM) — so it is deliberately NOT `hw`: its perf-budgets.json
+  # entry omits `hw`, so it rides the FULL baseline (this else-family) like the other allocation
+  # metrics, unfiltered by the k6 arm-set fingerprint or the JMH .config.jmh (it is neither a
+  # .behaviours arm nor a JMH microbench). NOTIFY-ONLY (perf-budgets.json omits `gating`):
+  # run-to-run variance on real agents is not yet known and the 1x1 shape sits at the edge of
+  # GC measurement granularity, so a flag annotates but must NOT fail the build until >=10 clean
+  # runs let a MAD-derived floor be set. Head-driven like every other optional profile: a
+  # disabled/absent h2 step leaves .h2_connection_memory absent, so this emits ZERO metrics
+  # rather than a fail-closed missing-budget error. (The harness self-validates and REDs its OWN
+  # step on a bad measurement — distinct from "memory grew", which has no threshold here.)
+  ((.h2_connection_memory // {}) | to_entries[] | .key as $k | .value as $v |
+    ( {name:("h2_connection_memory."+$k+".bytes_per_connection"), value:$v.bytes_per_connection, bkey:"h2_connection_memory.*.bytes_per_connection"} ) ),
   # item 12 — LLM/SSE streaming under concurrency. The .streaming block is a FLAT
   # object (not per-arm), so a CURATED subset of its scalars is budgeted here with
   # EXACT bkeys (like rig_valid_peak_achieved_rps / forward.error_rate, not the wildcard arm

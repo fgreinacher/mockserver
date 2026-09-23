@@ -831,7 +831,7 @@ server with `growth.js`, which needs the default 100k ring to reproduce issue #2
 O(n)-eviction slope — so shrinking the ring there would silently disable the control `growth.js`
 exists to be. Do not "just shrink the ring" on the shared SUT.
 
-#### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis — **[landed `c7fe73d54`; daily budget dormant by design]**
+#### 11. Re-measure the 8.0.0 multiplex cost, with a memory axis — **[landed `c7fe73d54`; daily figure now surfaced notify-only]**
 
 *Serves: D1, D4 / profile C. Cost: 2-3 days.*
 
@@ -852,9 +852,14 @@ the delta is connection + stream child-channel state, not logged bodies. Four se
 proof the axis is real), event-log-empty-at-sample, and a plausible-magnitude floor/ceiling. The step
 `perf-test-h2multiplex.sh` runs it alongside the throughput sweep and merges both into `perf-h2-multiplex.json`,
 which `perf-test-compare.sh` persists into the S3 run history (a dated trend). The
-`h2_connection_memory.*.bytes_per_connection` budget key is committed NOTIFY-ONLY and DORMANT (the daily
-compare's metrics jq does not yet read `.h2_connection_memory`, so it cannot perturb the fail-closed
-missing-budget rule; wiring it is a one-line clause in that k6/compare-owned script). **The pre-8.0.0
+`h2_connection_memory.*.bytes_per_connection` budget key is committed NOTIFY-ONLY and is now **surfaced per
+run** (the promised one-line clause landed): `perf-test-compare.sh`'s metrics jq reads `.h2_connection_memory`
+and emits each shape (`h2_connection_memory.conn_1x1/10x10/100x10.bytes_per_connection`) against that budget on
+every build, so a move is annotated exactly like its `streaming.*` / `tls_handshake.*` / `laptop.*` siblings —
+non-gating, so it cannot red the pipeline until >=10 clean runs let a MAD-derived floor be set. The figure is
+classified NOT hardware-sensitive (allocation / heap-delta is a property of the code path and JVM object
+layout, reproducible across amd64/arm64), so it rides the FULL baseline rather than a same-instance subset.
+**The pre-8.0.0
 comparison (the whole point) was run once** via `run-h2-connection-memory-compare.sh` (same external client,
 diff server-container RSS): pre-multiplex 7.6.0 vs first-multiplex 8.0.0, `-m 512m`, 3 repeats, median.
 At the 100x10 shape (the only one RSS resolves with low spread, ~4-6%): **271,581 -> 338,690 bytes/connection,

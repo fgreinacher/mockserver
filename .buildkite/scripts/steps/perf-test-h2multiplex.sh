@@ -23,12 +23,14 @@ set -euo pipefail
 #      {h2_connection_memory:{conn_<C>x<S>:{bytes_per_connection, ...}}}. The two JSON
 #      objects are jq-merged into the single perf-h2-multiplex.json artifact below.
 #
-# NOTIFY-ONLY, and there is deliberately NO pass/fail threshold on either axis:
-# run-to-run variance on real build agents is unknown, so a threshold now would be
-# guessing. They are recorded so a threshold can be added later once variance is known.
-# The bytes_per_connection budget key (h2_connection_memory.*.bytes_per_connection in
-# perf-budgets.json) is committed non-gating and DORMANT: the daily compare's metrics
-# jq does not yet read .h2_connection_memory (see the item-11 note in perf-budgets.json).
+# NOTIFY-ONLY, and there is deliberately NO build-FAILING threshold on either axis:
+# run-to-run variance on real build agents is unknown, so a gating threshold now would
+# be guessing. They are recorded so a gating threshold can be added later once variance
+# is known. The bytes_per_connection budget key (h2_connection_memory.*.bytes_per_connection
+# in perf-budgets.json) is committed NON-GATING but is now SURFACED per run: the daily
+# compare's metrics jq reads .h2_connection_memory and annotates each shape's
+# bytes_per_connection notify-only against that budget, so a move is visible every build
+# but cannot red the pipeline (see the item-11 clause in perf-test-compare.sh).
 #
 # The dated per-connection numbers here are a TREND signal for the current build. The
 # one-time pre-8.0.0-vs-8.0.0 comparison that actually answers the changelog is the
