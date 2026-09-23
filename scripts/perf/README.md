@@ -16,6 +16,7 @@ validated with numbers, not guesses. These scripts produced the evidence in
 | `InJvmStartupBench.java` | The **in-JVM** start cost — `ClientAndServer.startClientAndServer(...)` inside one JVM, cold first launch vs warm steady-state median. Delegated to by `bench_laptop.py`. | The number `MockServerExtension` users pay per test class (item 8b) |
 | `InJvmParallelBench.java` | **N in-JVM instances in ONE JVM** (programme item 17, in-JVM shape): per-instance startup, the LIVE thread count (counted via `ThreadMXBean`, with a name-prefix histogram), aggregate RSS / TCP sockets, heap used, the per-instance store capacity across launch order, and per-instance light-load p95 as a distribution. `--devMode true` is the control arm. | The `MockServerExtension` "lots of parallel tests in one JVM" profile: thread/heap footprint, the store-sizing freeze, and the `devMode` saving |
 | `parallel_instances.py` | **N containers on one host** (item 17, container shape): per-container startup (cold vs warm), aggregate + per-container RSS, per-container live thread count, at `{1,4,8,16,32}`. `--cpuset`/`--cpus` show the cgroup-aware pool sizing. | Comparing the container shape (N JVMs, N baselines, cgroup-sized) against the in-JVM shape (one shared JVM) |
+| `InJvmSuiteBench.java` | **Suite-level decomposition** (programme item 22): the per-test-method / per-test-class profile in ONE JVM. Times three regions per instance — `call` (`startClientAndServer` returns; port bind is inside it), `ready` (`PUT /mockserver/status` == 200), and `stop` (`server.stop()` returns) — for the cold first instance (reported alone; it pays class load), a SEQUENTIAL warm run (per-method, serial), and a CONCURRENT warm batch (per-method, parallel — the stated profile, with peak live thread count). Stops every instance and asserts **0 MockServer-owned threads survive** (the real leak signal, isolated from the harness's own JDK HttpClient pool). Emits a suite projection for a stated `classes x methods` shape. `--devMode true` is the control arm. | The `MockServerExtension` / `MockServerRule` "instance per method/class, often in parallel" profile: per-instance start AND stop cost, first-vs-subsequent, sequential-vs-concurrent |
 
 ## Usage
 
@@ -51,6 +52,14 @@ java -Xmx1g -cp <jar-with-dependencies> scripts/perf/InJvmParallelBench.java \
 # Item 17 — N parallel instances, CONTAINER shape (N JVMs); --cpuset shows cgroup sizing:
 python3 scripts/perf/parallel_instances.py --image mockserver/mockserver:<tag> \
   --counts 1,4,8,16,32 --settle 6 [--cpuset 2] --out container-result.json
+
+# Item 22 — suite-level decomposition (per-method / per-class, in ONE JVM); start AND stop timed:
+java -Xmx2g -cp <jar-with-dependencies> scripts/perf/InJvmSuiteBench.java \
+  --seq 16 --conc 16 --projectClasses 100 --projectMethods 10          # default profile
+java -Xmx2g -cp <jar-with-dependencies> scripts/perf/InJvmSuiteBench.java \
+  --seq 16 --conc 16 --devMode true --label suite-dev                  # control arm
+# NOTE: run on a QUIET machine — start/stop are single-digit ms, so background CPU contention
+# dominates the signal. The LEAK CHECK line must read "MockServer-owned live threads ... : 0".
 ```
 
 ## The `laptop` result block and its budgets (item 8)
