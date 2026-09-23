@@ -3538,9 +3538,12 @@ arrives as a push build still authored by the bot, passes the guard, and lands i
 describes. The control was complete in the descriptive layer and half-present in the operative one,
 which is the same shape as every other false-green in this document.
 
-The fix is to gate on whether an authenticated user exists at all (`BUILDKITE_BUILD_CREATOR` is empty
-exactly when the API reports `creator: None`) and fall through to the token-authenticated command path
-otherwise, which cannot be refused for want of a user.
+**FIXED `ea2336131`.** The native trigger path is now taken only when an authenticated user exists
+(`BUILDKITE_BUILD_CREATOR` is empty exactly when the API reports `creator: None`); everything else
+falls through to the token-authenticated command path, which cannot be refused for want of a user.
+The shipped guard is stricter than this paragraph originally proposed — it *also* rejects any author
+matching `*[bot]`, so a bot identity that happens to carry a Buildkite user still takes the command
+path rather than relying on that user holding build permission on all thirteen pipelines.
 
 ### `peak_achieved_rps` measures the client, not the server
 
