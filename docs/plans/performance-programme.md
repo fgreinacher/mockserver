@@ -3278,6 +3278,38 @@ SERVER_CORES` and run to `CLIENT_BASE + N*CLIENT_CORES_EACH - 1`, so N=8 at 4 co
 own 0-3 and the guard fires — correctly. The arithmetic to do first is simply
 `SERVER_CORES + N_max * CLIENT_CORES_EACH <= 24`.
 
+**MEASURED — build 411, 2026-09-23. The ladder fit, and the result is a CLIFF between 16,000 and
+24,000 offered that neither side's CPU explains.** `procs=2,4` at 4 cores each, rates
+4,000-32,000. The guard verified 12 then 20 distinct physical cores, none shared; 2 points, 0
+skipped, and **every rung `client_sound: true`** — the client-pegging that spoiled build 408 is
+gone.
+
+| offered | N=2 achieved | N=4 achieved | N=2 p50 | N=4 p50 |
+|---:|---:|---:|---:|---:|
+| 4,000 | 3,896 (0.97) | 3,914 (0.98) | 0.17 ms | 0.15 ms |
+| 8,000 | 7,604 (0.95) | 7,590 (0.95) | 0.15 ms | 0.13 ms |
+| 16,000 | 13,088 (0.82) | 13,660 (0.85) | 0.10 ms | 0.14 ms |
+| 24,000 | **2,933 (0.12)** | **2,604 (0.11)** | **965 ms** | **1,006 ms** |
+| 32,000 | **148 (0.005)** | **147 (0.005)** | **1,090 ms** | **2,947 ms** |
+
+Between 16,000 and 24,000 throughput falls by ~80% and p50 rises by four orders of magnitude,
+from ~0.1 ms to ~1 second. **The SUT peaked at 160.3% (N=2) and 152.9% (N=4) of its own 400%
+pin** — under half its cores — and the clients had headroom at every rung. So this is not a
+capacity limit on either side; it has the shape of a queueing or timeout collapse, and it is the
+first time this programme has seen the knee region with neither side CPU-bound. That is the thing
+to investigate next, and it is a *different* question from the published 36,000 figure, which
+this rig still does not reach.
+
+**IGNORE `scales_with_procs: false` from this run — it measures a threshold boundary, not
+scaling.** The healthy ceiling is the highest rung with `achieved >= 0.95 * offered`. At 8,000
+offered N=2 achieved 7,604 (ratio **0.951**, passes) and N=4 achieved 7,590 (ratio **0.949**,
+fails), so N=4 fell back to the 4,000 rung. The two runs differ by **14 rps, 0.2%**, and that
+straddling of 0.95 is the entire basis of a 2x ceiling difference and the false verdict. Both
+points are really "about 7,600 achieved at 8,000 offered". A verdict computed correctly under its
+own definition, about something other than what its name says — the same shape as
+`peak_achieved_rps` before it was renamed. Judging scaling needs process counts whose ceilings are
+not adjacent to that boundary.
+
 What makes the mistake expensive is *where* it fails: the guard runs per-N inside the loop and
 the emit block is after it, so an overlap at the LAST rung discards the rungs that already
 succeeded. Build 410 was cancelled for exactly this, having been triggered with `2,4,8` - N=2 and
