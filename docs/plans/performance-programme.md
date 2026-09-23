@@ -3322,6 +3322,58 @@ first time this programme has seen the knee region with neither side CPU-bound. 
 to investigate next, and it is a *different* question from the published 36,000 figure, which
 this rig still does not reach.
 
+**DIAGNOSED 2026-09-23 — the cliff is the RIG's, and the mechanism is the harness's own VU-pool
+rule colliding with the SUT's accept backlog.** Not a MockServer serving limit, and a different
+subject from the published ~36,000 knee.
+
+The sweep sizes each rung's VU pool as `clamp(ceil(rate * 0.08), 96, 2048)` per process
+(`k6/lib/config.js`: `vuPerRps: K6_SWEEP_VUS_PER_KRPS 80 / 1000`), and k6 holds **one keep-alive
+connection per VU**. Each of N processes offers `aggregate/N`, so the per-process pool is
+`0.08 * aggregate/N` and the total is `0.08 * aggregate` — **N cancels exactly**:
+
+| aggregate offered | total VUs = connections | vs `SO_BACKLOG` 1024 |
+|---:|---:|---|
+| 8,000 | 640 | under |
+| 16,000 | 1,280 | over — achieved falls to 0.82-0.85 while p50 stays ~0.1 ms |
+| 24,000 | **1,920** | well over — collapse |
+| 32,000 | 2,560 | far over |
+
+That identity is why the cliff sits at the same *aggregate* rate at both N=2 and N=4. **It also
+defeats this harness's own discriminator**: the multi-process sweep exists to separate a
+per-process client limit from a shared one, but a pool rule that makes total offered concurrency a
+function of aggregate rate alone produces an N-invariant cliff under *either* hypothesis. The
+`scales_with_procs` verdict cannot tell them apart on this run — an instrument measuring the wrong
+subject, in the harness built to avoid exactly that.
+
+**The ~1 second p50 is the fingerprint.** `SO_BACKLOG` is 1024
+(`mockserver-netty/.../MockServer.java:197`) and the harness sets no `--sysctl`, so once
+simultaneous connection attempts exceed the accept queue the kernel drops the SYN/final-ACK
+(`tcp_abort_on_overflow=0`) and the peer retransmits after the initial RTO of ~1 s — producing a
+round ~1 s median **with near-zero errors**, because the connection does eventually complete.
+Smooth queueing does not do that. The 32,000 rung corroborates it: 1,090 ms at N=2 and **2,947 ms
+at N=4** are exponential RTO backoff (1 s, 2 s), not a continuum.
+
+**Neither CPU figure contradicts this.** The SUT runs 5 boss and 5 worker threads
+(`LifeCycle.java:91-92`, `nioEventLoopThreadCount` default 5) on a 4-core pin; stalled on the
+accept path it never approaches that pin, and the clients are blocked on retransmits rather than
+spinning. "Neither side CPU-bound" is what a connection-storm collapse looks like.
+
+**So this rig's genuinely clean aggregate ceiling is ~8,000 rps.** 16,000 is already compromised,
+but differently and worth distinguishing: low p50 with a throughput shortfall is *dropped
+iterations* (the client not offering), not server slowness. `client_sound: true` does not
+contradict that — by design it ignores drops.
+
+*UNVERIFIED:* no packet capture or `TcpExtListenOverflows` counters from the perf box, so the
+accept-overflow fingerprint is inferred from the ~1 s value, the backoff multiples and the
+near-zero error rate rather than proven at the packet level.
+
+**The cheapest experiment that would settle it** is a flat, small VU pool over the same ladder -
+`PERF_MULTI_PRE_VUS=128 PERF_MULTI_MAX_VUS=128` passes straight through to
+`K6_SWEEP_PRE_VUS/MAX_VUS`. If the cliff moves or disappears, it is the storm; if it stays at
+24,000 with 128 connections, the limit is genuinely shared and worth escalating. Reading
+`nstat -az TcpExtListenOverflows TcpExtListenDrops` on the SUT container across the 24,000 rung
+would prove it outright.
+
 **IGNORE `scales_with_procs: false` from this run — it measures a threshold boundary, not
 scaling.** The healthy ceiling is the highest rung with `achieved >= 0.95 * offered`. At 8,000
 offered N=2 achieved 7,604 (ratio **0.951**, passes) and N=4 achieved 7,590 (ratio **0.949**,
