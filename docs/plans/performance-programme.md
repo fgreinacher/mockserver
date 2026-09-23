@@ -921,6 +921,28 @@ positive control) then under load; `perf-test-run.sh` samples heap-per-open-stre
 
 #### 13. Clustered state under load — **[harness landed `648780a33`; image provisioning wired so it actually measures]**
 
+**BROKEN ON THE PERF RIG, found 2026-09-23 in build 411 — and it is why the baseline is not
+persisting.** The A/B starts a 2-node candidate cluster and JGroups TCPPING never forms the view:
+`candidate view members A=1 B=1 clustered(A)=true (expect 2 / 2 / true)`, with the cross-node probe
+and its negative control both returning **HTTP 502**. Each node reports `clustered: true` from its
+own config while seeing only itself, so the arm compares two INDEPENDENT servers and calls it
+clustering.
+
+The `clustered_metrics_present` validity check catches exactly that — "would be a false green (two
+independent servers or no ratio)" — and fails the build rather than baselining it, which is the
+behaviour this programme wants. The consequence is that `persist + compare` records nothing, so
+the rolling baseline goes stale and `mockserver-infra`'s freshness assertion will eventually red.
+
+**It was MASKED until now.** Build 408 died earlier, in the metrics jq, on the
+`.h2_connection_memory` metadata strings (fixed `b462b9ca9`); the run never reached this check.
+Fixing one failure revealed the next, which is worth recording because the two look identical from
+the outside — "persist + compare failed" — and have nothing to do with each other.
+
+Not yet diagnosed: whether TCPPING cannot discover across the two containers on the perf agent's
+network, or whether the nodes are up but the probe path is what returns 502. The 502 on the
+NEGATIVE control is the clue worth starting from - it suggests the probe path itself, not the
+crossing.
+
 *Serves: D1, D2, D4 / profile C. Cost: about a week.*
 
 The `StateBackend` SPI and the Infinispan backend are built for exactly the deployment the
