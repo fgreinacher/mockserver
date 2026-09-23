@@ -111,7 +111,7 @@ sitemap:
 
 <h3>Following New Entries</h3>
 
-<p>Panels show entries oldest-first, with the newest appended at the bottom — like a console in a build pipeline. Each panel has a <strong>Follow</strong> button: when Follow is on, the panel scrolls automatically as new entries arrive; when it is off, the view stays where you left it so you can read without the content moving. Scrolling away from the bottom turns Follow off for that panel; scrolling back to the bottom turns it back on. The toolbar also has a master <strong>Follow new entries</strong> / <strong>Stop following new entries</strong> switch that controls all panels at once.</p>
+<p>The live panels — Log Messages, Received Requests, Proxied Requests, and the Traffic list — show entries oldest-first, with the newest appended at the bottom, like a console in a build pipeline. Each of them has a <strong>Follow</strong> chip in its header, reading <strong>Following</strong> while it is on: the panel then stays pinned to the newest entries as they arrive. Turn it off and the view stays exactly where you left it, so you can read without the content moving. Scrolling up with the wheel or the keyboard turns Follow off for that panel, and scrolling back down to the bottom the same way turns it back on; clicking the chip works either way, and jumps you to the newest entries. The toolbar also has a master <strong>Follow new entries</strong> / <strong>Stop following new entries</strong> switch that sets every panel at once. <strong>Active Expectations</strong> is a set of registered mocks rather than a stream of events, so it keeps its own order and has no Follow chip.</p>
 
 <h3>Clear and Reset</h3>
 
@@ -696,8 +696,8 @@ sitemap:
 <p>Each row is one MCP server (grouped by host), shown worst-first, with:</p>
 
 <ul>
-    <li><strong>Calls</strong> — how many MCP tool calls were made to that server.</li>
-    <li><strong>Errors</strong> — the error count and rate (a JSON-RPC error response or a non-2xx status).</li>
+    <li><strong>Calls</strong> — deliberately left blank. The view measures only the most recent captured traffic, so a call count here would stop at that limit however much traffic really ran, and would mislead if read as a total. The columns beside it are proportions and percentiles of that sample, which stay meaningful.</li>
+    <li><strong>Errors</strong> — the error rate (a JSON-RPC error response or a non-2xx status) as a percentage of the calls measured.</li>
     <li><strong>Median</strong>, <strong>p95</strong>, and <strong>Max</strong> latency — how long that server took to respond.</li>
     <li><strong>Slowest method</strong> — the tool method behind the slowest call.</li>
 </ul>

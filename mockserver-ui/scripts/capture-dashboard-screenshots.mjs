@@ -25,11 +25,14 @@
 //   FULL_PAGE    "true" to capture the whole scroll height     (default false)
 //   SETTLE_MS    extra settle delay before each capture (ms)   (default 1200)
 //   THEME        "light" or "dark" colour scheme               (default light)
+//   BROWSER_CHANNEL  Playwright browser channel to launch        (default: bundled
+//                Chromium if installed, else the installed "chrome")
 
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..');
@@ -64,6 +67,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 //               shot (open the Advanced editor, select an LLM conversation,
 //               expand the HTTP chaos form). Best-effort: a failure is logged
 //               and the capture still happens.
+//   followExempt — why this tab is allowed to be captured with a panel away
+//               from the tail. See "Follow state" below: every other tab must be
+//               following, and only a tab that deliberately drives a panel off
+//               the tail may opt out, with its reason stated here.
 const CHART_SETTLE = Number(process.env.CHART_SETTLE_MS || 8000);
 const SLOW_SETTLE = Number(process.env.SLOW_SETTLE_MS || 6000);
 
@@ -72,9 +79,25 @@ const TABS = [
   { value: 'dashboard',    ariaLabel: 'Dashboard view',            file: 'MockServerDashboard.png' },
   {
     value: 'traffic', ariaLabel: 'Traffic inspector view', file: 'MockServerTrafficInspector.png', settleMs: SLOW_SETTLE,
+    // Selecting a row deliberately stops that panel following (TrafficInspector's
+    // `interacting`), which is the documented behaviour this shot is showing — so
+    // the at-the-tail assertion is waived HERE and nowhere else.
+    followExempt: 'prepare selects an exchange, which intentionally pauses following',
     // Open an LLM exchange and show its conversation, not a bare HTTP row.
     prepare: async (page) => {
-      const row = page.getByText('/v1/messages', { exact: false }).first();
+      // Search for the LLM exchanges first, rather than hunting for one in the
+      // unfiltered feed. In console order the list is pinned to its tail, and what
+      // is AT the tail depends on how the demo happened to finish seeding — its MCP
+      // forwards land last, several seconds after the LLM traffic, so on a slower
+      // run every visible row is an MCP forward and no /v1/messages row is on screen
+      // to click. Picking one by DOM order instead is no better: the list is
+      // virtualized, so an off-screen match is not reliably scrollable into view.
+      // Filtering makes the shot the same every time, and shows the search field
+      // doing its job.
+      const search = page.locator('#traffic-inspector-search');
+      await search.waitFor({ state: 'visible', timeout: 8000 });
+      await search.fill('/v1/messages');
+      const row = page.getByText('/v1/messages', { exact: false }).last();
       await row.waitFor({ state: 'visible', timeout: 10000 });
       await row.click();
       const convo = page.getByRole('tab', { name: 'Conversation' });
@@ -106,13 +129,19 @@ const TABS = [
   },
   {
     value: 'performance', ariaLabel: 'Performance testing view', file: 'MockServerPerformance.png', lazy: true, settleMs: CHART_SETTLE,
-    // Show the RUNNING load scenario (live charts), not the empty create form.
-    // The panel auto-renders the live-status section once GET /mockserver/loadScenario
-    // reports state=running — so just wait for it. Shoot this EARLY in the load
-    // run (during ramp): at sustained peak the status endpoint is starved and the
-    // panel falls back to the create form. If it never appears, we still capture.
+    // Show the RUNNING load scenarios (live stats and charts), not the empty create
+    // form. The panel renders "Running Now" once GET /mockserver/loadScenario reports
+    // a live run — so just wait for it. Shoot this EARLY in the load run (during
+    // ramp): at sustained peak the status endpoint is starved and the panel falls
+    // back to the create form. If it never appears, we still capture.
+    //
+    // `load-running-scenarios`, not `load-live-status`: the latter is the older
+    // single-run readout, which the panel only renders for a lone `status`. The demo
+    // starts two scenarios, so it never appeared and this step timed out for 20s on
+    // every run before quietly giving up — while the shot it was waiting for was on
+    // screen the whole time.
     prepare: async (page) => {
-      await page.locator('[data-testid="load-live-status"]').first()
+      await page.locator('[data-testid="load-running-scenarios"]').first()
         .waitFor({ state: 'visible', timeout: 20000 });
     },
   },
@@ -165,6 +194,84 @@ async function gotoTab(page, tab) {
   await item.click();
 }
 
+// --- Follow state -----------------------------------------------------------
+//
+// The live panels render in CONSOLE ORDER: oldest first, newest appended at the
+// bottom. A panel that is not following therefore sits at the TOP of its window,
+// showing its OLDEST rows — so a screenshot can render perfectly while showing
+// stale content, which is exactly the failure this capture must not ship.
+//
+// Panels default to following (store `autoScroll: true`, see src/store/index.ts,
+// plumbed through src/hooks/useFollow.ts), so a freshly loaded page should already
+// be at the tail. That default is asserted rather than assumed: it is the sort of
+// thing a future UI change can flip with nothing failing.
+
+/** Within this many px of the bottom counts as "at the tail" (useTailFollow uses 8). */
+const AT_TAIL_TOLERANCE_PX = 24;
+
+/**
+ * Turn following back on wherever it is off: the toolbar master switch first
+ * (AppBar.tsx labels it "Follow new entries" when OFF), then any individual panel
+ * chip, which Panel.tsx labels "Follow" when off and "Following" when on.
+ */
+async function ensureFollowing(page) {
+  const master = page.locator('[aria-label="Follow new entries"]').first();
+  if (await master.isVisible().catch(() => false)) {
+    console.warn('    ! toolbar master follow switch was OFF — turning it on');
+    await master.click().catch(() => {});
+    await sleep(400);
+  }
+  // Selected and clicked in the page, on exactly the predicate followState reports
+  // on. A Playwright `hasText` locator was tried first and over-counted — it claimed
+  // three paused chips on a Dashboard whose chips all read "Following", so the run
+  // log described a problem that was not there. An instrument that reports on one
+  // thing while acting on another is worse than no instrument.
+  const clicked = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('.MuiChip-root'))
+      .filter((chip) => (chip.textContent || '').trim() === 'Follow')
+      .map((chip) => {
+        chip.click();
+        return true;
+      }).length,
+  );
+  if (clicked) {
+    console.warn(`    ! ${clicked} panel chip(s) were not following — clicked Follow`);
+    await sleep(800);
+  }
+}
+
+/**
+ * Per Follow-capable panel: its chip state and how far its scroll container is
+ * from the bottom. Reported for every shot so the log is the evidence that the
+ * panels were at the tail when the shutter fired.
+ */
+async function followState(page) {
+  return page.evaluate(() => {
+    const scrollerIn = (root) =>
+      Array.from(root.querySelectorAll('*')).find((el) => {
+        const style = getComputedStyle(el);
+        return (
+          (style.overflowY === 'auto' || style.overflowY === 'scroll') &&
+          el.scrollHeight - el.clientHeight > 4
+        );
+      });
+    return Array.from(document.querySelectorAll('.MuiChip-root'))
+      .filter((chip) => /^(Follow|Following)$/.test((chip.textContent || '').trim()))
+      .map((chip) => {
+        const panel = chip.closest('.MuiPaper-root') || document.body;
+        const heading = panel.querySelector('h1, h2, h3, h4, h5, h6, .MuiTypography-root');
+        const el = scrollerIn(panel);
+        return {
+          panel: ((heading && heading.textContent) || 'panel').trim().slice(0, 28),
+          following: (chip.textContent || '').trim() === 'Following',
+          // No scroller means the content fits — nothing can be scrolled out of shot.
+          scrollable: Boolean(el),
+          gap: el ? Math.round(el.scrollHeight - el.scrollTop - el.clientHeight) : 0,
+        };
+      });
+  });
+}
+
 async function main() {
   await mkdir(OUT_DIR, { recursive: true });
 
@@ -173,7 +280,22 @@ async function main() {
     throw new Error(`ONLY=${process.env.ONLY} matched no tabs. Valid values: ${TABS.map((t) => t.value).join(', ')}`);
   }
 
-  const browser = await chromium.launch({ headless: true });
+  // Playwright's own Chromium build cannot always be downloaded (a corporate
+  // TLS-inspecting proxy times out cdn.playwright.dev), so fall back to an
+  // installed Google Chrome, which is the same Chromium and renders these shots
+  // identically. BROWSER_CHANNEL forces a channel either way.
+  const launchOptions = { headless: true };
+  if (process.env.BROWSER_CHANNEL) {
+    launchOptions.channel = process.env.BROWSER_CHANNEL;
+  } else {
+    let bundled = null;
+    try { bundled = chromium.executablePath(); } catch { /* not registered */ }
+    if (!bundled || !existsSync(bundled)) {
+      console.warn("    ! bundled Chromium not installed — using the installed Chrome (channel=chrome)");
+      launchOptions.channel = 'chrome';
+    }
+  }
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext({
     viewport: { width: WIDTH, height: HEIGHT },
     deviceScaleFactor: SCALE,
@@ -204,6 +326,7 @@ async function main() {
   await sleep(2000);
 
   let ok = 0;
+  const notAtTail = [];
   for (const tab of wanted) {
     try {
       await gotoTab(page, tab);
@@ -216,6 +339,9 @@ async function main() {
           .catch(() => {});
       }
       await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+      // Pin every panel to its tail BEFORE the prepare step, so whatever prepare
+      // selects is chosen from the newest rows rather than the oldest.
+      await ensureFollowing(page);
       // Drive the tab into a richer documentation state (best-effort).
       if (tab.prepare) {
         try {
@@ -229,6 +355,33 @@ async function main() {
       await page.getByText(/collecting/i).first().waitFor({ state: 'hidden', timeout: 12000 }).catch(() => {});
       await sleep(tab.settleMs || SETTLE_MS);
 
+      // Pre-capture assertion: panels must be following and sitting at the tail,
+      // or the shot shows the oldest rows they hold. Re-pin once, then record any
+      // panel that still is not — a rendered-but-wrong screenshot must fail loudly.
+      let follow = await followState(page);
+      if (!tab.followExempt && follow.some((p) => !p.following || p.gap > AT_TAIL_TOLERANCE_PX)) {
+        await ensureFollowing(page);
+        await sleep(1200);
+        follow = await followState(page);
+      }
+      if (follow.length) {
+        console.log(
+          `      follow: ${follow
+            .map((p) => `${p.panel}=${p.following ? 'Following' : 'Follow'}@${p.gap}px`)
+            .join(', ')}`,
+        );
+      }
+      const stale = tab.followExempt
+        ? []
+        : follow.filter((p) => !p.following || p.gap > AT_TAIL_TOLERANCE_PX);
+      if (tab.followExempt) {
+        console.log(`      follow assertion waived — ${tab.followExempt}`);
+      }
+      if (stale.length) {
+        notAtTail.push(`${tab.value}: ${stale.map((p) => `${p.panel} (${p.following ? 'following' : 'NOT following'}, ${p.gap}px from the tail)`).join('; ')}`);
+        console.warn(`    ! ${tab.value} NOT at the tail — ${stale.length} panel(s) would show stale rows`);
+      }
+
       const out = join(OUT_DIR, tab.file);
       await page.screenshot({ path: out, fullPage: FULL_PAGE });
       console.log(`  ✓ ${tab.value.padEnd(13)} → ${out}`);
@@ -240,6 +393,13 @@ async function main() {
 
   await browser.close();
   console.log(`\nCaptured ${ok}/${wanted.length} tab(s) into ${OUT_DIR} at ${WIDTH}x${HEIGHT}@${SCALE}x`);
+  if (notAtTail.length) {
+    console.error(`\n✗ ${notAtTail.length} tab(s) were captured with a panel away from the tail — those shots show STALE rows:`);
+    for (const line of notAtTail) console.error(`    ${line}`);
+    process.exitCode = 1;
+  } else {
+    console.log('✓ every Follow-capable panel was following and at the tail when captured');
+  }
   if (ok < wanted.length) process.exitCode = 1;
 }
 
