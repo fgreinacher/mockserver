@@ -353,6 +353,12 @@ use HTTP/3 — the default — nothing changes except smaller downloads.
   scroll, and a scroll was being read as "you have scrolled away". Following now changes only when
   you act -- scrolling up stops it and it stays stopped, and Follow resumes it -- and it holds the
   newest entry however much the content moves underneath. This also covers the Traffic inspector.
+- **The dashboard's LLM Provider filter now appears on a busy server.** It was offered only if an LLM
+  expectation happened to be inside the at-most-100 expectations the server sends per update, so a
+  server holding more than that many other expectations ahead of its LLM ones never offered the
+  filter at all. The server now says explicitly whether any LLM expectation is present, so the
+  control no longer depends on which expectations fitted in the update. Against an older server that
+  does not send it, the previous behaviour is unchanged.
 - **The dashboard no longer shows counts that were really the size of its update window.** The
   Received Requests and Log Messages panels, the Traffic inspector's host list and unmatched badge,
   and the Composer's existing-mocks list each displayed a total derived from the at-most-100 entries

@@ -247,6 +247,7 @@ public class DashboardWebSocketHandlerTest {
             "    }\n" +
             "  } ],\n" +
             "  \"activeExpectationsTotal\" : 0,\n" +
+            "  \"activeExpectationsIncludeLlm\" : false,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -429,6 +430,7 @@ public class DashboardWebSocketHandlerTest {
             "    }\n" +
             "  } ],\n" +
             "  \"activeExpectationsTotal\" : 0,\n" +
+            "  \"activeExpectationsIncludeLlm\" : false,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -528,6 +530,7 @@ public class DashboardWebSocketHandlerTest {
             "    }\n" +
             "  } ],\n" +
             "  \"activeExpectationsTotal\" : 0,\n" +
+            "  \"activeExpectationsIncludeLlm\" : false,\n" +
             "  \"recordedRequests\" : [ {\n" +
             "    \"description\" : \"  /somePathTwo\",\n" +
             "    \"value\" : {\n" +
@@ -575,7 +578,8 @@ public class DashboardWebSocketHandlerTest {
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 1" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 1," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -653,7 +657,8 @@ public class DashboardWebSocketHandlerTest {
                 "      } ]" + NEW_LINE +
                 "    }" + NEW_LINE +
                 "  } ]," + NEW_LINE +
-                "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
+                "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+                "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
                 "}"};
 
         // then
@@ -723,7 +728,8 @@ public class DashboardWebSocketHandlerTest {
             "      } ]" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -812,7 +818,8 @@ public class DashboardWebSocketHandlerTest {
             "      }" + NEW_LINE +
             "    } ]" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -931,7 +938,8 @@ public class DashboardWebSocketHandlerTest {
             "      }" + NEW_LINE +
             "    } ]" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -1041,7 +1049,8 @@ public class DashboardWebSocketHandlerTest {
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 0" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -1140,6 +1149,7 @@ public class DashboardWebSocketHandlerTest {
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
             "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false," + NEW_LINE +
             "  \"recordedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"   four\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1242,6 +1252,7 @@ public class DashboardWebSocketHandlerTest {
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
             "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false," + NEW_LINE +
             "  \"recordedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"  two\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1422,6 +1433,7 @@ public class DashboardWebSocketHandlerTest {
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
             "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false," + NEW_LINE +
             "  \"proxiedRequests\" : [ {" + NEW_LINE +
             "    \"description\" : \"   four\"," + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
@@ -1570,6 +1582,7 @@ public class DashboardWebSocketHandlerTest {
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
             "  \"activeExpectationsTotal\" : 0," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false," + NEW_LINE +
             "  \"proxiedRequests\" : [ {" + NEW_LINE +
             "    \"value\" : {" + NEW_LINE +
             "      \"httpResponse\" : {" + NEW_LINE +
@@ -1669,7 +1682,8 @@ public class DashboardWebSocketHandlerTest {
             "      }" + NEW_LINE +
             "    }" + NEW_LINE +
             "  } ]," + NEW_LINE +
-            "  \"activeExpectationsTotal\" : 3" + NEW_LINE +
+            "  \"activeExpectationsTotal\" : 3," + NEW_LINE +
+            "  \"activeExpectationsIncludeLlm\" : false" + NEW_LINE +
             "}";
 
         // then
@@ -1880,6 +1894,58 @@ public class DashboardWebSocketHandlerTest {
             tree.get("activeExpectationsTotal").asInt(), is(registered));
         assertThat("activeExpectationsTotal is emphatically NOT the cap",
             tree.get("activeExpectationsTotal").asInt(), is(not(limit)));
+    }
+
+    @Test
+    public void shouldReportLlmExpectationPresentWhenItSitsBeyondTheCap() throws Exception {
+        // THE BOUNDARY IS THE DEFECT. The dashboard renders only the first EXPECTATION_UPDATE_ITEM_LIMIT
+        // expectations, so a boolean derived from that PAGE is a boolean about the page, not the server.
+        // Register MORE than the limit of NON-LLM expectations FIRST and a single LLM expectation LAST,
+        // so the LLM one is provably pushed off the page: below the cap the page would contain everything
+        // and a naive page check would agree with the flag, proving nothing. The limit is read from the
+        // class so this crosses whatever the real boundary is.
+        int limit = expectationUpdateItemLimit();
+        List<Expectation> many = new java.util.ArrayList<>();
+        for (int i = 0; i < limit + 5; i++) {
+            many.add(new Expectation(request("/path" + i)).withId(String.format("id-%04d", i)).thenRespond(response("body" + i)));
+        }
+        // The one LLM expectation, added AFTER the cap's worth of non-LLM ones, so it never appears on
+        // the rendered page. An LLM expectation is one carrying an httpLlmResponse action.
+        many.add(new Expectation(request("/llm")).withId("id-llm")
+            .thenRespondWithLlm(org.mockserver.model.HttpLlmResponse.llmResponse().withProvider(org.mockserver.model.Provider.OPENAI)));
+        Fixture fixture = newFixture(many);
+        quiesce(fixture.handler);
+
+        String frame = awaitFrame(fixture, request());
+        JsonNode tree = ObjectMapperFactory.createObjectMapper().readTree(frame);
+
+        // The LLM expectation is genuinely absent from the page the dashboard was sent...
+        assertThat("the rendered page is capped at EXPECTATION_UPDATE_ITEM_LIMIT",
+            tree.get("activeExpectations").size(), is(limit));
+        assertThat("the LLM expectation is NOT on the page (it sits beyond the cap)",
+            frame, not(containsString("id-llm")));
+        assertThat("no LLM action is visible anywhere on the page",
+            tree.get("activeExpectations").toString(), not(containsString("httpLlmResponse")));
+        // ...yet the server-side flag still reports it, which a page-only check could never do.
+        assertThat("activeExpectationsIncludeLlm is derived from the WHOLE server-side set, not the page",
+            tree.get("activeExpectationsIncludeLlm").asBoolean(), is(true));
+    }
+
+    @Test
+    public void shouldReportNoLlmExpectationWhenServerHoldsNone() throws Exception {
+        // The negative pole: a server with only non-LLM expectations reports the flag false, so the UI
+        // fallback (its latched page check) governs rather than a spurious server-side true.
+        List<Expectation> many = new java.util.ArrayList<>();
+        for (int i = 0; i < expectationUpdateItemLimit() + 5; i++) {
+            many.add(new Expectation(request("/path" + i)).withId(String.format("id-%04d", i)).thenRespond(response("body" + i)));
+        }
+        Fixture fixture = newFixture(many);
+        quiesce(fixture.handler);
+
+        String frame = awaitFrame(fixture, request());
+        JsonNode tree = ObjectMapperFactory.createObjectMapper().readTree(frame);
+        assertThat("activeExpectationsIncludeLlm is false when no expectation is an LLM expectation",
+            tree.get("activeExpectationsIncludeLlm").asBoolean(), is(false));
     }
 
     // Read the (private) cap straight from the class so the boundary-crossing test above tracks the

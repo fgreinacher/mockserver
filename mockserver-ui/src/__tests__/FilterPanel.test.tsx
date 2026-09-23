@@ -27,6 +27,11 @@ describe('FilterPanel', () => {
       filterEnabled: false,
       filterExpanded: false,
       logShowForwarded: true,
+      // The store is a singleton shared across tests; reset the authoritative
+      // server flag to its "never received" state so a value set by one test
+      // cannot leak into the window-fallback tests below.
+      activeExpectationsIncludeLlm: undefined,
+      activeExpectations: [],
     });
   });
 
@@ -197,6 +202,77 @@ describe('FilterPanel', () => {
     // The live window (≤100) turns over and no longer carries an LLM expectation.
     // A window-derived boolean would flip false and hide the still-relevant
     // filter; the latch keeps it visible for the session.
+    act(() => {
+      useDashboardStore.setState({
+        activeExpectations: [
+          { key: 'e2', value: { httpResponse: { statusCode: 200 } } },
+        ],
+      });
+    });
+
+    expect(screen.getByText('LLM Provider (expectations only)')).toBeInTheDocument();
+  });
+
+  it('offers the LLM Provider filter from the server flag even when the visible window has no LLM expectation', async () => {
+    // THE BOUNDARY IS THE DEFECT. The window (`activeExpectations`) is a capped page,
+    // so a server holding an LLM expectation BEYOND the cap never sends one in the
+    // page. Here the window contains only a non-LLM expectation — a page-derived
+    // check (and the latch) would both be false and hide the filter — but the
+    // authoritative server flag reports an LLM expectation exists, so the filter
+    // must still be offered. This is exactly the case the latch alone cannot cover.
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      filterExpanded: false,
+      activeExpectationsIncludeLlm: true,
+      activeExpectations: [
+        { key: 'e1', value: { httpResponse: { statusCode: 200 } } },
+      ],
+    });
+    renderFilterPanel();
+
+    await user.click(screen.getByText('Request Filter'));
+
+    expect(screen.getByText('LLM Provider (expectations only)')).toBeInTheDocument();
+  });
+
+  it('hides the LLM Provider filter when the authoritative server flag is false, even if the window once had one', async () => {
+    // The server flag is authoritative: when it says the server holds no LLM
+    // expectation, the filter is not offered even though the window shows one
+    // (which cannot actually co-occur in a real push, but proves the flag wins
+    // over the page rather than OR-ing with it).
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      filterExpanded: false,
+      activeExpectationsIncludeLlm: false,
+      activeExpectations: [
+        { key: 'e1', value: { httpLlmResponse: { provider: 'ANTHROPIC' } } },
+      ],
+    });
+    renderFilterPanel();
+
+    await user.click(screen.getByText('Request Filter'));
+
+    expect(screen.queryByText('LLM Provider (expectations only)')).not.toBeInTheDocument();
+  });
+
+  it('falls back to the latched window check against an older server that never sends the flag', async () => {
+    // `activeExpectationsIncludeLlm` undefined = an older server that predates the
+    // signal. The client must then behave exactly as before: infer from the page
+    // and latch, so a NEW dashboard against an OLD server keeps the filter it had.
+    const user = userEvent.setup();
+    useDashboardStore.setState({
+      filterExpanded: false,
+      activeExpectationsIncludeLlm: undefined,
+      activeExpectations: [
+        { key: 'e1', value: { httpLlmResponse: { provider: 'ANTHROPIC' } } },
+      ],
+    });
+    renderFilterPanel();
+
+    await user.click(screen.getByText('Request Filter'));
+    expect(screen.getByText('LLM Provider (expectations only)')).toBeInTheDocument();
+
+    // The window turns over to no LLM expectation; the latch keeps the filter.
     act(() => {
       useDashboardStore.setState({
         activeExpectations: [

@@ -235,14 +235,20 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
   const logShowForwarded = useDashboardStore((s) => s.logShowForwarded);
   const setLogShowForwarded = useDashboardStore((s) => s.setLogShowForwarded);
 
-  // `activeExpectations` is a capped live window (≤100), so a bare `.some(...)`
-  // over it is a boolean OF the window, not of the server: it silently flips
-  // FALSE — hiding the LLM Provider filter — once LLM expectations churn past
-  // the window even though they still exist server-side. Latch instead: once an
-  // LLM expectation has been seen this session, keep the filter available.
-  // (This still falls short when >100 non-LLM expectations sit ahead of the LLM
-  // ones from the very start — the window never contains one to observe; an
-  // accurate fix there needs a server-side signal, which does not exist today.)
+  // The server now reports, over its WHOLE expectation set, whether ANY of them is
+  // an LLM expectation (`activeExpectationsIncludeLlm`). That is the authoritative
+  // source for offering the LLM Provider filter and is used as-is whenever present.
+  const serverHasLlmExpectations = useDashboardStore((s) => s.activeExpectationsIncludeLlm);
+
+  // FALLBACK for an OLDER server that predates the signal (the flag is `undefined`):
+  // `activeExpectations` is a capped live window (≤100), so a bare `.some(...)` over
+  // it is a boolean OF the window, not of the server — it flips FALSE, hiding the
+  // filter, once LLM expectations churn past the window even though they still exist
+  // server-side. Latch instead: once an LLM expectation has been seen this session,
+  // keep the filter available. (This still falls short when >100 non-LLM expectations
+  // sit ahead of the LLM ones from the very start — the window never contains one to
+  // observe. That residual gap is exactly what the server-side flag above closes; the
+  // latch remains only so a NEW dashboard against an OLD server keeps what it had.)
   const windowHasLlmExpectations = useMemo(
     () => activeExpectations.some((e) => 'httpLlmResponse' in e.value),
     [activeExpectations],
@@ -253,7 +259,9 @@ export default function FilterPanel({ onFilterChange }: FilterPanelProps) {
     // the filter never blinks out for a frame between the push and an effect.
     setEverHadLlmExpectations(true);
   }
-  const hasLlmExpectations = everHadLlmExpectations || windowHasLlmExpectations;
+  const hasLlmExpectations = serverHasLlmExpectations !== undefined
+    ? serverHasLlmExpectations
+    : everHadLlmExpectations || windowHasLlmExpectations;
 
   const [method, setMethod] = useState('');
   const [path, setPath] = useState('');

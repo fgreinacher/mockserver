@@ -455,6 +455,16 @@ interface DashboardState {
    * can show a real count instead of one pinned at the cap.
    */
   activeExpectationsTotal: number;
+  /**
+   * Whether ANY expectation the SERVER holds is an LLM expectation, computed
+   * server-side over the whole matcher set — see `WebSocketMessage`. This is the
+   * authoritative source for offering the LLM Provider filter, because the
+   * `activeExpectations` page is capped and so cannot reveal an LLM expectation
+   * that sits beyond the cap. `undefined` until the first push carries it, and it
+   * stays `undefined` against an older server that never sends it — FilterPanel
+   * then falls back to inspecting the page.
+   */
+  activeExpectationsIncludeLlm: boolean | undefined;
   recordedRequests: JsonListItem[];
   proxiedRequests: JsonListItem[];
 
@@ -641,6 +651,7 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
   logMessages: [],
   activeExpectations: [],
   activeExpectationsTotal: 0,
+  activeExpectationsIncludeLlm: undefined,
   recordedRequests: [],
   proxiedRequests: [],
 
@@ -792,6 +803,13 @@ export const useDashboardStore = create<DashboardState>()((set) => ({
           message.activeExpectationsTotal !== undefined
             ? message.activeExpectationsTotal
             : s.activeExpectationsTotal,
+        // Preserve the previous value when a push omits it (an error-only push, or
+        // an older server that never sends it) so the flag is not spuriously reset
+        // to undefined between data pushes.
+        activeExpectationsIncludeLlm:
+          message.activeExpectationsIncludeLlm !== undefined
+            ? message.activeExpectationsIncludeLlm
+            : s.activeExpectationsIncludeLlm,
         activeExpectations: message.activeExpectations !== undefined
           ? reconcileByKey(s.activeExpectations, message.activeExpectations, activeExpectationsCache)
           : s.activeExpectations,

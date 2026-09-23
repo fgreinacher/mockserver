@@ -919,6 +919,35 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     // than EXPECTATION_UPDATE_ITEM_LIMIT of them, and a count pinned at exactly the
                     // limit reads as a bug — it silently stops being a count and becomes the cap.
                     int activeExpectationsTotal = allRequestMatchers.size();
+                    // Whether ANY expectation here is an LLM expectation - decided over the whole
+                    // retrieved list, NOT the capped page built below.
+                    //
+                    // Say what this is OF, because it is easy to read as more than it is: the
+                    // retrieval is FILTERED by the dashboard's own request filter, so this means
+                    // "an LLM expectation exists among those matching the current filter", which is
+                    // the whole server set only when no filter is active. That is the right question
+                    // for deciding whether to OFFER the LLM Provider control -- filtering by provider
+                    // inside a view that contains no LLM expectation would return nothing -- but it
+                    // does mean the control comes and goes with the filter. The dashboard offers its LLM
+                    // Provider filter from this flag, and it cannot derive that from the page it renders:
+                    // the page is capped at EXPECTATION_UPDATE_ITEM_LIMIT, so a server holding more than
+                    // that many non-LLM expectations AHEAD of its LLM ones never sends an LLM expectation
+                    // in the page at all, and the UI - which can only see the page - would then hide the
+                    // filter on exactly the busy server where it is wanted. This is the server-side signal
+                    // that closes that gap. Derived from the SAME already-retrieved allRequestMatchers (no
+                    // second store walk - that walk is per connected dashboard per throttled update, so a
+                    // second one would be a real cost, exactly as for activeExpectationsTotal above); it is
+                    // a fresh pass because the limited stream below deliberately stops at the cap and so
+                    // cannot observe the tail where the LLM expectation may sit. anyMatch short-circuits on
+                    // the first match, so the common case pays for only a few entries. An LLM expectation
+                    // is one whose Expectation carries an httpLlmResponse action
+                    // (Expectation.getHttpLlmResponse() != null) - the model-level fact the ExpectationDTO
+                    // serialises as the "httpLlmResponse" field the UI keys off; decided here from the
+                    // matcher model rather than re-observed from the serialised page.
+                    boolean activeExpectationsIncludeLlm = allRequestMatchers
+                        .stream()
+                        .anyMatch(requestMatcher -> requestMatcher.getExpectation() != null
+                            && requestMatcher.getExpectation().getHttpLlmResponse() != null);
                     List<ImmutableMap<String, Object>> activeExpectations = allRequestMatchers
                         .stream()
                         .limit(EXPECTATION_UPDATE_ITEM_LIMIT)
@@ -947,6 +976,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         "logMessages", logMessages,
                         "activeExpectations", activeExpectations,
                         "activeExpectationsTotal", activeExpectationsTotal,
+                        "activeExpectationsIncludeLlm", activeExpectationsIncludeLlm,
                         "recordedRequests", recordedRequests,
                         "proxiedRequests", proxiedRequests // reverse
                     ), retryCount);

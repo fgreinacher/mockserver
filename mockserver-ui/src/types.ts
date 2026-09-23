@@ -74,6 +74,16 @@ export interface WebSocketMessage {
   activeExpectations: JsonListItem[];
   /** Total expectations held by the server; `activeExpectations` is a capped page of them. */
   activeExpectationsTotal?: number;
+  /**
+   * Whether ANY expectation the server holds is an LLM expectation — computed
+   * server-side over the WHOLE matcher set, not the capped `activeExpectations`
+   * page. The dashboard offers its LLM Provider filter from this: because the
+   * page is capped, a server with many non-LLM expectations ahead of its LLM
+   * ones would never send an LLM expectation in the page, so the page alone
+   * cannot reveal that one exists. Absent from an older server that predates the
+   * signal — the client then falls back to inspecting the page (see FilterPanel).
+   */
+  activeExpectationsIncludeLlm?: boolean;
   recordedRequests: JsonListItem[];
   proxiedRequests: JsonListItem[];
   error?: string;

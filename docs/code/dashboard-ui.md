@@ -456,11 +456,22 @@ stored snapshot again).
 | Composer `Existing <kind> mocks (N)` | filtered window length | removed — a filtered subset has no accurate server-side total |
 | Received-request row ordinal | position in the window, renumbering on every push | **`timestamp`**, sent per entry and comparable with the log panel |
 | `OptimiseView` staleness | `proxied.length + recorded.length` vs a snapshot | a *signature* (tail row key + length), which changes even at saturation |
-| `FilterPanel` LLM filter | `activeExpectations.some(...)` | latched once observed (see the caveat below) |
+| `FilterPanel` LLM filter | `activeExpectations.some(...)` | **`activeExpectationsIncludeLlm`** — a server-side flag decided over the whole retrieved matcher list rather than the capped page, falling back to the latched window check for older servers. Note what it is of: the retrieval is filtered by the dashboard's own request filter, so it means "an LLM expectation matches the current filter" — the whole server set only when no filter is active. The control therefore comes and goes with the filter, which is intended: filtering by provider inside a view holding no LLM expectation would return nothing |
 
-**Known residual gap.** `FilterPanel`'s latch cures churn-out but not a server holding more than 100
-non-LLM expectations *ahead* of its LLM ones — the window never contains one to observe. A correct
-fix needs a server-side flag alongside `activeExpectationsTotal`.
+**How the LLM Provider filter decides whether to appear.** The server computes
+`activeExpectationsIncludeLlm` in `DashboardWebSocketHandler.sendUpdate` — `true` iff *any* expectation
+it holds carries an `httpLlmResponse` action (`Expectation.getHttpLlmResponse() != null`), evaluated
+over the **whole** matcher list, not the capped `activeExpectations` page. It is derived from the same
+already-retrieved list as `activeExpectationsTotal` (no second matcher-store walk) and short-circuits on
+the first LLM expectation. `FilterPanel` uses this flag as the authoritative source whenever it is
+present. Only when it is absent — an older server that predates the signal — does the client fall back to
+inspecting the page and latching (once an LLM expectation has been seen this session, keep the filter),
+so a new dashboard against an old server keeps the behaviour it had.
+
+This closes what used to be a residual gap: because `activeExpectations` is a capped page, a server
+holding more than `EXPECTATION_UPDATE_ITEM_LIMIT` (100) non-LLM expectations *ahead* of its LLM ones
+never sent an LLM expectation in the page, so a page-only check (even latched) never offered the filter
+on exactly the busy server where it was wanted. The server-side flag sees the whole set, so it does.
 
 ### Per-Expectation Delete and Edit
 
