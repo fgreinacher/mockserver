@@ -2455,16 +2455,34 @@ public class DashboardWebSocketHandlerTest {
         }
     }
 
-    // One controlled scan: wait for a throttle permit, reset the counter, send once, wait for the
-    // frame, then let the async counter settle. Returns the frame text and the DTOs constructed.
+    // One controlled scan: let the post-registration burst drain, reset the counter, then re-drive the
+    // update until a frame lands, and finally let the async counter settle. Returns the frame text and
+    // the DTOs constructed.
+    //
+    // Re-drive rather than send once. sendUpdate is throttled to a SINGLE write per second across ALL of
+    // a handler's dashboards (one shared Semaphore(1) permit refilled once per second), and its internal
+    // retry is bounded to a handful of attempts (retryCount starts at 2) before it silently DROPS the
+    // update. So a single sendUpdate has only about a second of retry life: if a sibling dashboard holds
+    // the permit through that window -- which happens whenever more than one connection is registered
+    // (see multipleDashboardsWithDifferentFiltersEachSeeTheirOwnView, where the initial post-registration
+    // update fans out to both connections) and the async pipeline is stretched under the parallel
+    // surefire provider -- all of that one send's attempts miss the permit, retryCount reaches -1, and NO
+    // frame is ever delivered, so the passive wait below times out. That is a latent race in this HELPER,
+    // not in production: production dashboards are driven by a continuous stream of log/matcher updates,
+    // and the two other end-to-end helpers here (awaitFrame, and the eviction test) ALREADY re-drive for
+    // exactly this reason. Re-driving is deterministic, not merely less flaky: the permit is refilled
+    // every second and the sibling's post-registration burst is one-shot and bounded, so once it drains
+    // there is no other consumer and a caller that keeps issuing fresh updates every 400ms wins the very
+    // next permit. It does not weaken any assertion -- state is static across these tests, so every frame
+    // this produces is byte-identical to the one a single successful send would have produced.
     private ScanResult singleScan(DashboardWebSocketHandler handler, MockChannelHandlerContext ctx, RequestDefinition filter) throws InterruptedException {
-        Thread.sleep(1200); // ensure the once-per-second throttle permit is available so no retry-scan fires
+        Thread.sleep(1200); // let the initial post-registration update drain before measuring
         ctx.textWebSocketFrame = null;
         handler.resetLogDtoConstructionCountForTesting();
-        handler.sendUpdate(ctx, filter);
         long deadline = System.currentTimeMillis() + 20000;
         while (System.currentTimeMillis() < deadline && ctx.textWebSocketFrame == null) {
-            Thread.sleep(100);
+            handler.sendUpdate(ctx, filter);
+            Thread.sleep(400);
         }
         // allow the off-thread scan's counter to settle
         long previous = -1;
