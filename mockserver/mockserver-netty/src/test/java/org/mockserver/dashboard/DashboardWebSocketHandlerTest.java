@@ -1922,8 +1922,17 @@ public class DashboardWebSocketHandlerTest {
         // The LLM expectation is genuinely absent from the page the dashboard was sent...
         assertThat("the rendered page is capped at EXPECTATION_UPDATE_ITEM_LIMIT",
             tree.get("activeExpectations").size(), is(limit));
+        // Scope the absence check to the rendered activeExpectations page, NOT the raw frame. The frame
+        // also carries a logMessages history, and when the (global, shared-JVM) log level is INFO the
+        // seeding of these expectations records a CREATED_EXPECTATION event that legitimately embeds the
+        // expectation id -- so a raw-frame containsString("id-llm") trips on that history rather than on
+        // the page, and does so ONLY under INFO logging. That is exactly what made this pass in an
+        // isolated -Dtest= run (default ERROR level, no such events) and fail in the full-suite JVM (a
+        // prior test leaves the global level at INFO). The property under test is "the LLM expectation
+        // is not on the PAGE", which is deterministic regardless of log level. See the activeExpectations(frame)
+        // helper below, which documents the same raw-frame-vs-page hazard.
         assertThat("the LLM expectation is NOT on the page (it sits beyond the cap)",
-            frame, not(containsString("id-llm")));
+            tree.get("activeExpectations").toString(), not(containsString("id-llm")));
         assertThat("no LLM action is visible anywhere on the page",
             tree.get("activeExpectations").toString(), not(containsString("httpLlmResponse")));
         // ...yet the server-side flag still reports it, which a page-only check could never do.
