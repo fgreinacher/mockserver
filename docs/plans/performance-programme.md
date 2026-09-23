@@ -921,8 +921,19 @@ positive control) then under load; `perf-test-run.sh` samples heap-per-open-stre
 
 #### 13. Clustered state under load — **[harness landed `648780a33`; image provisioning wired so it actually measures]**
 
-**BROKEN ON THE PERF RIG, found 2026-09-23 in build 411 — and it is why the baseline is not
-persisting.** The A/B starts a 2-node candidate cluster and JGroups TCPPING never forms the view:
+**FIXED `13bbaaad3`, confirmed on the rig by build 412.** The A/B now forms a real cluster and
+state genuinely crosses it: `candidate view members A=2 B=2 clustered(A)=true` and
+`state-crossed(A->B)=true (probe HTTP 222, negative-control HTTP 502)` — an expectation seeded
+ONLY on node A is served by node B, while a never-seeded id still 502s. That negative control
+is what distinguishes replication from two servers that happen to agree.
+
+The cause was hostname length, not clustering. Discovery was built from the container names,
+which in CI exceed the 63-character DNS label cap (RFC 1035), so TCPPING resolved nothing and
+each node formed a cluster of one. It reproduced only in CI, because local runs use a short
+`RUN_ID`. MockServer was never implicated — the in-JVM two-node suite passes, including a view
+dropping 2->1 on member death, which cannot happen without a real 2-member view.
+
+**Originally found 2026-09-23 in build 411, where it was why the baseline was not persisting.** The A/B starts a 2-node candidate cluster and JGroups TCPPING never forms the view:
 `candidate view members A=1 B=1 clustered(A)=true (expect 2 / 2 / true)`, with the cross-node probe
 and its negative control both returning **HTTP 502**. Each node reports `clustered: true` from its
 own config while seeing only itself, so the arm compares two INDEPENDENT servers and calls it
