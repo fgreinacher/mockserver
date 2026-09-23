@@ -4,6 +4,7 @@ import com.sun.management.OperatingSystemMXBean;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelInitializer;
@@ -25,7 +26,10 @@ import io.netty.handler.ssl.util.InsecureTrustManagerFactory;
 import io.netty.util.ReferenceCountUtil;
 
 import java.lang.management.ManagementFactory;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.net.SocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -33,9 +37,11 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -81,10 +87,27 @@ import java.util.concurrent.TimeUnit;
  *       </ul>
  *       {@link #ephemeralHeadroom} refuses a rung above the measured ceiling rather than letting it fail
  *       as connect errors that read like a server limit.</li>
- *   <li><b>Establishment is proven twice, client and server.</b> Client side: N distinct local ports.
- *       Server side: the event log recorded N received requests — every parked connection completed a
- *       real request before going idle, so the server accepted, read, matched and answered on it. A
- *       connection that only completed a TCP handshake would pass the first proof and fail the second.</li>
+ *   <li><b>Establishment is proven twice, client and server.</b> Client side: N distinct local
+ *       <em>endpoints</em> — address+port pairs, not ports alone, because with more than one source
+ *       address the same ephemeral port number legitimately recurs on a different local address and a
+ *       port-only count would false-fail. Server side: the event log recorded N received requests —
+ *       every parked connection completed a real request before going idle, so the server accepted,
+ *       read, matched and answered on it. A connection that only completed a TCP handshake would pass
+ *       the first proof and fail the second.</li>
+ *   <li><b>Source addresses are counted from the sockets that were actually bound, not the ones asked
+ *       for.</b> The ~15,500 wall this item hit is the macOS global ephemeral source-port range, and
+ *       the only way past it is more client source <em>addresses</em> (loopback aliases or more
+ *       load-generator hosts), not more server ports — the multi-port ratio measured 1.01. So the
+ *       driver can round-robin connections across a configured list of local source addresses
+ *       ({@code CEILING_SOURCE_ADDRESSES}), giving each address its own ephemeral range. Because this
+ *       programme's recurring defect is an instrument that runs honestly while measuring the wrong
+ *       subject, every rung reports how many <b>distinct source addresses were actually used</b> and
+ *       how many connections landed on <b>each</b>, tallied from {@link Channel#localAddress()} after
+ *       the OS assigned it — and {@link #measureRung} throws if that tally does not match the
+ *       round-robin distribution the run configured. A misconfiguration that silently collapsed onto
+ *       one address (an alias that was never created) therefore fails loudly rather than being read as
+ *       a raised ceiling; missing aliases are also caught up front by
+ *       {@link #assertSourceAddressesBindable}, which refuses to start.</li>
  *   <li><b>Client CPU headroom</b> is sampled across the probe window. A saturated driver measures
  *       itself, so a rung whose driver CPU has no headroom is marked {@code rig_valid:false} and its
  *       latency is not a server figure.</li>
@@ -112,6 +135,13 @@ import java.util.concurrent.TimeUnit;
  *   CEILING_PROBE_REQUESTS  sequential requests per latency sample (default 300)
  *   CEILING_SETTLE_MS       pause after parking a rung before probing (default 500)
  *   CEILING_WARMUP_REQUESTS discarded requests run before the first rung (default 2000)
+ *   CEILING_SOURCE_ADDRESSES comma-separated local source addresses to round-robin outgoing
+ *                           connections across, e.g. 127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4
+ *                           (default 127.0.0.1). Each address contributes its own ephemeral
+ *                           source-port range, which is the only lever that moves the ~15,500 wall on
+ *                           macOS. Non-primary loopback aliases must be created with sudo BEFORE the
+ *                           run and removed after (see run-connection-ceiling.sh); the driver refuses
+ *                           to start if any configured address is not bindable.
  * </pre>
  * Results are printed as one JSON document on stdout, after a human-readable table.
  */
@@ -154,8 +184,12 @@ public class ConnectionCeilingBenchmark {
             System.err.println("CEILING_MODE must be h1, tls or calibrate, was: " + mode);
             System.exit(2);
         }
+        InetAddress[] sourceAddresses = parseSourceAddresses(env("CEILING_SOURCE_ADDRESSES", "127.0.0.1"));
+        // Fail up front, naming the address and the sudo command, rather than letting a missing alias
+        // surface mid-rung as a BindException that reads like ephemeral-port exhaustion.
+        assertSourceAddressesBindable(sourceAddresses);
         if ("calibrate".equals(mode)) {
-            calibrate(host, ports);
+            calibrate(host, ports, sourceAddresses);
             return;
         }
         int[] ladder = parseLadder(env("CEILING_LADDER", "250,1000,4000,8000"));
@@ -165,15 +199,17 @@ public class ConnectionCeilingBenchmark {
 
         preloadFailureReportingClasses();
 
-        int headroom = ephemeralHeadroom();
+        int headroom = ephemeralHeadroom(sourceAddresses.length);
         for (int rung : ladder) {
             if (rung > headroom) {
                 System.err.println("RIG REFUSES RUNG: " + rung + " connections exceeds this driver's usable"
                     + " headroom of " + headroom + " — " + (int) (EPHEMERAL_SAFETY_FACTOR * 100) + "% of a"
-                    + " ceiling of " + (headroom / EPHEMERAL_SAFETY_FACTOR) + ", the remainder left for the"
-                    + " previous rung's TIME_WAIT sockets. Run CEILING_MODE=calibrate to measure this box's"
-                    + " ceiling and pass it as CEILING_CLIENT_CEILING, or lower the ladder — do not read the"
-                    + " resulting connect failures as a server ceiling.");
+                    + " ceiling of " + (int) (headroom / EPHEMERAL_SAFETY_FACTOR) + " across " + sourceAddresses.length
+                    + " source address(es), the remainder left for the previous rung's TIME_WAIT sockets. Add more"
+                    + " source addresses via CEILING_SOURCE_ADDRESSES (each adds its own ephemeral range), run"
+                    + " CEILING_MODE=calibrate to measure this box's per-address ceiling and pass it as"
+                    + " CEILING_CLIENT_CEILING, or lower the ladder — do not read the resulting connect failures"
+                    + " as a server ceiling.");
                 System.exit(2);
             }
         }
@@ -208,10 +244,10 @@ public class ConnectionCeilingBenchmark {
                 System.err.println("draining TIME_WAIT for " + drainMs + " ms before rung " + rung);
                 Thread.sleep(drainMs);
                 System.err.println("rung " + rung + ": baseline");
-                Rung pairedBaseline = measureRung(group, sslContext, controlPlane, host, ports, 0, probeRequests, settleMs);
+                Rung pairedBaseline = measureRung(group, sslContext, controlPlane, host, ports, sourceAddresses, 0, probeRequests, settleMs);
                 results.add(pairedBaseline);
                 System.err.println("rung " + rung + ": parking connections");
-                Rung measured = measureRung(group, sslContext, controlPlane, host, ports, rung, probeRequests, settleMs);
+                Rung measured = measureRung(group, sslContext, controlPlane, host, ports, sourceAddresses, rung, probeRequests, settleMs);
                 measured.pairedBaselineP50Micros = pairedBaseline.p50Micros;
                 results.add(measured);
                 System.err.println("rung " + rung + ": done");
@@ -220,7 +256,7 @@ public class ConnectionCeilingBenchmark {
             group.shutdownGracefully(0, 2, TimeUnit.SECONDS).sync();
         }
 
-        report(results, mode, ports.length, probeRequests);
+        report(results, mode, ports.length, sourceAddresses.length, probeRequests);
     }
 
     /**
@@ -245,10 +281,19 @@ public class ConnectionCeilingBenchmark {
 
     /** One ladder rung: park {@code connections} idle, then time {@code probeRequests} on a fresh connection. */
     private static Rung measureRung(NioEventLoopGroup group, SslContext sslContext, HttpClient controlPlane,
-                                    String host, int[] ports, int connections, int probeRequests,
-                                    long settleMs) throws Exception {
+                                    String host, int[] ports, InetAddress[] sourceAddresses, int connections,
+                                    int probeRequests, long settleMs) throws Exception {
         List<Channel> parked = new ArrayList<>(connections);
-        Set<Integer> distinctLocalPorts = new LinkedHashSet<>();
+        // Distinct local ENDPOINTS (address+port), not ports alone: with more than one source address the
+        // same ephemeral port recurs on a different local address and is a genuinely distinct socket.
+        Set<InetSocketAddress> distinctLocalEndpoints = new LinkedHashSet<>();
+        // Connections that actually landed on each source address, keyed by the address the OS bound —
+        // read back from the channel, never the address we asked for — so a silent collapse onto one
+        // address is visible instead of being mistaken for a raised ceiling.
+        Map<String, Integer> connectionsPerSourceAddress = new LinkedHashMap<>();
+        for (InetAddress source : sourceAddresses) {
+            connectionsPerSourceAddress.put(source.getHostAddress(), 0);
+        }
         long serverConfirmed;
         try {
             controlPlanePut(controlPlane, host, ports[0], "/mockserver/clear?type=LOG", "");
@@ -260,9 +305,12 @@ public class ConnectionCeilingBenchmark {
             int confirmedSinceClear = 0;
             for (int i = 0; i < connections; i++) {
                 int port = ports[i % ports.length];
+                // Round-robin the source address as well as the destination port, so every configured
+                // address contributes its own ephemeral range rather than the whole rung draining one.
+                InetAddress source = sourceAddresses[i % sourceAddresses.length];
                 Channel channel;
                 try {
-                    channel = connect(group, sslContext, host, port);
+                    channel = connect(group, sslContext, host, port, new InetSocketAddress(source, 0));
                 } catch (Exception e) {
                     // The rig ran out, not the server. Recording where it ran out is a result; dying with
                     // a stack trace is not, and a reader of the crash cannot tell the two apart.
@@ -286,7 +334,9 @@ public class ConnectionCeilingBenchmark {
                     throw new IllegalStateException("parked connection " + i + " got status " + status);
                 }
                 parked.add(channel);
-                distinctLocalPorts.add(((InetSocketAddress) channel.localAddress()).getPort());
+                InetSocketAddress localAddress = (InetSocketAddress) channel.localAddress();
+                distinctLocalEndpoints.add(localAddress);
+                connectionsPerSourceAddress.merge(localAddress.getAddress().getHostAddress(), 1, Integer::sum);
                 if (++confirmedSinceClear == CONFIRM_BATCH) {
                     serverConfirmed += drainRecordedRequests(controlPlane, host, ports[0], confirmedSinceClear);
                     confirmedSinceClear = 0;
@@ -295,10 +345,16 @@ public class ConnectionCeilingBenchmark {
             if (confirmedSinceClear > 0) {
                 serverConfirmed += drainRecordedRequests(controlPlane, host, ports[0], confirmedSinceClear);
             }
-            if (distinctLocalPorts.size() != connections) {
-                throw new IllegalStateException("HARNESS VALIDATION FAILED: " + distinctLocalPorts.size()
-                    + " distinct local ports for " + connections + " connections — sockets were reused");
+            if (distinctLocalEndpoints.size() != connections) {
+                throw new IllegalStateException("HARNESS VALIDATION FAILED: " + distinctLocalEndpoints.size()
+                    + " distinct local endpoints (address+port) for " + connections
+                    + " connections — sockets were reused");
             }
+            // The whole point of the multi-address feature is defeated if connections silently collapse
+            // onto one address, and that failure would read as a raised ceiling. Assert the actual bound
+            // distribution matches the round-robin the run configured — both the count of addresses used
+            // and the per-address totals — so a missing alias or an OS that ignored the bind fails loudly.
+            assertSourceAddressDistribution(connectionsPerSourceAddress, sourceAddresses, connections);
             if (serverConfirmed != connections) {
                 throw new IllegalStateException("HARNESS VALIDATION FAILED: server recorded " + serverConfirmed
                     + " requests, expected " + connections + " — connections are not established server-side");
@@ -345,9 +401,13 @@ public class ConnectionCeilingBenchmark {
                 double clientCpuHeadroom = 1.0 - ((double) cpuUsed / (double) (wallUsed * cores));
 
                 Arrays.sort(latenciesNanos);
-                return new Rung(connections, distinctLocalPorts.size(), serverConfirmed, errors,
+                Rung rung = new Rung(connections, distinctLocalEndpoints.size(), serverConfirmed, errors,
                     percentileMicros(latenciesNanos, 0.50), percentileMicros(latenciesNanos, 0.99),
                     clientCpuHeadroom);
+                rung.distinctSourceAddresses = (int) connectionsPerSourceAddress.values().stream()
+                    .filter(count -> count > 0).count();
+                rung.connectionsPerSourceAddress = new LinkedHashMap<>(connectionsPerSourceAddress);
+                return rung;
             } finally {
                 probe.close().sync();
             }
@@ -358,8 +418,21 @@ public class ConnectionCeilingBenchmark {
         }
     }
 
+    /** Connect letting the OS pick the source address and port — used by the warm-up and probe connections. */
     private static Channel connect(NioEventLoopGroup group, SslContext sslContext, String host, int port)
         throws InterruptedException {
+        return connect(group, sslContext, host, port, null);
+    }
+
+    /**
+     * Connect, optionally binding the outgoing socket to {@code localAddress} (address with port 0 for an
+     * OS-assigned ephemeral port). Binding an explicit source address is how a rung spreads its
+     * connections across several ephemeral ranges; {@code null} preserves the pre-existing behaviour of
+     * letting the OS choose, which for a loopback destination is 127.0.0.1 — so a run configured with the
+     * default single {@code 127.0.0.1} source lands on exactly the same address as before.
+     */
+    static Channel connect(NioEventLoopGroup group, SslContext sslContext, String host, int port,
+                           SocketAddress localAddress) throws InterruptedException {
         Bootstrap bootstrap = new Bootstrap()
             .group(group)
             .channel(NioSocketChannel.class)
@@ -375,7 +448,10 @@ public class ConnectionCeilingBenchmark {
                     ch.pipeline().addLast(new ResponseHandler());
                 }
             });
-        Channel channel = bootstrap.connect(host, port).sync().channel();
+        ChannelFuture future = localAddress == null
+            ? bootstrap.connect(host, port)
+            : bootstrap.connect(new InetSocketAddress(host, port), localAddress);
+        Channel channel = future.sync().channel();
         if (sslContext != null) {
             assertTlsNegotiated(channel);
         }
@@ -478,14 +554,20 @@ public class ConnectionCeilingBenchmark {
      * what {@code CEILING_MODE=calibrate} measured on this box, not from a model of how the kernel
      * allocates ports), else the assumed ephemeral range — and in both cases reduced by
      * {@link #EPHEMERAL_SAFETY_FACTOR}, because a ladder must fit the previous rung's {@code TIME_WAIT}
-     * sockets as well as its own. It takes no port count: whether destinations get separate source-port
-     * spaces is a kernel property, and on macOS it measured as one global range.
+     * sockets as well as its own. It takes no <em>port</em> count: whether destinations get separate
+     * source-port spaces is a kernel property, and on macOS it measured as one global range. It does
+     * scale by the number of source <em>addresses</em>, because each local address contributes its own
+     * ephemeral range — that is the whole reason for binding across addresses, and the guard would
+     * otherwise refuse the very rungs the feature exists to reach. This only raises the ceiling the
+     * guard will <em>attempt</em>; a rung the box cannot actually hold still fails through the honest
+     * rig-exhaustion path, never as a silent server figure.
      */
-    private static int ephemeralHeadroom() {
+    private static int ephemeralHeadroom(int sourceAddressCount) {
         String measured = System.getenv("CEILING_CLIENT_CEILING");
-        return (int) ((measured == null || measured.isEmpty()
+        int perAddress = (int) ((measured == null || measured.isEmpty()
             ? DEFAULT_EPHEMERAL_RANGE
             : Integer.parseInt(measured)) * EPHEMERAL_SAFETY_FACTOR);
+        return perAddress * Math.max(1, sourceAddressCount);
     }
 
     /**
@@ -494,9 +576,14 @@ public class ConnectionCeilingBenchmark {
      * If the two numbers match, the kernel draws source ports from one range regardless of destination,
      * and giving the server more ports buys nothing — the assumption this mode exists to test.
      */
-    private static void calibrate(String host, int[] ports) throws Exception {
+    private static void calibrate(String host, int[] ports, InetAddress[] sourceAddresses) throws Exception {
         long maxFd = maxFileDescriptors();
         boolean macOs = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("mac");
+        if (sourceAddresses.length > 1) {
+            System.out.printf("calibrate: round-robining across %d source addresses (%s) — each contributes"
+                + " its own ephemeral range, so the numbers below are the COMBINED ceiling%n",
+                sourceAddresses.length, describeAddresses(sourceAddresses));
+        }
         System.out.printf("calibrate: this JVM's file-descriptor limit is %d%s%n", maxFd,
             maxFd > 10_240 ? ""
                 : macOs
@@ -507,7 +594,7 @@ public class ConnectionCeilingBenchmark {
                       + " limit, so raise the HARD limit (systemd LimitNOFILE, docker --ulimit nofile)."
                       + " Do NOT pass -XX:-MaxFDLimit here: on Linux it disables that raise.");
 
-        Wall one = holdUntilRefused(host, new int[]{ports[0]});
+        Wall one = holdUntilRefused(host, new int[]{ports[0]}, sourceAddresses);
         System.out.printf("calibrate: 1 destination port  -> %d connections, refused by %s%n", one.held, one.kind);
         if (ports.length > 1) {
             // TIME_WAIT from the first arm would steal from the second, so wait it out rather than
@@ -515,7 +602,7 @@ public class ConnectionCeilingBenchmark {
             long drainMs = Long.parseLong(env("CEILING_TIMEWAIT_DRAIN_MS", "45000"));
             System.out.printf("calibrate: draining TIME_WAIT for %d ms before the second arm%n", drainMs);
             Thread.sleep(drainMs);
-            Wall many = holdUntilRefused(host, ports);
+            Wall many = holdUntilRefused(host, ports, sourceAddresses);
             System.out.printf("calibrate: %d destination ports -> %d connections, refused by %s%n",
                 ports.length, many.held, many.kind);
             // Only a PORT wall says anything about how source ports are allocated. Two arms that both
@@ -534,9 +621,19 @@ public class ConnectionCeilingBenchmark {
                         : "one global source-port range; more server ports do NOT raise the ceiling");
             }
         }
-        System.out.printf("calibrate: pass CEILING_CLIENT_CEILING=%d to a measuring run — which will use"
-            + " %d of it (%d%%), leaving the rest for the previous rung's TIME_WAIT sockets%n",
-            one.held, (int) (one.held * EPHEMERAL_SAFETY_FACTOR), (int) (EPHEMERAL_SAFETY_FACTOR * 100));
+        // CEILING_CLIENT_CEILING is a PER-ADDRESS figure (ephemeralHeadroom multiplies it back up by the
+        // source-address count), so when this calibrate run round-robined across several addresses the
+        // combined `one.held` must be divided down before it is suggested — otherwise a later multi-address
+        // measuring run would multiply an already-combined number and over-estimate its headroom.
+        // Integer division deliberately rounds DOWN: a suggested ceiling that is slightly too
+        // small costs a few connections of headroom, while one that is too large lets a rung
+        // run past the ephemeral range and report the client's wall as the server's.
+        int perAddressCeiling = one.held / sourceAddresses.length;
+        System.out.printf("calibrate: pass CEILING_CLIENT_CEILING=%d to a measuring run (per source address%s)"
+            + " — each address then contributes %d usable (%d%%), leaving the rest for the previous rung's"
+            + " TIME_WAIT sockets%n",
+            perAddressCeiling, sourceAddresses.length > 1 ? ", from the combined " + one.held + " above" : "",
+            (int) (perAddressCeiling * EPHEMERAL_SAFETY_FACTOR), (int) (EPHEMERAL_SAFETY_FACTOR * 100));
     }
 
     /** Where a connect loop stopped, and what stopped it — the two are different findings. */
@@ -559,14 +656,18 @@ public class ConnectionCeilingBenchmark {
         }
     }
 
-    /** Open connections round-robin across {@code ports} until one is refused; returns where and why it stopped. */
-    private static Wall holdUntilRefused(String host, int[] ports) throws Exception {
+    /**
+     * Open connections round-robin across {@code ports} and {@code sourceAddresses} until one is refused;
+     * returns where and why it stopped.
+     */
+    private static Wall holdUntilRefused(String host, int[] ports, InetAddress[] sourceAddresses) throws Exception {
         NioEventLoopGroup group = new NioEventLoopGroup();
         List<Channel> held = new ArrayList<>();
         try {
             for (int i = 0; ; i++) {
+                InetAddress source = sourceAddresses[i % sourceAddresses.length];
                 try {
-                    held.add(connect(group, null, host, ports[i % ports.length]));
+                    held.add(connect(group, null, host, ports[i % ports.length], new InetSocketAddress(source, 0)));
                 } catch (Exception e) {
                     return new Wall(held.size(), classify(e), describe(e));
                 }
@@ -618,7 +719,7 @@ public class ConnectionCeilingBenchmark {
         return sortedNanos[index] / 1_000.0;
     }
 
-    private static void report(List<Rung> results, String mode, int ports, int probeRequests) {
+    private static void report(List<Rung> results, String mode, int ports, int sourceAddresses, int probeRequests) {
         Rung firstBaseline = results.get(0);
         Rung lastBaseline = null;
         for (Rung rung : results) {
@@ -630,27 +731,42 @@ public class ConnectionCeilingBenchmark {
             : 100.0 * (lastBaseline.p50Micros - firstBaseline.p50Micros) / firstBaseline.p50Micros;
 
         System.out.println();
-        System.out.printf("item 21 connection-scaling ceiling — mode=%s ports=%d probe_requests=%d%n",
-            mode, ports, probeRequests);
-        System.out.println("connections  established  server_confirmed  p50_us   p99_us   vs_paired_baseline  client_cpu_headroom  rig_valid");
+        System.out.printf("item 21 connection-scaling ceiling — mode=%s ports=%d source_addresses=%d probe_requests=%d%n",
+            mode, ports, sourceAddresses, probeRequests);
+        System.out.println("connections  established  server_confirmed  src_addrs  p50_us   p99_us   vs_paired_baseline  client_cpu_headroom  rig_valid");
         for (Rung rung : results) {
             if (rung.exhaustedBy != null) {
-                System.out.printf("%11d  %11d  %16s  %7s  %7s  %18s  %19s  %s%n",
-                    rung.connections, rung.established, "-", "-", "-", "-", "-",
+                System.out.printf("%11d  %11d  %16s  %9s  %7s  %7s  %18s  %19s  %s%n",
+                    rung.connections, rung.established, "-", "-", "-", "-", "-", "-",
                     "false (rig exhausted: " + rung.exhaustedBy + ")");
                 continue;
             }
-            System.out.printf("%11d  %11d  %16d  %7.1f  %7.1f  %18s  %19.3f  %s%n",
-                rung.connections, rung.established, rung.serverConfirmed, rung.p50Micros, rung.p99Micros,
+            System.out.printf("%11d  %11d  %16d  %9d  %7.1f  %7.1f  %18s  %19.3f  %s%n",
+                rung.connections, rung.established, rung.serverConfirmed, rung.distinctSourceAddresses,
+                rung.p50Micros, rung.p99Micros,
                 Double.isNaN(rung.pairedBaselineP50Micros) ? "(baseline)"
                     : String.format(Locale.ROOT, "%.2fx", rung.p50Micros / rung.pairedBaselineP50Micros),
                 rung.clientCpuHeadroom, rung.rigValid());
+        }
+
+        // How many connections landed on EACH source address, printed per non-baseline rung. This is the
+        // check that a ladder "past 15,500" really used several source addresses rather than one — the
+        // headline number is worthless if the spread is not what was configured.
+        if (sourceAddresses > 1) {
+            System.out.println("\nconnections per source address (from the addresses the OS actually bound):");
+            for (Rung rung : results) {
+                if (rung.exhaustedBy == null && rung.connections > 0) {
+                    System.out.printf("  %d connections -> %s%n", rung.connections,
+                        formatAddressCounts(rung.connectionsPerSourceAddress));
+                }
+            }
         }
         System.out.printf("%nbaseline drift first-to-last: %.1f%% — reported only as a measure of how much the box"
             + " moved; the ratios above are each against their OWN immediately-preceding baseline, so this"
             + " drift does not enter them.%n", baselineDriftPct);
 
         StringBuilder json = new StringBuilder("{\"mode\":\"").append(mode).append("\",\"ports\":").append(ports)
+            .append(",\"source_addresses\":").append(sourceAddresses)
             .append(",\"probe_requests\":").append(probeRequests)
             .append(",\"baseline_drift_pct\":").append(String.format(Locale.ROOT, "%.2f", baselineDriftPct))
             .append(",\"rungs\":[");
@@ -671,6 +787,10 @@ public class ConnectionCeilingBenchmark {
         final Wall.Kind exhaustedBy;
         /** p50 of the zero-connection sample taken immediately before this rung; NaN for a baseline itself. */
         double pairedBaselineP50Micros = Double.NaN;
+        /** Distinct source addresses the OS actually bound this rung's connections to; 0 for a baseline. */
+        int distinctSourceAddresses = 0;
+        /** Connections that landed on each source address, keyed by the bound address; empty for a baseline. */
+        Map<String, Integer> connectionsPerSourceAddress = java.util.Collections.emptyMap();
 
         Rung(int connections, int established, long serverConfirmed, int probeErrors,
              double p50Micros, double p99Micros, double clientCpuHeadroom) {
@@ -715,9 +835,11 @@ public class ConnectionCeilingBenchmark {
                 : String.format(Locale.ROOT, "%.3f", p50Micros / pairedBaselineP50Micros);
             return String.format(Locale.ROOT,
                 "{\"connections\":%d,\"established\":%d,\"server_confirmed\":%d,\"probe_errors\":%d,"
+                    + "\"distinct_source_addresses\":%d,\"connections_per_source_address\":%s,"
                     + "\"p50_us\":%.1f,\"p99_us\":%.1f,\"vs_paired_baseline\":%s,"
                     + "\"client_cpu_headroom\":%.3f,\"rig_valid\":%s}",
-                connections, established, serverConfirmed, probeErrors, p50Micros, p99Micros,
+                connections, established, serverConfirmed, probeErrors, distinctSourceAddresses,
+                addressCountsToJson(connectionsPerSourceAddress), p50Micros, p99Micros,
                 ratio, clientCpuHeadroom, rigValid());
         }
     }
@@ -763,6 +885,15 @@ public class ConnectionCeilingBenchmark {
                     .PUT(HttpRequest.BodyPublishers.ofString(""))
                     .build(),
                 HttpResponse.BodyHandlers.ofString());
+            // Check the status BEFORE parsing. An error body is usually still valid JSON, and
+            // readTree(...).size() on it returns 0 — which this harness would report as the server
+            // having accepted none of the connections, i.e. a transport fault dressed up as a
+            // measurement. This is the server-side half of the establishment proof, so it must fail
+            // loudly rather than return a number it did not read.
+            if (response.statusCode() >= 400) {
+                throw new IllegalStateException("retrieve returned " + response.statusCode()
+                    + ": " + response.body());
+            }
             // Parse the array rather than counting pretty-printed "path" lines: the retrieve endpoint
             // happens to pretty-print today, and a compact response would silently count zero — which
             // this harness would then report as the server having accepted none of the connections.
@@ -788,6 +919,143 @@ public class ConnectionCeilingBenchmark {
             ladder[i] = Integer.parseInt(parts[i].trim());
         }
         return ladder;
+    }
+
+    /**
+     * Parse a comma-separated list of local source addresses into resolved {@link InetAddress}es,
+     * preserving order and rejecting duplicates — two entries for the same address would silently halve
+     * that address's apparent share and break the round-robin distribution check. Blank input yields the
+     * single default {@code 127.0.0.1}, which reproduces the pre-existing single-address behaviour.
+     */
+    static InetAddress[] parseSourceAddresses(String csv) throws java.net.UnknownHostException {
+        String[] parts = (csv == null || csv.isBlank() ? "127.0.0.1" : csv).split(",");
+        List<InetAddress> addresses = new ArrayList<>(parts.length);
+        Set<String> seen = new LinkedHashSet<>();
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            InetAddress address = InetAddress.getByName(trimmed);
+            if (!seen.add(address.getHostAddress())) {
+                throw new IllegalArgumentException("CEILING_SOURCE_ADDRESSES lists " + trimmed
+                    + " (" + address.getHostAddress() + ") more than once — each source address must be unique");
+            }
+            addresses.add(address);
+        }
+        if (addresses.isEmpty()) {
+            throw new IllegalArgumentException("CEILING_SOURCE_ADDRESSES resolved to no addresses");
+        }
+        return addresses.toArray(new InetAddress[0]);
+    }
+
+    /**
+     * Refuse to start unless every configured source address can actually be bound. A non-primary
+     * loopback alias that was never created (macOS needs {@code sudo ifconfig lo0 alias <ip> up}) would
+     * otherwise surface mid-rung as a {@code BindException} that reads like ephemeral-port exhaustion, or
+     * — worse for this programme — could be mistaken for having raised the ceiling. Failing up front with
+     * the address named and the fix printed keeps a misconfiguration from ever reaching a latency number.
+     */
+    private static void assertSourceAddressesBindable(InetAddress[] sourceAddresses) {
+        for (InetAddress address : sourceAddresses) {
+            if (!isBindable(address)) {
+                System.err.println("RIG REFUSES TO START: cannot bind to source address "
+                    + address.getHostAddress() + " — it is not configured on this host. On macOS create a"
+                    + " loopback alias first with `sudo ifconfig lo0 alias " + address.getHostAddress()
+                    + " up` (remove it afterwards with `sudo ifconfig lo0 -alias " + address.getHostAddress()
+                    + "`). Configured via CEILING_SOURCE_ADDRESSES. Do NOT read a run that silently used"
+                    + " fewer addresses as a raised ceiling.");
+                System.exit(2);
+            }
+        }
+    }
+
+    /** True if a socket can bind an ephemeral port on {@code address} — i.e. the address exists on this host. */
+    static boolean isBindable(InetAddress address) {
+        try (Socket probe = new Socket()) {
+            probe.bind(new InetSocketAddress(address, 0));
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * The number of connections each source address should receive when {@code connections} are dealt
+     * round-robin across {@code addressCount} addresses: address {@code j} gets {@code connections /
+     * addressCount}, plus one for the first {@code connections % addressCount} addresses. This is the
+     * exact distribution {@link #measureRung} produces and {@link #assertSourceAddressDistribution}
+     * checks the bound sockets against.
+     */
+    static int[] expectedRoundRobinCounts(int connections, int addressCount) {
+        int[] expected = new int[addressCount];
+        int base = connections / addressCount;
+        int remainder = connections % addressCount;
+        for (int j = 0; j < addressCount; j++) {
+            expected[j] = base + (j < remainder ? 1 : 0);
+        }
+        return expected;
+    }
+
+    /**
+     * Assert the connections actually bound per source address match the round-robin distribution the run
+     * configured — both that the expected number of addresses were used and that each got its expected
+     * share. Reads the tally keyed by the address the OS bound (from {@link Channel#localAddress()}), so
+     * a silent collapse onto one address, or an OS that ignored the requested bind, fails here rather
+     * than being reported as a higher ceiling.
+     */
+    static void assertSourceAddressDistribution(Map<String, Integer> connectionsPerSourceAddress,
+                                                InetAddress[] sourceAddresses, int connections) {
+        int[] expected = expectedRoundRobinCounts(connections, sourceAddresses.length);
+        int expectedDistinct = Math.min(connections, sourceAddresses.length);
+        long actualDistinct = connectionsPerSourceAddress.values().stream().filter(count -> count > 0).count();
+        if (actualDistinct != expectedDistinct) {
+            throw new IllegalStateException("HARNESS VALIDATION FAILED: connections landed on " + actualDistinct
+                + " source address(es), expected " + expectedDistinct + " for " + connections
+                + " connections round-robined across " + sourceAddresses.length + " configured address(es) — "
+                + formatAddressCounts(connectionsPerSourceAddress) + ". A run that silently used fewer"
+                + " addresses is NOT a raised ceiling.");
+        }
+        for (int j = 0; j < sourceAddresses.length; j++) {
+            String hostAddress = sourceAddresses[j].getHostAddress();
+            int actual = connectionsPerSourceAddress.getOrDefault(hostAddress, 0);
+            if (actual != expected[j]) {
+                throw new IllegalStateException("HARNESS VALIDATION FAILED: source address " + hostAddress
+                    + " bound " + actual + " connections, expected " + expected[j] + " from round-robin of "
+                    + connections + " across " + sourceAddresses.length + " address(es) — "
+                    + formatAddressCounts(connectionsPerSourceAddress));
+            }
+        }
+    }
+
+    private static String describeAddresses(InetAddress[] addresses) {
+        StringBuilder builder = new StringBuilder();
+        for (int i = 0; i < addresses.length; i++) {
+            builder.append(i == 0 ? "" : ",").append(addresses[i].getHostAddress());
+        }
+        return builder.toString();
+    }
+
+    /** Human-readable "addr=count, addr=count" for the table and validation messages. */
+    private static String formatAddressCounts(Map<String, Integer> counts) {
+        StringBuilder builder = new StringBuilder();
+        boolean first = true;
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            builder.append(first ? "" : ", ").append(entry.getKey()).append('=').append(entry.getValue());
+            first = false;
+        }
+        return builder.length() == 0 ? "(none)" : builder.toString();
+    }
+
+    /** {@code {"127.0.0.1":4000,...}} for the JSON document; empty map becomes {@code {}}. */
+    private static String addressCountsToJson(Map<String, Integer> counts) {
+        StringBuilder builder = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Integer> entry : counts.entrySet()) {
+            builder.append(first ? "" : ",").append('"').append(entry.getKey()).append("\":").append(entry.getValue());
+            first = false;
+        }
+        return builder.append('}').toString();
     }
 
     private static String env(String key, String defaultValue) {

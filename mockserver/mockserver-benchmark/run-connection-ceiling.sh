@@ -19,9 +19,34 @@
 # source-port range is GLOBAL and more server ports do not raise the ceiling. Run `calibrate` on any new
 # box rather than inheriting these numbers.
 #
+# GETTING PAST ~15,500 — MULTIPLE CLIENT SOURCE ADDRESSES (REQUIRES ROOT, MANUAL STEP):
+#   The ~15,500 wall is the client's GLOBAL ephemeral source-port range, not the server. More SERVER
+#   ports do not move it (ratio 1.01 above). The only lever is more client source ADDRESSES: each local
+#   address has its own ephemeral range, so N loopback aliases roughly multiply the ceiling by N. Set
+#   CEILING_SOURCE_ADDRESSES to a comma-separated list and the driver round-robins connections across
+#   them, reporting how many distinct addresses were actually used and how many connections landed on
+#   each (so a missing alias cannot be mistaken for a raised ceiling — the driver refuses to start if any
+#   listed address is not bindable).
+#
+#   Creating a non-primary loopback alias needs root, which this script does NOT do for you. On macOS,
+#   BEFORE the run, create the aliases (example for three extra addresses):
+#       sudo ifconfig lo0 alias 127.0.0.2 up
+#       sudo ifconfig lo0 alias 127.0.0.3 up
+#       sudo ifconfig lo0 alias 127.0.0.4 up
+#   then run e.g.:
+#       CEILING_SOURCE_ADDRESSES=127.0.0.1,127.0.0.2,127.0.0.3,127.0.0.4 \
+#         CEILING_LADDER=8000,20000,40000 ./run-connection-ceiling.sh
+#   and AFTER the run, TEAR THE ALIASES DOWN so the machine is not left reconfigured:
+#       sudo ifconfig lo0 -alias 127.0.0.2
+#       sudo ifconfig lo0 -alias 127.0.0.3
+#       sudo ifconfig lo0 -alias 127.0.0.4
+#   (List current aliases with `ifconfig lo0`; a reboot also clears them. On Linux the whole 127.0.0.0/8
+#   is already local, so no alias is needed — just list the addresses. As of this commit the >15,500
+#   figure is UNMEASURED here because these aliases were never created — the alias step is root-only.)
+#
 # Tunables (env): CEILING_MODE (h1|tls|calibrate), CEILING_LADDER, CEILING_PROBE_REQUESTS,
 # CEILING_SETTLE_MS, CEILING_WARMUP_REQUESTS, CEILING_TIMEWAIT_DRAIN_MS, CEILING_CLIENT_CEILING,
-# CEILING_SERVER_PORTS.
+# CEILING_SERVER_PORTS, CEILING_SOURCE_ADDRESSES.
 #
 # The ladder must also fit TWO ADJACENT rungs in the port range: a rung's sockets sit in TIME_WAIT for
 # 2*MSL (30 s on macOS) after it closes, so 8,000 followed immediately by 12,000 asks for 20,000 ports
