@@ -186,12 +186,10 @@ WASM body matching requires `wasmEnabled=true` on the running MockServer (the se
 
 ### From a local build
 
-```bash
-cd mockserver-jetbrains
-./gradlew buildPlugin
-```
-
-The plugin ZIP is written to `build/distributions/mockserver-jetbrains-<version>.zip`. Install via **Settings > Plugins > gear icon > Install Plugin from Disk**.
+Build the ZIP with `./gradlew buildPlugin` and install it via **Settings | Plugins | gear icon |
+Install Plugin from Disk**. See [Running unreleased plugin code](#running-unreleased-plugin-code)
+for the full recipe, including the proxy workaround and why you must install by file rather than
+by version number.
 
 ## Try it locally
 
@@ -201,12 +199,62 @@ From the repo root, one command builds the plugin, starts a local MockServer Doc
 scripts/try-editor-extensions.sh jetbrains
 ```
 
-## Running in a sandbox IDE
+## Running unreleased plugin code
+
+Two ways, and they suit different jobs. **Both build from source** — use them when the released
+plugin is missing a fix you need, or is broken on your IDE version.
+
+> **Behind a TLS-inspection proxy, Gradle needs the corporate CA** or it fails resolving plugins
+> with `403 Forbidden` from `plugins.gradle.org`. Build a truststore once, then pass it to every
+> Gradle command below:
+>
+> ```bash
+> KS=/tmp/gradle-ca.jks
+> cp "$(/usr/libexec/java_home)/lib/security/cacerts" "$KS" && chmod +w "$KS"
+> keytool -importcert -noprompt -trustcacerts -alias corp \
+>         -file ~/.tesco-ca/tesco_root_ca.pem -keystore "$KS" -storepass changeit
+> GRADLE_CA="-Djavax.net.ssl.trustStore=$KS -Djavax.net.ssl.trustStorePassword=changeit"
+> ```
+>
+> Omit `$GRADLE_CA` if you are not behind such a proxy.
+
+### Option A — install into your own IDE
+
+Best when you want your real projects, settings and theme — and the only option for **capturing
+`docs/screenshots/intellij_dashboard_in_ide.png`**, which should look like a normal install.
 
 ```bash
 cd mockserver-jetbrains
-./gradlew runIde
+./gradlew buildPlugin $GRADLE_CA
 ```
+
+Then **Settings | Plugins | gear icon | Install Plugin from Disk…**, pick
+`build/distributions/mockserver-jetbrains-<version>.zip`, and restart.
+
+**Install by FILE, not by version.** `pluginVersion` in `gradle.properties` is not bumped for a
+local build, so the zip carries the same version as the release it replaces and the IDE will keep
+showing that number. Nothing warns you if you install the wrong one — check the fix is actually
+present instead:
+
+```bash
+unzip -l build/distributions/mockserver-jetbrains-*.zip | grep <a class you changed>
+```
+
+### Option B — sandbox IDE
+
+Best for iterating on plugin code: a throwaway IDE with the plugin already loaded, leaving your
+real install untouched.
+
+```bash
+cd mockserver-jetbrains
+./gradlew runIde $GRADLE_CA
+```
+
+### Either way, the dashboard comes from the SERVER
+
+Neither option changes what the dashboard shows — see the next section. If you are chasing an
+unreleased **UI** change you need a locally built server jar as well, and if you are only chasing a
+UI change you do not need a local plugin at all.
 
 ## Testing dashboard changes that are not released yet
 
@@ -219,7 +267,7 @@ That distinction decides what you need to rebuild:
 | What you changed | What to rebuild |
 |------------------|-----------------|
 | Dashboard UI (`mockserver-ui/`) or anything else server-side | The **server jar**. The plugin can stay on the released version |
-| Plugin code (`mockserver-jetbrains/src/`) | The **plugin**, via `./gradlew runIde` |
+| Plugin code (`mockserver-jetbrains/src/`) | The **plugin** — see [Running unreleased plugin code](#running-unreleased-plugin-code) |
 
 The dashboard is bundled into the netty jar at build time, so to point the plugin at unreleased
 UI work, build and run that jar:
