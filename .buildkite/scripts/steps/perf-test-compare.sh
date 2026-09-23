@@ -458,6 +458,55 @@ The run set \`serving_percore_attempted: true\` but its \`.serving_percore\` blo
   fi
 fi
 
+# --- 2d. serving multi-process PRESENCE assertion (item 18, client rig) -------
+# Mirror of the serving_percore presence gate (2c): serving_multiproc VALUES stay
+# notify-only, but PRESENCE is loud. `serving_multiproc_attempted:true` means the
+# producer tried to run the multi-process sweep; if `.serving_multiproc` then carries
+# NEITHER a measured point NOR a skip reason (or its ONLY skips are RIG FAILURES),
+# the whole profile failed wholesale (docker/probe error, k6 unreachable, a producer
+# crash) and would otherwise vanish as a green build, since compare is head-driven
+# and zero serving_multiproc metrics trip nothing. A run that legitimately measured
+# nothing still records WHY under .skipped (e.g. every N infeasible on a small box),
+# so "points + skipped both empty" (or "points empty with a failure skip") is the
+# unambiguous wholesale-failure signal. Runs AFTER the S3 persist so this never costs
+# the k6 result its baseline place. A run with no `serving_multiproc_attempted`
+# (profile disabled — the default — or an older producer) is exempt. MP_NOTE is BUILT
+# here and folded into EXTRA below (like PC_NOTE / CLU_NOTE), NOT echo'd — an echo
+# lands only in the raw job log, so a dark skip would read as a clean pass in the
+# annotation (the exact false green this note prevents).
+MP_NOTE=""
+if [ "$(jq -r '.serving_multiproc_attempted // false' "$RESULT")" = "true" ]; then
+  MP_POINTS="$(jq -r '(.serving_multiproc.points // []) | length' "$RESULT")"
+  MP_SKIPPED="$(jq -r '(.serving_multiproc.skipped // []) | length' "$RESULT")"
+  # Failure-typed skips (SUT never ready, no process produced points) are RIG
+  # FAILURES; infeasible-typed skips (N too big for the box) are expected. A run that
+  # measured NOTHING is only benign when every skip is infeasibility.
+  MP_FAIL_SKIPS="$(jq -r '[(.serving_multiproc.skipped // [])[] | select((.type // "") == "failure")] | length' "$RESULT")"
+  if [ "$MP_POINTS" = "0" ] && { [ "$MP_SKIPPED" = "0" ] || [ "$MP_FAIL_SKIPS" != "0" ]; }; then
+    MP_FAIL_DETAIL="$(jq -r '[(.serving_multiproc.skipped // [])[] | select((.type // "") == "failure") | "N="+(.procs|tostring)+" ("+.reason+")"] | join("; ")' "$RESULT")"
+    annotate "error" ":no_entry: **Serving multi-process profile FAILED to produce — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The run set \`serving_multiproc_attempted: true\` but its \`.serving_multiproc\` block measured NO process-count and its only skips (if any) are RIG FAILURES, not infeasibility${MP_FAIL_DETAIL:+: **${MP_FAIL_DETAIL}**}. That means the multi-process sweep (\`mockserver-performance-test/scripts/multi-process-sweep.sh\`, item 18 client rig) failed wholesale — a docker/probe error, an unreachable k6, or a producer crash — rather than measuring or DELIBERATELY skipping (infeasible) any process-count. Compare is head-driven, so a missing block would otherwise emit zero serving_multiproc metrics and pass GREEN with no signal — the false green this gate exists to stop. The run was still persisted to the baseline history above, so the k6 result is not lost. Notify-only serving_multiproc VALUES are unaffected — this gate is about PRESENCE, not regression."
+    exit 1
+  fi
+  # A sweep that measured points reports its process-count ladder, its scaling
+  # verdict and per-N limiter in the annotation so a reader sees WHERE the ceiling
+  # came from (and whether it scaled with N) without opening the artifact.
+  MP_MEASURED="$(jq -r '(.serving_multiproc.procs_measured // []) | join(",")' "$RESULT")"
+  MP_SCALES="$(jq -r '.serving_multiproc.scaling.scales_with_procs // "insufficient_points"' "$RESULT")"
+  MP_LIMITED="$(jq -r '[(.serving_multiproc.points // [])[] | "N="+(.procs|tostring)+":"+(.limited_by // "?")] | join(" ")' "$RESULT")"
+  MP_NOTE="
+
+:information_source: **Serving multi-process sweep** (item 18 client rig) — measured N=[${MP_MEASURED}], scales_with_procs=${MP_SCALES}. Per-N limiter: ${MP_LIMITED}. Aggregate healthy ceiling + scaling verdict are NOTIFY-ONLY."
+  if [ "$MP_SKIPPED" != "0" ]; then
+    MP_SKIP_LIST="$(jq -r '[.serving_multiproc.skipped[] | "N="+(.procs|tostring)+" ["+(.type // "?")+"] ("+.reason+")"] | join("; ")' "$RESULT")"
+    MP_NOTE="${MP_NOTE} Skipped: ${MP_SKIP_LIST}."
+    if [ "$MP_FAIL_SKIPS" != "0" ]; then
+      MP_NOTE="${MP_NOTE} :warning: ${MP_FAIL_SKIPS} of those are RIG FAILURES, not infeasibility — investigate."
+    fi
+  fi
+fi
+
 # --- 3. pull the last N PRIOR runs --------------------------------------------
 BASE_DIR="$WORK/baseline"; mkdir -p "$BASE_DIR"
 if [ -n "${PERF_BASELINE_DIR:-}" ]; then
@@ -780,6 +829,34 @@ def metrics:
       {name:($pc+".rps_per_core"),          value:.rps_per_core,          bkey:"serving_percore.*.rps_per_core"},
       {name:($pc+".rig_valid_peak_achieved_rps"), value:.rig_valid_peak_achieved_rps, bkey:"serving_percore.*.rig_valid_peak_achieved_rps"},
       {name:($pc+".healthy_ceiling_p50_ms"),value:.healthy_ceiling_p50_ms,bkey:"serving_percore.*.healthy_ceiling_p50_ms"} ) ),
+  # item 18 (client rig) — multi-process aggregate throughput vs process count. Unlike
+  # serving_percore (one point per pinned core-count), this emits TWO FLAT scalars with
+  # EXACT bkeys (like rig_valid_peak_achieved_rps / forward.error_rate, not a wildcard
+  # arm family), distilled from the per-N .serving_multiproc.points + .scaling verdict:
+  #   aggregate_healthy_ceiling_rps  the BEST client-sound aggregate ceiling the rig
+  #     reached across all measured N — the whole point of the multi-process rig (one
+  #     k6 process cannot saturate the widened client pool). Each per-N ceiling is
+  #     computed to the Finding-1 definition by REUSING lib/perf-website-figures.jq on the
+  #     AGGREGATE offered/achieved series, never a third copy of the rule. `max` of the
+  #     per-N numbers; [] (no client-sound rung) -> null -> dropped by $headmetrics.
+  #     dir DOWN, `hw` (a throughput figure, machine-dependent) -> full HW-matched baseline.
+  #   scales_with_procs  the scaling verdict coerced to 1/0 (true/false); the boolean
+  #     is coerced because a raw boolean head value trips the compare not-numeric GATING
+  #     path. A null/insufficient-points verdict -> null -> dropped. dir DOWN (1->0, i.e.
+  #     stopped scaling, is worse). NOT `hw`: like clustered_state.* it is a WITHIN-run
+  #     comparison (min-N vs max-N ceiling) that already cancels the environment.
+  # BOTH are NOT part of .behaviours (no k6 fingerprint) and NON-GATING (perf-budgets.json
+  # omits `gating`) — the day-one notify-only rule; the two bkeys below MUST exist in
+  # perf-budgets.json or the fail-closed missing-budget rule REDs the build. A disabled/
+  # failed profile leaves .serving_multiproc {} -> both values null -> zero metrics
+  # emitted (no missing-budget trip); the wholesale-failure case is caught by the
+  # serving_multiproc_attempted PRESENCE gate (2d above), not here.
+  ( {name:"serving_multiproc_aggregate_healthy_ceiling_rps",
+     value:([ (.serving_multiproc.points // [])[] | .aggregate_healthy_ceiling_rps | select(type == "number") ] | max),
+     bkey:"serving_multiproc_aggregate_healthy_ceiling_rps"},
+    {name:"serving_multiproc_scales_with_procs",
+     value:((.serving_multiproc.scaling.scales_with_procs) | if . == true then 1 elif . == false then 0 else null end),
+     bkey:"serving_multiproc_scales_with_procs"} ),
   # rig_valid_peak_achieved_rps: max achieved over the RIG-VALID rungs (the k6 client
   # had CPU headroom, dropped no iterations, low errors). It is a property of the RIG,
   # not the server: the rig-validity filter caps it at whichever rung the client stops
@@ -1132,7 +1209,7 @@ fi
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}"
+${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}${MP_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did

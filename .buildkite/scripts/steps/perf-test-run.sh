@@ -439,33 +439,21 @@ k6_core_count() {
   echo "$total"
 }
 
-# Expand a cpuset spec ("0-5" / "8,9" / "6") into a space-separated list of logical
-# CPU ids, so each can be mapped to the PHYSICAL core it actually sits on.
-expand_cpuset() {
-  local spec="$1" part a b i out="" _xparts
-  [ -z "$spec" ] && { echo ""; return; }
-  IFS=',' read -ra _xparts <<< "$spec"
-  for part in "${_xparts[@]}"; do
-    if [[ "$part" == *-* ]]; then
-      a="${part%%-*}"; b="${part##*-}"
-      for ((i=a; i<=b; i++)); do out="$out $i"; done
-    else
-      out="$out $part"
-    fi
-  done
-  echo "${out# }"
-}
-
-# Map a logical CPU id to a stable PHYSICAL core key ("<package>:<core>"). Two
-# hyperthread siblings share one key, which is the whole point: cpusets that look
-# disjoint in logical numbering can be the two threads of the same core.
-# PERF_SYSFS_CPU_ROOT exists so the guard itself can be tested against a SIMULATED
-# topology (see the self-test below); it defaults to the real sysfs path.
-phys_core_key() {
-  local cpu="$1" base="${PERF_SYSFS_CPU_ROOT:-/sys/devices/system/cpu}/cpu$1/topology"
-  [ -r "$base/core_id" ] || return 1
-  printf '%s:%s' "$(cat "$base/physical_package_id" 2>/dev/null || echo 0)" "$(cat "$base/core_id")"
-}
+# The physical-core disjointness proof (expand_cpuset / phys_core_key / the
+# generalised cpusets_physically_disjoint checker) now lives in a shared lib so the
+# multi-process client rig (mockserver-performance-test/scripts/multi-process-sweep.sh)
+# uses the SAME implementation and cannot silently reintroduce the "load generator
+# shares the server's physical cores" defect. Sourced (not re-implemented); the
+# assert_cpusets_physically_disjoint wrapper below still reads this run's three
+# cpuset globals so its call site is unchanged. Fail closed if the lib is missing —
+# an unprovable benchmark is the thing this guard exists to stop.
+if [ -r "$SCRIPT_DIR/lib/perf-cpu-topology.sh" ]; then
+  # shellcheck source=lib/perf-cpu-topology.sh
+  . "$SCRIPT_DIR/lib/perf-cpu-topology.sh"
+else
+  echo ":x: CPU-topology guard lib not found at $SCRIPT_DIR/lib/perf-cpu-topology.sh — refusing to run without the physical-core disjointness proof" >&2
+  exit 1
+fi
 
 # THE GUARD. The cpusets below are chosen to be disjoint — but "disjoint" has to
 # mean disjoint in PHYSICAL cores, and for a long time it did not.
@@ -482,64 +470,15 @@ phys_core_key() {
 # counts LOGICAL cpus — the one number that cannot detect this. So the check now
 # resolves real topology and fails the run rather than quietly producing a figure
 # that means something other than it claims.
+# Thin wrapper preserving this run's call site (assert_cpusets_physically_disjoint
+# || exit 1 below): it hands this run's three cpuset globals to the shared,
+# generalised checker in lib/perf-cpu-topology.sh. The proof itself — /sys topology
+# resolution, CI fail-closed vs off-CI warn, the reversed-range-is-fatal rule, and
+# the bash-3.2-safe seen-cores table (no `local -A`) — lives ONCE in that lib and is
+# shared with the multi-process client rig, so the two cannot drift. An unpinned
+# global is passed through as an empty spec, which the checker skips.
 assert_cpusets_physically_disjoint() {
-  # `seen` is a newline-separated "<core key> <role>" table rather than an
-  # associative array: `local -A` needs bash 4, and macOS still ships bash 3.2, so
-  # the array form dies with a syntax error instead of running the check — which
-  # is a guard that fails for the wrong reason, the exact failure mode this whole
-  # function exists to prevent. (Caught by the self-test; it reported a FAIL on the
-  # overlapping topology for the syntax error, not for the overlap.)
-  local seen="" role spec cpu key dupe="" count=0 prev
-  for role in server upstream k6; do
-    case "$role" in
-      server)   spec="$SERVER_CPUS" ;;
-      upstream) spec="$UPSTREAM_CPUS" ;;
-      k6)       spec="$K6_CPUS" ;;
-    esac
-    [ -z "$spec" ] && continue
-    # A non-empty spec that expands to NOTHING would skip this role's check
-    # entirely and report the remaining roles as disjoint — a guard passing
-    # because it examined nothing, which is the failure it exists to catch. A
-    # reversed range ("13-8") does exactly that, so treat any such spec as fatal
-    # rather than letting it quietly narrow what is verified.
-    local _expanded; _expanded="$(expand_cpuset "$spec")"
-    if [ -z "$_expanded" ]; then
-      echo "^^^ +++"
-      echo ":x: the $role cpuset '$spec' expands to no cpus (a reversed or malformed range?) — refusing to verify core isolation against an empty set" >&2
-      return 1
-    fi
-    for cpu in $_expanded; do
-      if ! key="$(phys_core_key "$cpu")"; then
-        # Topology is unreadable (no /sys — e.g. a local macOS run). Off-CI that is
-        # a limitation, not a fault; in CI it means we cannot prove the numbers are
-        # honest, and an unprovable benchmark is the thing this guard exists to stop.
-        if [ "${BUILDKITE:-}" = "true" ]; then
-          echo "^^^ +++"
-          echo ":x: cannot read CPU topology for cpu${cpu}; refusing to produce benchmark figures that cannot be shown to be contention-free" >&2
-          return 1
-        fi
-        echo "--- WARNING: CPU topology unreadable — cannot verify the cpusets are physically disjoint (expected off-CI)"
-        return 0
-      fi
-      prev="$(printf '%s\n' "$seen" | awk -v k="$key" '$1==k {print $2; exit}')"
-      if [ -n "$prev" ]; then
-        dupe="$dupe\n    physical core $key is used by BOTH $prev and $role (via cpu$cpu)"
-      else
-        seen="$seen$key $role"$'\n'
-        count=$((count + 1))
-      fi
-    done
-  done
-  if [ -n "$dupe" ]; then
-    echo "^^^ +++"
-    echo ":x: the server, upstream and k6 cpusets OVERLAP on physical cores — the load generator would contend with the system under test, so any throughput figure from this run would measure the two of them fighting, not the server:" >&2
-    printf '%b\n' "$dupe" >&2
-    echo "    server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS on $(nproc 2>/dev/null || echo '?') logical cpus" >&2
-    echo "    Fix the cpusets (PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS) or use a box with more physical cores." >&2
-    return 1
-  fi
-  echo "--- verified: server / upstream / k6 occupy ${count} distinct physical cores, none shared"
-  return 0
+  cpusets_physically_disjoint server "$SERVER_CPUS" upstream "$UPSTREAM_CPUS" k6 "$K6_CPUS"
 }
 
 # --- core pinning --------------------------------------------------------------
@@ -2632,6 +2571,53 @@ if [ "${PERF_SERVING_PERCORE:-false}" = "true" ]; then
   fi
 fi
 
+# --- item 18 (client rig): multi-process aggregate throughput vs process count -
+# The single-process serving sweep (serving_percore above, and the main .sweep) is
+# CLIENT-LIMITED: one k6 process serialises internally (arrival-rate executor +
+# metrics pipeline + Go GC) and cannot saturate the widened client core pool, so
+# its clean ceiling is a property of the k6 RIG, not the server. This profile drives
+# the SAME offered-rate ladder from N INDEPENDENT k6 processes pinned to DISJOINT
+# cores and reports the AGGREGATE client-sound ceiling per process-count, plus a
+# scaling verdict that discriminates a per-process CLIENT limit (aggregate ceiling
+# rises with N) from a SHARED-PATH / server limit (ceiling flat vs N). It is the
+# instrument the programme owes for "a client rig that can saturate the server".
+# DEFAULT OFF (opt-in): like serving_percore it spins up and tears down its OWN
+# pinned SUT(s) and several k6 processes (many extra container lifecycles), so it is
+# scheduled DELIBERATELY (the plan's Tier-3 classification), enabled by setting
+# PERF_SERVING_MULTIPROC=true on a manual/scheduled build, NOT added to every daily
+# regression run. Every serving_multiproc.* metric is NOTIFY-ONLY (perf-budgets.json
+# omits `gating`). Records INTENT (`serving_multiproc_attempted`) separately from
+# success so compare can tell "attempted and produced no points" (RED) apart from
+# "profile disabled" (silent) — the same two-axis split serving_percore uses.
+#
+# PINNING NOTE: this standalone script does its OWN feasibility check and disjoint
+# cpuset assignment (server 0..S-1, each client block above it); it does NOT go
+# through, and does NOT use, the main run's SERVER_CPUS/K6_CPUS or the
+# assert_cpusets_physically_disjoint guard above (which governs only the main SUT vs
+# k6). It pins by LOGICAL cpu id and its feasibility counts LOGICAL cpus, so unlike
+# the main guard it does not prove the client blocks land on physical cores disjoint
+# from the SUT's — see the header of multi-process-sweep.sh and the perf-budgets.json
+# _comment_serving_multiproc block. The client-sound filter still excludes any rung
+# where a client process reached its CPU pin, so a client-CPU-bound rung is never
+# reported as a server figure.
+SERVING_MULTIPROC_JSON='{}'
+SERVING_MULTIPROC_ATTEMPTED=false
+if [ "${PERF_SERVING_MULTIPROC:-false}" = "true" ]; then
+  SERVING_MULTIPROC_ATTEMPTED=true
+  echo "--- item 18 serving multi-process (opt-in; PERF_SERVING_MULTIPROC=true)"
+  # NOT an add_check on failure by itself: the presence gate lives in compare
+  # (serving_multiproc_attempted + a non-empty points/skipped set), matching the
+  # serving_percore / laptop presence gates.
+  if MOCKSERVER_IMAGE="$MOCKSERVER_IMAGE" PERF_MULTI_REPO_ROOT="$REPO_ROOT" \
+       bash "$REPO_ROOT/mockserver-performance-test/scripts/multi-process-sweep.sh" "$OUT_DIR/serving-multiproc.json"; then
+    SERVING_MULTIPROC_JSON="$(cat "$OUT_DIR/serving-multiproc.json" 2>/dev/null || echo '{}')"
+    jq -e . >/dev/null 2>&1 <<<"$SERVING_MULTIPROC_JSON" || SERVING_MULTIPROC_JSON='{}'
+    echo "--- serving_multiproc: points=$(jq -r '(.points|length)//0' <<<"$SERVING_MULTIPROC_JSON") procs_measured=$(jq -rc '.procs_measured//"?"' <<<"$SERVING_MULTIPROC_JSON") scales_with_procs=$(jq -r '.scaling.scales_with_procs//"?"' <<<"$SERVING_MULTIPROC_JSON") skipped=$(jq -r '(.skipped|length)//0' <<<"$SERVING_MULTIPROC_JSON")"
+  else
+    echo "WARNING: serving multi-process profile failed — result carries no serving_multiproc points this run (notify-only)" >&2
+  fi
+fi
+
 # --- assemble result JSON -----------------------------------------------------
 # .commit is the ATTRIBUTED commit resolved in the provenance block above — the SUT
 # image's own revision when its label is a well-formed SHA, else the harness commit
@@ -2806,6 +2792,8 @@ jq -n \
   --argjson laptop_parallel "$LAPTOP_PARALLEL_JSON" \
   --argjson serving_percore "$SERVING_PERCORE_JSON" \
   --argjson serving_percore_attempted "$SERVING_PERCORE_ATTEMPTED" \
+  --argjson serving_multiproc "$SERVING_MULTIPROC_JSON" \
+  --argjson serving_multiproc_attempted "$SERVING_MULTIPROC_ATTEMPTED" \
   --argjson info_log_level_arm "$INFO_ARM_JSON" \
   --argjson info_log_level_arm_attempted "$INFO_ARM_ATTEMPTED" \
   --arg cpu_start "$CPU_START" --arg cpu_end "$CPU_END" --arg cpu_peak "$CPU_PEAK" --arg cpu_ratio "$CPU_RATIO" \
@@ -2942,6 +2930,14 @@ jq -n \
     # (attempted but no points) apart from a disabled profile — the laptop split.
     serving_percore: $serving_percore,
     serving_percore_attempted: $serving_percore_attempted,
+    # item 18 (client rig) — multi-process aggregate throughput vs process count.
+    # `{}` when the profile was disabled or its measurement failed; compare reads
+    # .serving_multiproc.points / .scaling head-driven, so an empty object emits zero
+    # serving_multiproc.* metrics (no missing-budget trip). serving_multiproc_attempted
+    # lets compare RED a wholesale failure (attempted but no points and no infeasible
+    # skip) apart from a disabled profile — the serving_percore / laptop split.
+    serving_multiproc: $serving_multiproc,
+    serving_multiproc_attempted: $serving_multiproc_attempted,
     # Plan open question 5 — the INFO-log-level PUBLICATION arm. The two PUBLISHED
     # figure families (knee curve + per-behaviour percentiles) re-measured against a
     # SUT at the shipped-default log level, so the site can show an honest
@@ -2970,6 +2966,12 @@ cp "$OUT_DIR/sweep.json" "$REPO_ROOT/perf-sweep.json" 2>/dev/null || echo '{}' >
 if [ -f "$OUT_DIR/serving-percore.json" ]; then
   cp "$OUT_DIR/serving-percore.json" "$REPO_ROOT/serving-percore.json" 2>/dev/null || true
 fi
+# Standalone multi-process sweep artifact (also embedded under .serving_multiproc).
+# Emitted only when the profile ran; a dated trend / the client-rig chart read this
+# file, mirroring perf-sweep.json / serving-percore.json.
+if [ -f "$OUT_DIR/serving-multiproc.json" ]; then
+  cp "$OUT_DIR/serving-multiproc.json" "$REPO_ROOT/serving-multiproc.json" 2>/dev/null || true
+fi
 
 # Stop the diagnostics streams so their files are complete, then upload the JVM-internals bundle on
 # the SUCCESS path too (the failure path already uploaded it from capture_sut_diagnostics). A healthy
@@ -2985,6 +2987,7 @@ if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact upload "perf-sweep.json" || true
   upload_diag_bundle
   [ -f "$REPO_ROOT/serving-percore.json" ] && buildkite-agent artifact upload "serving-percore.json" || true
+  [ -f "$REPO_ROOT/serving-multiproc.json" ] && buildkite-agent artifact upload "serving-multiproc.json" || true
   # Record the HARNESS commit this run executed against — deliberately NOT the
   # attributed (image-revision) `$COMMIT`. perf-test-guard.sh reads this (via
   # last_perf_run_commit) and compares it to the current git HEAD to decide "has

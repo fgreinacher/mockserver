@@ -93,6 +93,24 @@ REPO_ROOT="${PERF_MULTI_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 # CI-tree layout.
 FIGURES_JQ="${PERF_MULTI_FIGURES_JQ:-$REPO_ROOT/.buildkite/scripts/steps/lib/perf-website-figures.jq}"
 
+# The SAME physical-core disjointness proof the main run uses (perf-test-run.sh's
+# assert_cpusets_physically_disjoint), factored into a shared lib. This rig pins its
+# SUT and N client blocks by LOGICAL cpu id; at higher process counts a client block
+# can cross onto the hyperthread SIBLINGS of the server's cores, silently putting the
+# load generator inside the SUT and reporting the result as a server ceiling — the
+# exact defect that justified the perf-box resize. So before launching each N we PROVE
+# the server and client cpusets occupy distinct PHYSICAL cores (resolved from /sys, not
+# assumed from the enumeration) and FAIL THE RUN on overlap. Reused, never duplicated.
+# Fail closed if the lib is absent — a rig without the proof must not run.
+TOPOLOGY_LIB="${PERF_MULTI_TOPOLOGY_LIB:-$REPO_ROOT/.buildkite/scripts/steps/lib/perf-cpu-topology.sh}"
+if [ -r "$TOPOLOGY_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$TOPOLOGY_LIB"
+else
+  echo ":x: CPU-topology guard lib not found at $TOPOLOGY_LIB — refusing to run a multi-process sweep without the physical-core disjointness proof" >&2
+  exit 1
+fi
+
 OUT_FILE="${1:-/dev/stdout}"
 
 # --- inputs (all overridable) --------------------------------------------------
@@ -300,6 +318,25 @@ for N in "${PROCS_ARR[@]}"; do
   fi
 
   echo "+++ N=$N  server_cpus=${SCPU:-<external>}  per_process_rates=$PP_RATES  client_cores_each=$CLIENT_CORES_EACH" >&2
+
+  # --- PROVE the cpusets are physically disjoint BEFORE spinning containers -----
+  # The feasibility check above only proved the blocks fit in LOGICAL cpus; it says
+  # nothing about hyperthread siblings. Here we hand the SUT (when launched) and every
+  # client block to the shared /sys-resolving checker: if a client block lands on a
+  # SIBLING of a server core, the load generator would contend with the SUT and the
+  # throughput would measure the two fighting, not the server — so we FAIL THE RUN
+  # rather than skip N (a silent skip would let the ladder look complete while missing
+  # the very rungs the resize was meant to make measurable). Off-CI (no /sys) the
+  # checker WARNS and proceeds; in CI (BUILDKITE=true) an unreadable topology is fatal.
+  DISJOINT_PAIRS=()
+  [ -z "$TARGET_URL" ] && DISJOINT_PAIRS+=(server "$SCPU")
+  for ((i=0;i<N;i++)); do
+    DISJOINT_PAIRS+=("client$i" "$(cpuset_range $(( CLIENT_BASE + i * CLIENT_CORES_EACH )) "$CLIENT_CORES_EACH")")
+  done
+  if ! cpusets_physically_disjoint "${DISJOINT_PAIRS[@]}"; then
+    echo ":x: N=$N: the server and client cpusets are NOT physically disjoint (see above) — refusing to report a load generator contending with the server as a server figure" >&2
+    exit 1
+  fi
 
   # --- start (or confirm) the SUT ----------------------------------------------
   SUT_NAME_FOR_STATS="$SUT_CONTAINER"
