@@ -1201,7 +1201,7 @@ a patch every day. A stale page then becomes a waiting patch rather than invisib
 **fixed** `regression.js` only, never the pre-fix rig-artefact numbers. **Publish
 `healthy_ceiling_rps` with its latency, not `rig_valid_peak_achieved_rps` alone** — see Finding 1.
 
-#### 20. HTTP/3 and QUIC — **research**
+#### 20. HTTP/3 and QUIC — **[20a landed `e219041ac`; 20b/20c remain research]**
 
 - **20a (do this):** a JMH benchmark of the HTTP/3 request bridge, compared **in the same
   run** against the HTTP/2 equivalent. In-process, deterministic, no driver needed, and it
