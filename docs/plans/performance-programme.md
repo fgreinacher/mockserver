@@ -3322,6 +3322,42 @@ first time this programme has seen the knee region with neither side CPU-bound. 
 to investigate next, and it is a *different* question from the published 36,000 figure, which
 this rig still does not reach.
 
+**CONFIRMED 2026-09-23, build 412 — the flat-pool experiment removed the cliff entirely, and the
+rig nearly doubled its reach.** Same ladder, same cores, same commit; the only change is
+`PERF_MULTI_PRE_VUS=128 PERF_MULTI_MAX_VUS=128`, which caps connections at 256 (N=2) / 512 (N=4)
+instead of letting the per-rung rule reach 1,920.
+
+| aggregate offered | 411 achieved (per-rung pool) | 412 achieved (flat 128) | 411 p50 | 412 p50 |
+|---:|---:|---:|---:|---:|
+| 16,000 | 13,088 | 13,834 | 0.10 ms | 0.093 ms |
+| 24,000 | **2,933** | **19,900** | **965 ms** | **0.10 ms** |
+| 32,000 | **148** | **23,845** | **1,090 ms** | **0.105 ms** |
+
+At N=4 the 32,000 rung went from **147 to 26,820 rps** - a factor of **182** - with p50 falling
+from 2,947 ms to 0.102 ms. Latency stayed flat at ~0.1 ms across the WHOLE ladder, which is what
+rules out a server-side knee in this range: a real capacity limit bends latency, and nothing bent.
+
+**Three consequences.**
+
+1. **The hypothesis is settled.** The collapse was the harness's own connection reservoir crossing
+   `SO_BACKLOG`, exactly as predicted. Nothing about it was MockServer's.
+2. **`scales_with_procs` became TRUE**, for the first time. N=4 beats N=2 at every high rung
+   (26,820 vs 23,845 at 32,000), so the multi-process discriminator finally discriminates instead
+   of reporting a threshold straddle. The verdict was never wrong in itself - it had nothing
+   separable to measure while the pool rule made total concurrency a function of aggregate rate.
+3. **The server is STILL not the limit.** At peak the SUT drew **183.3% of its 400% pin** - under
+   half - with p50 at 0.102 ms and error rate 0.0099. The ladder simply stops at 32,000. The
+   published ~36,000 knee is now plausibly in reach of this rig for the first time, which is the
+   obvious next run: extend to 40,000/48,000/64,000 with the flat pool and watch for the first
+   rung where latency actually bends rather than where the rig runs out.
+
+**The per-rung rule should not simply be deleted**, and the flat override is not free: `sweep.js`
+documents that one flat pool cannot serve the 500-64,000 CI ladder without either storming the low
+rungs or client-capping the high ones. 128 VUs worked here because latency stayed at ~0.1 ms
+(Little's law leaves enormous headroom); it would NOT survive a genuinely slow rung. The fix for
+the CI ladder is to bound the pool by the accept backlog as well as by rate - something like
+`min(ceil(rate * 0.08), backlog_budget)` - rather than to pick one constant.
+
 **DIAGNOSED 2026-09-23 — the cliff is the RIG's, and the mechanism is the harness's own VU-pool
 rule colliding with the SUT's accept backlog.** Not a MockServer serving limit, and a different
 subject from the published ~36,000 knee.
