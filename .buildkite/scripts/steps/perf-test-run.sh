@@ -1255,6 +1255,8 @@ run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_hos
     ${K6_SWEEP_PRE_VUS:+-e K6_SWEEP_PRE_VUS="$K6_SWEEP_PRE_VUS"} \
     ${K6_SWEEP_MAX_VUS:+-e K6_SWEEP_MAX_VUS="$K6_SWEEP_MAX_VUS"} \
     ${K6_SWEEP_VUS_PER_KRPS:+-e K6_SWEEP_VUS_PER_KRPS="$K6_SWEEP_VUS_PER_KRPS"} \
+    ${K6_SWEEP_VU_CEILING:+-e K6_SWEEP_VU_CEILING="$K6_SWEEP_VU_CEILING"} \
+    ${K6_SWEEP_VU_FLOOR:+-e K6_SWEEP_VU_FLOOR="$K6_SWEEP_VU_FLOOR"} \
     "$K6_IMAGE" run /k6/sweep.js
   kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true; SWEEP_SAMPLER_PID=""
 }
