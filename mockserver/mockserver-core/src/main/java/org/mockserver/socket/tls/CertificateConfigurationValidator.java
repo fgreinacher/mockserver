@@ -5,7 +5,12 @@ import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.slf4j.event.Level;
 
+import java.nio.charset.StandardCharsets;
+import java.security.InvalidKeyException;
+import java.security.NoSuchAlgorithmException;
 import java.security.PrivateKey;
+import java.security.Signature;
+import java.security.SignatureException;
 import java.security.cert.CertificateExpiredException;
 import java.security.cert.CertificateNotYetValidException;
 import java.security.cert.X509Certificate;
@@ -112,45 +117,76 @@ public class CertificateConfigurationValidator {
     }
 
     private void validateKeyMatchesCertificate(PrivateKey privateKey, X509Certificate certificate, String privateKeyPath, String x509CertificatePath) {
-        String sigAlgorithm = certificate.getSigAlgName();
-        try {
-            java.security.Signature signature = java.security.Signature.getInstance(sigAlgorithm);
-            signature.initSign(privateKey);
-            byte[] challenge = "mockserver-validation-challenge".getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            signature.update(challenge);
-            byte[] signed = signature.sign();
+        // Derive the challenge signature algorithm from the private KEY, not from
+        // certificate.getSigAlgName(): the latter is the algorithm the issuing CA used to sign the
+        // certificate and says nothing about the subject key's own type. An RSA certificate issued
+        // by an EC CA reports SHA256withECDSA, which cannot be used with the RSA private key.
+        String keyAlgorithm = privateKey.getAlgorithm();
+        String sigAlgorithm = signatureAlgorithmForKey(keyAlgorithm);
+        if (sigAlgorithm == null) {
+            throw new RuntimeException(
+                "The private key at '" + privateKeyPath + "' uses the unsupported key algorithm '" + keyAlgorithm + "'."
+                    + " MockServer can validate RSA, EC, DSA and Ed25519/Ed448 private keys."
+            );
+        }
 
-            java.security.Signature verifier = java.security.Signature.getInstance(sigAlgorithm);
+        byte[] challenge = "mockserver-validation-challenge".getBytes(StandardCharsets.UTF_8);
+        byte[] signed;
+        try {
+            Signature signature = Signature.getInstance(sigAlgorithm);
+            signature.initSign(privateKey);
+            signature.update(challenge);
+            signed = signature.sign();
+        } catch (NoSuchAlgorithmException | InvalidKeyException | SignatureException e) {
+            throw new RuntimeException(
+                "The private key at '" + privateKeyPath + "' (algorithm '" + keyAlgorithm + "') could not be used with the signature algorithm '" + sigAlgorithm + "'"
+                    + " (the certificate at '" + x509CertificatePath + "' reports signature algorithm '" + certificate.getSigAlgName() + "')."
+                    + " This is not a mismatch between the key and the certificate - usually the running JVM's security providers cannot apply that algorithm, though a malformed key file would also land here.",
+                e
+            );
+        }
+
+        try {
+            Signature verifier = Signature.getInstance(sigAlgorithm);
             verifier.initVerify(certificate.getPublicKey());
             verifier.update(challenge);
             if (!verifier.verify(signed)) {
-                throw new RuntimeException(
-                    "The private key at '" + privateKeyPath + "' does not match the certificate at '" + x509CertificatePath + "'."
-                        + " The public key fingerprints differ."
-                        + " Regenerate the key pair or check that the files correspond to each other."
-                );
+                throw keyDoesNotMatchCertificate(privateKeyPath, x509CertificatePath, null);
             }
-        } catch (RuntimeException e) {
-            throw e;
-        } catch (java.security.NoSuchAlgorithmException e) {
-            throw new RuntimeException(
-                "Unsupported certificate signature algorithm '" + sigAlgorithm + "' in certificate at '" + x509CertificatePath + "'.",
-                e
-            );
-        } catch (java.security.InvalidKeyException e) {
-            throw new RuntimeException(
-                "The private key at '" + privateKeyPath + "' does not match the certificate at '" + x509CertificatePath + "'."
-                    + " The public key fingerprints differ."
-                    + " Regenerate the key pair or check that the files correspond to each other.",
-                e
-            );
-        } catch (Exception e) {
-            throw new RuntimeException(
-                "The private key at '" + privateKeyPath + "' does not match the certificate at '" + x509CertificatePath + "'."
-                    + " The public key fingerprints differ."
-                    + " Regenerate the key pair or check that the files correspond to each other.",
-                e
-            );
+        } catch (NoSuchAlgorithmException | InvalidKeyException | SignatureException e) {
+            // A failure verifying against the certificate's public key means the key and certificate
+            // do not correspond (typically different key types, e.g. an RSA key with an EC certificate).
+            throw keyDoesNotMatchCertificate(privateKeyPath, x509CertificatePath, e);
+        }
+    }
+
+    private static RuntimeException keyDoesNotMatchCertificate(String privateKeyPath, String x509CertificatePath, Exception cause) {
+        String message = "The private key at '" + privateKeyPath + "' does not match the certificate at '" + x509CertificatePath + "'."
+            + " The public key fingerprints differ."
+            + " Regenerate the key pair or check that the files correspond to each other.";
+        return cause == null ? new RuntimeException(message) : new RuntimeException(message, cause);
+    }
+
+    private static String signatureAlgorithmForKey(String keyAlgorithm) {
+        if (keyAlgorithm == null) {
+            return null;
+        }
+        switch (keyAlgorithm.toUpperCase(java.util.Locale.ROOT)) {
+            case "RSA":
+                return "SHA256withRSA";
+            case "EC":
+            case "ECDSA":
+                return "SHA256withECDSA";
+            case "DSA":
+                return "SHA256withDSA";
+            case "ED25519":
+                return "Ed25519";
+            case "ED448":
+                return "Ed448";
+            case "EDDSA":
+                return "EdDSA";
+            default:
+                return null;
         }
     }
 

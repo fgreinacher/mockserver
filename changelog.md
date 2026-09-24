@@ -371,6 +371,20 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **A valid custom key and certificate could stop the server from starting when the certificate was
+  issued by a CA using a different key algorithm — and the error told you to throw the good key
+  away.** When you configure `privateKeyPath` and `x509CertificatePath`, MockServer checks the key
+  matches the certificate at startup. That check chose its algorithm from the certificate's own
+  signature — which reflects the *issuing CA's* key type, not the certificate subject's — so an RSA
+  certificate signed by an EC certificate authority (a normal, standards-compliant setup) was tested
+  with an EC algorithm against an RSA key and threw `InvalidKeyException`, refusing to start. Worse,
+  the resulting message read *"The private key does not match the certificate ... Regenerate the key
+  pair"*, a false diagnosis: the key and certificate matched perfectly. The check now derives its
+  algorithm from the private key itself, so RSA, EC, DSA and Ed25519/Ed448 keys are all validated
+  correctly regardless of which algorithm the CA used to sign the certificate. The error messages are
+  also now distinct: a genuine key/certificate mismatch still says "does not match / regenerate", an
+  algorithm the JVM cannot apply says so without telling you to regenerate anything, and an
+  unsupported key type is named. Reported in #2728 against 7.5.0.
 - **`jvm_memory_allocated_bytes` was missing from `/mockserver/metrics` on the Docker images and
   standalone jar — it now appears.** To avoid classpath clashes, the shaded distribution repackages
   the third-party libraries it bundles under a private prefix. That repackaging also rewrote
