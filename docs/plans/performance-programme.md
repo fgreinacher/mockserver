@@ -3354,6 +3354,40 @@ first time this programme has seen the knee region with neither side CPU-bound. 
 to investigate next, and it is a *different* question from the published 36,000 figure, which
 this rig still does not reach.
 
+**BUILD 414 — the finer ladder, and the rig is now provably squeezed between two walls.**
+`K6_SWEEP_VUS_PER_KRPS=20` with rungs 8,000-48,000, so every pool sits under the 1024 backlog.
+
+| offered | achieved | ratio | p50 |
+|---:|---:|---:|---:|
+| 16,000 | 15,343 | 0.959 | 0.103 ms |
+| 32,000 | 29,762 | 0.930 | 0.106 ms |
+| 40,000 | 36,522 | 0.913 | 0.120 ms |
+| 44,000 | **39,552** | 0.899 | **0.146 ms** |
+| 48,000 | 41,875 | 0.872 | **0.969 ms** |
+
+**The server sustains 39,552 rps at a p50 of 0.146 ms** - sub-millisecond, and while the client
+was UNDER-offering, so the server was never pushed to its own limit. Latency bends at the 48,000
+rung. Both figures sit well above the published 32,000 healthy ceiling, and this is the second
+independent line of evidence for that: build 413 reached 36,473 at 0.160 ms on a FOUR-core SUT.
+
+**No metric certifies it, so the published figure does not move.** `rig_valid_peak_achieved_rps`
+came back **0** - every rung excluded, all for the same reason: `vus_active_max >= pool`, the VU
+pool exhausted, client-limited. The keep ratio never reaches 0.95 above 16,000 either.
+
+**The binding constraint is `SO_BACKLOG` = 1024, and that is the finding.** The rig has two walls
+and no gap between them:
+
+| VUs per krps | connections at 32,000 | outcome |
+|---:|---:|---|
+| 80 (default) | 2,048 | storms past the backlog, p50 collapses to ~20 ms |
+| 20 | 640 | no storm, but the pool exhausts and the client under-offers |
+
+There is no pool size that both offers enough and stays under 1024, because offering ~40,000 rps
+needs more concurrency than the accept queue will hold. Twiddling the knob further cannot fix it.
+**The next change is to raise the accept backlog** - `SO_BACKLOG` in `MockServer.java:197` and the
+container's `somaxconn` - and only then re-run the ladder. That is a server-side change with its
+own review, not a rig tweak, which is why it stops here rather than being guessed at.
+
 **EXTENDED TO 64,000 — build 413, 2026-09-23. Latency finally BENDS, and the bend brackets the
 published figure. But this is not a healthy-ceiling measurement, and the harness says so.**
 
