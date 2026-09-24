@@ -357,6 +357,12 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **MockServer no longer allocates a full MCP tool registry per connection.** With MCP enabled (the
+  default), every incoming connection used to build its own copy of the Model Context Protocol tool
+  registry — dozens of tools each carrying a JSON schema — and hold it for the life of the
+  connection. Under heavy concurrent load this added up to hundreds of megabytes of avoidable memory
+  and could exhaust the heap. MockServer now reuses one MCP handler across all connections instead of
+  building one per connection, so memory no longer grows with the number of open connections.
 - **The dashboard's live panels are readable on a busy server.** Log Messages, Received Requests,
   Proxied Requests, Active Expectations and the Traffic inspector were effectively unusable under
   load: opening an entry or scrolling was undone the moment anything new arrived. Three things caused
