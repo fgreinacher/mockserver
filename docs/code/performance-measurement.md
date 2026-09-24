@@ -105,6 +105,20 @@ The healthy operating ceiling is the highest rung where `achieved_rps` is within
 `achieved_rps` (top of the overload curve) is a different, higher number; do not publish one
 without the other.
 
+**Rig validity and the `vus_active_p95` criterion.** A rung is rig-valid when the k6 client had
+CPU headroom, low errors, and the VU pool was not exhausted. The original check keyed off
+`vus_active_max`, which is right-censored: it cannot exceed the pool size, so a single stall
+pileup that temporarily drains the pool makes the rung read as client-limited even when the pool
+sat at 1% utilisation for 95% of the measurement. The criterion is `vus_active_p95 < pool`
+(`bac8a96b7`): low rungs are certified correctly; rungs where the pool is genuinely under pressure
+are still excluded. Reading `vus_active_max == pool` as "client-limited" when `vus_active_p95` is
+a small fraction of the pool is a server property being reported as a client limitation.
+
+**Ladder granularity.** A 2,000-rps gap between rungs cannot reliably locate a knee. In build
+420 (2026-09-24) the 38,000-rps rung dipped just below the ratio floor (0.949 vs 0.950); without
+finer rungs at 39,000 and 41,000, the reported healthy ceiling would have been ~36,000 rather than
+41,000. When placing rungs near a suspected knee, use gaps of 1,000 rps or smaller.
+
 ### `forward.js` — forward connection-pool guard
 
 Guards `mockserver.forwardConnectionPoolEnabled`. The guard runs against a dedicated upstream
@@ -251,3 +265,11 @@ Before publishing any figure:
 - Never publish a throughput ceiling without the latency measured at it. The peak `achieved_rps`
   from `sweep.js` is the top of an overload curve. The healthy operating ceiling is a lower
   number; publish both, labelled distinctly.
+
+**Current certified knee (build 420, 2026-09-24, `3dbed98ae`, `c5.12xlarge`, 6 physical cores
+isolated, G1 with a 1.2 GB heap, JDK 17.0.20.1+1, `MOCKSERVER_LOG_LEVEL=ERROR`, `MOCKSERVER_DISABLE_SYSTEM_OUT=true`):**
+`healthy_ceiling_rps` **41,000** (achieved 39,033, p50 0.196 ms); `peak_achieved_rps` **43,671**
+(at 48,000 offered, server in overload). Previous published figures for reference (build 64,
+2026-06-24, pre-8.0.0, instance type not recorded): 32,000 healthy ceiling at p50 0.194 ms,
+36,323 peak — both predating the 8.0.0 HTTP/2 multiplex change, and taken before the 2026-09-22
+hardware change, so the load generator was sharing the server's physical cores.
