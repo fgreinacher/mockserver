@@ -119,6 +119,27 @@ public interface KeyValueStore<V> {
     }
 
     /**
+     * Resize a bounded store's byte budget (total estimated retained heap), evicting the eldest entries
+     * immediately if the running total exceeds the new budget. {@code <= 0} disables the byte bound.
+     * Called when {@code maxExpectationsSizeInBytes} changes via {@code PUT /mockserver/configuration}.
+     * Default is a no-op for stores whose eviction is configured on the implementation itself.
+     *
+     * @param maxBytes the new byte budget
+     */
+    default void setMaxBytes(long maxBytes) {
+        // no-op — unbounded by bytes, or bounded by the underlying implementation's own configuration
+    }
+
+    /**
+     * Number of entries this store has evicted specifically to stay within its BYTE budget (as opposed
+     * to the element-count bound), or {@code 0} for stores that do not enforce a byte budget here. Lets
+     * a caller announce byte-driven eviction once per server.
+     */
+    default long getByteEvictedCount() {
+        return 0L;
+    }
+
+    /**
      * Adds an invalidation listener that is notified on mutations.
      *
      * @param listener the listener

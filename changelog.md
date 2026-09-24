@@ -125,6 +125,17 @@ changes except smaller downloads.
 
 ### Added
 
+- **An optional memory budget for stored expectations** (`mockserver.maxExpectationsSizeInBytes`,
+  default **0 = off**). The expectation store is normally bounded only by a count (`maxExpectations`),
+  which is blind to how large each expectation is: a JSON request matcher, for example, is parsed into a
+  node tree many times the size of the raw JSON, so a few thousand large expectations can retain far more
+  heap than the count suggests. Turn this on to add a hard ceiling on the memory expectations may hold —
+  when it is reached the oldest, lowest-priority expectations are evicted (the same way `maxExpectations`
+  already evicts on count) and the eviction is announced once in the log. It is **off by default and
+  opt-in**: expectations are state you configured, not observational data, so MockServer will not evict
+  your mocks unless you ask it to. A reasonable starting point, if you register many large expectations,
+  is about an eighth of the JVM heap. When set, whichever of `maxExpectations` or this is reached first
+  evicts; set it back to 0 to disable.
 - **The TCP accept queue is now configurable** (`mockserver.soBacklog`, default **1024** —
   unchanged, but previously hard-coded so no property could reach it). This is the queue
   the kernel parks completed handshakes in while MockServer accepts them, and it only matters when

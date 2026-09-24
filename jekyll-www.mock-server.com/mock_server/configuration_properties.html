@@ -91,6 +91,12 @@ mockserver.enableCORSForAllResponses=false</code></pre>
             <td>Lower to reduce memory on constrained hosts; use a power-of-2 to avoid wasted ring-buffer slots</td>
         </tr>
         <tr>
+            <td><span class="inline_code">maxExpectationsSizeInBytes</span></td>
+            <td><span class="inline_code">MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES</span></td>
+            <td><span class="this_value">0 (off)</span></td>
+            <td>Optional byte budget on the memory stored expectations may hold — useful when you register many large expectations (a JSON request matcher, for example, is parsed into a tree many times the size of the raw JSON, which the <span class="inline_code">maxExpectations</span> count cannot see). Off by default and opt-in, because expectations are state you configured, not observational data; turn it on to add a hard ceiling and MockServer evicts the oldest, lowest-priority expectations once it is reached. A reasonable starting point is about an eighth of the JVM heap. Set back to 0 to disable</td>
+        </tr>
+        <tr>
             <td><span class="inline_code">maxLogEntries</span></td>
             <td><span class="inline_code">MOCKSERVER_MAX_LOG_ENTRIES</span></td>
             <td><span class="this_value">heap-based (up to 100,000)</span></td>

@@ -101,6 +101,7 @@ public class ConfigurationProperties {
 
     // memory usage
     private static final String MOCKSERVER_MAX_EXPECTATIONS = "mockserver.maxExpectations";
+    private static final String MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES = "mockserver.maxExpectationsSizeInBytes";
     private static final String MOCKSERVER_MAX_LOG_ENTRIES = "mockserver.maxLogEntries";
     // LLM-capture disk-offload + OOM guard (config plumbing only — eviction/persistence behaviour added later)
     private static final String MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES = "mockserver.maxEventLogSizeInBytes";
@@ -2180,6 +2181,61 @@ public class ConfigurationProperties {
      */
     public static void maxEventLogSizeInBytes(long maxEventLogSizeInBytes) {
         setProperty(MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES, "" + maxEventLogSizeInBytes);
+    }
+
+    public static long maxExpectationsSizeInBytes() {
+        // Opt-in: disabled (0) unless explicitly set. Expectations are user-configured state, so a
+        // heap-derived default would silently evict a user's own mocks on upgrade. See the setter Javadoc.
+        Long explicit = explicitMaxExpectationsSizeInBytes();
+        return explicit != null ? explicit : 0L;
+    }
+
+    /**
+     * The explicit {@code maxExpectationsSizeInBytes} override (programmatic cache, system property,
+     * properties file, or environment variable), clamped to {@code >= 0}, or {@code null} when only the
+     * computed default applies. Never caches a default. See {@link #explicitMaxEventLogSizeInBytes()}.
+     */
+    static Long explicitMaxExpectationsSizeInBytes() {
+        String explicit = explicitProperty(MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES, "MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES");
+        if (explicit == null) {
+            return null;
+        }
+        try {
+            return Math.max(0L, Long.parseLong(explicit.trim()));
+        } catch (NumberFormatException nfe) {
+            LoggerHolder.LOGGER.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("NumberFormatException converting " + MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES + " with value [" + explicit + "]")
+                    .setThrowable(nfe)
+            );
+            return null;
+        }
+    }
+
+    /**
+     * <p>
+     * Maximum total estimated size in bytes of the expectations held in memory before the oldest,
+     * lowest-priority ones are evicted to stay within the budget. This bounds the memory expectations
+     * can hold when individual expectations are large (big request-matcher or response bodies), which
+     * {@code maxExpectations} cannot, since a count cap treats a 10 MB expectation the same as a 10-byte
+     * one. A JSON request matcher is the heaviest case: it is parsed into a retained node tree many times
+     * the size of the raw JSON.
+     * </p>
+     * <p>
+     * <strong>The default is {@code 0} (disabled)</strong>, so expectations are bounded only by
+     * {@code maxExpectations} unless you set this. It is opt-in because expectations are state you
+     * configured, not observational data — evicting one silently removes a mock you added. Turn it on if
+     * you register many large expectations and want a hard memory ceiling; a reasonable starting point is
+     * about an eighth of the JVM heap (leaving room for the request log, Netty buffers and the working
+     * set). When set, whichever of {@code maxExpectations} or this is reached first evicts, and the
+     * eviction is announced once per server in the log.
+     * </p>
+     *
+     * @param maxExpectationsSizeInBytes maximum total size in bytes of stored expectations (0, the default, disables the limit)
+     */
+    public static void maxExpectationsSizeInBytes(long maxExpectationsSizeInBytes) {
+        setProperty(MOCKSERVER_MAX_EXPECTATIONS_SIZE_IN_BYTES, "" + maxExpectationsSizeInBytes);
     }
 
     public static int maxLoggedBodyBytes() {

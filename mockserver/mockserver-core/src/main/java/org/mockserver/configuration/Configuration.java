@@ -122,6 +122,7 @@ public class Configuration {
 
     // memory usage
     private Integer maxExpectations;
+    private Long maxExpectationsSizeInBytes;
     private Integer maxLogEntries;
     private Long maxEventLogSizeInBytes;
     private Integer maxLoggedBodyBytes;
@@ -1701,6 +1702,36 @@ public class Configuration {
      */
     public Configuration maxExpectations(Integer maxExpectations) {
         this.maxExpectations = maxExpectations;
+        return this;
+    }
+
+    public Long maxExpectationsSizeInBytes() {
+        if (maxExpectationsSizeInBytes == null) {
+            // Honour an explicit static override, else disabled (0). See the setter Javadoc for why the
+            // default is opt-in rather than heap-derived.
+            return ConfigurationProperties.maxExpectationsSizeInBytes();
+        }
+        return maxExpectationsSizeInBytes;
+    }
+
+    /**
+     * <p>
+     * Maximum total estimated size in bytes of the expectations held in memory before the oldest,
+     * lowest-priority ones are evicted to stay within the budget. Bounds expectation memory when
+     * individual expectations are large, which {@link #maxExpectations} cannot (a count cap treats a
+     * 10 MB expectation the same as a 10-byte one).
+     * </p>
+     * <p>
+     * The default is <strong>0 (disabled)</strong> — expectations are bounded only by
+     * {@link #maxExpectations} unless you set this. It is opt-in because expectations are state you
+     * configured, not observational data. When set, whichever bound ({@link #maxExpectations} or this) is
+     * reached first evicts; a reasonable starting point is about an eighth of the JVM heap.
+     * </p>
+     *
+     * @param maxExpectationsSizeInBytes maximum total size in bytes of stored expectations (0, the default, disables the limit)
+     */
+    public Configuration maxExpectationsSizeInBytes(Long maxExpectationsSizeInBytes) {
+        this.maxExpectationsSizeInBytes = maxExpectationsSizeInBytes;
         return this;
     }
 

@@ -37,6 +37,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Boolean devMode;
 
     private Integer maxExpectations;
+    private Long maxExpectationsSizeInBytes;
     private Integer maxLogEntries;
     private Long maxEventLogSizeInBytes;
     private Integer maxLoggedBodyBytes;
@@ -379,6 +380,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.devMode = configuration.devMode();
 
             this.maxExpectations = configuration.maxExpectations();
+            this.maxExpectationsSizeInBytes = configuration.maxExpectationsSizeInBytes();
             this.maxLogEntries = configuration.maxLogEntries();
             this.maxEventLogSizeInBytes = configuration.maxEventLogSizeInBytes();
             this.maxLoggedBodyBytes = configuration.maxLoggedBodyBytes();
@@ -716,6 +718,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         if (maxEventLogSizeInBytes != null && maxEventLogSizeInBytes < 0) {
             throw new IllegalArgumentException("maxEventLogSizeInBytes must be greater than or equal to 0, got: " + maxEventLogSizeInBytes);
         }
+        if (maxExpectationsSizeInBytes != null && maxExpectationsSizeInBytes < 0) {
+            throw new IllegalArgumentException("maxExpectationsSizeInBytes must be greater than or equal to 0, got: " + maxExpectationsSizeInBytes);
+        }
         if (maxLoggedBodyBytes != null && maxLoggedBodyBytes < 0) {
             throw new IllegalArgumentException("maxLoggedBodyBytes must be greater than or equal to 0, got: " + maxLoggedBodyBytes);
         }
@@ -777,6 +782,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.devMode(devMode);
 
         configuration.maxExpectations(maxExpectations);
+        configuration.maxExpectationsSizeInBytes(maxExpectationsSizeInBytes);
         configuration.maxLogEntries(maxLogEntries);
         configuration.maxEventLogSizeInBytes(maxEventLogSizeInBytes);
         configuration.maxLoggedBodyBytes(maxLoggedBodyBytes);
@@ -1276,6 +1282,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (maxExpectations != null) {
             target.maxExpectations(maxExpectations);
+        }
+        if (maxExpectationsSizeInBytes != null) {
+            target.maxExpectationsSizeInBytes(maxExpectationsSizeInBytes);
         }
         if (maxLogEntries != null) {
             target.maxLogEntries(maxLogEntries);
@@ -2391,6 +2400,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setMaxExpectations(Integer maxExpectations) {
         this.maxExpectations = maxExpectations;
+        return this;
+    }
+
+    public Long getMaxExpectationsSizeInBytes() {
+        return maxExpectationsSizeInBytes;
+    }
+
+    public ConfigurationDTO setMaxExpectationsSizeInBytes(Long maxExpectationsSizeInBytes) {
+        this.maxExpectationsSizeInBytes = maxExpectationsSizeInBytes;
         return this;
     }
 
