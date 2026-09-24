@@ -2,9 +2,10 @@
 //
 // Offers load at an ascending LADDER of fixed arrival rates (K6_SWEEP_RATES) and
 // records, per rate step, the ACHIEVED throughput, latency percentiles
-// (p50/p90/p95/p99/p99.9), and error rate. This series is what we plot as a
-// load-vs-latency knee curve on the documentation site, so the JSON output shape
-// is a hard contract (see handleSummary).
+// (p50/p90/p95/p99/p99.9), a per-phase latency breakdown (phase_ms, see PHASES),
+// and error rate. This series is what we plot as a load-vs-latency knee curve on
+// the documentation site, so the JSON output shape is a hard contract (see
+// handleSummary).
 //
 // Each rate is one constant-arrival-rate scenario, staggered after the previous
 // (startTime = sum of prior step+gap durations) with a short quiet gap between
@@ -154,6 +155,24 @@ const BUCKET_WIDTH_MS = TIME_BUCKETS > 0 ? (STEP_SECONDS * 1000) / TIME_BUCKETS 
 // stall time-bucket can be computed from the test clock.
 const RATE_INDEX = new Map(RATES.map((r, i) => [r, i]));
 
+// k6's six built-in request-timing phases, in wire order, mapped to the output
+// key used in each rung's phase_ms block. These are metrics k6 ALREADY computes
+// for every request, so capturing them adds no per-request work — only summary-
+// time reads. Captured because http_req_duration alone cannot say WHICH phase
+// owns the latency tail, and it deliberately EXCLUDES connection setup:
+// duration == sending + waiting + receiving, so a tail in blocked/connecting/tls
+// never shows up in the duration percentiles we quote. Reading the split tells
+// waiting-heavy (time to first byte -> server) from sending/receiving-heavy
+// (client socket work) from blocked/connecting-heavy (connection setup).
+const PHASES = [
+  ['http_req_blocked', 'blocked'],
+  ['http_req_connecting', 'connecting'],
+  ['http_req_tls_handshaking', 'tls'],
+  ['http_req_sending', 'sending'],
+  ['http_req_waiting', 'waiting'],
+  ['http_req_receiving', 'receiving'],
+];
+
 // Custom metrics. Trend/Counter samples carry their OWN tags (2nd arg to .add),
 // independent of request tags, so tagging these by rung does NOT perturb the
 // http_req_* submetrics the knee chart depends on.
@@ -199,6 +218,14 @@ function sweepThresholds() {
   const t = {};
   for (const rate of RATES) {
     t[`http_req_duration{rate:${rate}}`] = ['p(50)>=0', 'p(90)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
+    // Per-phase breakdown submetrics (see PHASES). p95 + p99 ONLY: the question
+    // is which phase owns the TAIL, so only the high percentiles carry it (a mean
+    // or median cannot locate a tail); p99.9 is omitted because a per-phase p99.9
+    // needs more samples than the low rungs produce in one short step. Same
+    // notify-only materialise-via-threshold trick as http_req_duration.
+    for (const [metric] of PHASES) {
+      t[`${metric}{rate:${rate}}`] = ['p(95)>=0', 'p(99)>=0'];
+    }
     t[`http_req_failed{rate:${rate}}`] = ['rate>=0'];
     t[`http_reqs{rate:${rate}}`] = ['count>=0'];
     // dropped_iterations is k6's own "the client could not launch this iteration
@@ -302,6 +329,16 @@ export function handleSummary(data) {
     const count = reqs && reqs.values ? reqs.values.count : 0;
     const v = dur && dur.values ? dur.values : {};
 
+    // Per-phase latency breakdown for this rung: p95/p99 of each of k6's six
+    // built-in request phases, tagged by rung exactly like http_req_duration.
+    // This is what discriminates the tail's OWNER — see PHASES for the reading.
+    const phaseMs = {};
+    for (const [metric, key] of PHASES) {
+      const pm = data.metrics[`${metric}{rate:${rate}}`];
+      const pv = pm && pm.values ? pm.values : {};
+      phaseMs[key] = { p95_ms: round(pv['p(95)']), p99_ms: round(pv['p(99)']) };
+    }
+
     // VU-pool diagnostics for this rung.
     const va = data.metrics[`sweep_vus_active{rate:${rate}}`];
     const vaV = va && va.values ? va.values : {};
@@ -322,6 +359,10 @@ export function handleSummary(data) {
       p95_ms: round(v['p(95)']),
       p99_ms: round(v['p(99)']),
       p999_ms: round(v['p(99.9)']),
+      // Per-phase p95/p99 (ms) — additive; older consumers ignore it. duration
+      // above == sending + waiting + receiving and omits blocked/connecting/tls,
+      // so this block is the only place a connection-setup tail is visible.
+      phase_ms: phaseMs,
       // Completed-request count for THIS rung. Additive field (older/other
       // consumers ignore unknown keys; the website renderer's key-presence check
       // does not include it). It lets a downstream aggregator apply the repo's
