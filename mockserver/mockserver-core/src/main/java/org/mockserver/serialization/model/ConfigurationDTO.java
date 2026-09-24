@@ -48,6 +48,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private String memoryUsageCsvDirectory;
 
     private Integer nioEventLoopThreadCount;
+    private Integer soBacklog;
     private Integer actionHandlerThreadCount;
     private Integer clientNioEventLoopThreadCount;
     private Integer webSocketClientEventLoopThreadCount;
@@ -389,6 +390,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.memoryUsageCsvDirectory = configuration.memoryUsageCsvDirectory();
 
             this.nioEventLoopThreadCount = configuration.nioEventLoopThreadCount();
+            this.soBacklog = configuration.soBacklog();
             this.actionHandlerThreadCount = configuration.actionHandlerThreadCount();
             this.clientNioEventLoopThreadCount = configuration.clientNioEventLoopThreadCount();
             this.webSocketClientEventLoopThreadCount = configuration.webSocketClientEventLoopThreadCount();
@@ -786,6 +788,7 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.memoryUsageCsvDirectory(memoryUsageCsvDirectory);
 
         configuration.nioEventLoopThreadCount(nioEventLoopThreadCount);
+        configuration.soBacklog(soBacklog);
         configuration.actionHandlerThreadCount(actionHandlerThreadCount);
         configuration.clientNioEventLoopThreadCount(clientNioEventLoopThreadCount);
         configuration.webSocketClientEventLoopThreadCount(webSocketClientEventLoopThreadCount);
@@ -1300,6 +1303,9 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (memoryUsageCsvDirectory != null) {
             target.memoryUsageCsvDirectory(memoryUsageCsvDirectory);
+        }
+        if (soBacklog != null) {
+            target.soBacklog(soBacklog);
         }
         if (nioEventLoopThreadCount != null) {
             target.nioEventLoopThreadCount(nioEventLoopThreadCount);
@@ -2480,6 +2486,15 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public Integer getActionHandlerThreadCount() {
         return actionHandlerThreadCount;
+    }
+
+    public Integer getSoBacklog() {
+        return soBacklog;
+    }
+
+    public ConfigurationDTO setSoBacklog(Integer soBacklog) {
+        this.soBacklog = soBacklog;
+        return this;
     }
 
     public ConfigurationDTO setActionHandlerThreadCount(Integer actionHandlerThreadCount) {
