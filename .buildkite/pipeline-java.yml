@@ -129,7 +129,7 @@ steps:
   # (-DskipTests) reusing the restored maven cache. The mockserver-java pipeline is
   # already path-gated (generate-pipeline.sh) to mockserver/ + mockserver-ui/
   # changes — the two drift inputs — so no per-step path filter is needed.
-  # Cloud blob-store contract suites (S3/MinIO, GCS/fake-gcs, Azure/Azurite).
+  # Cloud blob-store contract suites (S3/s3mock, GCS/fake-gcs, Azure/Azurite).
   # Split out of the main build because it needs the Docker socket, and
   # run-in-docker.sh exit-0s a socket step on PR builds — putting `-s` on the
   # main build would silently skip the ENTIRE Java reactor on every PR.
@@ -139,6 +139,11 @@ steps:
   # otherwise turn an unusable socket into a green build of zero tests.
   - label: ":cloud: cloud blob-store contract tests"
     command: ".buildkite/scripts/steps/java-cloud-store-test.sh"
+    # Opt this Docker-gated step into the ECR pull-through cache for Docker Hub
+    # rate-limit/availability protection. Fail-safe: any ECR or login problem
+    # leaves images on their public registries (see ecr-pull-through-login.sh).
+    env:
+      MOCKSERVER_ECR_PULL_THROUGH: "true"
     timeout_in_minutes: 30
     retry:
       automatic:
@@ -157,6 +162,10 @@ steps:
   # no longer pass as a pass. ~75s of real broker tests locally.
   - label: ":envelope: asyncapi live-broker tests"
     command: ".buildkite/scripts/steps/java-async-broker-test.sh"
+    # ECR pull-through cache opt-in, fail-safe as above — all three broker
+    # images are on Docker Hub, so this is pure rate-limit/availability cover.
+    env:
+      MOCKSERVER_ECR_PULL_THROUGH: "true"
     timeout_in_minutes: 30
     retry:
       automatic:
