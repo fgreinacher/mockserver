@@ -135,6 +135,7 @@ public class Configuration {
     // scalability
     private Boolean useNativeTransport;
     private Integer nioEventLoopThreadCount;
+    private Integer soBacklog;
     private Integer actionHandlerThreadCount;
     private Integer clientNioEventLoopThreadCount;
     private Integer webSocketClientEventLoopThreadCount;
@@ -1955,6 +1956,27 @@ public class Configuration {
      */
     public Configuration nioEventLoopThreadCount(Integer nioEventLoopThreadCount) {
         this.nioEventLoopThreadCount = nioEventLoopThreadCount;
+        return this;
+    }
+
+    public Integer soBacklog() {
+        if (soBacklog == null) {
+            return ConfigurationProperties.soBacklog();
+        }
+        return soBacklog;
+    }
+
+    /**
+     * <p>Depth of the TCP accept queue (Netty's {@code SO_BACKLOG}). When it is full the kernel drops
+     * the handshake silently and the client retransmits after its initial RTO, so the symptom is a
+     * median latency near one second with no errors - which looks like a slow server rather than a
+     * connection limit. Capped by {@code net.core.somaxconn} (Linux) or {@code kern.ipc.somaxconn}
+     * (macOS), so raise the OS limit too when tuning for many simultaneous connections.</p>
+     *
+     * @param soBacklog accept queue depth
+     */
+    public Configuration soBacklog(Integer soBacklog) {
+        this.soBacklog = soBacklog;
         return this;
     }
 

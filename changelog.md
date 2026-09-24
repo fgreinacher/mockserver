@@ -124,6 +124,18 @@ changes except smaller downloads.
   was used up**. Spurious refusals under concurrent load are cut roughly tenfold.
 
 ### Added
+
+- **The TCP accept queue is now configurable, and deeper by default** (`mockserver.soBacklog`,
+  default **4096**, previously a hard-coded 1024 that no property could change). This is the queue
+  the kernel parks completed handshakes in while MockServer accepts them, and it only matters when
+  many clients connect at once - a load test ramping up, a pool refilling, a fleet of containers
+  starting together. Steady traffic over existing keep-alive connections never touches it.
+  A full queue is worth recognising because it does not look like a limit: the kernel silently
+  drops the handshake rather than refusing it, the client retransmits after about a second, and the
+  symptom is a **median latency near one second with no errors at all**. The effective depth is
+  still capped by `net.core.somaxconn` (Linux) or `kern.ipc.somaxconn` (macOS), and a Docker
+  container has its own value - so raise the OS limit alongside it. See
+  [Performance](/mock_server/performance.html) for the three connection limits together.
 - **The dashboard can now ask for more request history per update.** Connect the dashboard
   WebSocket with `?logLimit=N` — for example `/_mockserver_ui_websocket?logLimit=250` — and the
   server sends up to `N` log rows, recorded requests and proxied requests per update instead of the

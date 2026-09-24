@@ -123,6 +123,7 @@ public class ConfigurationProperties {
     // scalability
     private static final String MOCKSERVER_USE_NATIVE_TRANSPORT = "mockserver.useNativeTransport";
     private static final String MOCKSERVER_NIO_EVENT_LOOP_THREAD_COUNT = "mockserver.nioEventLoopThreadCount";
+    private static final String MOCKSERVER_SO_BACKLOG = "mockserver.soBacklog";
     private static final String MOCKSERVER_ACTION_HANDLER_THREAD_COUNT = "mockserver.actionHandlerThreadCount";
     private static final String MOCKSERVER_CLIENT_NIO_EVENT_LOOP_THREAD_COUNT = "mockserver.clientNioEventLoopThreadCount";
     private static final String MOCKSERVER_WEB_SOCKET_CLIENT_EVENT_LOOP_THREAD_COUNT = "mockserver.webSocketClientEventLoopThreadCount";
@@ -2421,6 +2422,29 @@ public class ConfigurationProperties {
      */
     public static void nioEventLoopThreadCount(int count) {
         setProperty(MOCKSERVER_NIO_EVENT_LOOP_THREAD_COUNT, "" + count);
+    }
+
+    public static int soBacklog() {
+        return readIntegerProperty(MOCKSERVER_SO_BACKLOG, "MOCKSERVER_SO_BACKLOG", 4096);
+    }
+
+    /**
+     * <p>Depth of the TCP accept queue (Netty's {@code SO_BACKLOG}) - how many connections the kernel
+     * may hold after completing their handshake but before MockServer accepts them.</p>
+     *
+     * <p>When the queue is full the kernel silently DROPS the client's SYN or final ACK rather than
+     * refusing it, so the client retransmits after its initial RTO - typically one second on Linux.
+     * The visible symptom is a median latency that jumps to roughly a second with no errors at all,
+     * which reads like the server slowing down rather than like a connection limit.</p>
+     *
+     * <p>The effective value is capped by the OS: {@code net.core.somaxconn} on Linux (commonly 4096)
+     * and {@code kern.ipc.somaxconn} on macOS. Raising this above the OS limit has no effect, so
+     * tune both when a client opens many connections at once.</p>
+     *
+     * @param backlog accept queue depth
+     */
+    public static void soBacklog(int backlog) {
+        setProperty(MOCKSERVER_SO_BACKLOG, "" + backlog);
     }
 
     public static int actionHandlerThreadCount() {

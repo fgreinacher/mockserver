@@ -194,7 +194,12 @@ public class MockServer extends LifeCycle {
         this.mcpSessionManager = initializer.getMcpSessionManager();
         serverServerBootstrap = new ServerBootstrap()
             .group(bossGroup, workerGroup)
-            .option(ChannelOption.SO_BACKLOG, 1024)
+            // Accept-queue depth. Configurable (mockserver.soBacklog) and defaulting to 4096
+            // rather than the former hard-coded 1024: a full queue makes the kernel DROP the
+            // handshake silently, so the client retransmits after its RTO and the symptom is a
+            // ~1s median with zero errors - indistinguishable from a slow server. Still capped
+            // by net.core.somaxconn, so this raises the ceiling rather than overriding the OS.
+            .option(ChannelOption.SO_BACKLOG, configuration.soBacklog())
             .channel(NettyTransport.serverSocketChannelClassFor(bossGroup))
             .childOption(ChannelOption.AUTO_READ, true)
             .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
