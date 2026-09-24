@@ -3530,6 +3530,74 @@ N=4 would have run and then been thrown away. The blast radius stops there, beca
 survives and only the multiproc block is lost. That trade (fail closed, lose the sweep) is
 deliberate and was accepted in review; it just moves the burden onto choosing the ladder.
 
+**BUILD 416, 2026-09-24 — the SUT died mid-ladder, and the heap told the story.** `ExitCode:3`,
+`OOMKilled:false` — same signature as build 272: the JVM self-terminating on
+`-XX:+ExitOnOutOfMemoryError`, not a cgroup kill. The SUT died 488 s into a 1,522 s run; the rig
+kept reporting per-rung throughput against a dead container (160–217 rps at `error_rate` 1.0) for
+1,034 seconds. 391 of 523 diagnostic samples have blank in-JVM columns.
+
+The heap dump closed the cause. Dominant retainers: **7,287,296 `LinkedHashMap$Entry`** (~437 MB),
+2,836,432 `ObjectNode`, 6,569,787 `TextNode`. `ObjectNode._children` is a `LinkedHashMap`, which
+is why the entry class dominates. The arithmetic closes exactly: 334,480 `ToolDefinition` ÷ 40
+tools per registry = **8,362 registries**; 2,836,432 `ObjectNode` ÷ 8,362 = 339 per registry =
+40 tools × ~8.5 schema nodes each.
+
+Root cause: `PortUnificationHandler` and `Http2MultiplexChildInitializer` each constructed a
+**new `McpStreamableHttpHandler` per connection**. Each construction eagerly creates an
+`McpToolRegistry` of 40 tools, every tool carrying a full JSON schema tree — about **156 KB
+retained per connection**. MCP is enabled by default, so this affected every deployment. The
+`Http2MultiplexChildInitializer` held its handler in a `final` field, which reads as shared — but
+the initializer itself is per-connection, so HTTP/2 leaked identically. `Http3Server` was
+unaffected (it builds its registry once per server).
+
+**Fixed `2a5999395`.** Verified behaviourally: 300 concurrent connections held against the
+shipped image; heap flat at ~27 MB where the leak would have retained ~47 MB.
+
+**The event-log byte guard was not at fault.** `diag-samples.csv` from build 416 shows
+`retained_bytes` pinned at exactly **256.0 MB against a 256 MB budget — 100.00%**, flat at
+87,580 entries through the final 30 seconds, `dropped_log_events` 0. The guard bounded its own
+structure faithfully. It was 21% of the heap; the other 950 MB was the MCP registry leak. An
+instrument that ran honestly about the wrong subject.
+
+**The SUT liveness gap was fixed too.** `ec59fbe23` adds a between-rung health probe so the run
+fails immediately when the SUT is down, rather than continuing for over 1,000 s against a dead
+container.
+
+**BUILD 418, 2026-09-24 — first run on the fixed SUT, survived the whole ladder.** Ladder
+`8000…48000`, both arms, `config_profile=default`, SUT commit `2a5999395`.
+
+| rung | achieved | ratio | dropped | p50 ms | p99 ms | vus_max / pool |
+|--:|--:|--:|--:|--:|--:|--|
+| 8000 | 7865.9 | 0.983 | 2012 | 0.112 | 48.67 | 640 / 640 |
+| 16000 | 15963.7 | 0.998 | 546 | 0.121 | 63.62 | 1280 / 1280 |
+| 24000 | 23922.9 | 0.997 | 1163 | 0.112 | 65.44 | 1920 / 1920 |
+| 32000 | 31524.6 | 0.985 | 7131 | 0.118 | 68.71 | 2048 / 2048 |
+| 40000 | 37375.9 | 0.934 | 39362 | 0.136 | 76.97 | 2048 / 2048 |
+| 44000 | 40204.3 | 0.914 | 56946 | 0.151 | 79.24 | 2048 / 2048 |
+| 48000 | 41681.3 | 0.868 | 94561 | 0.167 | 80.62 | 2048 / 2048 |
+
+`error_rate` was **0 on all 24 rungs across both arms**. Where build 416 collapsed at 36,000 and
+died at 38,000, build 418 climbed through 48,000. Peak observed: **41,681 rps** (ERROR arm) and
+**43,524 rps** (INFO arm) — both above the published 36,323.
+
+**No metric certifies it, and the reason is the VU ceiling.** Every rung reports
+`vus_active_max == pool`, so all 12 rungs were excluded as `client-limited` and
+`rig_valid_peak_achieved_rps=0`. Pools are sized `rate × 0.08` clamped to `vuCeiling`, default
+**2048**, so every rung at or above 25,600 offered was capped: 48,000 needed 3,840 VUs and got
+2,048. The peaks above are therefore **measured but not certified** — a floor on the server's
+capability, not its limit. The only rig-valid figure in build 418 is the INFO arm's 15,999.
+
+**The deep tail is unchanged and still unexplained.** `stall_concurrency_max == pool` at every
+shared rung in build 418, exactly as in build 416 — each stall pileup pulls in the entire VU
+pool. p50 stays ~0.11 ms while p99 sits at 48–80 ms. The leak fix changed survival and headroom;
+it did not change the sub-knee stall shape. Note the measurement subtlety: `vus_active_max ==
+pool` is right-censored — at the 8,000 rung `vus_active_p95` was 6 against a 640 pool, so the
+pool sat idle and only touched its ceiling during pileups. Reading that as "client-limited"
+reports a server property as a client limitation.
+
+**Build 419 is running with `K6_SWEEP_VU_CEILING=4096`**, testing whether raising the ceiling
+converts the measured-but-uncertified 41,681 rps into a certified figure.
+
 ## The load generator has been sharing the server's physical cores all along
 
 **Found 2026-09-22, while costing the client rig.** The rig pins the server, the upstream and k6 to
@@ -3764,7 +3832,7 @@ and a PR that fails only by inheriting a red required check has nothing wrong wi
 
 ## What remains
 
-**Two things are outstanding: one can be settled from the repo, one needs a bigger client rig.**
+**Three things are outstanding: two need a run, one can be started from the repo.**
 
 The dashboard usability bug that previously led this section is **fixed** (see *The dashboard "closes
 the item I clicked" bug* above) — both halves of it, guarded by a real-browser regression test. It led
@@ -3779,13 +3847,19 @@ hard way.
 ```mermaid
 flowchart TD
   right["Needs a run, or an external system"]
-  right --> f["Item 18: a ladder the rig can
-  actually offer (generator is wired)"]
-  right --> h["A client rig that can
-  saturate the server, repeatably"]
+  right --> f["Extended ladder with higher VU ceiling
+  (build 419 running, K6_SWEEP_VU_CEILING=4096)"]
   right --> k["Canceled-child reporting on a
   native trigger step"]
-  done["Settled from the repo"]
+  right --> s["Shading defect:
+  jvm_memory_allocated_bytes dead in shipped jar"]
+  done["Settled from the repo or by a run"]
+  done --> a["MCP per-connection registries
+  (2a5999395, 2026-09-24)"]
+  done --> b["SUT liveness gate
+  (ec59fbe23, 2026-09-24)"]
+  done --> h["A client rig that can
+  saturate the server (build 412)"]
   done --> c["Renamed peak_achieved_rps
   in all three namespaces"]
   done --> d["Zero-drop tolerance,
@@ -3837,8 +3911,11 @@ The rows below are what remains.
 
 | | Status | Detail |
 |---|---|---|
-| **A client rig that can saturate the server** | **DONE 2026-09-23 (build 412) — the rig produces a valid ladder and reaches 26,820 rps with the server still at 183% of a 400% pin. What remains is not a rig problem but an unfinished ladder: extend past 32,000 and find the rung where latency actually bends.** — the box is now c5.12xlarge with 24 physical cores; the multi-process harness is now WIRED (`faebd742f`, opt-in `PERF_SERVING_MULTIPROC`, notify-only, and it shares the main run's `/sys` physical-core guard), so what is still owed is a ladder of valid rungs actually produced on it - one k6 process serialises internally and will not reach 40k however many cores it is given, which is why the wiring had to come first | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. **Build 408 (2026-09-23) refutes the "needs client cores" framing**: the box now has 48 logical cores and the run still produced no knee, because each k6 process was given only two of them and pegged at N=1 and N=2, while the 48,000 and 64,000 rungs collapsed to ~100% errors (61 and 181 rps achieved). The generator is wired and the cores exist. **Build 412 then delivered the valid ladder**: with 4 cores per client process and a FLAT 128-VU pool the cliff vanished entirely — 24,000 offered went 2,933 -> 19,900 rps and 32,000 at N=4 went 147 -> 26,820, with p50 flat at ~0.1 ms across the whole ladder and `scales_with_procs` TRUE for the first time. The remaining gap to the published ~36,000 is simply that the ladder stops at 32,000, not that the rig cannot offer the load. See the build-408 and build-412 notes under the 36,000 rps knee |
+| **A client rig that can saturate the server** | **DONE 2026-09-23 (build 412) — the rig produces a valid ladder and reaches 26,820 rps with the server still at 183% of a 400% pin. What remains is not a rig problem but an unfinished ladder: extend past 32,000 and find the rung where latency actually bends.** — the box is now c5.12xlarge with 24 physical cores; the multi-process harness is now WIRED (`faebd742f`, opt-in `PERF_SERVING_MULTIPROC`, notify-only, and it shares the main run's `/sys` physical-core guard), so what is still owed is a ladder of valid rungs actually produced on it - one k6 process serialises internally and will not reach 40k however many cores it is given, which is why the wiring had to come first | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. **Build 408 (2026-09-23) refutes the "needs client cores" framing**: the box now has 48 logical cores and the run still produced no knee, because each k6 process was given only two of them and pegged at N=1 and N=2, while the 48,000 and 64,000 rungs collapsed to ~100% errors (61 and 181 rps achieved). The generator is wired and the cores exist. **Build 412 then delivered the valid ladder**: with 4 cores per client process and a FLAT 128-VU pool the cliff vanished entirely — 24,000 offered went 2,933 -> 19,900 rps and 32,000 at N=4 went 147 -> 26,820, with p50 flat at ~0.1 ms across the whole ladder and `scales_with_procs` TRUE for the first time. The remaining gap to the published ~36,000 is simply that the ladder stops at 32,000, not that the rig cannot offer the load. **Build 418 (2026-09-24) then extended to 48,000 rps on the fixed SUT with `error_rate` 0 on all 24 rungs**, but `rig_valid_peak_achieved_rps=0` throughout because the default `vuCeiling=2048` capped every rung above 16,000 — the rig measured (41,681 rps peak) but did not certify. Build 419 is running with `K6_SWEEP_VU_CEILING=4096`. See the build-408, build-412, build-416, and build-418 notes under the 36,000 rps knee |
 | **`peak_achieved_rps`** | **DONE.** Renamed in all three namespaces that name the rig-valid quantity. The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Done** (`84f6c293e`): the absolute zero-drop threshold now forgives a drop fraction within `PERF_SWEEP_DROP_TOL` (default 1%), but **only** on a rung that also had VU-pool headroom — so a genuinely starved rig is still excluded on the headroom term and a 0.4% blip no longer voids a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
+| **MCP per-connection registries** | **DONE `2a5999395`, 2026-09-24.** `PortUnificationHandler` and `Http2MultiplexChildInitializer` each constructed a new `McpStreamableHttpHandler` per connection; each construction eagerly created an `McpToolRegistry` of 40 tools carrying full JSON schema trees (~156 KB retained per connection). Root-caused via heap dump from build 416: 334,480 `ToolDefinition` instances ÷ 40 tools = 8,362 leaked registries. The fix makes the registry a shared instance. Verified behaviourally: heap flat at ~27 MB at 300 concurrent connections, where the leak would have retained ~47 MB | See build 416 root cause above |
+| **SUT liveness gate** | **DONE `ec59fbe23`, 2026-09-24.** Build 416's SUT died 488 s into a 1,522 s run; the rig kept reporting throughput against a dead container for 1,034 s, with 391 of 523 diagnostic samples blank. The gate probes the SUT between rungs and fails the run immediately on a dead SUT | Corroborated by `error_rate` flipping to 1.0 at 36,000 rung and staying there for the remainder of build 416 |
+| **Shading defect: `jvm_memory_allocated_bytes`** | **OPEN.** `mockserver/pom.xml` relocates `com.sun` wholesale, including `com.sun.management`. `JvmMetricsCollector.totalAllocatedBytes()` checks `instanceof com.sun.management.ThreadMXBean`; the shade plugin rewrites that class reference to the shaded package, so it never matches the real JDK class. `jvm_memory_allocated_bytes` has been dead in every shipped jar, and `alloc_kb_per_handshake` has been `null` on every TLS-arm run since the metric was added | Needs a shade-exclusion fix (`com.sun.management` to the exclusions list) and a build to verify the metric fires |
 
 ### Needs a run, or an external system
 
@@ -3847,6 +3924,7 @@ that is merely undone.
 
 | | What it needs | Why it is stuck here |
 |---|---|---|
+| **Extended ladder with higher VU ceiling** | Build 419 (running, `K6_SWEEP_VU_CEILING=4096`) | Build 418 measured 41,681 rps (ERROR arm) and 43,524 rps (INFO arm) with `error_rate` 0 on all 24 rungs, but `rig_valid_peak_achieved_rps=0` throughout because the default ceiling (2048 VUs) capped every rung above 16,000 — 48,000 needed 3,840 VUs. The published figures do not move until a rung is rig-valid |
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). A **third** case has since been observed and is NOT safe — see below. See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 **A child that is never created at all, observed 2026-09-22.** This question was framed around how a
