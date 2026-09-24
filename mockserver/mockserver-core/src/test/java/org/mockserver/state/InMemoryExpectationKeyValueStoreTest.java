@@ -331,4 +331,31 @@ public class InMemoryExpectationKeyValueStoreTest {
         assertThat(byteBounded.size(), lessThan(5));
         assertThat(byteBounded.getQueue().getTotalBytes(), lessThanOrEqualTo(250_000L));
     }
+
+    @Test
+    public void shouldReportTotalBytesEvenWhenByteBudgetDisabled() {
+        // given - byte budget disabled (0), so getMaxBytes() reports 0 (no bound in force)
+        InMemoryExpectationKeyValueStore byteBounded = new InMemoryExpectationKeyValueStore(1000, 0L);
+        assertThat(byteBounded.getMaxBytes(), is(0L));
+        assertThat(byteBounded.getTotalBytes(), is(0L));
+
+        // when - large expectations are stored
+        for (int i = 1; i <= 5; i++) {
+            byteBounded.put("e" + i, new ExpectationEntry(largeExpectation("e" + i, 100_000)));
+        }
+
+        // then - byte ACCOUNTING is live even though byte EVICTION is disabled, and mirrors the queue
+        assertThat(byteBounded.getTotalBytes(), greaterThan(0L));
+        assertThat(byteBounded.getTotalBytes(), is(byteBounded.getQueue().getTotalBytes()));
+        assertThat(byteBounded.getMaxBytes(), is(0L));
+    }
+
+    @Test
+    public void shouldReportConfiguredMaxBytes() {
+        InMemoryExpectationKeyValueStore byteBounded = new InMemoryExpectationKeyValueStore(1000, 250_000L);
+        assertThat(byteBounded.getMaxBytes(), is(250_000L));
+
+        byteBounded.setMaxBytes(500_000L);
+        assertThat(byteBounded.getMaxBytes(), is(500_000L));
+    }
 }

@@ -177,7 +177,21 @@ changes except smaller downloads.
   `mock_server_dropped_log_events` counter, the ring gauges let you watch a log backlog building
   rather than inferring it from damage afterwards; the retained gauges answer which part of the event
   log is filling the heap, which a single-site scrape could not distinguish. Both sets are read at
-  scrape time from live state, so the request path is unaffected.
+  scrape time from live state, so the request path is unaffected. The dashboard Metrics view now
+  charts all four sites, each value drawn against its budget (a budget of `0` is shown as no limit
+  set, not a full bar).
+- New expectation-store and accept-queue metrics on the Prometheus endpoint (`/mockserver/metrics`)
+  and in the dashboard Metrics view, answering "is the server running out of room?" for the two sites
+  a growth run could not previously see. `mock_server_expectations_bytes` reports the memory the
+  stored expectations hold and `mock_server_max_expectations_bytes` the byte budget in force
+  (`0` when `maxExpectationsSizeInBytes` is off, the default) — the used figure is live whether or not
+  the budget is set, with `mock_server_expectations_byte_evicted_total` counting byte-driven
+  evictions. `mock_server_accept_queue_backlog_configured` reports the configured accept-queue depth
+  (`soBacklog`); on Linux `mock_server_accept_queue_backlog_effective` reports the smaller of that and
+  the kernel ceiling (`/proc/sys/net/core/somaxconn`), and is deliberately **omitted** where that
+  ceiling cannot be read (macOS, restricted containers) rather than reporting the configured value
+  under an "effective" name. All are read at scrape time from live state, so the request path is
+  unaffected.
 - The in-memory event log is now bounded by **size** as well as by entry count, and that size bound
   now covers both the retained entries and the entries still waiting in the in-flight queue.
   `maxEventLogSizeInBytes` was previously off by default; it now defaults to a share of the heap-ceiling

@@ -212,6 +212,16 @@ public class InMemoryExpectationKeyValueStore implements KeyValueStore<Expectati
         return queue.getByteEvictedCount();
     }
 
+    @Override
+    public long getTotalBytes() {
+        return queue.getTotalBytes();
+    }
+
+    @Override
+    public long getMaxBytes() {
+        return queue.getMaxBytes();
+    }
+
     private void fireChanged(String key) {
         for (InvalidationListener listener : listeners) {
             listener.onChanged(key);

@@ -140,6 +140,25 @@ public interface KeyValueStore<V> {
     }
 
     /**
+     * Estimated retained heap (summed entry weight) currently held by this store, or {@code 0} for
+     * stores that do not track a byte total here. Tracked whether or not the byte budget is enabled,
+     * so it is a live figure by default — {@code maxExpectationsSizeInBytes <= 0} disables byte
+     * <em>eviction</em>, not byte <em>accounting</em>. Backs the {@code mock_server_expectations_bytes}
+     * gauge.
+     */
+    default long getTotalBytes() {
+        return 0L;
+    }
+
+    /**
+     * The byte budget in force for this store, or {@code 0} when no byte bound is enforced here (the
+     * default — count-only bounding). Backs the {@code mock_server_max_expectations_bytes} gauge.
+     */
+    default long getMaxBytes() {
+        return 0L;
+    }
+
+    /**
      * Adds an invalidation listener that is notified on mutations.
      *
      * @param listener the listener

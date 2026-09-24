@@ -92,6 +92,21 @@ public class RequestMatchersStateBackendTest {
     // -------------------------------------------------------
 
     @Test
+    public void exposesExpectationStoreByteFiguresFromBackend() {
+        assertThat(backendMatchers.getExpectationBytes(), is(0L));
+        assertThat(backendMatchers.getExpectationByteEvictedCount(), is(0L));
+
+        backendMatchers.add(new Expectation(request().withPath("/a")).withId("a")
+            .thenRespond(response().withStatusCode(200)), API);
+
+        // the getters read the live backend store weight, tracked whether or not a byte budget is set
+        assertThat(backendMatchers.getExpectationBytes(), greaterThan(0L));
+        assertThat(backendMatchers.getExpectationBytes(), is(stateBackend.expectations().getTotalBytes()));
+        assertThat(backendMatchers.getMaxExpectationBytes(), is(stateBackend.expectations().getMaxBytes()));
+        assertThat(backendMatchers.getExpectationByteEvictedCount(), is(0L));
+    }
+
+    @Test
     public void addKeepsBackendInSync() {
         Expectation expA = new Expectation(request().withPath("/a")).withId("a")
             .thenRespond(response().withStatusCode(200));

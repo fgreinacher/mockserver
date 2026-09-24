@@ -716,6 +716,36 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         }
     }
 
+    /**
+     * Live estimated retained heap (summed entry weight) held by the expectation store, or {@code 0}
+     * before a backend is attached. Tracked whether or not the byte budget is enabled, so this is a
+     * real number by default. Backs the {@code mock_server_expectations_bytes} gauge.
+     */
+    public long getExpectationBytes() {
+        KeyValueStore<ExpectationEntry> backend = expectationBackend;
+        return backend != null ? backend.getTotalBytes() : 0L;
+    }
+
+    /**
+     * The expectation-store byte budget in force ({@code maxExpectationsSizeInBytes}), or {@code 0}
+     * when the byte bound is disabled (the default). Backs the {@code mock_server_max_expectations_bytes}
+     * gauge.
+     */
+    public long getMaxExpectationBytes() {
+        KeyValueStore<ExpectationEntry> backend = expectationBackend;
+        return backend != null ? backend.getMaxBytes() : 0L;
+    }
+
+    /**
+     * Cumulative count of expectations evicted specifically to stay within the byte budget, or
+     * {@code 0} before a backend is attached. Backs the {@code mock_server_expectations_byte_evicted}
+     * counter.
+     */
+    public long getExpectationByteEvictedCount() {
+        KeyValueStore<ExpectationEntry> backend = expectationBackend;
+        return backend != null ? backend.getByteEvictedCount() : 0L;
+    }
+
     private HttpRequestMatcher addPrioritisedExpectation(Expectation expectation, Cause cause) {
         HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(expectation);
         httpRequestMatchers.add(httpRequestMatcher);
