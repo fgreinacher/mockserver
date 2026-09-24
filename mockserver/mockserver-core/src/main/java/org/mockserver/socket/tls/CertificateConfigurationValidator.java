@@ -116,7 +116,7 @@ public class CertificateConfigurationValidator {
         checkExtendedKeyUsage(leafCert, x509CertificatePath);
     }
 
-    private void validateKeyMatchesCertificate(PrivateKey privateKey, X509Certificate certificate, String privateKeyPath, String x509CertificatePath) {
+    void validateKeyMatchesCertificate(PrivateKey privateKey, X509Certificate certificate, String privateKeyPath, String x509CertificatePath) {
         // Derive the challenge signature algorithm from the private KEY, not from
         // certificate.getSigAlgName(): the latter is the algorithm the issuing CA used to sign the
         // certificate and says nothing about the subject key's own type. An RSA certificate issued
@@ -167,7 +167,7 @@ public class CertificateConfigurationValidator {
         return cause == null ? new RuntimeException(message) : new RuntimeException(message, cause);
     }
 
-    private static String signatureAlgorithmForKey(String keyAlgorithm) {
+    static String signatureAlgorithmForKey(String keyAlgorithm) {
         if (keyAlgorithm == null) {
             return null;
         }

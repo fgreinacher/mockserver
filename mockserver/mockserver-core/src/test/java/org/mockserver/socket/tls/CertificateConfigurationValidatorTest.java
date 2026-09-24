@@ -14,9 +14,24 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.cert.X509Certificate;
 import java.util.Date;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+import java.security.Security;
+import java.security.spec.ECGenParameterSpec;
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.operator.ContentSigner;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.junit.Assert.fail;
 import static org.mockserver.configuration.Configuration.configuration;
 
@@ -290,6 +305,158 @@ public class CertificateConfigurationValidatorTest {
         config.certificateAuthorityCertificate(caCertFile.getAbsolutePath());
 
         new CertificateConfigurationValidator(config, mockServerLogger).validate();
+    }
+
+    // ----------------------------------------------------------------------------------------------
+    // Error and mapping paths of the key/certificate match check (issue #2728). These branches are
+    // not exercised by the happy-path/genuine-mismatch matrix in
+    // CertificateConfigurationValidatorKeyMatchTest, and are unit-level (no subject/issuer matrix),
+    // so they live here in the flat test rather than the parameterized one where they would run
+    // redundantly for every row.
+    // ----------------------------------------------------------------------------------------------
+
+    @Test
+    public void shouldMapEverySupportedKeyAlgorithmToItsSignatureAlgorithm() {
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("RSA"), is("SHA256withRSA"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("EC"), is("SHA256withECDSA"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("ECDSA"), is("SHA256withECDSA"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("DSA"), is("SHA256withDSA"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("Ed25519"), is("Ed25519"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("Ed448"), is("Ed448"));
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("EdDSA"), is("EdDSA"));
+        // the mapping is case-insensitive - a provider that reports "rsa" must map identically
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("rsa"), is("SHA256withRSA"));
+    }
+
+    @Test
+    public void shouldReturnNullSignatureAlgorithmForNullKeyAlgorithm() {
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey(null), is(nullValue()));
+    }
+
+    @Test
+    public void shouldReturnNullSignatureAlgorithmForUnknownKeyAlgorithm() {
+        assertThat(CertificateConfigurationValidator.signatureAlgorithmForKey("XMSS"), is(nullValue()));
+    }
+
+    @Test
+    public void shouldRejectUnsupportedKeyAlgorithmNamingTheAlgorithm() {
+        PrivateKey unsupportedKey = new StubPrivateKey("XMSS", new byte[]{1, 2, 3});
+
+        try {
+            new CertificateConfigurationValidator(configuration(), mockServerLogger)
+                .validateKeyMatchesCertificate(unsupportedKey, null, "key.pem", "cert.pem");
+            fail("expected RuntimeException for unsupported key algorithm");
+        } catch (RuntimeException e) {
+            assertThat(e.getMessage(), containsString("unsupported key algorithm 'XMSS'"));
+        }
+    }
+
+    @Test
+    public void shouldReportSignatureAlgorithmInapplicableRatherThanMismatch() throws Exception {
+        // A key whose algorithm maps to a real signature algorithm the provider cannot apply to it:
+        // getAlgorithm() reports RSA (so sigAlgorithm is SHA256withRSA), but the key material is not a
+        // usable RSA key, so Signature.initSign throws in the SIGN phase - before any comparison with
+        // the certificate. That must NOT be reported as a key/certificate mismatch.
+        PrivateKey unusableRsaKey = new StubPrivateKey("RSA", new byte[]{1, 2, 3});
+        KeyPair rsa = generateRsaKeyPair();
+        X509Certificate certificate = buildCertificate(rsa.getPublic(), rsa.getPrivate(), "SHA256withRSA");
+
+        try {
+            new CertificateConfigurationValidator(configuration(), mockServerLogger)
+                .validateKeyMatchesCertificate(unusableRsaKey, certificate, "key.pem", "cert.pem");
+            fail("expected RuntimeException for inapplicable signature algorithm");
+        } catch (RuntimeException e) {
+            assertThat(e.getMessage(), containsString("could not be used with the signature algorithm"));
+            assertThat(e.getMessage(), containsString("This is not a mismatch between the key and the certificate"));
+            assertThat(e.getMessage(), containsString("(algorithm 'RSA')"));
+            assertThat(e.getMessage(), not(containsString("does not match the certificate")));
+        }
+    }
+
+    @Test
+    public void shouldReportMismatchWhenVerifyThrowsForCrossTypeKeyAndCertificate() throws Exception {
+        // Sign phase succeeds (real RSA key), but the certificate's public key is EC, so the verify
+        // phase's initVerify throws InvalidKeyException rather than returning false - the catch at the
+        // verify phase, distinct from the verify-returns-false branch. It is a genuine mismatch, so it
+        // must carry the "does not match" advice, and the original cause must be preserved.
+        KeyPair rsa = generateRsaKeyPair();
+        KeyPair ec = generateEcKeyPair();
+        X509Certificate ecSubjectCertificate = buildCertificate(ec.getPublic(), rsa.getPrivate(), "SHA256withRSA");
+
+        Configuration config = configuration();
+        config.privateKeyPath(writePem("key.pem", "PRIVATE KEY", rsa.getPrivate().getEncoded()));
+        config.x509CertificatePath(writePem("cert.pem", "CERTIFICATE", ecSubjectCertificate.getEncoded()));
+
+        try {
+            new CertificateConfigurationValidator(config, mockServerLogger).validate();
+            fail("expected RuntimeException for RSA key against EC certificate");
+        } catch (RuntimeException e) {
+            assertThat(e.getMessage(), containsString("does not match the certificate"));
+            assertThat(e.getMessage(), containsString("Regenerate the key pair"));
+            assertThat(e.getMessage(), not(containsString("not a mismatch between the key and the certificate")));
+            // the verify-throws branch preserves the underlying cause; verify-returns-false does not
+            assertThat(e.getCause(), is(notNullValue()));
+        }
+    }
+
+    private static KeyPair generateRsaKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
+        generator.initialize(2048);
+        return generator.generateKeyPair();
+    }
+
+    private static KeyPair generateEcKeyPair() throws Exception {
+        KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+        generator.initialize(new ECGenParameterSpec("secp256r1"));
+        return generator.generateKeyPair();
+    }
+
+    private static X509Certificate buildCertificate(PublicKey subjectPublicKey, PrivateKey issuerPrivateKey, String issuerSignatureAlgorithm) throws Exception {
+        if (Security.getProvider("BC") == null) {
+            Security.addProvider(new BouncyCastleProvider());
+        }
+        X500Name dn = new X500Name("CN=Test");
+        BigInteger serial = BigInteger.valueOf(System.nanoTime());
+        Date notBefore = new Date(System.currentTimeMillis() - 86400000L);
+        Date notAfter = new Date(System.currentTimeMillis() + 86400000L * 365);
+        JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(dn, serial, notBefore, notAfter, dn, subjectPublicKey);
+        ContentSigner signer = new JcaContentSignerBuilder(issuerSignatureAlgorithm).setProvider("BC").build(issuerPrivateKey);
+        return new JcaX509CertificateConverter().setProvider("BC").getCertificate(builder.build(signer));
+    }
+
+    private String writePem(String name, String type, byte[] encoded) throws IOException {
+        return createTempPemFile(name, pemEncode(type, encoded)).getAbsolutePath();
+    }
+
+    /**
+     * A {@link PrivateKey} that reports a chosen algorithm name with key material that is not a usable
+     * key of that type - the only way to drive {@link CertificateConfigurationValidator}'s
+     * unsupported-algorithm and sign-phase-failure branches, which a real key loaded from a PEM file
+     * cannot reach.
+     */
+    private static final class StubPrivateKey implements PrivateKey {
+        private final String algorithm;
+        private final byte[] encoded;
+
+        private StubPrivateKey(String algorithm, byte[] encoded) {
+            this.algorithm = algorithm;
+            this.encoded = encoded;
+        }
+
+        @Override
+        public String getAlgorithm() {
+            return algorithm;
+        }
+
+        @Override
+        public String getFormat() {
+            return "PKCS#8";
+        }
+
+        @Override
+        public byte[] getEncoded() {
+            return encoded == null ? null : encoded.clone();
+        }
     }
 
     private File createTempPemFile(String name, String content) throws IOException {
