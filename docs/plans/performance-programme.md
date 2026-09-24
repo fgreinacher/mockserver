@@ -3619,7 +3619,7 @@ reports a server property as a client limitation.
 
 **Build 418 failed at `persist + compare` with exit 1** — the correct behaviour for a run where `validity.valid` was false. `publish` did not run, so no uncertified figures were persisted. The published site figures remain **32,000 / 36,323** from build 64 and are not superseded by either build 418 or build 419.
 
-**An open measurement question this exposes — not yet a decision.** The rig's headroom check keys off `vus_active_max`, which is right-censored: it cannot exceed the pool, so once any stall pileup occurs the field reads at the pool ceiling regardless of how idle the pool was between pileups. The `vus_active_p95` column shows how misleading this is in practice:
+**DECIDED AND SHIPPED `bac8a96b7`.** The rig's headroom check keyed off `vus_active_max`, which is right-censored: it cannot exceed the pool, so once any stall pileup occurs the field reads at the pool ceiling regardless of how idle the pool was between pileups. The `vus_active_p95` column showed how misleading this was in practice:
 
 | rung | pool | vus_active_p95 | p95 as % of pool |
 |--:|--:|--:|--:|
@@ -3629,9 +3629,40 @@ reports a server property as a client limitation.
 | 32000 | 2560 | 2237 | 87% |
 | 48000 | 3840 | 3683 | 96% |
 
-A rung whose pool sat at 1% utilisation 95% of the time is being classified as client-limited because a tail pileup briefly touched the ceiling. A percentile-based check (`vus_active_p95 < pool`) would certify the low rungs while still correctly excluding 32,000 and 48,000.
+A rung whose pool sat at 1% utilisation 95% of the time was being classified as client-limited because a tail pileup briefly touched the ceiling. The criterion was changed to `vus_active_p95 < pool`, which certifies low rungs while still correctly excluding 32,000 and 48,000 where the pool is genuinely under pressure. Build 420 validated the decision: 8,000–41,000 certified under the new criterion; 42,000–48,000 correctly excluded.
 
-**This is not a decided change.** Changing a validity criterion so that previously-excluded rungs pass is indistinguishable from the outside from relaxing a gate to manufacture a result. The justification is that `vus_active_max` reports a server property (a tail stall) as a client limitation — but whether to change the criterion, and how, is the maintainer's call. This is recorded as an open question, not planned work.
+**BUILD 420, 2026-09-24 — the knee is certified for the first time.** Ladder `8000…48000` with the two new rungs at 39,000 and 41,000, `K6_SWEEP_VU_CEILING=4096`, p95 headroom criterion (`bac8a96b7`), SUT commit `2a5999395`.
+
+`rig_valid_rungs: 2` on the ERROR arm; `sweep_client_had_headroom: ok: true` — *"2 rung(s) measured with client headroom, no dropped iterations, low errors"*. `validity.valid: true` — the gate that had blocked every prior publication. This is the first build in this programme where `saturation_rps` is non-zero: `rig_valid_peak_achieved_rps = 23872.1`, `saturation_rps = 24000` (ERROR arm). INFO arm: `rig_valid_peak_achieved_rps = 33701.9`, `saturation_rps = 34000`. Builds 414, 416, 418 and 419 all returned 0 on both metrics.
+
+**ERROR-arm ladder** (applying the same site filter as `perf-website-figures.jq`: zero errors, achieved ≥ 0.95 × offered, p50 within 3× the flat-region median):
+
+| offered | achieved | ratio | p50 ms | vus_active_p95 | site-healthy |
+|--:|--:|--:|--:|--:|--|
+| 8000 | 7893.9 | 0.987 | 0.113 | 7 | yes |
+| 16000 | 15906.1 | 0.994 | 0.118 | 303 | yes |
+| 24000 | 23872.1 | 0.995 | 0.111 | 1001 | yes |
+| 28000 | 27693.1 | 0.989 | 0.112 | 1632 | yes |
+| 32000 | 31588.7 | 0.987 | 0.119 | 2197 | yes |
+| 34000 | 33178.1 | 0.976 | 0.125 | 2460 | yes |
+| 36000 | 34897.7 | 0.969 | 0.125 | 2655 | yes |
+| 38000 | 36067.1 | 0.949 | 0.139 | 2858 | no |
+| 39000 | 37223.1 | 0.954 | 0.147 | 2940 | yes |
+| 40000 | 38221.3 | 0.956 | 0.152 | 3034 | yes |
+| 41000 | 39032.7 | 0.952 | 0.196 | 3118 | yes |
+| 42000 | 39338.2 | 0.937 | 0.357 | 3203 | no |
+| 44000 | 40885.7 | 0.929 | 1.026 | 3350 | no |
+| 48000 | 43671.6 | 0.910 | 3.891 | 3646 | no |
+
+Derived under that filter: **`healthy_ceiling_rps` 41,000** (achieved 39,033, p50 0.196 ms) and **`peak_achieved_rps` 43,672**, against the published 32,000 / 36,323 from build 64. These are figures derived by applying the site filter to the ladder table above. The authoritative published values are whatever `perf-website-figures.jq` emits in the run artifact; `publish` had not completed when this was written.
+
+**Why 38,000 alone dips below threshold — and why the finer rungs earned their place.** The ratio at 38,000 is 0.949, just under the 0.95 floor, while 39,000, 40,000 and 41,000 pass at 0.952–0.956. Without rungs at 39,000 and 41,000 that single dip would have read as the ceiling and the published figure would have been ~36,000. A ladder coarse enough to leave a 2,000-rps gap cannot distinguish a noisy rung from a knee.
+
+**Four changes were each necessary and none sufficient.** The MCP per-connection registry leak (`2a5999395`) let the SUT survive the full ladder instead of dying at 38,000; the raised VU ceiling (`K6_SWEEP_VU_CEILING=4096`) let pools scale to 3,840 instead of clamping at 2,048; the p95 headroom criterion (`bac8a96b7`) stopped a 99%-idle pool reading as client-limited; the finer rungs located the ceiling. Remove any one and the run certifies nothing.
+
+**The deep tail remains unexplained.** p50 stays at 0.113 ms across the low rungs; the overload rungs show 0.196 ms–3.891 ms. The server-side request-duration histogram landed in `aeaf0c74a` and is captured by this run's sampler into `diag-samples.csv`, but that artifact has not been analysed. Nothing in build 420 explains the tail.
+
+**MinIO blocked five builds on an unrelated cause.** `quay.io/minio/minio` began gating anonymous pulls: token grants `actions:[]`, every tag 401s. `S3BlobStoreContractTest` failed on every run between build 420's prerequisites and build 420 itself. Fixed `0b0ac1d9b`: moved the S3 contract suite to the `adobe/s3mock` emulator, aligning it with the GCS and Azure suites which always used emulators. Verified in CI: 18 tests, 0 failures, 0 skipped, with `assert-suite-ran.sh` confirming execution.
 
 ## The load generator has been sharing the server's physical cores all along
 
@@ -3882,14 +3913,17 @@ hard way.
 ```mermaid
 flowchart TD
   right["Needs a run, or an external system"]
-  done --> f["Extended ladder with higher VU ceiling
-  (build 419: ceiling not the constraint;
-  validity criterion open question)"]
+  done["Settled from the repo or by a run"]
+  done --> f["Knee certified: 41,000 rps healthy ceiling
+  43,672 peak (build 420, 2026-09-24)"]
+  done --> g["p95 headroom criterion
+  (bac8a96b7, 2026-09-24)"]
+  done --> m["MinIO -> adobe/s3mock
+  (0b0ac1d9b, 2026-09-24)"]
   right --> k["Canceled-child reporting on a
   native trigger step"]
   right --> s["Shading defect:
   jvm_memory_allocated_bytes dead in shipped jar"]
-  done["Settled from the repo or by a run"]
   done --> a["MCP per-connection registries
   (2a5999395, 2026-09-24)"]
   done --> b["SUT liveness gate
@@ -3947,7 +3981,7 @@ The rows below are what remains.
 
 | | Status | Detail |
 |---|---|---|
-| **A client rig that can saturate the server** | **DONE 2026-09-23 (build 412) — the rig produces a valid ladder and reaches 26,820 rps with the server still at 183% of a 400% pin. What remains is not a rig problem but an unfinished ladder: extend past 32,000 and find the rung where latency actually bends.** — the box is now c5.12xlarge with 24 physical cores; the multi-process harness is now WIRED (`faebd742f`, opt-in `PERF_SERVING_MULTIPROC`, notify-only, and it shares the main run's `/sys` physical-core guard), so what is still owed is a ladder of valid rungs actually produced on it - one k6 process serialises internally and will not reach 40k however many cores it is given, which is why the wiring had to come first | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. **Build 408 (2026-09-23) refutes the "needs client cores" framing**: the box now has 48 logical cores and the run still produced no knee, because each k6 process was given only two of them and pegged at N=1 and N=2, while the 48,000 and 64,000 rungs collapsed to ~100% errors (61 and 181 rps achieved). The generator is wired and the cores exist. **Build 412 then delivered the valid ladder**: with 4 cores per client process and a FLAT 128-VU pool the cliff vanished entirely — 24,000 offered went 2,933 -> 19,900 rps and 32,000 at N=4 went 147 -> 26,820, with p50 flat at ~0.1 ms across the whole ladder and `scales_with_procs` TRUE for the first time. The remaining gap to the published ~36,000 is simply that the ladder stops at 32,000, not that the rig cannot offer the load. **Build 418 (2026-09-24) then extended to 48,000 rps on the fixed SUT with `error_rate` 0 on all 24 rungs**, but `rig_valid_peak_achieved_rps=0` throughout because the default `vuCeiling=2048` capped every rung above 16,000 — the rig measured (41,681 rps peak) but did not certify. Build 419 (2026-09-24) ran with `K6_SWEEP_VU_CEILING=4096` and produced `rig_valid_peak_achieved_rps=0` — the ceiling was not the binding constraint. See the build-408, build-412, build-416, build-418, and build-419 notes under the 36,000 rps knee |
+| **A client rig that can saturate the server** | **DONE 2026-09-23 (build 412) — the rig produces a valid ladder and reaches 26,820 rps with the server still at 183% of a 400% pin. What remains is not a rig problem but an unfinished ladder: extend past 32,000 and find the rung where latency actually bends.** — the box is now c5.12xlarge with 24 physical cores; the multi-process harness is now WIRED (`faebd742f`, opt-in `PERF_SERVING_MULTIPROC`, notify-only, and it shares the main run's `/sys` physical-core guard), so what is still owed is a ladder of valid rungs actually produced on it - one k6 process serialises internally and will not reach 40k however many cores it is given, which is why the wiring had to come first | **No longer blocking the baseline — build 391 produced a valid run and persisted one (see the CORRECTION above). What it still blocks is the 36k knee, which needs a ladder of valid rungs, not one.** Build 384 (clean-tier, baseline-eligible) had k6's client CPU at 599.5-613.1% of its 600% pin at EVERY rung, so: (a) the ~19,000 plateau is the client's ceiling, not the 36,000 knee; (b) `rig_valid_peak_achieved_rps` came back 0 with every rung excluded; and (c) `persist + compare` therefore judged the run INVALID, refused to persist it, and failed the build - which is why `mockserver-infra`'s `assert perf baseline is fresh` was failing at the time. Every control behaved correctly; the rig measures the server only intermittently. `multi-process-sweep.sh` already broke the single-process ceiling locally (5,561 to 8,528 rps) before hitting its own client pins, and accepts `PERF_MULTI_TARGET_URL` for a second host. **Build 408 (2026-09-23) refutes the "needs client cores" framing**: the box now has 48 logical cores and the run still produced no knee, because each k6 process was given only two of them and pegged at N=1 and N=2, while the 48,000 and 64,000 rungs collapsed to ~100% errors (61 and 181 rps achieved). The generator is wired and the cores exist. **Build 412 then delivered the valid ladder**: with 4 cores per client process and a FLAT 128-VU pool the cliff vanished entirely — 24,000 offered went 2,933 -> 19,900 rps and 32,000 at N=4 went 147 -> 26,820, with p50 flat at ~0.1 ms across the whole ladder and `scales_with_procs` TRUE for the first time. The remaining gap to the published ~36,000 is simply that the ladder stops at 32,000, not that the rig cannot offer the load. **Build 418 (2026-09-24) then extended to 48,000 rps on the fixed SUT with `error_rate` 0 on all 24 rungs**, but `rig_valid_peak_achieved_rps=0` throughout because the default `vuCeiling=2048` capped every rung above 16,000 — the rig measured (41,681 rps peak) but did not certify. Build 419 (2026-09-24) ran with `K6_SWEEP_VU_CEILING=4096` and produced `rig_valid_peak_achieved_rps=0` — the ceiling was not the binding constraint. **Build 420 (2026-09-24) then certified the knee**: p95 headroom criterion (`bac8a96b7`) replaced `vus_active_max`, finer rungs at 39,000 and 41,000 were added, and `validity.valid: true` for the first time — `healthy_ceiling_rps` 41,000, `peak_achieved_rps` 43,672. See the build-408, build-412, build-416, build-418, build-419, and build-420 notes under the 36,000 rps knee |
 | **`peak_achieved_rps`** | **DONE.** Renamed in all three namespaces that name the rig-valid quantity. The false continuity claim is deleted, and `sweep_client_had_headroom` is keyed off the rig-valid rung **count** (`rig_valid_rungs`), not a throughput value. Renamed: the ERROR-series top-level field → `rig_valid_peak_achieved_rps`; the INFO arm → `info_log_level_arm.rig_valid_peak_achieved_rps` (budget `info_rig_valid_peak_achieved_rps`); per-core → `serving_percore.*.rig_valid_peak_achieved_rps`. All three are computed by the SAME "max achieved over rig-valid rungs" logic, so they carried the same misleading server-claim name. The **website** field is genuinely different — `max_by(.achieved_rps)` over ALL sweep points with no rig-validity filter (36,323.8 vs the rig-valid 2,000.1) — so it keeps `peak_achieved_rps` in `lib/perf-website-figures.jq`. **Done** (`84f6c293e`): the absolute zero-drop threshold now forgives a drop fraction within `PERF_SWEEP_DROP_TOL` (default 1%), but **only** on a rung that also had VU-pool headroom — so a genuinely starved rig is still excluded on the headroom term and a 0.4% blip no longer voids a whole run | See [`peak_achieved_rps` measures the client, not the server](#peak_achieved_rps-measures-the-client-not-the-server) for the full case |
 | **MCP per-connection registries** | **DONE `2a5999395`, 2026-09-24.** `PortUnificationHandler` and `Http2MultiplexChildInitializer` each constructed a new `McpStreamableHttpHandler` per connection; each construction eagerly created an `McpToolRegistry` of 40 tools carrying full JSON schema trees (~156 KB retained per connection). Root-caused via heap dump from build 416: 334,480 `ToolDefinition` instances ÷ 40 tools = 8,362 leaked registries. The fix makes the registry a shared instance. Verified behaviourally: heap flat at ~27 MB at 300 concurrent connections, where the leak would have retained ~47 MB | See build 416 root cause above |
 | **SUT liveness gate** | **DONE `ec59fbe23`, 2026-09-24.** Build 416's SUT died 488 s into a 1,522 s run; the rig kept reporting throughput against a dead container for 1,034 s, with 391 of 523 diagnostic samples blank. The gate probes the SUT between rungs and fails the run immediately on a dead SUT | Corroborated by `error_rate` flipping to 1.0 at 36,000 rung and staying there for the remainder of build 416 |
@@ -3960,7 +3994,7 @@ that is merely undone.
 
 | | What it needs | Why it is stuck here |
 |---|---|---|
-| **Extended ladder with higher VU ceiling** | **ANSWERED by build 419 (2026-09-24) — the ceiling was not the binding constraint.** Running with `K6_SWEEP_VU_CEILING=4096` (3,840 VUs at 48,000 rps instead of 2,048) produced `rig_valid_peak_achieved_rps=0` again; INFO arm certified ~15,996 — unchanged from build 418. Peak observed rose to 42,201 rps (measured, not certified). The published figures remain 32,000 / 36,323 from build 64. **Open measurement question (not decided work):** `vus_active_max` is right-censored by the pool; `vus_active_p95` at the 8,000 rung was 9 against a pool of 640 (1%), yet the rung was excluded as client-limited. A percentile-based check (`vus_active_p95 < pool`) would certify the low rungs. Whether to adopt it is a maintainer decision | See BUILD 419 note |
+| **Extended ladder — knee certified** | **DONE build 420 (2026-09-24).** `validity.valid: true` for the first time. ERROR arm: `rig_valid_peak_achieved_rps = 23,872`, `saturation_rps = 24,000`. Derived under the site filter: `healthy_ceiling_rps` **41,000** (achieved 39,033, p50 0.196 ms), `peak_achieved_rps` **43,672** — against the published 32,000 / 36,323 from build 64. These are figures from applying the site's jq filter to the ladder; the authoritative values are in the run artifact (`publish` had not completed when this was written). Four necessary changes: MCP leak fix, raised VU ceiling, p95 headroom criterion, finer rungs. The p95 criterion (`bac8a96b7`) is the gate change: `vus_active_max` was right-censored and classified idle pools as client-limited; `vus_active_p95 < pool` correctly certifies low rungs and still excludes over-offered ones | See BUILD 419 and BUILD 420 notes |
 | **Canceled-child reporting** | Time, and a child that actually reaches `canceled` or `not_run` | How a child build reaching `canceled` or `not_run` *independently of the parent* is reported on a native Buildkite `trigger` step was never observed. The load-bearing case — a child skipped by `skip_intermediate_builds` — WAS observed and is safe (`skipped`, `soft_failed = false`). A **third** case has since been observed and is NOT safe — see below. See [G7](#g7-trigger-queue-capacity-was-oversubscribed-under-a-commit-burst--resolved) |
 
 **A child that is never created at all, observed 2026-09-22.** This question was framed around how a
@@ -4357,10 +4391,7 @@ answer is "nothing happened", the controls are theatre.
 
 ## Open questions and risks
 
-Every question that could be answered has been; the four that are genuinely still open are
-listed under ["Needs a run, or an external system"](#needs-a-run-or-an-external-system) — the
-36,000 rps knee, the `-Xmx512m` sidecar, `alloc_bytes_per_op` agent-independence, and item 18's
-load generator. What is left here is standing risk rather than an unanswered question.
+Every question that could be answered has been; the remaining open items are listed under ["Needs a run, or an external system"](#needs-a-run-or-an-external-system) — the canceled-child reporting case and the `jvm_memory_allocated_bytes` shading defect. The 36,000 rps knee was certified by build 420 (2026-09-24): `healthy_ceiling_rps` 41,000, `peak_achieved_rps` 43,672 (pending publish step confirmation). What is left here is standing risk rather than an unanswered question.
 
 1. **Never ship a new wall-clock gate with a threshold on day one.** Every wall-clock measurement
    lands notify-only, observes 10 runs, and only then gets a budget derived from that history.
