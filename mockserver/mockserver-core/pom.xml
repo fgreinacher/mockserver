@@ -703,6 +703,7 @@
                         <exclude>**/MockServerEventLogTest.java</exclude>
                         <exclude>**/MockServerEventLogEventualVerificationTest.java</exclude>
                         <exclude>**/MockServerEventLogVerifyByDispositionTest.java</exclude>
+                        <exclude>**/MockServerEventLogEvictionSignalTest.java</exclude>
                         <exclude>**/HttpStateTest.java</exclude>
                         <exclude>**/HttpStateAuditTest.java</exclude>
                         <exclude>**/HttpStateConfigurationUpdateTest.java</exclude>
@@ -961,6 +962,7 @@
                                 <include>**/MockServerEventLogTest.java</include>
                                 <include>**/MockServerEventLogEventualVerificationTest.java</include>
                                 <include>**/MockServerEventLogVerifyByDispositionTest.java</include>
+                                <include>**/MockServerEventLogEvictionSignalTest.java</include>
                                 <include>**/HttpStateTest.java</include>
                                 <include>**/HttpStateAuditTest.java</include>
                                 <include>**/HttpStateConfigurationUpdateTest.java</include>
