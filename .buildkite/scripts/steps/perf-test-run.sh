@@ -1197,6 +1197,12 @@ run_regression() {
 #                                 attribute the heap to the right site — an empty ring with a full
 #                                 retained deque means the retained log is holding the heap, not the
 #                                 backlog. Same graceful-blank behaviour on an older image.
+#   evicted_log_entries           entries dropped once the event log hit its max size — silent
+#                                 evidence loss the dropped_log_events counter does NOT cover.
+#   req_dur_count/_sum + _le_*ms  the server's OWN request-duration histogram (receipt->response).
+#                                 _count is the population; the le=5/10/25/50/100ms cumulative counts
+#                                 bracket the tail so a SERVER-side p99 can be reconstructed and set
+#                                 against k6's CLIENT p99 — the test of whether the tail is in-server.
 # A BLANK JVM-metric column has THREE distinct meanings, all preserved and NOT conflated: (1) the
 # metric is absent on an older image; (2) the scrape TIMED OUT (--max-time 4) because the SUT was
 # thrashing in GC near death — common in the final rows, and itself a death signal; (3) a genuine
@@ -1211,9 +1217,10 @@ to_bytes() { awk -v s="$1" 'BEGIN{
   printf "%d", n*m }'; }
 diag_sampler() {
   local t0; t0="$(date -u +%s)"
-  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries" > "$DIAG_SAMPLE_LOG"
+  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries,evicted_log_entries,req_dur_count,req_dur_sum,req_dur_le_5ms,req_dur_le_10ms,req_dur_le_25ms,req_dur_le_50ms,req_dur_le_100ms" > "$DIAG_SAMPLE_LOG"
   while true; do
     local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt retent retbytes maxretbytes maxretent
+    local evicted hist rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100
     ts="$(date -u +%s)"
     # Authoritative liveness: docker inspect .State, NOT the metrics scrape (which
     # also fails when the JVM thrashes in GC while alive). Only a readable state with
@@ -1260,13 +1267,30 @@ diag_sampler() {
     retbytes="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_retained_bytes/{print $2}')"
     maxretbytes="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_bytes/{print $2}')"
     maxretent="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_entries/{print $2}')"
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    evicted="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_evicted_log_entries_total/{print $2}')"
+    # One awk pass over the already-fetched scrape pulls the whole histogram (no extra HTTP): the
+    # population (_count/_sum) plus the cumulative buckets bracketing the tail. le values are matched
+    # against the exact strings the classic exposition prints (0.0005 renders as 5.0E-4, hence the
+    # 5ms floor uses le="0.005"). "|" is safe — bucket values are integers/floats, never contain it.
+    hist="$(printf '%s' "$metrics" | awk -F' ' '
+      /^mock_server_request_duration_seconds_count /{c=$2}
+      /^mock_server_request_duration_seconds_sum /{s=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.005"\}/{b5=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.01"\}/{b10=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.025"\}/{b25=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.05"\}/{b50=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.1"\}/{b100=$2}
+      END{print c"|"s"|"b5"|"b10"|"b25"|"b50"|"b100}')"
+    IFS='|' read -r rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 <<<"$hist"
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$ts" "$((ts - t0))" \
       "$([ -n "$memu" ] && to_bytes "$memu" || echo '')" \
       "$([ -n "$meml" ] && to_bytes "$meml" || echo '')" \
       "${cpu:-}" "${heap:-}" "${heapmax:-}" "${nonheap:-}" "${gc:-}" "${gcc:-}" "${threads:-}" \
       "${dropped:-}" "${occ:-}" "${cap:-}" "${inflt:-}" "${maxinflt:-}" \
-      "${retent:-}" "${retbytes:-}" "${maxretbytes:-}" "${maxretent:-}" >> "$DIAG_SAMPLE_LOG"
+      "${retent:-}" "${retbytes:-}" "${maxretbytes:-}" "${maxretent:-}" \
+      "${evicted:-}" "${rq_count:-}" "${rq_sum:-}" \
+      "${rq_le5:-}" "${rq_le10:-}" "${rq_le25:-}" "${rq_le50:-}" "${rq_le100:-}" >> "$DIAG_SAMPLE_LOG"
     sleep "$PERF_DIAG_SAMPLE_INTERVAL"
   done
 }
