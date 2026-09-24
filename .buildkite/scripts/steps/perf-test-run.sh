@@ -121,6 +121,10 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # a 1.5 GB heap and was at the identical risk.
 PERF_MAX_EVENT_LOG_BYTES="${PERF_MAX_EVENT_LOG_BYTES:-268435456}" # 256 MiB
 
+# Accept-queue depth for the SUT. Unset by default so the headline figure describes the
+# shipped configuration; setting it labels the result config_profile "tuned".
+PERF_SO_BACKLOG="${PERF_SO_BACKLOG:-}"
+
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-result.XXXXXX")"
 # The k6 image runs as a NON-root user (uid 12345); mktemp -d creates the dir
 # 0700 owned by the agent user, so k6's handleSummary() can't write its result
@@ -564,6 +568,7 @@ start_mockserver() {
     -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
     -e MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES="$PERF_MAX_EVENT_LOG_BYTES" \
+    ${PERF_SO_BACKLOG:+-e MOCKSERVER_SO_BACKLOG="$PERF_SO_BACKLOG"} \
     "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null
 }
 
@@ -778,6 +783,11 @@ JAVA_TOOL_OPTS_VAL="$(container_env JAVA_TOOL_OPTIONS)"
 # the exact OOM risk build #249 hit, and must never be silently baselined as a healthy
 # one). Read back from the container, not echoed from the shell var, on purpose.
 MAX_EVENT_LOG_VAL="$(container_env MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES)"
+# Accept-queue depth the SUT actually received. Absent is normal (shipped default), so
+# empty is not an error — but declared-yet-unapplied is, since the run would be labelled
+# tuned while measuring a default server.
+SO_BACKLOG_VAL="$(container_env MOCKSERVER_SO_BACKLOG)"
+CONFIG_PROFILE="default"; [ -n "$PERF_SO_BACKLOG" ] && CONFIG_PROFILE="tuned"
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
 # k6 container CPU allocation (cores * 100%) from its cpuset pin.
@@ -796,6 +806,12 @@ awk -v v="$HEAP_MAX_BYTES" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("resolved h
 [ -n "$LOG_LEVEL_VAL" ]     || CONFIG_ERRORS+=("MOCKSERVER_LOG_LEVEL not recordable (neither container env nor shell)")
 [ -n "$DISABLE_SYSOUT_VAL" ] || CONFIG_ERRORS+=("MOCKSERVER_DISABLE_SYSTEM_OUT not recordable (neither container env nor shell)")
 awk -v v="$MAX_EVENT_LOG_VAL" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("event-log body-byte OOM guard (MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES) not applied to the SUT, OR the container env could not be read (docker inspect failed) - these are not distinguished here and both fail closed: '${MAX_EVENT_LOG_VAL}' — a run without it is at the build-#249 OOM risk and must not be baselined as healthy")
+if [ -n "$PERF_SO_BACKLOG" ]; then
+  awk -v v="$PERF_SO_BACKLOG" 'BEGIN{exit !(v ~ /^[0-9]+$/ && v+0>0)}' \
+    || CONFIG_ERRORS+=("PERF_SO_BACKLOG='${PERF_SO_BACKLOG}' is not a positive integer")
+  [ "$SO_BACKLOG_VAL" = "$PERF_SO_BACKLOG" ] \
+    || CONFIG_ERRORS+=("PERF_SO_BACKLOG=${PERF_SO_BACKLOG} was declared but the SUT container reports MOCKSERVER_SO_BACKLOG='${SO_BACKLOG_VAL}' — this run would be labelled 'tuned' while measuring something else")
+fi
 if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
   echo "ERROR: run configuration is not fully recordable — refusing to emit a result that misrepresents what it measured:" >&2
   printf '  - %s\n' "${CONFIG_ERRORS[@]}" >&2
@@ -919,6 +935,12 @@ if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] \
   BASELINE_ELIGIBLE="false"
   echo "--- baseline eligibility: NOT eligible (PERF_JVM_DIAGNOSTICS=$PERF_JVM_DIAGNOSTICS) — this run will be recorded but NOT persisted to the baseline"
 fi
+# Same reasoning for a TUNED server: a valid measurement, so green, but the baseline
+# series tracks the shipped default and a tuned point would raise its rolling median.
+if [ "$CONFIG_PROFILE" != "default" ]; then
+  BASELINE_ELIGIBLE="false"
+  echo "--- baseline eligibility: NOT eligible (config_profile=$CONFIG_PROFILE, soBacklog=$SO_BACKLOG_VAL) — a tuned run is recorded but NOT persisted to the default-configuration baseline"
+fi
 
 # --- image freshness: detect a FROZEN snapshot tag (closes the frozen-image false green) ---
 # The provenance fix above deliberately STOPS treating image-lag as a failure — a lagging
@@ -994,6 +1016,7 @@ CONFIG_JSON="$(jq -n \
   --arg log_level "$LOG_LEVEL_VAL" --arg log_level_src "$LOG_LEVEL_SRC" \
   --arg disable_sysout "$DISABLE_SYSOUT_VAL" --arg disable_sysout_src "$DISABLE_SYSOUT_SRC" \
   --arg max_event_log "$MAX_EVENT_LOG_VAL" \
+  --arg so_backlog "$SO_BACKLOG_VAL" --arg config_profile "$CONFIG_PROFILE" \
   --arg jto "$JAVA_TOOL_OPTS_VAL" --arg psjo "${PERF_SERVER_JAVA_OPTS:-}" \
   --arg k6_image "$K6_IMAGE" --arg k6_digest "$K6_IMAGE_DIGEST" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg upstream_cpus "${UPSTREAM_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
@@ -1046,6 +1069,9 @@ CONFIG_JSON="$(jq -n \
     log_level: $log_level,
     disable_system_out: $disable_sysout,
     max_event_log_size_bytes: ($max_event_log|tonumber),
+    # null = shipped default in force; a number = this run was tuned.
+    so_backlog: (if $so_backlog=="" then null else ($so_backlog|tonumber) end),
+    config_profile: $config_profile,
     java_tool_options: $jto,
     perf_server_java_opts: $psjo,
     k6_image: $k6_image,
@@ -1062,11 +1088,12 @@ CONFIG_JSON="$(jq -n \
       gc:"observed", heap_max_bytes:"observed",
       log_level:$log_level_src, disable_system_out:$disable_sysout_src,
       max_event_log_size_bytes:"container-env",
+      so_backlog:"container-env", config_profile:"declared",
       java_tool_options:"observed", perf_server_java_opts:"declared",
       k6_image_digest:"observed", cpusets:"declared", k6_cpu_pin_pct:"declared"
     }
   }')"
-echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} provenance_ok=${PROVENANCE_OK} attributed=${ATTRIBUTED_COMMIT:0:10}(${ATTRIBUTED_SRC}) harness=${HARNESS_COMMIT:0:10} image_age_days=${IMAGE_AGE_DAYS} image_stale=${IMAGE_STALE} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=3)"
+echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} soBacklog=${SO_BACKLOG_VAL:-<shipped default>} config_profile=${CONFIG_PROFILE} provenance_ok=${PROVENANCE_OK} attributed=${ATTRIBUTED_COMMIT:0:10}(${ATTRIBUTED_SRC}) harness=${HARNESS_COMMIT:0:10} image_age_days=${IMAGE_AGE_DAYS} image_stale=${IMAGE_STALE} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=3)"
 
 echo "--- seeding upstream /simple (forward target)"
 docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
