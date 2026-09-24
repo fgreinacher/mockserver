@@ -82,8 +82,8 @@ RUN unzip netty-tcnative-boringssl-static.jar
 
 FROM ${source} AS intermediate
 
-# runtime image https://console.cloud.google.com/gcr/images/distroless/global/java17
-FROM gcr.io/distroless/java17:debug-nonroot@sha256:88ecc55e7bfad5901d2666248abb60ab9eb2c5bb3050877adbe1d97dfde4f855
+# runtime image https://console.cloud.google.com/gcr/images/distroless/global/java25
+FROM gcr.io/distroless/java25:debug-nonroot@sha256:92702d2e60d0e35495baff8650889c3d5b830f062b7f312924f9e77d85682d1d
 
 # maintainer details
 LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"

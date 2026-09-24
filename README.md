@@ -119,7 +119,7 @@ Please see: [Change Log](https://github.com/mock-server/mockserver-monorepo/blob
 
 ### Requirements
 
-**Runtime:** MockServer 6.x requires **Java 17+**. The minimum was raised from Java 11 as part of the Jakarta EE 10 / Spring 7 platform modernisation — see the [Java 17 / Jakarta upgrade guide](docs/operations/migration-java17-jakarta.md). If you are still on Java 11, pin to the `5.15.x` line (no longer receiving security updates). The official Docker image already bundles a Java 17 runtime.
+**Runtime:** MockServer 6.x requires **Java 17+**. The minimum was raised from Java 11 as part of the Jakarta EE 10 / Spring 7 platform modernisation — see the [Java 17 / Jakarta upgrade guide](docs/operations/migration-java17-jakarta.md). If you are still on Java 11, pin to the `5.15.x` line (no longer receiving security updates). The official Docker image bundles its own Java 26 runtime, so containerised users need no JVM of their own.
 
 **Building from source:** requires **JDK 17+**; the produced bytecode targets Java 17.
 

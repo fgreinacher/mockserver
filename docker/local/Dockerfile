@@ -12,8 +12,8 @@
 # - An AppCDS archive is tied to the exact JDK build it was trained with (same coupling as the
 #   JDK 25 AOT cache in docker/aot/Dockerfile), so the trimmed JDK runtime is baked into this image
 #   alongside the archive. Multi-arch builds each train + bake their own archive.
-# - There is no distroless/java17 base that ships a matching CDS-capable runtime for a baked
-#   archive, so a jlink-trimmed JDK 26 runtime (same module set as the binary bundle, see
+# - No distroless java base ships a matching CDS-capable runtime for a baked archive, so a
+#   jlink-trimmed JDK 26 runtime (same module set as the binary bundle, see
 #   scripts/build-binary-bundle.sh and docs/code/cli.md) is copied onto distroless/java-base — the
 #   same base+digest as docker/aot/Dockerfile.
 # - The JVM inside this image is JDK 26; the MockServer library itself is still compiled to the

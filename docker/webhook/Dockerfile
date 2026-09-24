@@ -14,8 +14,8 @@
 #   docker build -t mockserver/mockserver-webhook:6.1.1-SNAPSHOT docker/webhook
 #
 
-# runtime image — distroless java17 (nonroot, ~180 MB)
-FROM gcr.io/distroless/java17:nonroot@sha256:6457ce026c1733d9693b65a4dbb45459d71ec1f5e48676f9d3877c99c63c35cc
+# runtime image — distroless java25 (nonroot, ~180 MB)
+FROM gcr.io/distroless/java25:nonroot@sha256:ca60da1345c0f17b6d019049e6749e15f10fd3c0da86dec938d2b4ec565d0629
 
 LABEL maintainer="James Bloom <jamesdbloom@gmail.com>"
 LABEL description="MockServer Kubernetes Admission Webhook for automatic sidecar injection"

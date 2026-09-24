@@ -9,9 +9,10 @@
 # Notes:
 # - The AOT cache is CPU-architecture and JDK-build specific; it is created in this image
 #   build, so multi-arch builds each get their own cache.
-# - There is no distroless/java25 base yet, so a jlink-trimmed JDK 25 runtime (same module
-#   set as the binary-bundle builder, see docs/code/cli.md) is copied onto
-#   distroless/java-base.
+# - A jlink-trimmed JDK 25 runtime (same module set as the binary-bundle builder, see
+#   docs/code/cli.md) is copied onto distroless/java-base: the baked AOT cache is trained
+#   against this exact runtime, so it ships the runtime rather than the stock distroless/java25
+#   base to keep the cache and the JDK build in lockstep.
 # - netty-tcnative is intentionally omitted: TLS uses the JDK provider. Functionally
 #   identical; TLS handshake throughput may be lower than the standard image.
 #

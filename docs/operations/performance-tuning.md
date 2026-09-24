@@ -45,7 +45,9 @@ A heap dump on OOM is *not* enabled by default; for triage runs add `-XX:+HeapDu
 
 ### GC selection
 
-Java 17 ships production-ready ZGC. For latency-sensitive deployments — particularly those running with large `maxLogEntries` (deep event ring buffers) — `-XX:+UseZGC` typically holds stop-the-world pauses in the single-digit millisecond range (1–5 ms) regardless of heap size, where G1 (the Java 17 server-class default) commonly sits in the 50–200 ms range during mixed cycles under sustained allocation. (Sub-millisecond pauses are an attribute of Generational ZGC in JDK 21+, not the non-generational ZGC shipped in Java 17.)
+ZGC has been production-ready since Java 17. For latency-sensitive deployments — particularly those running with large `maxLogEntries` (deep event ring buffers) — `-XX:+UseZGC` typically holds stop-the-world pauses in the single-digit millisecond range (1–5 ms) regardless of heap size, where G1 (the server-class default) commonly sits in the 50–200 ms range during mixed cycles under sustained allocation.
+
+**Which ZGC you get depends on the JVM.** The Docker images bundle Java 25 or later, where ZGC is *generational* and `-XX:+UseZGC` alone selects it. The separate `-XX:+ZGenerational` flag was removed in JDK 24: passing it does no harm but has no effect — the JVM logs `Ignoring option ZGenerational; support was removed in 24.0` and starts normally — so drop it from your flags. On your own Java 17 JVM, `-XX:+UseZGC` gives the older non-generational collector, whose pauses are single-digit milliseconds rather than the sub-millisecond figures generational ZGC reaches.
 
 These numbers are based on typical GC behaviour, not MockServer-specific benchmarks. Use the `mockserver-performance-test/` k6 harness with `mockserver.outputMemoryUsageCsv=true` to confirm your workload before switching.
 

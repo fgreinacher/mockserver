@@ -252,6 +252,15 @@ changes except smaller downloads.
   Nothing is lost: the removed files are for operating systems and processor architectures the
   container cannot execute, and the build now fails if the correct binary for any of the five
   libraries is missing after the trim.
+- **The distroless Docker images now bundle a Java 25 runtime instead of Java 17.** Six published
+  variants (root, root-snapshot, snapshot, GraalJS, clustered and webhook) move from
+  `gcr.io/distroless/java17` to `gcr.io/distroless/java25` (Temurin 25 LTS). The standard and local
+  images already ran JDK 26, and the experimental AOT image JDK 25, so neither changes here. This
+  brings every image onto a modern JVM — later garbage-collector and JIT work — with nothing for you
+  to change. The embedded MockServer library is still compiled to the **Java 17** bytecode floor, so
+  running the JAR on your own Java 17+ JVM is unaffected; only the bundled JVM inside the images
+  changed. On Java 25 the JVM prints one benign startup warning that Netty's native-library load is
+  a "restricted method"; it does not affect operation.
 - **The "AsyncAPI module is not available" error now tells you how to enable it.** Asking for
   message-broker mocking (Kafka, RabbitMQ/AMQP, MQTT) on a server without the optional
   `mockserver-async` module previously returned only the fact that it was missing, leaving you to
