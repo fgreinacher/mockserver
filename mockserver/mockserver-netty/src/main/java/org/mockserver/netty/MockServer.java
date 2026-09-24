@@ -194,14 +194,10 @@ public class MockServer extends LifeCycle {
         this.mcpSessionManager = initializer.getMcpSessionManager();
         serverServerBootstrap = new ServerBootstrap()
             .group(bossGroup, workerGroup)
-            // Accept-queue depth, now configurable via mockserver.soBacklog. The DEFAULT stays
-            // at the long-standing 1024 deliberately. Raising it to 4096 was tried and reverted:
-            // the first perf run carrying that default saw the SUT exhaust its heap and exit
-            // during a high-connection sweep. The cause was not isolated - that run changed VU
-            // density as well - but an unproven default that can turn "slow" into "dead" is not
-            // something to ship. A deeper queue admits connections the server may not be able to
-            // serve, so 1024 may be acting as useful backpressure rather than as a ceiling.
-            // Operators who need more can set it, and should raise net.core.somaxconn to match.
+            // Accept-queue depth, configurable via mockserver.soBacklog. The 1024 default is
+            // deliberate: a deeper queue admits connections the server may not be able to
+            // serve, so it can act as backpressure rather than as a ceiling. Raising it also
+            // needs net.core.somaxconn raised to match.
             .option(ChannelOption.SO_BACKLOG, configuration.soBacklog())
             .channel(NettyTransport.serverSocketChannelClassFor(bossGroup))
             .childOption(ChannelOption.AUTO_READ, true)
