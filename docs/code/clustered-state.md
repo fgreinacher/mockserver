@@ -274,7 +274,7 @@ Three optional modules provide cloud-backed `BlobStore` implementations for dura
 
 | Module | Blob store type | Cloud SDK | Emulator (Testcontainers) |
 |--------|----------------|-----------|---------------------------|
-| `mockserver-blob-s3` | `s3` | AWS SDK v2 `S3Client` | MinIO (`minio/minio`) |
+| `mockserver-blob-s3` | `s3` | AWS SDK v2 `S3Client` | adobe/s3mock |
 | `mockserver-blob-gcs` | `gcs` | `google-cloud-storage` | fake-gcs-server (`fsouza/fake-gcs-server`) |
 | `mockserver-blob-azure` | `azure` | `azure-storage-blob` | Azurite (`mcr.microsoft.com/azure-storage/azurite`) |
 
