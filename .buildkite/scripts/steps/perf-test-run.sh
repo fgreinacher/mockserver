@@ -1465,6 +1465,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         | (.error_rate // 0) as $err
         | (.offered_rps) as $off | (.achieved_rps // 0) as $ach
         | (.vus_active_max) as $vmax
+        | (.vus_active_p95) as $vp95
         | ($pools[($off|tostring)]) as $pool
         | (($cores <= 0) or ($c == null) or ($c <= $cpu_ceiling)) as $headroom
         # Drop fraction = drops / (drops + completed). A dropped iteration is one the
@@ -1472,10 +1473,15 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         # (drops + completed) is the intended iteration count and this is the exact
         # fraction of the offered load the client failed to deliver.
         | (if ($drops + $completed) > 0 then ($drops / ($drops + $completed)) else 0 end) as $drop_frac
-        # VU-pool headroom: the rung had spare VUs (its peak concurrency stayed below
-        # its FIXED per-rung pool), so the pool was NOT the constraint. Requires BOTH
-        # the per-iteration vus_active_max and the rung pool_per_rung to be present.
-        | (($vmax != null) and ($pool != null) and ($vmax < $pool)) as $vu_headroom
+        # VU-pool headroom, keyed off the p95 concurrency rather than the max. vus_active_max
+        # is RIGHT-CENSORED: it cannot exceed the pool, so a single stall pileup touching the
+        # ceiling makes any rung read as client-limited however idle the pool actually was -
+        # build 419 excluded a rung whose p95 was 9 against a pool of 640. The p95 answers the
+        # question actually being asked: was the pool the constraint for the bulk of the rung.
+        # Falls back to the max when p95 is absent (older artifact), never the other way.
+        | (if ($vp95 != null) and ($pool != null) then ($vp95 < $pool)
+           elif ($vmax != null) and ($pool != null) then ($vmax < $pool)
+           else false end) as $vu_headroom
         # $no_drops (the rig-validity drop clause): forgive drops ONLY when they are a
         # small FRACTION *and* the VU pool had headroom. A tolerance on the fraction
         # ALONE would admit a genuinely VU-starved rung whose achieved rate is a
@@ -1498,7 +1504,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         | ($rig_valid and ($off > 0) and ($ach >= 0.95 * $off)) as $clean
         | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c,
             dropped_iterations:$drops, dropped_fraction:($drop_frac|.*100000|round/100000),
-            vus_active_max:$vmax, pool_per_rung:$pool, error_rate:$err,
+            vus_active_max:$vmax, vus_active_p95:$vp95, pool_per_rung:$pool, error_rate:$err,
             rig_valid:$rig_valid, clean:$clean,
             exclude_reason:(
               if $rig_valid then null
@@ -1506,6 +1512,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
               elif ($no_drops|not) then
                 "k6 dropped \($drops) iterations = \(($drop_frac*1000|round)/10)% of offered"
                 + (if $vu_headroom then " (> \(($drop_tol*100))% tolerance despite VU-pool headroom - too sustained to be a blip)"
+                   elif (($vp95 != null) and ($pool != null)) then " with VU pool exhausted (vus_active_p95 \($vp95) >= pool \($pool), client-limited)"
                    elif (($vmax != null) and ($pool != null)) then " with VU pool exhausted (vus_active_max \($vmax) >= pool \($pool), client-limited)"
                    else " (no VU-pool diagnostics to corroborate a blip; strict zero-drop applied)" end)
               else "server error_rate \($err) > \($err_eps) (fast errors inflate achieved)" end) } ]
@@ -1518,7 +1525,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         client_pin_pct:$pin, client_cores:$cores,
         ladder:$rungs,
         excluded:[ $rungs[] | select(.rig_valid|not)
-                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, dropped_fraction, vus_active_max, pool_per_rung, error_rate, reason:.exclude_reason} ] }'
+                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, dropped_fraction, vus_active_max, vus_active_p95, pool_per_rung, error_rate, reason:.exclude_reason} ] }'
 }
 
 echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
@@ -1869,8 +1876,10 @@ if [ "${PERF_PROXY_PROFILE:-true}" = "true" ]; then
       fi
 
       # Per-SUT resource snapshot: cumulative JVM allocation counter (monotonic —
-      # end-start is exact allocation over the window; null on an image predating
-      # jvm_memory_allocated_bytes) + requests_received_count (the EXACT handshake
+      # end-start is exact allocation over the window). Null until the SUT image is
+      # built after the com.sun shade-relocation fix, which suppressed the metric in
+      # every shipped jar - not a sign the arm is broken.
+      # Plus requests_received_count (the EXACT handshake
       # denominator, since noConnectionReuse => 1 request per fresh handshake, and a
       # delta matches the same window as the resource delta). Scraped over the
       # network so no host port publishing is needed.
