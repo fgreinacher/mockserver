@@ -2425,7 +2425,7 @@ public class ConfigurationProperties {
     }
 
     public static int soBacklog() {
-        return readIntegerProperty(MOCKSERVER_SO_BACKLOG, "MOCKSERVER_SO_BACKLOG", 4096);
+        return readIntegerProperty(MOCKSERVER_SO_BACKLOG, "MOCKSERVER_SO_BACKLOG", 1024);
     }
 
     /**
@@ -2440,6 +2440,10 @@ public class ConfigurationProperties {
      * <p>The effective value is capped by the OS: {@code net.core.somaxconn} on Linux (commonly 4096)
      * and {@code kern.ipc.somaxconn} on macOS. Raising this above the OS limit has no effect, so
      * tune both when a client opens many connections at once.</p>
+     *
+     * <p>Raise it deliberately rather than by default. A deeper queue admits connections the server
+     * may then be unable to serve, so the 1024 default can act as backpressure; a run with 4096 and
+     * several thousand concurrent connections exhausted the heap and exited.</p>
      *
      * @param backlog accept queue depth
      */

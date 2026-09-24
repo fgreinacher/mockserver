@@ -293,7 +293,7 @@ schema_faq:
 <p><strong>Connections arriving in a burst need accept-queue room.</strong> A third OS limit sits beside
 file descriptors and ephemeral ports, and it announces itself differently from both. While MockServer
 accepts connections, the kernel parks completed handshakes in a queue whose depth is
-<code class="inline code">mockserver.soBacklog</code> (default 4096), capped by
+<code class="inline code">mockserver.soBacklog</code> (default 1024), capped by
 <code class="inline code">net.core.somaxconn</code> on Linux or <code class="inline code">kern.ipc.somaxconn</code>
 on macOS. When that queue fills, the kernel does not refuse the connection &mdash; it silently drops the
 handshake packet and the client retransmits after its initial timeout, about one second on Linux. The

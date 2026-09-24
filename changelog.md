@@ -125,8 +125,8 @@ changes except smaller downloads.
 
 ### Added
 
-- **The TCP accept queue is now configurable, and deeper by default** (`mockserver.soBacklog`,
-  default **4096**, previously a hard-coded 1024 that no property could change). This is the queue
+- **The TCP accept queue is now configurable** (`mockserver.soBacklog`, default **1024** —
+  unchanged, but previously hard-coded so no property could reach it). This is the queue
   the kernel parks completed handshakes in while MockServer accepts them, and it only matters when
   many clients connect at once - a load test ramping up, a pool refilling, a fleet of containers
   starting together. Steady traffic over existing keep-alive connections never touches it.
@@ -136,6 +136,9 @@ changes except smaller downloads.
   still capped by `net.core.somaxconn` (Linux) or `kern.ipc.somaxconn` (macOS), and a Docker
   container has its own value - so raise the OS limit alongside it. See
   [Performance](/mock_server/performance.html) for the three connection limits together.
+  Raise it deliberately rather than routinely: a deeper queue admits connections the server may
+  then be unable to serve, so the default acts as backpressure and the failure mode changes from
+  slow to dead.
 - **The dashboard can now ask for more request history per update.** Connect the dashboard
   WebSocket with `?logLimit=N` — for example `/_mockserver_ui_websocket?logLimit=250` — and the
   server sends up to `N` log rows, recorded requests and proxied requests per update instead of the

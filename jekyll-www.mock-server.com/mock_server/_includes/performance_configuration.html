@@ -336,7 +336,8 @@
         <li>Docker: <code class="inline code">docker run --sysctl net.core.somaxconn=16384 ...</code> &mdash; containers get their own value, so setting it on the host is not enough</li>
         <li>macOS: <code class="inline code">sysctl -w kern.ipc.somaxconn=16384</code></li>
     </ul>
-    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">4096</span></p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">1024</span></p>
+    <p><strong>Raise this deliberately, not routinely.</strong> A deeper queue lets the kernel admit connections your server may then be unable to serve, so the default acts as backpressure: the failure mode changes from slow to dead. Raise it when you have measured that connections are being dropped at the queue, and raise <code class="inline code">somaxconn</code> with it.</p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.soBacklog(int backlog)</code></pre>
     <p>System Property:</p>
