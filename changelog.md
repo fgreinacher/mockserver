@@ -371,6 +371,18 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **`jvm_memory_allocated_bytes` was missing from `/mockserver/metrics` on the Docker images and
+  standalone jar — it now appears.** To avoid classpath clashes, the shaded distribution repackages
+  the third-party libraries it bundles under a private prefix. That repackaging also rewrote
+  MockServer's own reference to the JDK's HotSpot allocation counter, so the runtime check that reads
+  cumulative bytes-allocated could never match and the metric was silently dropped. This affected the
+  artifacts most people run — **every Docker image** (which ships the shaded jar), the standalone
+  binary, and the `mockserver-netty-no-dependencies` jar — so external Prometheus scrapers of a
+  shipped MockServer have never seen this metric. It is now emitted with a changing, non-zero value.
+  The same repackaging silently broke two other JDK integrations in that jar (the check that
+  classifies an SCTP connection close as benign, and an internal HTTP test server); both are fixed by
+  the same change, and a build guard now fails the build if any JDK `com.sun.*` reference is
+  repackaged again.
 - **MockServer no longer allocates a full MCP tool registry per connection.** With MCP enabled (the
   default), every incoming connection used to build its own copy of the Model Context Protocol tool
   registry — dozens of tools each carrying a JSON schema — and hold it for the life of the
