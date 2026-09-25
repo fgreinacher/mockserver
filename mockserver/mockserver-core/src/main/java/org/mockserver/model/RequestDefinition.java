@@ -9,7 +9,11 @@ import static org.apache.commons.lang3.StringUtils.isNotBlank;
 public abstract class RequestDefinition extends Not {
 
     private String logCorrelationId;
-    private Long receivedTimestamp;
+    // epoch-millis receive time, stored as a primitive to avoid a boxed Long on every served request
+    // (set once per request, so this was a per-request retained allocation). UNSET_RECEIVED_TIMESTAMP is
+    // the "not set" sentinel; the public getter/setter keep their Long signatures and null semantics.
+    private static final long UNSET_RECEIVED_TIMESTAMP = Long.MIN_VALUE;
+    private long receivedTimestamp = UNSET_RECEIVED_TIMESTAMP;
 
     @JsonIgnore
     public String getLogCorrelationId() {
@@ -29,7 +33,7 @@ public abstract class RequestDefinition extends Not {
      */
     @JsonIgnore
     public Long getReceivedTimestamp() {
-        return receivedTimestamp;
+        return receivedTimestamp == UNSET_RECEIVED_TIMESTAMP ? null : receivedTimestamp;
     }
 
     /**
@@ -38,7 +42,7 @@ public abstract class RequestDefinition extends Not {
      * frozen-clock tests are deterministic.
      */
     public RequestDefinition withReceivedTimestamp(Long receivedTimestamp) {
-        this.receivedTimestamp = receivedTimestamp;
+        this.receivedTimestamp = receivedTimestamp == null ? UNSET_RECEIVED_TIMESTAMP : receivedTimestamp;
         return this;
     }
 

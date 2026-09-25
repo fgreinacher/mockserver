@@ -517,6 +517,24 @@ public class HttpRequestTest {
     // ---- receivedTimestamp ----
 
     @Test
+    public void receivedTimestampUnsetReturnsNull() {
+        // the field is a primitive long backed by a sentinel; an unset request must still report null so
+        // the null checks on the serve path (HttpState) and breakpoint dispatch keep working.
+        HttpRequest request = request().withMethod("GET").withPath("/test");
+        assertThat(request.getReceivedTimestamp(), is(nullValue()));
+    }
+
+    @Test
+    public void receivedTimestampSetToNullReturnsNull() {
+        HttpRequest request = request().withMethod("GET").withPath("/test");
+        request.withReceivedTimestamp(4242L);
+        assertThat(request.getReceivedTimestamp(), is(4242L));
+        request.withReceivedTimestamp(null);
+        assertThat("clearing the timestamp must round-trip back to null",
+            request.getReceivedTimestamp(), is(nullValue()));
+    }
+
+    @Test
     public void receivedTimestampExcludedFromEquals() {
         HttpRequest a = request().withMethod("GET").withPath("/test");
         HttpRequest b = request().withMethod("GET").withPath("/test");

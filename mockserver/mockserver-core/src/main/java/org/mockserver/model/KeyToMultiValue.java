@@ -10,7 +10,11 @@ import static org.mockserver.model.NottableString.*;
 public class KeyToMultiValue extends ObjectWithJsonToString {
     private final NottableString name;
     private final List<NottableString> values;
-    private Integer hashCode;
+    // Lazily cached hashCode using the same self-healing sentinel as Not/HttpRequest: 0 means "not yet
+    // computed" and a genuinely-zero result is stored as 1. Because "computed?" and the value live in one
+    // int field, a concurrent reader of a shared instance sees either 0 (and recomputes the same value) or
+    // the finished value - never a torn pair - so no volatile is needed. Recomputed eagerly on mutation.
+    private int hashCode;
 
     KeyToMultiValue(final String name, final String... values) {
         this(string(name), strings(values));
@@ -49,7 +53,12 @@ public class KeyToMultiValue extends ObjectWithJsonToString {
         } else {
             this.values = new LinkedList<>(values);
         }
-        this.hashCode = Objects.hash(this.name, this.values);
+        recomputeHashCode();
+    }
+
+    private void recomputeHashCode() {
+        int computed = Objects.hash(name, values);
+        this.hashCode = computed != 0 ? computed : 1;
     }
 
     public NottableString getName() {
@@ -64,7 +73,7 @@ public class KeyToMultiValue extends ObjectWithJsonToString {
         if (this.values != values) {
             this.values.clear();
             this.values.addAll(values);
-            this.hashCode = Objects.hash(name, this.values);
+            recomputeHashCode();
         }
     }
 
@@ -76,7 +85,7 @@ public class KeyToMultiValue extends ObjectWithJsonToString {
         if (values != null) {
             values.add(value);
         }
-        this.hashCode = Objects.hash(name, values);
+        recomputeHashCode();
     }
 
     private void addValues(final List<String> values) {
@@ -86,7 +95,7 @@ public class KeyToMultiValue extends ObjectWithJsonToString {
     private void addNottableValues(final List<NottableString> values) {
         if (this.values != null) {
             this.values.addAll(values);
-            this.hashCode = Objects.hash(name, this.values);
+            recomputeHashCode();
         }
     }
 
@@ -116,8 +125,8 @@ public class KeyToMultiValue extends ObjectWithJsonToString {
 
     @Override
     public int hashCode() {
-        if (hashCode == null) {
-            this.hashCode = Objects.hash(this.name, this.values);
+        if (hashCode == 0) {
+            recomputeHashCode();
         }
         return hashCode;
     }
