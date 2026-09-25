@@ -297,8 +297,11 @@ updates:
       - "/docker/snapshot"
       - "/docker/graaljs"
       - "/docker/local"
+      - "/docker/aot"
       - "/docker/webhook"
       - "/docker/clustered"
+      - "/container_integration_tests/docker_compose_libs_classpath"
+      - "/container_integration_tests/docker_compose_war_tomcat"
       - "/docker_build/maven"
       - "/docker_build/performance"
     schedule:
