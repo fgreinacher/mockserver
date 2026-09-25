@@ -233,6 +233,23 @@ function test() {
 # The -graaljs image exists to evaluate JavaScript response templates. Assert the
 # RENDERED body: a template that fails to evaluate can still return a response, so
 # only the computed value distinguishes a working engine from a broken one.
+# The -aot image exists to start fast from a baked Leyden AOT cache. If the cache is
+# rejected the JVM silently falls back to a cold start — the server still works, so no
+# readiness or functional check can see it. -Xlog:aot makes the load observable.
+function assert_aot_cache_loaded() {
+  local container="$1"
+  local logs
+  logs=$(docker logs "${container}" 2>&1 || true)
+  if grep -q "Opened AOT cache" <<<"${logs}"; then
+    printPassMessage "aot: baked AOT cache loaded (no cold-start fallback)"
+    return 0
+  fi
+  printFailureMessage "aot: JVM did not report \"Opened AOT cache\" — the baked cache was rejected and the image silently cold-started"
+  printMessage "aot-related log lines:"
+  grep -i 'aot\|cds\|shared' <<<"${logs}" | head -20 || true
+  return 1
+}
+
 function assert_javascript_template() {
   local host_port="$1" container="$2"
   local expectation
@@ -377,7 +394,11 @@ function smoke_test_variant_nonblocking() {
 
   if [[ ${exit_code} -eq 0 ]]; then
     runCommand "docker rm -f ${container} >/dev/null 2>&1 || true"
-    runCommand "docker run -d --name ${container} -p 0:1080 ${tag}"
+    # -Xlog:aot makes the AOT cache load observable; the entrypoint does not enable it,
+    # and without it a rejected cache is indistinguishable from a loaded one.
+    local run_env=""
+    [[ "${variant}" == "aot" ]] && run_env='-e JAVA_TOOL_OPTIONS=-Xlog:aot=info'
+    runCommand "docker run -d --name ${container} -p 0:1080 ${run_env} ${tag}"
     local host_port
     host_port=$(docker port "${container}" 1080 2>/dev/null | head -1 | awk -F: '{print $NF}')
     if [[ -z "${host_port}" ]]; then
@@ -395,6 +416,9 @@ function smoke_test_variant_nonblocking() {
         printFailureMessage "${variant}: /mockserver/status returned \"${status}\" (expected 200)"
         runCommand "docker logs ${container} 2>&1 || true"
         exit_code=1
+      fi
+      if [[ ${exit_code} -eq 0 ]] && [[ "${variant}" == "aot" ]]; then
+        assert_aot_cache_loaded "${container}" || exit_code=1
       fi
     fi
     runCommand "docker rm -f ${container} >/dev/null 2>&1 || true"
@@ -773,6 +797,9 @@ function run_all_tests() {
         smoke_test_variant "graaljs" || true
         # root-snapshot is a new variant not yet proven in CI — non-blocking.
         smoke_test_variant_nonblocking "root-snapshot" || true
+        # aot is experimental and its build runs a training JVM that is flaky under
+        # arm64 emulation, so it is non-blocking here as it is in the release pipeline.
+        smoke_test_variant_nonblocking "aot" || true
       fi
       # Clustered variant: test that the -clustered image boots and responds
       # to /mockserver/status. The image is already built by build_clustered_docker().
