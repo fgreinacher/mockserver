@@ -30,7 +30,7 @@ Admission Webhook
 gcr.io/distroless/java25:nonroot"]
         CLUSTERED["docker/clustered/Dockerfile
 Clustered (Infinispan)
-gcr.io/distroless/java25:nonroot"]
+gcr.io/distroless/java21:nonroot"]
     end
 
     subgraph "Build Images"
@@ -54,7 +54,7 @@ grafana/k6"]
 | Root Snapshot | `docker/root-snapshot/Dockerfile` | `gcr.io/distroless/java25` | `root` | Testing pre-release (root) |
 | Local | `docker/local/Dockerfile` | `gcr.io/distroless/java-base-debian12:nonroot` + jlink-trimmed Temurin 26 + AppCDS | `nonroot` | The image the release **and** snapshot pipelines actually build+push as `mockserver/mockserver:<ver>` / `:snapshot`; builds from a local JAR, bakes a baked AppCDS archive (~⅓ faster time-to-ready); no netty-tcnative (JDK TLS provider). JVM is JDK 26; the library is still compiled to the Java 17 floor (runtime-only) |
 | Webhook | `docker/webhook/Dockerfile` | `gcr.io/distroless/java25:nonroot` | `nonroot` | Kubernetes admission webhook for sidecar injection |
-| Clustered | `docker/clustered/Dockerfile` | `gcr.io/distroless/java25:nonroot` | `nonroot` | Infinispan state backend for multi-node clustering |
+| Clustered | `docker/clustered/Dockerfile` | `gcr.io/distroless/java21:nonroot` | `nonroot` | Infinispan state backend for multi-node clustering |
 | AOT (experimental) | `docker/aot/Dockerfile` | `gcr.io/distroless/java-base-debian12:nonroot` + jlink-trimmed Temurin 25 | `nonroot` | EXPERIMENTAL, published as opt-in `X.Y.Z-aot` / `latest-aot` tags (Docker Hub + ECR Public) from the next release; bakes a JDK 25 AOT cache (JEP 483/514) at image-build time via a training run; ~2× faster time-to-ready; JDK TLS provider (no tcnative) |
 
 ### Docker Registries

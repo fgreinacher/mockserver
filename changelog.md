@@ -252,9 +252,11 @@ changes except smaller downloads.
   Nothing is lost: the removed files are for operating systems and processor architectures the
   container cannot execute, and the build now fails if the correct binary for any of the five
   libraries is missing after the trim.
-- **The distroless Docker images now bundle a Java 25 runtime instead of Java 17.** Six published
-  variants (root, root-snapshot, snapshot, GraalJS, clustered and webhook) move from
-  `gcr.io/distroless/java17` to `gcr.io/distroless/java25` (Temurin 25 LTS). The standard and local
+- **The distroless Docker images now bundle a newer Java runtime instead of Java 17.** Five published
+  variants (root, root-snapshot, snapshot, GraalJS and webhook) move from
+  `gcr.io/distroless/java17` to `gcr.io/distroless/java25` (Temurin 25 LTS). The `-clustered` image
+  moves to `gcr.io/distroless/java21` instead: Infinispan 14 calls an API that Java 24 removed, so
+  clustering does not start on Java 25 and 21 is the newest runtime it supports. The standard and local
   images already ran JDK 26, and the experimental AOT image JDK 25, so neither changes here. This
   brings every image onto a modern JVM — later garbage-collector and JIT work — with nothing for you
   to change. The embedded MockServer library is still compiled to the **Java 17** bytecode floor, so

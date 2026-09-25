@@ -59,8 +59,13 @@ RUN NETTY_TCNATIVE="$(unzip -p mockserver-netty-jar-with-dependencies.jar META-I
     && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c -
 RUN unzip netty-tcnative-boringssl-static.jar
 
-# runtime image https://console.cloud.google.com/gcr/images/distroless/global/java25
-FROM gcr.io/distroless/java25:nonroot@sha256:ca60da1345c0f17b6d019049e6749e15f10fd3c0da86dec938d2b4ec565d0629
+# runtime image https://console.cloud.google.com/gcr/images/distroless/global/java21
+# Java 21, not 25: Infinispan 14.0.35 calls Subject.getSubject during cache-manager
+# startup, which throws UnsupportedOperationException from JDK 24 onward (JEP 486
+# permanently disabled the Security Manager). No JVM flag restores it; Infinispan 15
+# fixes the call but requires a Java 21+ compile target, which the Java 17 library
+# floor does not allow. 21 is the newest base on which clustering starts.
+FROM gcr.io/distroless/java21:nonroot@sha256:0a1f5a75661918de9c0813f287f651c3bf2d6dd752eada5f084eb0c1f14ced9e
 
 # maintainer details
 LABEL org.opencontainers.image.authors="James Bloom <jamesdbloom@gmail.com>"
