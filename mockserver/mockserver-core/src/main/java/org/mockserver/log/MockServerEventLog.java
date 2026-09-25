@@ -638,6 +638,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         if (configuration.maxLoggedBodyBytes() > 0) {
             truncateBodiesForLog(logEntry);
         }
+        // The retained entry no longer needs the decoded String view its bodies cached while matching:
+        // it is faithfully re-derivable from the canonical raw bytes on the next render/verify. Drop it
+        // BEFORE add() so the weight add() computes reflects the released body (roughly raw bytes plus the
+        // structural constants) rather than double-counting the second copy.
+        logEntry.releaseDerivedForms();
         // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
         // budget — truncation has already run, and the estimate is computed lazily inside add().
         eventLog.add(logEntry);

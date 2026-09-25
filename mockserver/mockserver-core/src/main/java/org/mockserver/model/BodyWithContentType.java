@@ -5,6 +5,8 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import java.nio.charset.Charset;
 import java.util.Objects;
 
+import static org.mockserver.model.MediaType.DEFAULT_TEXT_HTTP_CHARACTER_SET;
+
 /**
  * @author jamesdbloom
  */
@@ -32,6 +34,19 @@ public abstract class BodyWithContentType<T> extends Body<T> {
     @JsonIgnore
     public Charset getCharset(Charset defaultIfNotSet) {
         return determineCharacterSet(contentType, defaultIfNotSet);
+    }
+
+    /**
+     * Decode raw body bytes to the String view, resolving the charset from this body's content type
+     * (falling back to the default text charset). The single place the {@code byte[] -> String}
+     * conversion lives, shared by the text bodies for both lazy derivation and the release check.
+     */
+    @JsonIgnore
+    String decodeRawBytes(byte[] rawBytes) {
+        if (rawBytes == null) {
+            return null;
+        }
+        return new String(rawBytes, determineCharacterSet(contentType, DEFAULT_TEXT_HTTP_CHARACTER_SET));
     }
 
     @Override

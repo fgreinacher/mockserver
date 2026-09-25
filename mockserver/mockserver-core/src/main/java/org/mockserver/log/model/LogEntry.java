@@ -139,6 +139,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * Counted, per HTTP message (each request definition and the response):
      * <ul>
      *   <li>the raw body bytes ({@code getBodyAsRawBytes()}) — the dominant cost for large captures;</li>
+     *   <li>any decoded String view still cached on the body ({@code retainedDerivedFormBytes()}); a
+     *   retained live-traffic body has released this, so it usually adds nothing (see {@code releaseDerivedForms});</li>
      *   <li>the header name + value characters, plus a small fixed overhead per header value;</li>
      *   <li>a fixed structural overhead ({@link #PER_HTTP_MESSAGE_OVERHEAD_BYTES}) for the model object,
      *   its method/path/status NottableStrings and its Body/Headers wrappers.</li>
@@ -185,6 +187,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
                         if (b != null) {
                             size += b.length;
                         }
+                        size += derivedBodyBytes(request.getBody());
                         size += headerBytes(request.getHeaders());
                     }
                 }
@@ -196,6 +199,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
                 if (b != null) {
                     size += b.length;
                 }
+                size += derivedBodyBytes(httpResponse.getBody());
                 size += headerBytes(httpResponse.getHeaders());
             }
             if (hasHttpMessage) {
@@ -231,6 +235,40 @@ public class LogEntry implements EventTranslator<LogEntry> {
             }
         }
         return size;
+    }
+
+    /**
+     * Heap held by a body's derived String view, in bytes ({@code length * 2} for UTF-16), or 0 once it
+     * has been released. Charged so an entry still holding the decoded copy (a re-imported recording whose
+     * canonical value differs from its raw bytes, or one not yet passed through the release hook) is weighed
+     * for it; a retained live-traffic body has released it, so this adds nothing and the weight stays at
+     * roughly the raw bytes plus the structural constants.
+     */
+    private static long derivedBodyBytes(Body<?> body) {
+        return body == null ? 0L : body.retainedDerivedFormBytes();
+    }
+
+    /**
+     * Drop the lazily-derived String (and JSON tree) cached on this entry's request/response bodies, called
+     * once the entry has been moved into the retained event-log deque (see
+     * {@code MockServerEventLog.processLogEntry}). The bodies keep their canonical raw bytes, so a later
+     * render/verify re-derives the identical String; this only frees the redundant second copy.
+     */
+    public void releaseDerivedForms() {
+        RequestDefinition[] reqs = this.httpRequests;
+        if (reqs != null) {
+            for (RequestDefinition rd : reqs) {
+                if (rd instanceof HttpRequest) {
+                    Body<?> body = ((HttpRequest) rd).getBody();
+                    if (body != null) {
+                        body.releaseDerivedForms();
+                    }
+                }
+            }
+        }
+        if (httpResponse != null && httpResponse.getBody() != null) {
+            httpResponse.getBody().releaseDerivedForms();
+        }
     }
 
     private LogEntry setId(String id) {

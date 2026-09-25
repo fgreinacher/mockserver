@@ -81,6 +81,12 @@ changes except smaller downloads.
 - **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
   copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
   life of the entry.
+- A retained log entry no longer holds each text body **twice**. Every JSON, string and XML body
+  kept both the decoded `String` and the raw bytes; the raw bytes are now canonical and the string
+  is re-derived only when something reads it back. Requests in flight are unaffected — they keep the
+  decoded form while being matched — so `maxEventLogSizeInBytes` now reflects real heap without
+  retaining fewer entries. A recorded body whose exact wire bytes cannot be reproduced from its
+  decoded form keeps both, so re-imported recordings are byte-identical as before.
 - A long-lived keep-alive connection no longer leaks a tracking object **on every request it
   carries**. A connection-pooling client, load balancer or browser made the heap grow in proportion
   to the number of requests on that connection, ending in an `OutOfMemoryError`.
@@ -219,6 +225,12 @@ changes except smaller downloads.
   as zero.
 
 ### Changed
+
+- `NottableString.withStyle(...)`, `NottableString.withSchemaType(...)` and `Parameter.withStyle(...)`
+  now return a **new instance** instead of modifying the one they were called on. Code that called
+  them for their side effect and ignored the result will no longer see the style or schema type
+  applied — assign the returned value. These objects are shared between requests, so modifying one
+  in place could alter a header that another request had already recorded.
 - **BREAKING (experimental feature): HTTP/3's native libraries now ship separately, making the
   standalone jar ~11 MB smaller.** The QUIC native binaries were the single largest item in the
   standalone jar — about 11 MB across five platforms — for a feature that is experimental, off by

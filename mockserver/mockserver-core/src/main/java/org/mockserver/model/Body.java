@@ -39,6 +39,26 @@ public abstract class Body<T> extends Not {
         return toString().getBytes(UTF_8);
     }
 
+    /**
+     * Drop any lazily-derived, re-computable representation this body caches (the decoded String view and,
+     * for {@link JsonBody}, the parsed tree) once the entry that holds it has been retained in the event
+     * log. The canonical raw bytes are kept, so the string re-derives identically on the next read. No-op
+     * here; only the text bodies that hold a String copy override it.
+     */
+    @JsonIgnore
+    public void releaseDerivedForms() {
+    }
+
+    /**
+     * Approximate heap, in bytes, currently held by this body's derived String view (0 when it has been
+     * released or was never materialised). Counted by the event-log weigher so an entry whose String is
+     * still cached is charged for it. No-op here; the text bodies override it.
+     */
+    @JsonIgnore
+    public long retainedDerivedFormBytes() {
+        return 0L;
+    }
+
     @JsonIgnore
     public Charset getCharset(Charset defaultIfNotSet) {
         if (this instanceof BodyWithContentType) {

@@ -16,7 +16,10 @@ public class StringBody extends BodyWithContentType<String> {
     private int hashCode;
     public static final MediaType DEFAULT_CONTENT_TYPE = MediaType.create("text", "plain");
     private final boolean subString;
-    private final String value;
+    // The raw bytes are canonical; value is the derived String view - cached on first read and released
+    // once the entry is retained (see releaseDerivedForms). The read/write race with the release is
+    // benign: a reader either sees the cached String or null, and null re-derives the identical String.
+    private transient String value;
     private final byte[] rawBytes;
 
     public StringBody(String value) {
@@ -68,7 +71,26 @@ public class StringBody extends BodyWithContentType<String> {
     }
 
     public String getValue() {
-        return value;
+        String v = value;
+        if (v == null && rawBytes != null) {
+            v = decodeRawBytes(rawBytes);
+            value = v;
+        }
+        return v;
+    }
+
+    @Override
+    public void releaseDerivedForms() {
+        String v = value;
+        if (v != null && rawBytes != null && v.equals(decodeRawBytes(rawBytes))) {
+            value = null;
+        }
+    }
+
+    @Override
+    public long retainedDerivedFormBytes() {
+        String v = value;
+        return v == null ? 0L : (long) v.length() * 2;
     }
 
     @JsonIgnore
@@ -82,7 +104,7 @@ public class StringBody extends BodyWithContentType<String> {
 
     @Override
     public String toString() {
-        return value;
+        return getValue();
     }
 
     @Override
@@ -101,14 +123,16 @@ public class StringBody extends BodyWithContentType<String> {
         }
         StringBody that = (StringBody) o;
         return subString == that.subString &&
-            Objects.equals(value, that.value) &&
+            Objects.equals(getValue(), that.getValue()) &&
             Arrays.equals(rawBytes, that.rawBytes);
     }
 
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            int result = Objects.hash(super.hashCode(), subString, value);
+            // keyed on the canonical rawBytes, not the releasable value view, so the hash is stable
+            // across a release and never re-materialises the String
+            int result = Objects.hash(super.hashCode(), subString);
             hashCode = 31 * result + Arrays.hashCode(rawBytes);
         }
         return hashCode;

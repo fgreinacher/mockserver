@@ -21,12 +21,15 @@ public class JsonBody extends BodyWithContentType<String> {
     public static final MatchType DEFAULT_MATCH_TYPE = MatchType.ONLY_MATCHING_FIELDS;
     // setting default to UTF8 as per https://tools.ietf.org/html/rfc8259#section-8.1
     public static final MediaType DEFAULT_JSON_CONTENT_TYPE = MediaType.APPLICATION_JSON_UTF_8;
-    private final String json;
+    // The raw bytes are canonical; json is the derived String view - cached on first read and released
+    // once the entry is retained (see releaseDerivedForms). Its read/write race with the release is
+    // benign: a reader either sees the cached String or null, and null re-derives the identical String.
+    private transient String json;
     private final MatchType matchType;
     private final boolean matchNumbersAsStrings;
     private final byte[] rawBytes;
     private static ObjectMapper objectMapper;
-    private JsonNode jsonNode;
+    private transient JsonNode jsonNode;
 
     public JsonBody(String json) {
         this(json, null, DEFAULT_JSON_CONTENT_TYPE, DEFAULT_MATCH_TYPE, false);
@@ -120,21 +123,45 @@ public class JsonBody extends BodyWithContentType<String> {
     }
 
     public JsonNode get(String field) {
-        if (jsonNode == null) {
+        // Read the cache into a local: releaseDerivedForms() can null it concurrently, and
+        // re-reading the field after building would then dereference null.
+        JsonNode node = jsonNode;
+        if (node == null) {
             if (objectMapper == null) {
                 objectMapper = ObjectMapperFactory.createObjectMapper();
             }
             try {
-                jsonNode = objectMapper.readTree(json);
+                node = objectMapper.readTree(getValue());
+                jsonNode = node;
             } catch (JsonProcessingException jpe) {
                 throw new RuntimeException(jpe.getMessage(), jpe);
             }
         }
-        return jsonNode.get(field);
+        return node.get(field);
     }
 
     public String getValue() {
-        return json;
+        String value = json;
+        if (value == null && rawBytes != null) {
+            value = decodeRawBytes(rawBytes);
+            json = value;
+        }
+        return value;
+    }
+
+    @Override
+    public void releaseDerivedForms() {
+        String value = json;
+        if (value != null && rawBytes != null && value.equals(decodeRawBytes(rawBytes))) {
+            json = null;
+        }
+        jsonNode = null;
+    }
+
+    @Override
+    public long retainedDerivedFormBytes() {
+        String value = json;
+        return value == null ? 0L : (long) value.length() * 2;
     }
 
     @JsonIgnore
@@ -152,7 +179,7 @@ public class JsonBody extends BodyWithContentType<String> {
 
     @Override
     public String toString() {
-        return json;
+        return getValue();
     }
 
     @Override
@@ -170,7 +197,7 @@ public class JsonBody extends BodyWithContentType<String> {
             return false;
         }
         JsonBody jsonBody = (JsonBody) o;
-        return Objects.equals(json, jsonBody.json) &&
+        return Objects.equals(getValue(), jsonBody.getValue()) &&
             matchType == jsonBody.matchType &&
             matchNumbersAsStrings == jsonBody.matchNumbersAsStrings &&
             Arrays.equals(rawBytes, jsonBody.rawBytes);
@@ -179,7 +206,9 @@ public class JsonBody extends BodyWithContentType<String> {
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            int result = Objects.hash(super.hashCode(), json, matchType, matchNumbersAsStrings);
+            // keyed on the canonical rawBytes, not the releasable json view, so the hash is stable
+            // across a release and never re-materialises the String
+            int result = Objects.hash(super.hashCode(), matchType, matchNumbersAsStrings);
             hashCode = 31 * result + Arrays.hashCode(rawBytes);
         }
         return hashCode;

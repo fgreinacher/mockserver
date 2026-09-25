@@ -15,7 +15,10 @@ public class XmlBody extends BodyWithContentType<String> {
     private int hashCode;
     // setting default to UTF8 as per https://tools.ietf.org/html/rfc3470#section-5.1
     public static final MediaType DEFAULT_XML_CONTENT_TYPE = MediaType.APPLICATION_XML_UTF_8;
-    private final String xml;
+    // The raw bytes are canonical; xml is the derived String view - cached on first read and released
+    // once the entry is retained (see releaseDerivedForms). The read/write race with the release is
+    // benign: a reader either sees the cached String or null, and null re-derives the identical String.
+    private transient String xml;
     private final byte[] rawBytes;
 
     public XmlBody(String xml) {
@@ -54,7 +57,26 @@ public class XmlBody extends BodyWithContentType<String> {
     }
 
     public String getValue() {
-        return xml;
+        String value = xml;
+        if (value == null && rawBytes != null) {
+            value = decodeRawBytes(rawBytes);
+            xml = value;
+        }
+        return value;
+    }
+
+    @Override
+    public void releaseDerivedForms() {
+        String value = xml;
+        if (value != null && rawBytes != null && value.equals(decodeRawBytes(rawBytes))) {
+            xml = null;
+        }
+    }
+
+    @Override
+    public long retainedDerivedFormBytes() {
+        String value = xml;
+        return value == null ? 0L : (long) value.length() * 2;
     }
 
     @JsonIgnore
@@ -64,7 +86,7 @@ public class XmlBody extends BodyWithContentType<String> {
 
     @Override
     public String toString() {
-        return xml;
+        return getValue();
     }
 
     @Override
@@ -82,14 +104,16 @@ public class XmlBody extends BodyWithContentType<String> {
             return false;
         }
         XmlBody xmlBody = (XmlBody) o;
-        return Objects.equals(xml, xmlBody.xml) &&
+        return Objects.equals(getValue(), xmlBody.getValue()) &&
             Arrays.equals(rawBytes, xmlBody.rawBytes);
     }
 
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            int result = Objects.hash(super.hashCode(), xml);
+            // keyed on the canonical rawBytes, not the releasable xml view, so the hash is stable
+            // across a release and never re-materialises the String
+            int result = Objects.hash(super.hashCode());
             hashCode = 31 * result + Arrays.hashCode(rawBytes);
         }
         return hashCode;
