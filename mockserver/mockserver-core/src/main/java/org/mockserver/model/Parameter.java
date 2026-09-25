@@ -73,8 +73,7 @@ public class Parameter extends KeyToMultiValue {
     }
 
     public Parameter withStyle(ParameterStyle style) {
-        getName().withStyle(style);
-        return this;
+        return new Parameter(getName().withStyle(style), getValues().toArray(new NottableString[0]));
     }
 
 }

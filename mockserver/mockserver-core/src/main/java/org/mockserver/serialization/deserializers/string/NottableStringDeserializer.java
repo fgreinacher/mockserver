@@ -73,10 +73,10 @@ public class NottableStringDeserializer extends StdDeserializer<NottableString> 
             }
 
             if (result != null && parameterStyle != null) {
-                result.withStyle(parameterStyle);
+                result = result.withStyle(parameterStyle);
             }
             if (result != null && schemaType != null) {
-                result.withSchemaType(schemaType);
+                result = result.withSchemaType(schemaType);
             }
 
             return result;

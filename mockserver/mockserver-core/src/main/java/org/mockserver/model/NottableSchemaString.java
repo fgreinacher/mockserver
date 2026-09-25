@@ -108,7 +108,11 @@ public class NottableSchemaString extends NottableString {
     }
 
     private NottableSchemaString(String schema, Boolean not) {
-        super(schema, not);
+        this(schema, not, null, null);
+    }
+
+    private NottableSchemaString(String schema, Boolean not, ParameterStyle parameterStyle, String schemaType) {
+        super(schema, not, parameterStyle, schemaType);
         if (isNotBlank(schema)) {
             schemaJsonNode = getSchemaJsonNode(getValue());
             type = getNodeValue(schemaJsonNode, TYPE);
@@ -118,6 +122,11 @@ public class NottableSchemaString extends NottableString {
         }
         json = (Boolean.TRUE.equals(isNot()) ? NOT_CHAR : "") + schema;
         jsonSchemaValidator = new JsonSchemaValidator(MOCK_SERVER_LOGGER, this.json, this.schemaJsonNode);
+    }
+
+    @Override
+    NottableString copyWith(ParameterStyle parameterStyle, String schemaType) {
+        return new NottableSchemaString(getValue(), isNot(), parameterStyle, schemaType);
     }
 
     private NottableSchemaString(String schema) {

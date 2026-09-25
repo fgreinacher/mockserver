@@ -33,10 +33,14 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     // see a fully-built Pattern.
     private volatile Pattern pattern;
     private volatile Pattern caseSensitivePattern;
-    private ParameterStyle parameterStyle;
-    private String schemaType;
+    private final ParameterStyle parameterStyle;
+    private final String schemaType;
 
     NottableString(String value, Boolean not) {
+        this(value, not, null, null);
+    }
+
+    NottableString(String value, Boolean not, ParameterStyle parameterStyle, String schemaType) {
         this.value = value;
         this.isBlank = StringUtils.isBlank(value);
         if (not != null) {
@@ -46,6 +50,8 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
         }
         this.hashCode = Objects.hash(this.value, this.not);
         this.json = serialise();
+        this.parameterStyle = parameterStyle;
+        this.schemaType = schemaType;
     }
 
     NottableString(String value) {
@@ -59,6 +65,8 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
         }
         this.hashCode = Objects.hash(this.value, this.not);
         this.json = serialise();
+        this.parameterStyle = null;
+        this.schemaType = null;
     }
 
     private String serialise() {
@@ -187,8 +195,7 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     }
 
     public NottableString withStyle(ParameterStyle style) {
-        this.parameterStyle = style;
-        return this;
+        return copyWith(style, this.schemaType);
     }
 
     public String getSchemaType() {
@@ -196,8 +203,13 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     }
 
     public NottableString withSchemaType(String schemaType) {
-        this.schemaType = schemaType;
-        return this;
+        return copyWith(this.parameterStyle, schemaType);
+    }
+
+    // copy of the same runtime type carrying the given style/schemaType; overridden per subclass
+    // so a re-styled optional/schema string keeps its subtype and matching semantics
+    NottableString copyWith(ParameterStyle parameterStyle, String schemaType) {
+        return new NottableString(value, not, parameterStyle, schemaType);
     }
 
     NottableString capitalize() {

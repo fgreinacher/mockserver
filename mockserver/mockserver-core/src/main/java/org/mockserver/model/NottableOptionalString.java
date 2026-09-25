@@ -31,6 +31,10 @@ public class NottableOptionalString extends NottableString {
         super(schema, not);
     }
 
+    private NottableOptionalString(String schema, Boolean not, ParameterStyle parameterStyle, String schemaType) {
+        super(schema, not, parameterStyle, schemaType);
+    }
+
     private NottableOptionalString(String schema) {
         super(schema);
     }
@@ -38,6 +42,11 @@ public class NottableOptionalString extends NottableString {
     @Override
     public boolean isOptional() {
         return true;
+    }
+
+    @Override
+    NottableString copyWith(ParameterStyle parameterStyle, String schemaType) {
+        return new NottableOptionalString(getValue(), isNot(), parameterStyle, schemaType);
     }
 
 }
