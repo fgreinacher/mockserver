@@ -236,3 +236,67 @@ number instead of raising coverage is the antipattern the ledger exists to preve
 2. Run a subset of the suite at `DEBUG`/`TRACE` so the guarded bodies execute.
    Restores the incidental protection; costs suite time and log noise.
 3. Add targeted tests per site. ~180 sites of low-value assertions — rejected.
+
+## The ladder needs finer rungs around the knee
+
+Build 434 (six vCPUs, 4 GB, generational ZGC, JDK 25) measured this ladder:
+
+| offered | achieved | p50 ms | p95 ms |
+|---|---|---|---|
+| 32,000 | 31,745 | 0.119 | 24.6 |
+| 48,000 | 43,686 | 0.369 | 82.2 |
+| 64,000 | 48,698 | **36.9** | 78.4 |
+| 128,000 | 50,311 | 38.2 | 74.4 |
+
+The median jumps from **0.369 ms to 36.9 ms** between the 48,000 and 64,000 rungs. The
+knee is somewhere in that gap and the ladder has no resolution there, so the run cannot
+say where the healthy ceiling actually is — only that it is above 43,686 achieved and
+below 48,698.
+
+`rig_valid_peak_achieved_rps` reports **50,311**, the top rung. That is not a publishable
+ceiling: throughput is flat near 50,000 from 64,000 offered upward while the median sits
+near 40 ms. The server is queuing, not serving faster. `saturation_rps` reports 32,000,
+which is conservative — 48,000 offered still returns a sub-millisecond median.
+
+**Two separate limits are in play above 64,000** and they must not be conflated:
+`vus_concurrent_overall_max` hit **4,096** against the 4,096 ceiling from that rung up, so
+those rungs are ALSO client-constrained. The occupancy-ratio criterion keeps them because
+the pool is pinned, and it cannot distinguish "pinned because the server is slow" from
+"pinned because there are not enough VUs". Here p50 shows it is genuinely the server —
+but that has to be read off the latency, not inferred from the criterion.
+
+**Next run:** a fine ladder across the knee for each core count (for six vCPUs,
+44,000 → 64,000 in 4,000 steps), with the VU ceiling raised so the pool is not a
+co-constraint. Publish the highest rung holding a sub-millisecond median, not the highest
+achieved throughput.
+
+## What the GC logs actually showed
+
+Two six-core runs differing only in heap size and event-log budget, both on JDK 25 with
+generational ZGC:
+
+| | 2.4 GiB heap, 256 MiB budget | 7.2 GiB heap, 1 GiB budget |
+|---|---|---|
+| collections | 646 | 163 |
+| total cycle time | 175.2 s | 54.7 s |
+| cycle p50 / p95 / max | 66 / 1047 / 2058 ms | 181 / 952 / 1272 ms |
+| peak live set after GC | 1,658 M | 2,204 M |
+| Major "Proactive" | 20 | 28 |
+
+**The live set tracks the event-log budget, not the workload.** A 1 GiB budget retained
+2,204 M; 256 MiB retained 1,658 M. The heap occupancy that appeared to justify a large
+heap was mostly the budget the harness had been told to use — the event log is the
+dominant retained structure, as the consumer docs now say.
+
+**The smaller heap collects four times as often with shorter cycles, and is no slower.**
+646 collections at a 66 ms median against 163 at 181 ms, yet the 2.4 GiB run matched or
+beat the 7.2 GiB run on throughput and latency at every rung. On generational ZGC the
+extra heap bought fewer, longer cycles — not more speed. "Proactive" collections, which
+are ZGC collecting because it has room rather than because it must, fell from 28 to 20.
+
+**These are CYCLE times, not pause times.** `-Xlog:gc` does not emit stop-the-world
+pauses, so a 1,047 ms p95 cycle is concurrent work, consistent with a request p95 near
+74 ms rather than near 1,000 ms. Turning "the tail improved" into a pause number needs
+`-Xlog:gc+phases`, or the allocation-profile step (JFR `settings=profile` plus periodic
+`GC.class_histogram`), which is the only thing here that can also name the allocation
+sources.
