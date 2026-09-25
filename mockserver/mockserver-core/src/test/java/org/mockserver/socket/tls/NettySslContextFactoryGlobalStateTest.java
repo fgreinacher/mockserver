@@ -230,6 +230,12 @@ public class NettySslContextFactoryGlobalStateTest {
     private static class CapturingLogger extends MockServerLogger {
         private final List<String> warnings = new CopyOnWriteArrayList<>();
 
+        CapturingLogger() {
+            // WARN so the warnings this test asserts on pass the level predicate the production
+            // path applies. The suite default is ERROR, at which they are not logged.
+            super(configuration().logLevel("WARN"), NettySslContextFactoryGlobalStateTest.class);
+        }
+
         @Override
         public void logEvent(LogEntry logEntry) {
             if (logEntry.getLogLevel() == Level.WARN) {

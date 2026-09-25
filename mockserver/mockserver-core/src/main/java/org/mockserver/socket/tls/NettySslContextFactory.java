@@ -151,14 +151,15 @@ public class NettySslContextFactory {
         boolean configuredInsecure = java.util.Arrays.stream(configuration.tlsProtocols().split(","))
             .map(String::trim)
             .anyMatch(p -> p.equalsIgnoreCase("TLSv1") || p.equalsIgnoreCase("TLSv1.1"));
-        if (configuredInsecure && Boolean.TRUE.equals(configuration.tlsAllowInsecureProtocols())) {
+        if (configuredInsecure && Boolean.TRUE.equals(configuration.tlsAllowInsecureProtocols())
+            && mockServerLogger.isEnabledForInstance(Level.WARN)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
                     .setMessageFormat("TLS protocol list includes deprecated TLSv1 / TLSv1.1 (RFC 8996; vulnerable to BEAST and POODLE). Set mockserver.tlsAllowInsecureProtocols=false to drop them, or remove the entries from mockserver.tlsProtocols.")
             );
         }
-        if (forwardProxyTrustsEverything()) {
+        if (forwardProxyTrustsEverything() && mockServerLogger.isEnabledForInstance(Level.WARN)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)
@@ -185,11 +186,13 @@ public class NettySslContextFactory {
             return;
         }
         if (usingBundledDefaultCertificateAuthority() && BUNDLED_CA_WARNING_LOGGED.compareAndSet(false, true)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("MockServer is signing TLS traffic with the bundled default Certificate Authority, whose private key is published in the MockServer jar — anyone can forge certificates it trusts, so this must not be relied on as real interception security. To use a unique private CA set mockserver.dynamicallyCreateCertificateAuthorityCertificate=true (or run with --proxy-setup).")
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("MockServer is signing TLS traffic with the bundled default Certificate Authority, whose private key is published in the MockServer jar — anyone can forge certificates it trusts, so this must not be relied on as real interception security. To use a unique private CA set mockserver.dynamicallyCreateCertificateAuthorityCertificate=true (or run with --proxy-setup).")
+                );
+            }
         }
     }
 
@@ -641,7 +644,7 @@ public class NettySslContextFactory {
             && now >= fixedServerCertificateNotAfterEpochMs
             && !fixedServerCertificateExpiryWarned) {
             fixedServerCertificateExpiryWarned = true;
-            if (mockServerLogger != null) {
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.WARN)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.WARN)
@@ -689,7 +692,7 @@ public class NettySslContextFactory {
     private void logUsedCertificateData() {
         final X509Certificate caCertificate = keyAndCertificateFactory.certificateAuthorityX509Certificate();
         final X509Certificate eeCertificate = keyAndCertificateFactory.x509Certificate();
-        if (caCertificate != null && eeCertificate != null) {
+        if (caCertificate != null && eeCertificate != null && mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.DEBUG)

@@ -70,12 +70,14 @@ public class DownstreamProxyRelayHandler extends SimpleChannelInboundHandler<Htt
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by downstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by downstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel))
+                        .setThrowable(cause)
+                );
+            }
         }
         closeOnFlush(ctx.channel());
     }

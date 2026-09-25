@@ -469,7 +469,10 @@ public class ExpectationBlobStoreRestoreTest {
         private final List<String> messages = Collections.synchronizedList(new java.util.ArrayList<>());
 
         CapturingMockServerLogger() {
-            super(ExpectationBlobStoreRestoreTest.class);
+            // DEBUG so every restore diagnostic this test asserts on passes the level predicate the
+            // production path applies - the post-deadline cause is logged at DEBUG, the rest at
+            // INFO/WARN. The suite default is ERROR, at which none of them are logged.
+            super(configuration().logLevel("DEBUG"), ExpectationBlobStoreRestoreTest.class);
         }
 
         @Override

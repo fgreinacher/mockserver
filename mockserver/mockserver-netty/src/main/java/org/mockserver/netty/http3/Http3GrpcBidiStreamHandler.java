@@ -528,12 +528,14 @@ public class Http3GrpcBidiStreamHandler {
             return;
         }
         deadline.cancel();
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(Level.WARN)
-                .setMessageFormat("gRPC bidi stream error over HTTP/3:{}")
-                .setArguments(message)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("gRPC bidi stream error over HTTP/3:{}")
+                    .setArguments(message)
+            );
+        }
         DefaultHttp3HeadersFrame trailers = GrpcHttp3Adapter.buildTrailingHeadersFrame(
             String.valueOf(statusCode.getCode()), message
         );

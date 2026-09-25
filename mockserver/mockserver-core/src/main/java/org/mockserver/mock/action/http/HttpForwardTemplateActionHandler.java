@@ -47,13 +47,15 @@ public class HttpForwardTemplateActionHandler extends HttpForwardAction {
                     String forwardHost = resolveForwardHost(templatedRequest);
                     InetAddressValidator.validateForwardTarget(configuration, forwardHost);
                 } catch (IllegalArgumentException blocked) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setHttpRequest(originalRequest)
-                            .setMessageFormat("forward template action blocked by SSRF policy:{}")
-                            .setArguments(blocked.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setHttpRequest(originalRequest)
+                                .setMessageFormat("forward template action blocked by SSRF policy:{}")
+                                .setArguments(blocked.getMessage())
+                        );
+                    }
                     return badGatewayFuture(originalRequest);
                 }
                 HttpResponse responseOverride = httpTemplate.getResponseOverride();

@@ -46,13 +46,15 @@ public class HttpForwardWithFallbackActionHandler extends HttpForwardAction {
         try {
             InetAddressValidator.validateForwardTarget(configuration, httpForward.getHost());
         } catch (IllegalArgumentException blocked) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(httpRequest)
-                    .setMessageFormat("forward-with-fallback action blocked by SSRF policy:{}")
-                    .setArguments(blocked.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(httpRequest)
+                        .setMessageFormat("forward-with-fallback action blocked by SSRF policy:{}")
+                        .setArguments(blocked.getMessage())
+                );
+            }
             if (fallbackOnTimeout && fallbackResponse != null) {
                 return completedFuture(httpRequest, fallbackResponse);
             }
@@ -74,13 +76,15 @@ public class HttpForwardWithFallbackActionHandler extends HttpForwardAction {
                 if (throwable != null) {
                     // Connection error or timeout
                     if (fallbackOnTimeout && fallbackResponse != null) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setLogLevel(Level.INFO)
-                                .setHttpRequest(httpRequest)
-                                .setMessageFormat("forward-with-fallback: upstream request failed ({}), returning fallback response")
-                                .setArguments(throwable.getMessage())
-                        );
+                        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(Level.INFO)
+                                    .setHttpRequest(httpRequest)
+                                    .setMessageFormat("forward-with-fallback: upstream request failed ({}), returning fallback response")
+                                    .setArguments(throwable.getMessage())
+                            );
+                        }
                         return fallbackResponse;
                     }
                     return HttpResponse.badGatewayResponse();
@@ -88,26 +92,30 @@ public class HttpForwardWithFallbackActionHandler extends HttpForwardAction {
 
                 if (response == null) {
                     if (fallbackOnTimeout && fallbackResponse != null) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setLogLevel(Level.INFO)
-                                .setHttpRequest(httpRequest)
-                                .setMessageFormat("forward-with-fallback: upstream returned null response, returning fallback response")
-                        );
+                        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(Level.INFO)
+                                    .setHttpRequest(httpRequest)
+                                    .setMessageFormat("forward-with-fallback: upstream returned null response, returning fallback response")
+                            );
+                        }
                         return fallbackResponse;
                     }
                     return HttpResponse.badGatewayResponse();
                 }
 
                 if (shouldFallback(response.getStatusCode(), fallbackOnStatusCodes) && fallbackResponse != null) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.INFO)
-                            .setHttpRequest(httpRequest)
-                            .setHttpResponse(response)
-                            .setMessageFormat("forward-with-fallback: upstream returned status {}, returning fallback response")
-                            .setArguments(response.getStatusCode())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.INFO)
+                                .setHttpRequest(httpRequest)
+                                .setHttpResponse(response)
+                                .setMessageFormat("forward-with-fallback: upstream returned status {}, returning fallback response")
+                                .setArguments(response.getStatusCode())
+                        );
+                    }
                     return fallbackResponse;
                 }
 

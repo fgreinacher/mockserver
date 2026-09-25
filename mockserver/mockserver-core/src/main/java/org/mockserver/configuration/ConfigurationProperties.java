@@ -1767,13 +1767,15 @@ public class ConfigurationProperties {
                 return ObjectMapperFactory.createObjectMapper().readValue(overridesJson, new TypeReference<Map<String, String>>() {
                 });
             } catch (Exception e) {
-                LoggerHolder.LOGGER.logEvent(
-                    new LogEntry()
-                        .setType(SERVER_CONFIGURATION)
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("invalid value for logLevelOverrides, expected JSON map but found:{}")
-                        .setArguments(overridesJson)
-                );
+                if (LoggerHolder.LOGGER.isEnabledForInstance(Level.WARN)) {
+                    LoggerHolder.LOGGER.logEvent(
+                        new LogEntry()
+                            .setType(SERVER_CONFIGURATION)
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("invalid value for logLevelOverrides, expected JSON map but found:{}")
+                            .setArguments(overridesJson)
+                    );
+                }
                 return Collections.emptyMap();
             }
         } else {
@@ -1796,13 +1798,15 @@ public class ConfigurationProperties {
             try {
                 setProperty(MOCKSERVER_LOG_LEVEL_OVERRIDES, ObjectMapperFactory.createObjectMapper().writeValueAsString(overrides));
             } catch (Exception e) {
-                LoggerHolder.LOGGER.logEvent(
-                    new LogEntry()
-                        .setType(SERVER_CONFIGURATION)
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("failed to serialize logLevelOverrides:{}")
-                        .setArguments(overrides)
-                );
+                if (LoggerHolder.LOGGER.isEnabledForInstance(Level.WARN)) {
+                    LoggerHolder.LOGGER.logEvent(
+                        new LogEntry()
+                            .setType(SERVER_CONFIGURATION)
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("failed to serialize logLevelOverrides:{}")
+                            .setArguments(overrides)
+                    );
+                }
             }
         } else {
             clearProperty(MOCKSERVER_LOG_LEVEL_OVERRIDES);
@@ -3188,7 +3192,7 @@ public class ConfigurationProperties {
     public static int maxLlmConversationBodySize() {
         int value = readIntegerProperty(MOCKSERVER_MAX_LLM_CONVERSATION_BODY_SIZE, "MOCKSERVER_MAX_LLM_CONVERSATION_BODY_SIZE", 1048576);
         if (value < 16384) {
-            if (LoggerHolder.LOGGER != null) {
+            if (LoggerHolder.LOGGER != null && LoggerHolder.LOGGER.isEnabledForInstance(Level.INFO)) {
                 LoggerHolder.LOGGER.logEvent(
                     new LogEntry()
                         .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
@@ -3200,7 +3204,7 @@ public class ConfigurationProperties {
             return 16384;
         }
         if (value > 67108864) {
-            if (LoggerHolder.LOGGER != null) {
+            if (LoggerHolder.LOGGER != null && LoggerHolder.LOGGER.isEnabledForInstance(Level.INFO)) {
                 LoggerHolder.LOGGER.logEvent(
                     new LogEntry()
                         .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
@@ -3332,7 +3336,7 @@ public class ConfigurationProperties {
     public static double driftSampleRate() {
         double value = readDoubleProperty(MOCKSERVER_DRIFT_SAMPLE_RATE, "MOCKSERVER_DRIFT_SAMPLE_RATE", 1.0d);
         if (value < 0.0d) {
-            if (LoggerHolder.LOGGER != null) {
+            if (LoggerHolder.LOGGER != null && LoggerHolder.LOGGER.isEnabledForInstance(Level.WARN)) {
                 LoggerHolder.LOGGER.logEvent(
                     new LogEntry()
                         .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)
@@ -3344,7 +3348,7 @@ public class ConfigurationProperties {
             return 0.0d;
         }
         if (value > 1.0d) {
-            if (LoggerHolder.LOGGER != null) {
+            if (LoggerHolder.LOGGER != null && LoggerHolder.LOGGER.isEnabledForInstance(Level.WARN)) {
                 LoggerHolder.LOGGER.logEvent(
                     new LogEntry()
                         .setType(LogEntry.LogMessageType.SERVER_CONFIGURATION)

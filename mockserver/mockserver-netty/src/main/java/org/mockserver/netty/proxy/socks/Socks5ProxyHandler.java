@@ -89,12 +89,14 @@ public class Socks5ProxyHandler extends SocksProxyHandler<Socks5Message> {
             ctx.writeAndFlush(new DefaultSocks5PasswordAuthResponse(Socks5PasswordAuthStatus.SUCCESS));
         } else {
             ctx.writeAndFlush(new DefaultSocks5PasswordAuthResponse(Socks5PasswordAuthStatus.FAILURE)).addListener(ChannelFutureListener.CLOSE);
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(AUTHENTICATION_FAILED)
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("proxy authentication failed so returning SOCKS FAILURE response")
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(AUTHENTICATION_FAILED)
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("proxy authentication failed so returning SOCKS FAILURE response")
+                );
+            }
         }
     }
 

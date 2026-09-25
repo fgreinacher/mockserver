@@ -240,13 +240,15 @@ public abstract class MockServerAbstractMojo extends AbstractMojo {
                     }
                 }
             } catch (RuntimeException e) {
-                MOCK_SERVER_LOGGER.logEvent(
-                        new LogEntry()
-                                .setType(LogEntry.LogMessageType.WARN)
-                                .setLogLevel(Level.WARN)
-                                .setMessageFormat("Exception loading json expectation from " + filePath)
-                                .setThrowable(e)
-                );
+                if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.WARN)) {
+                    MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                    .setType(LogEntry.LogMessageType.WARN)
+                                    .setLogLevel(Level.WARN)
+                                    .setMessageFormat("Exception loading json expectation from " + filePath)
+                                    .setThrowable(e)
+                    );
+                }
             }
         }
 

@@ -171,12 +171,14 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault -> " + message + sniDescription(ctx.channel()))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault -> " + message + sniDescription(ctx.channel()))
+                        .setThrowable(cause)
+                );
+            }
         }
         Channel channel = ctx.channel();
         channel.writeAndFlush(response);

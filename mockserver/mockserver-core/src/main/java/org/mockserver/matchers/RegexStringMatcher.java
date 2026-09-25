@@ -234,7 +234,7 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                 timeoutMillis,
                 Boolean.FALSE,
                 fired -> {
-                    if (mockServerLogger != null) {
+                    if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(WARN)) {
                         mockServerLogger.logEvent(
                             new LogEntry()
                                 .setLogLevel(WARN)

@@ -925,13 +925,15 @@ public class Main {
                         .withBody("{\"id\":1,\"name\":\"Example User\"}")
                 );
         } catch (Throwable throwable) {
-            MOCK_SERVER_LOGGER.logEvent(
-                new LogEntry()
-                    .setType(SERVER_CONFIGURATION)
-                    .setLogLevel(WARN)
-                    .setMessageFormat("exception while seeding demo expectations:{}")
-                    .setThrowable(throwable)
-            );
+            if (MOCK_SERVER_LOGGER.isEnabledForInstance(WARN)) {
+                MOCK_SERVER_LOGGER.logEvent(
+                    new LogEntry()
+                        .setType(SERVER_CONFIGURATION)
+                        .setLogLevel(WARN)
+                        .setMessageFormat("exception while seeding demo expectations:{}")
+                        .setThrowable(throwable)
+                );
+            }
         }
     }
 

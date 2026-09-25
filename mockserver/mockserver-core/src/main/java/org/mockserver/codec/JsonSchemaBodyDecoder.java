@@ -130,20 +130,22 @@ public class JsonSchemaBodyDecoder {
             // template request); the response path has no request to attribute the failure to, so it
             // logs a response-specific message reporting the offending body and matcher instead of
             // two misleading "null"s.
-            LogEntry logEntry = new LogEntry()
-                .setType(EXCEPTION)
-                .setExpectation(this.expectation);
-            if (requestForLogging != null) {
-                logEntry
-                    .setHttpRequest(requestForLogging)
-                    .setMessageFormat("exception parsing xml body for{}while matching against request{}")
-                    .setArguments(requestForLogging, this.httpRequest);
-            } else {
-                logEntry
-                    .setMessageFormat("exception parsing xml response body{}while matching against body matcher{}")
-                    .setArguments(bodyAsString, bodyMatcher);
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                LogEntry logEntry = new LogEntry()
+                    .setType(EXCEPTION)
+                    .setExpectation(this.expectation);
+                if (requestForLogging != null) {
+                    logEntry
+                        .setHttpRequest(requestForLogging)
+                        .setMessageFormat("exception parsing xml body for{}while matching against request{}")
+                        .setArguments(requestForLogging, this.httpRequest);
+                } else {
+                    logEntry
+                        .setMessageFormat("exception parsing xml response body{}while matching against body matcher{}")
+                        .setArguments(bodyAsString, bodyMatcher);
+                }
+                mockServerLogger.logEvent(logEntry);
             }
-            mockServerLogger.logEvent(logEntry);
             return bodyAsString;
         }
     }

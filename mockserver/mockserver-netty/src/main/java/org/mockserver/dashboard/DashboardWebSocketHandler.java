@@ -843,12 +843,14 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("web socket server caught SSL or decoder fault" + sniDescription(ctx.channel()))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("web socket server caught SSL or decoder fault" + sniDescription(ctx.channel()))
+                        .setThrowable(cause)
+                );
+            }
         }
         ctx.close();
     }

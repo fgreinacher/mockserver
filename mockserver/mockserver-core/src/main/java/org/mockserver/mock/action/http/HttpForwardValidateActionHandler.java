@@ -32,14 +32,16 @@ public class HttpForwardValidateActionHandler extends HttpForwardAction {
             if (Boolean.TRUE.equals(action.getValidateRequest())) {
                 List<String> requestErrors = OpenAPIRequestValidator.validate(action.getSpecUrlOrPayload(), request, mockServerLogger);
                 if (!requestErrors.isEmpty()) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
-                            .setLogLevel(Level.WARN)
-                            .setHttpRequest(request)
-                            .setMessageFormat("OpenAPI request validation failed for request{}errors:{}")
-                            .setArguments(request, String.join("; ", requestErrors))
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
+                                .setLogLevel(Level.WARN)
+                                .setHttpRequest(request)
+                                .setMessageFormat("OpenAPI request validation failed for request{}errors:{}")
+                                .setArguments(request, String.join("; ", requestErrors))
+                        );
+                    }
                     if (strict) {
                         return rejectRequest(request, 400, "OpenAPI request validation failed: " + String.join("; ", requestErrors));
                     }
@@ -55,15 +57,17 @@ public class HttpForwardValidateActionHandler extends HttpForwardAction {
                         mockServerLogger
                     );
                     if (!responseErrors.isEmpty()) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
-                                .setLogLevel(Level.WARN)
-                                .setHttpRequest(request)
-                                .setHttpResponse(httpResponse)
-                                .setMessageFormat("OpenAPI response validation failed for request{}response{}errors:{}")
-                                .setArguments(request, httpResponse, String.join("; ", responseErrors))
-                        );
+                        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
+                                    .setLogLevel(Level.WARN)
+                                    .setHttpRequest(request)
+                                    .setHttpResponse(httpResponse)
+                                    .setMessageFormat("OpenAPI response validation failed for request{}response{}errors:{}")
+                                    .setArguments(request, httpResponse, String.join("; ", responseErrors))
+                            );
+                        }
                         if (strict) {
                             return response()
                                 .withStatusCode(502)
@@ -79,13 +83,15 @@ public class HttpForwardValidateActionHandler extends HttpForwardAction {
                 try {
                     InetAddressValidator.validateForwardTarget(configuration, action.getHost());
                 } catch (IllegalArgumentException blocked) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setHttpRequest(request)
-                            .setMessageFormat("forward-validate action blocked by SSRF policy:{}")
-                            .setArguments(blocked.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setHttpRequest(request)
+                                .setMessageFormat("forward-validate action blocked by SSRF policy:{}")
+                                .setArguments(blocked.getMessage())
+                        );
+                    }
                     return badGatewayFuture(request);
                 }
                 // SSRF validation above has already resolved and vetted the host. Unresolved so Netty's

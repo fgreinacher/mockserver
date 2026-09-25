@@ -41,6 +41,7 @@ public class HttpRequestHandlerExceptionTest {
     public void shouldLogWarnOnDecoderFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -59,6 +60,7 @@ public class HttpRequestHandlerExceptionTest {
     public void shouldLogWarnOnSslFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -77,6 +79,7 @@ public class HttpRequestHandlerExceptionTest {
     public void shouldStaySilentOnBenignConnectionClose() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -93,6 +96,7 @@ public class HttpRequestHandlerExceptionTest {
     public void shouldLogErrorOnUnexpectedException() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when

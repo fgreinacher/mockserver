@@ -106,12 +106,14 @@ public class McpSessionManager {
         if (oldestId != null) {
             sessions.remove(oldestId);
             if (mockServerLogger != null) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("MCP session limit reached ({}), evicted least recently used session {}")
-                        .setArguments(MAX_SESSIONS, oldestId)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("MCP session limit reached ({}), evicted least recently used session {}")
+                            .setArguments(MAX_SESSIONS, oldestId)
+                    );
+                }
             }
         }
     }

@@ -154,12 +154,14 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                     tagGrpcWebResponse(reflectionResponse, request, grpcWebContentType);
                     ctx.writeAndFlush(reflectionResponse);
                 } catch (Exception e) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setMessageFormat("gRPC reflection request error:{}:{}")
-                            .setArguments(request.getPath(), e.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setMessageFormat("gRPC reflection request error:{}:{}")
+                                .setArguments(request.getPath(), e.getMessage())
+                        );
+                    }
                     org.mockserver.model.HttpResponse errorResponse = org.mockserver.model.HttpResponse.response()
                         .withStatusCode(200)
                         .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)
@@ -244,12 +246,14 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                 HttpRequest converted = convertGrpcRequest(ctx, request);
                 ctx.fireChannelRead(converted);
             } catch (GrpcException e) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("gRPC request error:{}:{}")
-                        .setArguments(request.getPath(), e.getMessage())
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("gRPC request error:{}:{}")
+                            .setArguments(request.getPath(), e.getMessage())
+                    );
+                }
                 // The status now travels on the exception rather than being inferred from the
                 // message text, so an oversize message reports RESOURCE_EXHAUSTED and an
                 // unsupported grpc-encoding reports UNIMPLEMENTED, instead of everything except
@@ -266,12 +270,14 @@ public class GrpcToHttpRequestHandler extends SimpleChannelInboundHandler<HttpRe
                 tagGrpcWebResponse(errorResponse, request, grpcWebContentType);
                 ctx.writeAndFlush(errorResponse);
             } catch (Exception e) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("failed to convert gRPC request to JSON:{}:{}")
-                        .setArguments(request.getPath(), e.getMessage())
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("failed to convert gRPC request to JSON:{}:{}")
+                            .setArguments(request.getPath(), e.getMessage())
+                    );
+                }
                 org.mockserver.model.HttpResponse errorResponse = org.mockserver.model.HttpResponse.response()
                     .withStatusCode(200)
                     .withHeader("content-type", GrpcStatusMapper.GRPC_CONTENT_TYPE)

@@ -97,12 +97,14 @@ public class MemoryMonitoring implements MockServerLogListener, MockServerMatche
         try (FileOutputStream rawFileOutputStream = new FileOutputStream(csvFile, true)) {
             rawFileOutputStream.write((line + NEW_LINE).getBytes(StandardCharsets.UTF_8));
         } catch (IOException e) {
-            MOCK_SERVER_LOGGER.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("exception writing memory usage statistics to CSV file [" + csvFile + "]")
-                    .setThrowable(e)
-            );
+            if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.WARN)) {
+                MOCK_SERVER_LOGGER.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("exception writing memory usage statistics to CSV file [" + csvFile + "]")
+                        .setThrowable(e)
+                );
+            }
         }
     }
 

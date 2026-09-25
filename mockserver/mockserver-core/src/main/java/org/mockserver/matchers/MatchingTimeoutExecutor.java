@@ -238,12 +238,14 @@ public final class MatchingTimeoutExecutor {
                 Boolean.FALSE,
                 fired -> {
                     if (mockServerLogger != null) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setLogLevel(WARN)
-                                .setMessageFormat(description + " regex evaluation timed out after {}ms for pattern:{}— treating as non-match (raise mockserver.regexMatchingTimeoutMillis or simplify the pattern to suppress this)")
-                                .setArguments(fired, pattern.pattern())
-                        );
+                        if (mockServerLogger.isEnabledForInstance(WARN)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(WARN)
+                                    .setMessageFormat(description + " regex evaluation timed out after {}ms for pattern:{}— treating as non-match (raise mockserver.regexMatchingTimeoutMillis or simplify the pattern to suppress this)")
+                                    .setArguments(fired, pattern.pattern())
+                            );
+                        }
                     } else {
                         // callers without a MockServerLogger still get an observable trace of the timeout
                         LOGGER.warn("{} regex evaluation timed out after {}ms for pattern:{} — treating as non-match (raise mockserver.regexMatchingTimeoutMillis or simplify the pattern to suppress this)", description, fired, pattern.pattern());

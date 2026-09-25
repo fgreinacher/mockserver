@@ -31,13 +31,15 @@ public class HttpForwardActionHandler extends HttpForwardAction {
         try {
             InetAddressValidator.validateForwardTarget(configuration, httpForward.getHost());
         } catch (IllegalArgumentException blocked) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(httpRequest)
-                    .setMessageFormat("forward action blocked by SSRF policy:{}")
-                    .setArguments(blocked.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(httpRequest)
+                        .setMessageFormat("forward action blocked by SSRF policy:{}")
+                        .setArguments(blocked.getMessage())
+                );
+            }
             return badGatewayFuture(httpRequest);
         }
         // SSRF validation above has already resolved and vetted the host. Hand the connect path an

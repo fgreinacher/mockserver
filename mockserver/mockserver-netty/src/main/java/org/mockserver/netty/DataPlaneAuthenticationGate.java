@@ -78,16 +78,18 @@ public final class DataPlaneAuthenticationGate {
         }
         // Do NOT echo any credential or the configured scheme detail in the body.
         unauthorizedResponse.withBody("Unauthorized for data plane", MediaType.create("text", "plain"));
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setType(AUTHENTICATION_FAILED)
-                .setLogLevel(Level.INFO)
-                .setCorrelationId(request.getLogCorrelationId())
-                .setHttpRequest(request)
-                .setHttpResponse(unauthorizedResponse)
-                .setMessageFormat("data plane authentication failed so returning response:{}for request:{}")
-                .setArguments(unauthorizedResponse, request)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(AUTHENTICATION_FAILED)
+                    .setLogLevel(Level.INFO)
+                    .setCorrelationId(request.getLogCorrelationId())
+                    .setHttpRequest(request)
+                    .setHttpResponse(unauthorizedResponse)
+                    .setMessageFormat("data plane authentication failed so returning response:{}for request:{}")
+                    .setArguments(unauthorizedResponse, request)
+            );
+        }
         responseWriter.writeResponse(request, unauthorizedResponse, false);
         return false;
     }

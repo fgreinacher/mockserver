@@ -147,12 +147,14 @@ public class ClusterFanIn {
     }
 
     private void logUnreachable(String peer, Throwable throwable) {
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setType(WARN)
-                .setLogLevel(Level.WARN)
-                .setMessageFormat("cluster verify/retrieve fan-in could not reach peer{}error:{}")
-                .setArguments(peer, throwable.getMessage())
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(WARN)
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("cluster verify/retrieve fan-in could not reach peer{}error:{}")
+                    .setArguments(peer, throwable.getMessage())
+            );
+        }
     }
 }

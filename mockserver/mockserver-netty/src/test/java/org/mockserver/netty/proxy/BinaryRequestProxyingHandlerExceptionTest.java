@@ -43,6 +43,7 @@ public class BinaryRequestProxyingHandlerExceptionTest {
     public void shouldLogWarnAndCloseOnDecoderFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -62,6 +63,7 @@ public class BinaryRequestProxyingHandlerExceptionTest {
     public void shouldLogWarnAndCloseOnSslFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -81,6 +83,7 @@ public class BinaryRequestProxyingHandlerExceptionTest {
     public void shouldStaySilentOnBenignConnectionClose() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when
@@ -98,6 +101,7 @@ public class BinaryRequestProxyingHandlerExceptionTest {
     public void shouldLogErrorAndCloseOnUnexpectedException() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(handler(logger));
 
         // when

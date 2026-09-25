@@ -145,14 +145,16 @@ final class GrpcPendingRequests {
                 // expected, so this MAY be discarding a live stream -- which would make that
                 // stream's response skip gRPC conversion and go out as raw JSON (issue #2419).
                 // Log it so the condition is diagnosable instead of silent.
-                MOCK_SERVER_LOGGER.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("evicting pending gRPC request record for stream {} after exceeding {}"
-                            + " retained streams on one connection; if this stream is still open its response"
-                            + " will not be converted to gRPC - please raise an issue")
-                        .setArguments(eldest.getKey(), MAX_PENDING_STREAMS)
-                );
+                if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.WARN)) {
+                    MOCK_SERVER_LOGGER.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("evicting pending gRPC request record for stream {} after exceeding {}"
+                                + " retained streams on one connection; if this stream is still open its response"
+                                + " will not be converted to gRPC - please raise an issue")
+                            .setArguments(eldest.getKey(), MAX_PENDING_STREAMS)
+                    );
+                }
             }
             return evict;
         }
@@ -233,14 +235,16 @@ final class GrpcPendingRequests {
         if (streamId == null) {
             if (withoutStreamId != null) {
                 withoutStreamIdAmbiguous = true;
-                MOCK_SERVER_LOGGER.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("a second gRPC request ({}/{}) was decoded on an HTTP/1.1 connection"
-                            + " before the previous response was written (pipelining); neither response can be"
-                            + " safely attributed to a method, so both will be returned unconverted")
-                        .setArguments(serviceName, methodName)
-                );
+                if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.WARN)) {
+                    MOCK_SERVER_LOGGER.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("a second gRPC request ({}/{}) was decoded on an HTTP/1.1 connection"
+                                + " before the previous response was written (pipelining); neither response can be"
+                                + " safely attributed to a method, so both will be returned unconverted")
+                            .setArguments(serviceName, methodName)
+                    );
+                }
             }
             if (withoutStreamId != null) {
                 withoutStreamId.cancelDeadline();

@@ -20,6 +20,8 @@ import static org.hamcrest.Matchers.*;
 import static org.junit.Assert.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 /**
  * EmbeddedChannel tests for {@link DownstreamProxyRelayHandler} verifying:
@@ -135,6 +137,7 @@ public class DownstreamProxyRelayHandlerTest {
     public void shouldLogWarnAndCloseOnDecoderFault() {
         // given - a handler wired with a mock logger so the log level can be asserted
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(new DownstreamProxyRelayHandler(logger, new EmbeddedChannel()));
 
         // when - a genuine decoder fault is caught
@@ -154,6 +157,7 @@ public class DownstreamProxyRelayHandlerTest {
     public void shouldLogWarnAndCloseOnSslFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(new DownstreamProxyRelayHandler(logger, new EmbeddedChannel()));
 
         // when - a throwable whose cause is an SSLException is caught
@@ -173,6 +177,7 @@ public class DownstreamProxyRelayHandlerTest {
     public void shouldStaySilentOnBenignConnectionClose() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(new DownstreamProxyRelayHandler(logger, new EmbeddedChannel()));
 
         // when - a benign connection reset is caught
@@ -190,6 +195,7 @@ public class DownstreamProxyRelayHandlerTest {
     public void shouldLogErrorOnUnexpectedException() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel channel = new EmbeddedChannel(new DownstreamProxyRelayHandler(logger, new EmbeddedChannel()));
 
         // when - an unexpected exception is caught

@@ -1251,13 +1251,15 @@ public class HttpState {
                         break;
                     }
                     case REQUESTS: {
-                        LogEntry logEntry = new LogEntry()
+                        LogEntry logEntry = mockServerLogger.isEnabledForInstance(Level.INFO)
+                            ? new LogEntry()
                             .setType(RETRIEVED)
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setHttpRequest(requestDefinition)
                             .setMessageFormat("retrieved requests in " + format.name().toLowerCase() + " that match:{}")
-                            .setArguments(requestDefinition);
+                            .setArguments(requestDefinition)
+                            : null;
                         switch (format) {
                             case JAVA: {
                                 List<RequestDefinition> requests = retrieveRequestsPossiblyFanIn(requestDefinition, logCorrelationId, request, applyFanIn);
@@ -1265,7 +1267,9 @@ public class HttpState {
                                     getRequestDefinitionSerializer().serialize(requests),
                                     MediaType.create("application", "java").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1275,7 +1279,9 @@ public class HttpState {
                                     getRequestDefinitionSerializer().serializeRecordedRequests(true, requests),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1288,7 +1294,9 @@ public class HttpState {
                                     getLogEntrySerializer().serialize(logEntries),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1298,7 +1306,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeRequestsAsOpenApi(requests),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1308,7 +1318,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeRequestsAsPostman(requests),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1318,7 +1330,9 @@ public class HttpState {
                                     .withBody(getExpectationExportSerializer().serializeRequestsAsBruno(requests))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
                                     .withHeader("content-disposition", "attachment; filename=\"mockserver-requests.bruno.zip\"");
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1332,7 +1346,9 @@ public class HttpState {
                                     }
                                 }
                                 response.withBody(getHarConverter().serialize(pairs), MediaType.JSON_UTF_8);
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1345,7 +1361,9 @@ public class HttpState {
                                     }
                                 }
                                 response.withBody(toCurlCommands(httpRequests), MediaType.PLAIN_TEXT_UTF_8);
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1357,20 +1375,24 @@ public class HttpState {
                             case RUST:
                             case PHP:
                                 response.withBody(format.name() + " not supported for REQUESTS (use RECORDED_EXPECTATIONS)", MediaType.create("text", "plain").withCharset(UTF_8));
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                         }
                         break;
                     }
                     case REQUEST_RESPONSES: {
-                        LogEntry logEntry = new LogEntry()
+                        LogEntry logEntry = mockServerLogger.isEnabledForInstance(Level.INFO)
+                            ? new LogEntry()
                             .setType(RETRIEVED)
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setHttpRequest(requestDefinition)
                             .setMessageFormat("retrieved requests and responses in " + format.name().toLowerCase() + " that match:{}")
-                            .setArguments(requestDefinition);
+                            .setArguments(requestDefinition)
+                            : null;
                         switch (format) {
                             case JAVA:
                             case JAVASCRIPT:
@@ -1381,7 +1403,9 @@ public class HttpState {
                             case RUST:
                             case PHP:
                                 response.withBody(format.name() + " not supported for REQUEST_RESPONSES", MediaType.create("text", "plain").withCharset(UTF_8));
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             case JSON: {
@@ -1394,7 +1418,9 @@ public class HttpState {
                                     getHttpRequestResponseSerializer().serialize(pairs),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1407,7 +1433,9 @@ public class HttpState {
                                     getLogEntrySerializer().serialize(logEntries),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1417,7 +1445,9 @@ public class HttpState {
                                     getHarConverter().serialize(pairs),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1427,7 +1457,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeRequestResponsesAsOpenApi(pairs),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1437,7 +1469,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeRequestResponsesAsPostman(pairs),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1447,7 +1481,9 @@ public class HttpState {
                                     .withBody(getExpectationExportSerializer().serializeRequestResponsesAsBruno(pairs))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
                                     .withHeader("content-disposition", "attachment; filename=\"mockserver-traffic.bruno.zip\"");
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1460,7 +1496,9 @@ public class HttpState {
                                     }
                                 }
                                 response.withBody(toCurlCommands(httpRequests), MediaType.PLAIN_TEXT_UTF_8);
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1468,13 +1506,15 @@ public class HttpState {
                         break;
                     }
                     case RECORDED_EXPECTATIONS: {
-                        LogEntry logEntry = new LogEntry()
+                        LogEntry logEntry = mockServerLogger.isEnabledForInstance(Level.INFO)
+                            ? new LogEntry()
                             .setType(RETRIEVED)
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setHttpRequest(requestDefinition)
                             .setMessageFormat("retrieved recorded expectations in " + format.name().toLowerCase() + " that match:{}")
-                            .setArguments(requestDefinition);
+                            .setArguments(requestDefinition)
+                            : null;
                         switch (format) {
                             case JAVA: {
                                 List<Expectation> requests = postProcessRecordedExpectations(awaitRetrieve(
@@ -1485,7 +1525,9 @@ public class HttpState {
                                     getExpectationToJavaSerializer().serialize(requests),
                                     MediaType.create("application", "java").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1498,7 +1540,9 @@ public class HttpState {
                                     getExpectationToJavaScriptSerializer().serialize(requests),
                                     MediaType.create("application", "javascript").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1511,7 +1555,9 @@ public class HttpState {
                                     getExpectationToPythonSerializer().serialize(requests),
                                     MediaType.create("text", "x-python").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1524,7 +1570,9 @@ public class HttpState {
                                     getExpectationToGoSerializer().serialize(requests),
                                     MediaType.create("text", "x-go").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1537,7 +1585,9 @@ public class HttpState {
                                     getExpectationToCSharpSerializer().serialize(requests),
                                     MediaType.create("text", "x-csharp").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1550,7 +1600,9 @@ public class HttpState {
                                     getExpectationToRubySerializer().serialize(requests),
                                     MediaType.create("text", "x-ruby").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1563,7 +1615,9 @@ public class HttpState {
                                     getExpectationToRustSerializer().serialize(requests),
                                     MediaType.create("text", "x-rust").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1576,7 +1630,9 @@ public class HttpState {
                                     getExpectationToPhpSerializer().serialize(requests),
                                     MediaType.create("application", "x-httpd-php").withCharset(UTF_8)
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1589,7 +1645,9 @@ public class HttpState {
                                     getExpectationSerializerThatSerializesBodyDefault().serialize(requests),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1602,7 +1660,9 @@ public class HttpState {
                                     getLogEntrySerializer().serialize(logEntries),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1615,7 +1675,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeAsOpenApi(expectations),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1628,7 +1690,9 @@ public class HttpState {
                                     getExpectationExportSerializer().serializeAsPostmanCollection(expectations),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1641,7 +1705,9 @@ public class HttpState {
                                     .withBody(getExpectationExportSerializer().serializeAsBrunoCollection(expectations))
                                     .withHeader(io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE.toString(), "application/zip")
                                     .withHeader("content-disposition", "attachment; filename=\"mockserver-recorded.bruno.zip\"");
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
@@ -1654,13 +1720,17 @@ public class HttpState {
                                     getHarConverter().serialize(expectationsToLogEvents(expectations)),
                                     MediaType.JSON_UTF_8
                                 );
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                             }
                             case CURL:
                                 response.withBody("CURL not supported for RECORDED_EXPECTATIONS", MediaType.create("text", "plain").withCharset(UTF_8));
-                                mockServerLogger.logEvent(logEntry);
+                                if (logEntry != null) {
+                                    mockServerLogger.logEvent(logEntry);
+                                }
                                 httpResponseFuture.complete(response);
                                 break;
                         }
@@ -5804,12 +5874,14 @@ public class HttpState {
 
             return buildGenerateExpectationResponse(objectMapper, suggestions, suggestions.isEmpty() ? 0.0 : 0.75, preview, null);
         } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("failed to generate expectation:{}").setArguments(e.getMessage())
-                    .setThrowable(e)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("failed to generate expectation:{}").setArguments(e.getMessage())
+                        .setThrowable(e)
+                );
+            }
             return generateExpectationError(objectMapper, "failed to generate expectation");
         }
     }
@@ -6154,14 +6226,16 @@ public class HttpState {
             }
             // OIDC path: log the detailed reason server-side only and withhold detail from
             // the client so the expected issuer/audience/scopes are not disclosed.
-            mockServerLogger.logEvent(
-                new org.mockserver.log.model.LogEntry()
-                    .setLogLevel(org.slf4j.event.Level.INFO)
-                    .setHttpRequest(request)
-                    .setMessageFormat("control plane request failed authentication:{}")
-                    .setArguments(authenticationException.getMessage())
-                    .setThrowable(authenticationException)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new org.mockserver.log.model.LogEntry()
+                        .setLogLevel(org.slf4j.event.Level.INFO)
+                        .setHttpRequest(request)
+                        .setMessageFormat("control plane request failed authentication:{}")
+                        .setArguments(authenticationException.getMessage())
+                        .setThrowable(authenticationException)
+                );
+            }
             return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);
         }
         return new ControlPlaneAuthDecision(ControlPlaneAuthOutcome.UNAUTHENTICATED, null);
@@ -6602,12 +6676,14 @@ public class HttpState {
         addIfRepointed(lowered, "tlsMutualAuthenticationCertificateChain", configuration.tlsMutualAuthenticationCertificateChain(), supplied.getTlsMutualAuthenticationCertificateChain());
 
         if (!lowered.isEmpty()) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("control plane PUT /mockserver/configuration changed TLS-sensitive configuration that lowers or alters security posture: {} — verify this was intended, especially as control plane authentication is disabled by default")
-                    .setArguments(String.join("; ", lowered))
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("control plane PUT /mockserver/configuration changed TLS-sensitive configuration that lowers or alters security posture: {} — verify this was intended, especially as control plane authentication is disabled by default")
+                        .setArguments(String.join("; ", lowered))
+                );
+            }
         }
     }
 
@@ -6834,12 +6910,14 @@ public class HttpState {
             try {
                 InetAddressValidator.validateForwardTarget(configuration, targetHost);
             } catch (IllegalArgumentException blocked) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("contract test blocked by SSRF policy:{}")
-                        .setArguments(blocked.getMessage())
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("contract test blocked by SSRF policy:{}")
+                            .setArguments(blocked.getMessage())
+                    );
+                }
                 responseWriter.writeResponse(controlPlaneRequest, withDashboardCORS(controlPlaneRequest, response()
                     .withStatusCode(FORBIDDEN.code())
                     .withBody("{\"error\":" + jsonEncodeString("contract test blocked by SSRF policy: " + blocked.getMessage()) + "}", MediaType.JSON_UTF_8)), true);
@@ -7026,12 +7104,14 @@ public class HttpState {
                     try {
                         InetAddressValidator.validateForwardTarget(configuration, specHost);
                     } catch (IllegalArgumentException blocked) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setLogLevel(Level.WARN)
-                                .setMessageFormat("traffic validation spec fetch blocked by SSRF policy:{}")
-                                .setArguments(blocked.getMessage())
-                        );
+                        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(Level.WARN)
+                                    .setMessageFormat("traffic validation spec fetch blocked by SSRF policy:{}")
+                                    .setArguments(blocked.getMessage())
+                            );
+                        }
                         responseWriter.writeResponse(controlPlaneRequest, withDashboardCORS(controlPlaneRequest, response()
                             .withStatusCode(FORBIDDEN.code())
                             .withBody("{\"error\":" + jsonEncodeString("traffic validation spec fetch blocked by SSRF policy: " + blocked.getMessage()) + "}", MediaType.JSON_UTF_8)), true);
@@ -7201,13 +7281,15 @@ public class HttpState {
                 try {
                     InetAddressValidator.validateForwardTarget(configuration, replayTargetHost);
                 } catch (IllegalArgumentException blocked) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setHttpRequest(requestToReplay)
-                            .setMessageFormat("replay blocked by SSRF policy:{}")
-                            .setArguments(blocked.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setHttpRequest(requestToReplay)
+                                .setMessageFormat("replay blocked by SSRF policy:{}")
+                                .setArguments(blocked.getMessage())
+                        );
+                    }
                     responseWriter.writeResponse(controlPlaneRequest, withDashboardCORS(controlPlaneRequest, response()
                         .withStatusCode(FORBIDDEN.code())
                         .withBody("{\"error\":" + jsonEncodeString("replay blocked by SSRF policy: " + blocked.getMessage()) + "}", MediaType.JSON_UTF_8)), true);
@@ -7222,14 +7304,16 @@ public class HttpState {
                     try {
                         if (throwable != null) {
                             String errorMessage = throwable.getMessage() != null ? throwable.getMessage() : throwable.getClass().getSimpleName();
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.WARN)
-                                    .setHttpRequest(requestToReplay)
-                                    .setMessageFormat("exception replaying request:{}error:{}")
-                                    .setArguments(requestToReplay, errorMessage)
-                                    .setThrowable(throwable)
-                            );
+                            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                                mockServerLogger.logEvent(
+                                    new LogEntry()
+                                        .setLogLevel(Level.WARN)
+                                        .setHttpRequest(requestToReplay)
+                                        .setMessageFormat("exception replaying request:{}error:{}")
+                                        .setArguments(requestToReplay, errorMessage)
+                                        .setThrowable(throwable)
+                                );
+                            }
                             responseWriter.writeResponse(controlPlaneRequest, withDashboardCORS(controlPlaneRequest, response()
                                 .withStatusCode(BAD_GATEWAY.code())
                                 .withBody("{\"error\":" + jsonEncodeString("replay failed: " + errorMessage) + "}", MediaType.JSON_UTF_8)), true);
@@ -7336,13 +7420,15 @@ public class HttpState {
         try {
             InetAddressValidator.validateForwardTarget(configuration, host);
         } catch (IllegalArgumentException blocked) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setCorrelationId(logCorrelationId)
-                    .setMessageFormat("record-and-forward blocked by SSRF policy:{}")
-                    .setArguments(blocked.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setCorrelationId(logCorrelationId)
+                        .setMessageFormat("record-and-forward blocked by SSRF policy:{}")
+                        .setArguments(blocked.getMessage())
+                );
+            }
             return response()
                 .withStatusCode(FORBIDDEN.code())
                 .withBody("{\"error\":" + jsonEncodeString("record-and-forward blocked by SSRF policy: " + blocked.getMessage()) + "}", MediaType.JSON_UTF_8);
@@ -7351,13 +7437,15 @@ public class HttpState {
         configuration.proxyRemoteHost(host);
         configuration.proxyRemotePort(port);
         configuration.attemptToProxyIfNoMatchingExpectation(true);
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setType(LogEntry.LogMessageType.INFO)
-                .setLogLevel(Level.INFO)
-                .setCorrelationId(logCorrelationId)
-                .setMessageFormat("enabled record-and-forward of unmatched requests to upstream " + host + ":" + port + (https ? " (https)" : ""))
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(LogEntry.LogMessageType.INFO)
+                    .setLogLevel(Level.INFO)
+                    .setCorrelationId(logCorrelationId)
+                    .setMessageFormat("enabled record-and-forward of unmatched requests to upstream " + host + ":" + port + (https ? " (https)" : ""))
+            );
+        }
         return null;
     }
 
@@ -7504,33 +7592,39 @@ public class HttpState {
         if (consolidateParam || parameterizeParam) {
             int inputCount = processed == null ? 0 : processed.size();
             processed = RecordedExpectationPostProcessor.consolidate(processed, parameterizeParam);
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(LogEntry.LogMessageType.INFO)
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("consolidated recorded expectations from " + inputCount + " to " + processed.size())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(LogEntry.LogMessageType.INFO)
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("consolidated recorded expectations from " + inputCount + " to " + processed.size())
+                );
+            }
         } else if (Boolean.TRUE.equals(configuration.deduplicateRecordedExpectations())) {
             int inputCount = processed == null ? 0 : processed.size();
             boolean templatizeValues = Boolean.TRUE.equals(configuration.templatizeRecordedValues());
             processed = RecordedExpectationPostProcessor.deduplicateAndTemplatize(processed, templatizeValues);
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(LogEntry.LogMessageType.INFO)
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("deduplicated and templatized recorded expectations from " + inputCount + " to " + processed.size())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(LogEntry.LogMessageType.INFO)
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("deduplicated and templatized recorded expectations from " + inputCount + " to " + processed.size())
+                );
+            }
         }
         if (Boolean.TRUE.equals(configuration.redactSecretsInRecordedExpectations()) && processed != null && !processed.isEmpty()) {
             Expectation[] redacted = new org.mockserver.fixture.FixtureRedactor()
                 .redact(processed.toArray(new Expectation[0]), true);
             processed = new java.util.ArrayList<>(java.util.Arrays.asList(redacted));
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(LogEntry.LogMessageType.INFO)
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("redacted secrets in " + processed.size() + " recorded expectations")
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(LogEntry.LogMessageType.INFO)
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("redacted secrets in " + processed.size() + " recorded expectations")
+                );
+            }
         }
         return processed;
     }

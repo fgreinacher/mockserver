@@ -228,13 +228,15 @@ public class MockServer extends LifeCycle {
             try {
                 bindDnsPort(configuration);
             } catch (Throwable throwable) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(SERVER_CONFIGURATION)
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("exception binding DNS port - DNS mocking disabled")
-                        .setThrowable(throwable)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(SERVER_CONFIGURATION)
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("exception binding DNS port - DNS mocking disabled")
+                            .setThrowable(throwable)
+                    );
+                }
             }
         }
 
@@ -255,12 +257,14 @@ public class MockServer extends LifeCycle {
         } catch (ClassNotFoundException ignored) {
             // mockserver-async not on classpath — AsyncAPI endpoints will return 501
         } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(SERVER_CONFIGURATION)
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("failed to register AsyncAPI control-plane: " + e.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(SERVER_CONFIGURATION)
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("failed to register AsyncAPI control-plane: " + e.getMessage())
+                );
+            }
         }
 
         startedServer(getLocalPorts());
@@ -396,22 +400,26 @@ public class MockServer extends LifeCycle {
             Http3Server server = new Http3Server(configuration, mockServerLogger, httpState, actionHandler, MockServer.this, mcpSessionMgr);
             int boundPort = server.start(http3Port);
             this.http3Server = server;
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(SERVER_CONFIGURATION)
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("HTTP/3 (QUIC) server started on UDP port: {}")
-                    .setArguments(boundPort)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(SERVER_CONFIGURATION)
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("HTTP/3 (QUIC) server started on UDP port: {}")
+                        .setArguments(boundPort)
+                );
+            }
         } catch (Throwable throwable) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setType(SERVER_CONFIGURATION)
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("exception starting HTTP/3 server on port {} - HTTP/3 disabled")
-                    .setArguments(http3Port)
-                    .setThrowable(throwable)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(SERVER_CONFIGURATION)
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("exception starting HTTP/3 server on port {} - HTTP/3 disabled")
+                        .setArguments(http3Port)
+                        .setThrowable(throwable)
+                );
+            }
         }
     }
 

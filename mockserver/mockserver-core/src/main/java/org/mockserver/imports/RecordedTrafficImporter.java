@@ -114,7 +114,7 @@ public class RecordedTrafficImporter {
                 // A single malformed/truncated line must not lose the rest of the session — skip it,
                 // count it, and continue. The most common cause is a crash-truncated final line.
                 skippedLineCount++;
-                if (mockServerLogger != null) {
+                if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.WARN)) {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(Level.WARN)
@@ -129,7 +129,7 @@ public class RecordedTrafficImporter {
             throw new IllegalArgumentException(
                 "not a recorded-traffic NDJSON archive — none of the " + nonBlankLineCount + " non-blank line(s) could be parsed as an HttpRequestAndHttpResponse");
         }
-        if (skippedLineCount > 0 && mockServerLogger != null) {
+        if (skippedLineCount > 0 && mockServerLogger != null && mockServerLogger.isEnabledForInstance(Level.WARN)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)

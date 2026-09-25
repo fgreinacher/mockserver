@@ -141,13 +141,15 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
             if (!completed.compareAndSet(false, true)) {
                 return;
             }
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.INFO)
-                    .setHttpRequest(request)
-                    .setMessageFormat("gRPC deadline elapsed over HTTP/3 for {} - returning DEADLINE_EXCEEDED")
-                    .setArguments(request.getPath())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.INFO)
+                        .setHttpRequest(request)
+                        .setMessageFormat("gRPC deadline elapsed over HTTP/3 for {} - returning DEADLINE_EXCEEDED")
+                        .setArguments(request.getPath())
+                );
+            }
             String deadlineMessage = GrpcTimeout.deadlineExceededMessage(timeoutNanos);
             // Claim the stream for the deadline. If it was IDLE the stream never started, so a
             // trailers-only frame (carrying :status) is correct; if it was STREAMING the initial
@@ -182,13 +184,15 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
         if (!completed.compareAndSet(false, true)) {
             // the deadline already fired and terminated this stream -- dropping the late response
             // avoids writing a second response onto a stream that already ended
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.INFO)
-                    .setHttpRequest(request)
-                    .setMessageFormat("dropping gRPC response over HTTP/3 for a stream that already"
-                        + " ended with DEADLINE_EXCEEDED - the delay outlasted the client's grpc-timeout")
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.INFO)
+                        .setHttpRequest(request)
+                        .setMessageFormat("dropping gRPC response over HTTP/3 for a stream that already"
+                            + " ended with DEADLINE_EXCEEDED - the delay outlasted the client's grpc-timeout")
+                );
+            }
             return;
         }
         if (deadlineFuture != null) {
@@ -245,14 +249,16 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
                     .addListener(QuicStreamChannel.SHUTDOWN_OUTPUT);
             }
         } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(request)
-                    .setMessageFormat("failed to encode gRPC response over HTTP/3 for {}/{}:{}")
-                    .setArguments(serviceName, methodName, e.getMessage())
-                    .setThrowable(e)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(request)
+                        .setMessageFormat("failed to encode gRPC response over HTTP/3 for {}/{}:{}")
+                        .setArguments(serviceName, methodName, e.getMessage())
+                        .setThrowable(e)
+                );
+            }
             writeErrorResponse(
                 GrpcStatusMapper.GrpcStatusCode.INTERNAL,
                 "failed to encode gRPC response: " + e.getMessage()
@@ -512,14 +518,16 @@ public class Http3GrpcResponseWriter extends ResponseWriter implements GrpcStrea
                     return null;
                 });
             } catch (Exception e) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setHttpRequest(request)
-                        .setMessageFormat("exception sending gRPC stream message {} over HTTP/3 for request:{}")
-                        .setArguments(index + 1, request)
-                        .setThrowable(e)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setHttpRequest(request)
+                            .setMessageFormat("exception sending gRPC stream message {} over HTTP/3 for request:{}")
+                            .setArguments(index + 1, request)
+                            .setThrowable(e)
+                    );
+                }
                 finishGrpcStream(action, streamBreakpointsActive, streamId);
             }
         };

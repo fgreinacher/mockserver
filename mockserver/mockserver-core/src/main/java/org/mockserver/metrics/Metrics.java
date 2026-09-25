@@ -14,6 +14,7 @@ import org.mockserver.mock.action.http.ChaosAutoHaltMonitor;
 import org.mockserver.mock.action.http.ForwardCircuitBreaker;
 import org.mockserver.mock.action.http.ServiceChaosRegistry;
 import org.mockserver.model.Action;
+import org.slf4j.event.Level;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -576,13 +577,15 @@ public class Metrics {
                         .register();
                     metrics.put(name, gauge);
                 } catch (Throwable throwable) {
-                    new MockServerLogger().logEvent(
-                        new LogEntry()
-                            .setType(EXCEPTION)
-                            .setMessageFormat("exception:{} creating metric:{}")
-                            .setArguments(throwable.getMessage(), name.name())
-                            .setThrowable(throwable)
-                    );
+                    if (MockServerLogger.isEnabled(Level.INFO)) {
+                        new MockServerLogger().logEvent(
+                            new LogEntry()
+                                .setType(EXCEPTION)
+                                .setMessageFormat("exception:{} creating metric:{}")
+                                .setArguments(throwable.getMessage(), name.name())
+                                .setThrowable(throwable)
+                        );
+                    }
                 }
             }
             return gauge;

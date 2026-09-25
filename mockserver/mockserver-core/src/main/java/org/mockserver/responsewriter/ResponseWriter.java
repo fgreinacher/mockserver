@@ -77,7 +77,7 @@ public abstract class ResponseWriter {
         if (isNotBlank(contentLengthHeader)) {
             try {
                 int contentLength = Integer.parseInt(contentLengthHeader);
-                if (response.getBodyAsRawBytes().length > contentLength) {
+                if (response.getBodyAsRawBytes().length > contentLength && mockServerLogger.isEnabledForInstance(Level.INFO)) {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setType(INFO)

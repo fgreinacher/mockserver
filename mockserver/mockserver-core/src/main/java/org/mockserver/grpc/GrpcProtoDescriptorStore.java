@@ -55,17 +55,19 @@ public class GrpcProtoDescriptorStore {
                 try {
                     loadDescriptorSetFromPath(entry);
                 } catch (Exception e) {
-                    mockServerLogger.logEvent(
-                        new org.mockserver.log.model.LogEntry()
-                            .setType(org.mockserver.log.model.LogEntry.LogMessageType.WARN)
-                            // setType alone does NOT raise the level: LogEntry.logLevel defaults to
-                            // INFO and MockServerLogger gates on getLogLevel(), so without this the
-                            // WARN is silent at global log level WARN/ERROR — exactly when the
-                            // fail-safe most needs to be diagnosable.
-                            .setLogLevel(org.slf4j.event.Level.WARN)
-                            .setMessageFormat("failed to load gRPC descriptor from {}:{}")
-                            .setArguments(entry, e.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new org.mockserver.log.model.LogEntry()
+                                .setType(org.mockserver.log.model.LogEntry.LogMessageType.WARN)
+                                // setType alone does NOT raise the level: LogEntry.logLevel defaults to
+                                // INFO and MockServerLogger gates on getLogLevel(), so without this the
+                                // WARN is silent at global log level WARN/ERROR — exactly when the
+                                // fail-safe most needs to be diagnosable.
+                                .setLogLevel(org.slf4j.event.Level.WARN)
+                                .setMessageFormat("failed to load gRPC descriptor from {}:{}")
+                                .setArguments(entry, e.getMessage())
+                        );
+                    }
                 }
             }
         } catch (IOException e) {

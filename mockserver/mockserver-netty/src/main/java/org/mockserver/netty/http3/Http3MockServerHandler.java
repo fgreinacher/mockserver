@@ -138,12 +138,14 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 // Enforce the cap on the bidi streaming path too.
                 if (maxBodySize > 0 && accumulatedBodySize + frameSize > maxBodySize) {
                     bodyExceeded = true;
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setMessageFormat("HTTP/3 bidi stream body size {} exceeds maxRequestBodySize {} -- resetting stream")
-                            .setArguments(accumulatedBodySize + frameSize, maxBodySize)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setMessageFormat("HTTP/3 bidi stream body size {} exceeds maxRequestBodySize {} -- resetting stream")
+                                .setArguments(accumulatedBodySize + frameSize, maxBodySize)
+                        );
+                    }
                     bidiHandler.onChannelInactive();
                     bidiHandler = null;
                     if (ctx.channel() instanceof QuicStreamChannel) {
@@ -161,12 +163,14 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 // path which uses HttpObjectAggregator.maxContentLength.
                 if (maxBodySize > 0 && accumulatedBodySize + frameSize > maxBodySize) {
                     bodyExceeded = true;
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setMessageFormat("HTTP/3 request body size {} exceeds maxRequestBodySize {} -- rejecting with 413")
-                            .setArguments(accumulatedBodySize + frameSize, maxBodySize)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setMessageFormat("HTTP/3 request body size {} exceeds maxRequestBodySize {} -- rejecting with 413")
+                                .setArguments(accumulatedBodySize + frameSize, maxBodySize)
+                        );
+                    }
                     releaseBodyAccumulator();
                     sendPayloadTooLarge(ctx);
                     return;
@@ -448,13 +452,15 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
             grpcResponseWriter.scheduleDeadline(grpcRequest);
             processRequestThroughPipeline(ctx, grpcRequest, grpcResponseWriter);
         } catch (GrpcException e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(request)
-                    .setMessageFormat("gRPC request error over HTTP/3:{}:{}")
-                    .setArguments(request.getPath(), e.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(request)
+                        .setMessageFormat("gRPC request error over HTTP/3:{}:{}")
+                        .setArguments(request.getPath(), e.getMessage())
+                );
+            }
             // the status travels on the exception, so oversize -> RESOURCE_EXHAUSTED and an
             // unsupported grpc-encoding -> UNIMPLEMENTED, as on HTTP/1.1 and HTTP/2
             GrpcStatusMapper.GrpcStatusCode statusCode =
@@ -466,13 +472,15 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
             );
             errorWriter.writeErrorResponse(statusCode, e.getMessage());
         } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(request)
-                    .setMessageFormat("failed to convert gRPC request to JSON over HTTP/3:{}:{}")
-                    .setArguments(request.getPath(), e.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(request)
+                        .setMessageFormat("failed to convert gRPC request to JSON over HTTP/3:{}:{}")
+                        .setArguments(request.getPath(), e.getMessage())
+                );
+            }
             Http3GrpcResponseWriter errorWriter = new Http3GrpcResponseWriter(
                 configuration, mockServerLogger, ctx, descriptorStore, null, null
             );
@@ -635,14 +643,16 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
             org.mockserver.authentication.AuthenticationResult result = authHandler.authenticate(request);
             return result.isAuthenticated() ? result : null;
         } catch (AuthenticationException e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setHttpRequest(request)
-                    .setMessageFormat("MCP-over-H3 authentication failed: {}")
-                    .setArguments(e.getMessage())
-                    .setThrowable(e)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setHttpRequest(request)
+                        .setMessageFormat("MCP-over-H3 authentication failed: {}")
+                        .setArguments(e.getMessage())
+                        .setThrowable(e)
+                );
+            }
             return null;
         }
     }
@@ -719,13 +729,15 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(Level.WARN)
-                .setMessageFormat("exception in HTTP/3 request handler: {}")
-                .setArguments(cause.getMessage())
-                .setThrowable(cause)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("exception in HTTP/3 request handler: {}")
+                    .setArguments(cause.getMessage())
+                    .setThrowable(cause)
+            );
+        }
         ctx.close();
     }
 
@@ -763,13 +775,15 @@ public class Http3MockServerHandler extends Http3RequestStreamInboundHandler {
                 }
             }
         } catch (Exception e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.DEBUG)
-                    .setHttpRequest(request)
-                    .setMessageFormat("failed to capture client certificates from QUIC session: {}")
-                    .setArguments(e.getMessage())
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.DEBUG)
+                        .setHttpRequest(request)
+                        .setMessageFormat("failed to capture client certificates from QUIC session: {}")
+                        .setArguments(e.getMessage())
+                );
+            }
         }
     }
 

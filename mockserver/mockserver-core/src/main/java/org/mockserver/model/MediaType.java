@@ -167,13 +167,15 @@ public class MediaType extends ObjectWithJsonToString {
                             ));
                     }
                 } catch (Throwable throwable) {
-                    MOCK_SERVER_LOGGER.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("invalid parameters format \"" + parameters + "\", expected{}see:{}")
-                            .setArguments("Content-Type := type \"/\" subtype *[\";\" parameter]\nparameter := attribute \"=\" value", "https://www.w3.org/Protocols/rfc1341/4_Content-Type.html")
-                            .setThrowable(throwable)
-                    );
+                    if (MOCK_SERVER_LOGGER.isEnabledForInstance(WARN)) {
+                        MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("invalid parameters format \"" + parameters + "\", expected{}see:{}")
+                                .setArguments("Content-Type := type \"/\" subtype *[\";\" parameter]\nparameter := attribute \"=\" value", "https://www.w3.org/Protocols/rfc1341/4_Content-Type.html")
+                                .setThrowable(throwable)
+                        );
+                    }
                 }
             }
             return new MediaType(type, subType, parameterMap);

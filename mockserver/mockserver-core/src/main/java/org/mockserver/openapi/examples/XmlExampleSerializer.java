@@ -53,13 +53,15 @@ public class XmlExampleSerializer {
             writer.close();
             return out.toString(StandardCharsets.UTF_8);
         } catch (XMLStreamException e) {
-            MOCK_SERVER_LOGGER.logEvent(
-                new LogEntry()
-                    .setLogLevel(WARN)
-                    .setMessageFormat("exception while serialising example to XML - {}")
-                    .setArguments(e.getMessage())
-                    .setThrowable(e)
-            );
+            if (MOCK_SERVER_LOGGER.isEnabledForInstance(WARN)) {
+                MOCK_SERVER_LOGGER.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat("exception while serialising example to XML - {}")
+                        .setArguments(e.getMessage())
+                        .setThrowable(e)
+                );
+            }
             return null;
         }
     }
@@ -266,11 +268,13 @@ public class XmlExampleSerializer {
         if (builder == null) {
             return value;
         }
-        MOCK_SERVER_LOGGER.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("stripped XML-illegal character(s) from an example value when serialising XML")
-        );
+        if (MOCK_SERVER_LOGGER.isEnabledForInstance(WARN)) {
+            MOCK_SERVER_LOGGER.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("stripped XML-illegal character(s) from an example value when serialising XML")
+            );
+        }
         return builder.toString();
     }
 
@@ -311,12 +315,14 @@ public class XmlExampleSerializer {
             builder.append(isXmlNameChar(c) ? c : '_');
         }
         String sanitised = builder.toString();
-        MOCK_SERVER_LOGGER.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("invalid XML name \"{}\" in example schema sanitised to \"{}\"")
-                .setArguments(name, sanitised)
-        );
+        if (MOCK_SERVER_LOGGER.isEnabledForInstance(WARN)) {
+            MOCK_SERVER_LOGGER.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("invalid XML name \"{}\" in example schema sanitised to \"{}\"")
+                    .setArguments(name, sanitised)
+            );
+        }
         return sanitised;
     }
 

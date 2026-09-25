@@ -320,12 +320,14 @@ public class PactImporter {
                 // a header/query/path string, so a presence regex is the closest faithful mapping
                 return ".+";
             default:
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.DEBUG)
-                        .setMessageFormat("Pact matchingRule '{}' is not mapped — falling back to exact matching for value:{}")
-                        .setArguments(match, exampleValue)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.DEBUG)
+                            .setMessageFormat("Pact matchingRule '{}' is not mapped — falling back to exact matching for value:{}")
+                            .setArguments(match, exampleValue)
+                    );
+                }
                 return exampleValue;
         }
     }

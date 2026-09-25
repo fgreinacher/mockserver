@@ -322,11 +322,11 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
      * Logs at the given level when a logger is available. The whole restore path must
      * tolerate a null logger: the {@code (Configuration, MockServerLogger, RequestMatchers, BlobStore)}
      * constructor accepts one, and turning a logged, recoverable restore failure into a
-     * NullPointerException would fail startup outright. Level filtering is left to
-     * {@link MockServerLogger#logEvent(LogEntry)}, which already applies it.
+     * NullPointerException would fail startup outright. The level is checked here so a
+     * disabled level costs no LogEntry allocation.
      */
     private void logEvent(Level level, String message, Throwable throwable) {
-        if (mockServerLogger == null) {
+        if (mockServerLogger == null || !mockServerLogger.isEnabledForInstance(level)) {
             return;
         }
         LogEntry logEntry = new LogEntry()

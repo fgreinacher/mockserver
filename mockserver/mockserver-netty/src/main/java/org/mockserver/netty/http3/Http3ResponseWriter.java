@@ -233,13 +233,15 @@ public class Http3ResponseWriter extends ResponseWriter implements StreamErrorWr
     private void writeStreamingResponse(HttpRequest request, HttpResponse response) {
         StreamingBody streamingBody = response.getStreamingBody();
 
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(Level.DEBUG)
-                .setHttpRequest(request)
-                .setMessageFormat("streaming response over HTTP/3 for request:{}")
-                .setArguments(request)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.DEBUG)
+                    .setHttpRequest(request)
+                    .setMessageFormat("streaming response over HTTP/3 for request:{}")
+                    .setArguments(request)
+            );
+        }
 
         // Send the response headers immediately (without SHUTDOWN_OUTPUT). Dropping content-length:
         // a streamed body's length is unknown at header time, and one copied from a relayed upstream
@@ -287,14 +289,16 @@ public class Http3ResponseWriter extends ResponseWriter implements StreamErrorWr
             },
             // onError
             error -> {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setHttpRequest(request)
-                        .setMessageFormat("streaming response error over HTTP/3 for request:{}error:{}")
-                        .setArguments(request, error.getMessage())
-                        .setThrowable(error)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setHttpRequest(request)
+                            .setMessageFormat("streaming response error over HTTP/3 for request:{}error:{}")
+                            .setArguments(request, error.getMessage())
+                            .setThrowable(error)
+                    );
+                }
                 if (ctx.channel().isActive()) {
                     ctx.writeAndFlush(new DefaultHttp3DataFrame(Unpooled.EMPTY_BUFFER))
                         .addListener(future -> shutdownQuicStreamOutput());

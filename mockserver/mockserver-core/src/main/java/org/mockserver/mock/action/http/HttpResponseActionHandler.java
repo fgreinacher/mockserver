@@ -129,13 +129,15 @@ public class HttpResponseActionHandler {
                 response.withBody(new StringBody(generated, MediaType.APPLICATION_JSON));
             }
         } catch (JsonSchemaResponseSynthesisException schemaException) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(WARN)
-                    .setMessageFormat("unable to generate a schema-valid response from the inline JSON schema, leaving response body unset because:{}")
-                    .setArguments(schemaException.getCause() != null ? schemaException.getCause().getMessage() : schemaException.getMessage())
-                    .setThrowable(schemaException)
-            );
+            if (mockServerLogger.isEnabledForInstance(WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat("unable to generate a schema-valid response from the inline JSON schema, leaving response body unset because:{}")
+                        .setArguments(schemaException.getCause() != null ? schemaException.getCause().getMessage() : schemaException.getMessage())
+                        .setThrowable(schemaException)
+                );
+            }
         }
     }
 
@@ -165,14 +167,16 @@ public class HttpResponseActionHandler {
             String synthesized = new GraphQLResponseSynthesizer(graphQLSchema).synthesizeResponse(requestBody);
             response.withBody(new StringBody(synthesized, MediaType.APPLICATION_JSON));
         } catch (GraphQLSchemaException gqlException) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(WARN)
-                    .setHttpRequest(httpRequest)
-                    .setMessageFormat("unable to synthesize GraphQL response from registered schema, leaving response body unset because:{}")
-                    .setArguments(gqlException.getMessage())
-                    .setThrowable(gqlException)
-            );
+            if (mockServerLogger.isEnabledForInstance(WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setHttpRequest(httpRequest)
+                        .setMessageFormat("unable to synthesize GraphQL response from registered schema, leaving response body unset because:{}")
+                        .setArguments(gqlException.getMessage())
+                        .setThrowable(gqlException)
+                );
+            }
         }
     }
 

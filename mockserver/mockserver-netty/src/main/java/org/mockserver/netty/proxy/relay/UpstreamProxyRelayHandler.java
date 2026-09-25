@@ -113,12 +113,14 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by upstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel, downstreamChannel))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by upstream relay handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel(), upstreamChannel, downstreamChannel))
+                        .setThrowable(cause)
+                );
+            }
         }
         closeOnFlush(ctx.channel());
     }

@@ -32,6 +32,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockserver.configuration.Configuration.configuration;
 import static org.mockserver.netty.unification.PortUnificationHandler.enableSslDownstream;
+import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 /**
  * EmbeddedChannel tests for {@link UpstreamProxyRelayHandler} verifying:
@@ -142,6 +144,7 @@ public class UpstreamProxyRelayHandlerTest {
     public void shouldLogWarnAndCloseOnDecoderFault() {
         // given - a handler wired with a mock logger so the log level can be asserted
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
             new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
@@ -165,6 +168,7 @@ public class UpstreamProxyRelayHandlerTest {
     public void shouldLogWarnAndCloseOnSslFault() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
             new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
@@ -188,6 +192,7 @@ public class UpstreamProxyRelayHandlerTest {
     public void shouldStaySilentOnBenignConnectionClose() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
             new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)
@@ -209,6 +214,7 @@ public class UpstreamProxyRelayHandlerTest {
     public void shouldLogErrorOnUnexpectedException() {
         // given
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         EmbeddedChannel downstream = new EmbeddedChannel();
         EmbeddedChannel channel = new EmbeddedChannel(
             new UpstreamProxyRelayHandler(logger, new EmbeddedChannel(), downstream, "backend.example.com", 443)

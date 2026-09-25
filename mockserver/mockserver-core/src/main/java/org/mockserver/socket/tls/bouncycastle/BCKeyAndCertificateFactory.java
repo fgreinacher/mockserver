@@ -711,7 +711,7 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         if (!certificateAuthorityRenewalWarned
             && KeyAndCertificateFactory.isPastRenewalThreshold(certificateAuthorityX509Certificate, KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now)) {
             certificateAuthorityRenewalWarned = true;
-            if (mockServerLogger != null) {
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(WARN)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(WARN)

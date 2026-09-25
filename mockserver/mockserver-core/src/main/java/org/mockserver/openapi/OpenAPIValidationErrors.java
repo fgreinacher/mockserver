@@ -51,12 +51,14 @@ final class OpenAPIValidationErrors {
      */
     static String unexpectedError(String context, Throwable throwable, MockServerLogger logger) {
         if (logger != null) {
-            logger.logEvent(
-                new LogEntry()
-                    .setLogLevel(WARN)
-                    .setMessageFormat("exception while " + context)
-                    .setThrowable(throwable)
-            );
+            if (logger.isEnabledForInstance(WARN)) {
+                logger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat("exception while " + context)
+                        .setThrowable(throwable)
+                );
+            }
         }
         return context + " failed: " + describe(throwable);
     }

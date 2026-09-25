@@ -1362,14 +1362,16 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     resultConsumer.accept("");
                 }
             } catch (Throwable throwable) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(EXCEPTION)
-                        .setCorrelationId(logCorrelationId)
-                        .setMessageFormat("exception:{} while processing verification:{}")
-                        .setArguments(throwable.getMessage(), verification)
-                        .setThrowable(throwable)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(EXCEPTION)
+                            .setCorrelationId(logCorrelationId)
+                            .setMessageFormat("exception:{} while processing verification:{}")
+                            .setArguments(throwable.getMessage(), verification)
+                            .setThrowable(throwable)
+                    );
+                }
                 resultConsumer.accept("exception while processing verification" + (isNotBlank(throwable.getMessage()) ? " " + throwable.getMessage() : ""));
             }
         });
@@ -1541,14 +1543,16 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     resultConsumer.accept("");
                 }
             } catch (Throwable throwable) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(EXCEPTION)
-                        .setCorrelationId(logCorrelationId)
-                        .setMessageFormat("exception:{} while processing verification:{}")
-                        .setArguments(throwable.getMessage(), verification)
-                        .setThrowable(throwable)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(EXCEPTION)
+                            .setCorrelationId(logCorrelationId)
+                            .setMessageFormat("exception:{} while processing verification:{}")
+                            .setArguments(throwable.getMessage(), verification)
+                            .setThrowable(throwable)
+                    );
+                }
                 resultConsumer.accept("exception while processing verification" + (isNotBlank(throwable.getMessage()) ? " " + throwable.getMessage() : ""));
             }
         });
@@ -2034,14 +2038,16 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     private void verificationSequenceExceptionHandler(VerificationSequence verificationSequence, Consumer<String> resultConsumer, String logCorrelationId, Throwable throwable, String s, String s2) {
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setType(EXCEPTION)
-                .setCorrelationId(logCorrelationId)
-                .setMessageFormat(s)
-                .setArguments(throwable.getMessage(), verificationSequence)
-                .setThrowable(throwable)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(EXCEPTION)
+                    .setCorrelationId(logCorrelationId)
+                    .setMessageFormat(s)
+                    .setArguments(throwable.getMessage(), verificationSequence)
+                    .setThrowable(throwable)
+            );
+        }
         resultConsumer.accept(s2 + (isNotBlank(throwable.getMessage()) ? " " + throwable.getMessage() : ""));
     }
 

@@ -663,12 +663,14 @@ public class PortUnificationHandler extends ReplayingDecoder<Void> {
             // NotSslRecordException, a subclass of SSLException) but NOT a plain DecoderException;
             // the branch below catches that residual so a decoder fault is not silently dropped.
         } else if (isSslOrDecoderFault(throwable)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by port unification handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
-                    .setThrowable(throwable)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by port unification handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
+                        .setThrowable(throwable)
+                );
+            }
         }
         closeOnFlush(ctx.channel());
     }

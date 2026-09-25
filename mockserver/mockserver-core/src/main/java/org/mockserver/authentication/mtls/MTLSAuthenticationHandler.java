@@ -74,30 +74,34 @@ public class MTLSAuthenticationHandler implements AuthenticationHandler {
                             if (!hasClientAuthExtendedKeyUsage(presentedX509Certificate)) {
                                 throw new CertPathValidatorException("client certificate extended key usage does not permit clientAuth (id-kp-clientAuth 1.3.6.1.5.5.7.3.2)");
                             }
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.DEBUG)
-                                    .setHttpRequest(request)
-                                    .setMessageFormat("validated client certificate:{}against control plane trust store certificate:{}")
-                                    .setArguments(clientCertificateInformation, caCertificateInformation)
-                            );
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.DEBUG)
-                                    .setHttpRequest(request)
-                                    .setMessageFormat("control plane request passed authentication:{}")
-                                    .setArguments(request)
-                            );
+                            if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                                mockServerLogger.logEvent(
+                                    new LogEntry()
+                                        .setLogLevel(Level.DEBUG)
+                                        .setHttpRequest(request)
+                                        .setMessageFormat("validated client certificate:{}against control plane trust store certificate:{}")
+                                        .setArguments(clientCertificateInformation, caCertificateInformation)
+                                );
+                                mockServerLogger.logEvent(
+                                    new LogEntry()
+                                        .setLogLevel(Level.DEBUG)
+                                        .setHttpRequest(request)
+                                        .setMessageFormat("control plane request passed authentication:{}")
+                                        .setArguments(request)
+                                );
+                            }
                             return true;
                         } catch (Throwable throwable) {
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.TRACE)
-                                    .setHttpRequest(request)
-                                    .setMessageFormat("exception validating client certificate:{}against control plane trust store certificate:{}")
-                                    .setArguments(clientCertificateInformation, caCertificateInformation)
-                                    .setThrowable(throwable)
-                            );
+                            if (mockServerLogger.isEnabledForInstance(Level.TRACE)) {
+                                mockServerLogger.logEvent(
+                                    new LogEntry()
+                                        .setLogLevel(Level.TRACE)
+                                        .setHttpRequest(request)
+                                        .setMessageFormat("exception validating client certificate:{}against control plane trust store certificate:{}")
+                                        .setArguments(clientCertificateInformation, caCertificateInformation)
+                                        .setThrowable(throwable)
+                                );
+                            }
                         }
                     }
                 }
@@ -145,12 +149,14 @@ public class MTLSAuthenticationHandler implements AuthenticationHandler {
                 "subjectDistinguishedName", subjectDistinguishedName
             ));
         } catch (Throwable throwable) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.TRACE)
-                    .setMessageFormat("exception serialising certificate information")
-                    .setThrowable(throwable)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.TRACE)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.TRACE)
+                        .setMessageFormat("exception serialising certificate information")
+                        .setThrowable(throwable)
+                );
+            }
             return "";
         }
     }

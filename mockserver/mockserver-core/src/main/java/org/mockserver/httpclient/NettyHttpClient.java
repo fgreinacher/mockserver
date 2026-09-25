@@ -174,19 +174,23 @@ public class NettyHttpClient {
                 remoteAddress = httpRequest.socketAddressFromHostHeader();
             }
             if (Protocol.HTTP_3.equals(httpRequest.getProtocol())) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("HTTP3 (QUIC) cannot be forwarded over a TCP connection so protocol will be negotiated by ALPN (HTTP1 or HTTP2)")
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("HTTP3 (QUIC) cannot be forwarded over a TCP connection so protocol will be negotiated by ALPN (HTTP1 or HTTP2)")
+                    );
+                }
                 httpRequest.withProtocol(null);
             }
             if (Protocol.HTTP_2.equals(httpRequest.getProtocol()) && !Boolean.TRUE.equals(httpRequest.isSecure())) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("HTTP2 requires ALPN but request is not secure (i.e. TLS) so protocol changed to HTTP1")
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("HTTP2 requires ALPN but request is not secure (i.e. TLS) so protocol changed to HTTP1")
+                    );
+                }
                 httpRequest.withProtocol(Protocol.HTTP_1_1);
             }
 
@@ -264,16 +268,18 @@ public class NettyHttpClient {
                         long threshold = configuration.slowRequestThresholdMillis();
                         if (threshold > 0 && totalTime > threshold) {
                             Metrics.incrementSlowRequestTotal();
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.WARN)
-                                    .setMessageFormat("slow forwarded request {} took {}ms (threshold {}ms)")
-                                    .setArguments(
-                                        httpRequest.getMethod("") + " " + httpRequest.getPath(),
-                                        totalTime,
-                                        threshold
-                                    )
-                            );
+                            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                                mockServerLogger.logEvent(
+                                    new LogEntry()
+                                        .setLogLevel(Level.WARN)
+                                        .setMessageFormat("slow forwarded request {} took {}ms (threshold {}ms)")
+                                        .setArguments(
+                                            httpRequest.getMethod("") + " " + httpRequest.getPath(),
+                                            totalTime,
+                                            threshold
+                                        )
+                                );
+                            }
                         }
                         if (message != null) {
                             HttpResponse response = (HttpResponse) message;

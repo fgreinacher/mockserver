@@ -98,9 +98,11 @@ public class ExpectationExportSerializer {
             }
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
         } catch (JsonProcessingException e) {
-            mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
-                .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
-                .setMessageFormat("exception while serialising expectations as OpenAPI: " + e.getMessage()));
+            if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.INFO)) {
+                mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
+                    .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
+                    .setMessageFormat("exception while serialising expectations as OpenAPI: " + e.getMessage()));
+            }
             // Return a minimal but schema-VALID OpenAPI document rather than "{}".
             return "{\"openapi\":\"" + OPENAPI_VERSION + "\","
                 + "\"info\":{\"title\":\"" + COLLECTION_NAME + "\",\"version\":\"1.0\"},"
@@ -118,10 +120,12 @@ public class ExpectationExportSerializer {
         // matcher — that would invert the meaning. Schema matchers
         // (NottableSchemaString) likewise carry no literal path/method string.
         if (isNegatedOrSchema(req.getPath()) || isNegatedOrSchema(req.getMethod())) {
-            mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
-                .setType(org.mockserver.log.model.LogEntry.LogMessageType.INFO)
-                .setMessageFormat("skipping OpenAPI export of expectation " + expectation.getId()
-                    + " because a negated or schema path/method matcher cannot be represented as an OpenAPI operation"));
+            if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.INFO)) {
+                mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
+                    .setType(org.mockserver.log.model.LogEntry.LogMessageType.INFO)
+                    .setMessageFormat("skipping OpenAPI export of expectation " + expectation.getId()
+                        + " because a negated or schema path/method matcher cannot be represented as an OpenAPI operation"));
+            }
             return;
         }
 
@@ -141,11 +145,13 @@ public class ExpectationExportSerializer {
         // operation keys. A recorded CONNECT (proxy mode) or an arbitrary/whitespace
         // method would produce a schema-invalid document, so skip the operation.
         if (!OPENAPI_METHODS.contains(method)) {
-            mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
-                .setType(org.mockserver.log.model.LogEntry.LogMessageType.INFO)
-                .setMessageFormat("skipping OpenAPI export of expectation " + expectation.getId()
-                    + " because HTTP method \"" + stringValue(req.getMethod(), "")
-                    + "\" is not a valid OpenAPI 3.0 operation"));
+            if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.INFO)) {
+                mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
+                    .setType(org.mockserver.log.model.LogEntry.LogMessageType.INFO)
+                    .setMessageFormat("skipping OpenAPI export of expectation " + expectation.getId()
+                        + " because HTTP method \"" + stringValue(req.getMethod(), "")
+                        + "\" is not a valid OpenAPI 3.0 operation"));
+            }
             return;
         }
 
@@ -423,9 +429,11 @@ public class ExpectationExportSerializer {
 
             return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
         } catch (JsonProcessingException e) {
-            mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
-                .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
-                .setMessageFormat("exception while serialising expectations as Postman: " + e.getMessage()));
+            if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.INFO)) {
+                mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
+                    .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
+                    .setMessageFormat("exception while serialising expectations as Postman: " + e.getMessage()));
+            }
             return "{}";
         }
     }
@@ -536,9 +544,11 @@ public class ExpectationExportSerializer {
             zip.finish();
             return baos.toByteArray();
         } catch (IOException e) {
-            mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
-                .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
-                .setMessageFormat("exception while serialising expectations as Bruno: " + e.getMessage()));
+            if (mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.INFO)) {
+                mockServerLogger.logEvent(new org.mockserver.log.model.LogEntry()
+                    .setType(org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION)
+                    .setMessageFormat("exception while serialising expectations as Bruno: " + e.getMessage()));
+            }
             return new byte[0];
         }
     }

@@ -1995,12 +1995,14 @@ public class McpToolRegistry {
                 return errorResult("'baseUrl' is required and must not be blank");
             }
 
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("MCP run_contract_test sending requests to external target:{}")
-                    .setArguments(baseUrl)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("MCP run_contract_test sending requests to external target:{}")
+                        .setArguments(baseUrl)
+                );
+            }
 
             String operationIdFilter = params.path("operationId").asText(null);
 
@@ -2131,12 +2133,14 @@ public class McpToolRegistry {
                 return errorResult("'baseUrl' is required and must not be blank");
             }
 
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("MCP run_resiliency_test sending requests to external target:{}")
-                    .setArguments(baseUrl)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("MCP run_resiliency_test sending requests to external target:{}")
+                        .setArguments(baseUrl)
+                );
+            }
 
             String operationIdFilter = params.path("operationId").asText(null);
 
@@ -2262,12 +2266,14 @@ public class McpToolRegistry {
             String protocolVersion = params.path("protocolVersion").asText(null);
             String toolName = params.path("toolName").asText(null);
 
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.INFO)
-                    .setMessageFormat("MCP run_mcp_contract_test connecting to external MCP server:{}")
-                    .setArguments(targetUrl)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.INFO)
+                        .setMessageFormat("MCP run_mcp_contract_test connecting to external MCP server:{}")
+                        .setArguments(targetUrl)
+                );
+            }
 
             // Parse targetUrl into host, port, scheme, path
             java.net.URI uri;
@@ -4734,13 +4740,15 @@ public class McpToolRegistry {
     }
 
     private ObjectNode errorResult(String message, Throwable throwable) {
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(Level.WARN)
-                .setMessageFormat("MCP tool error: {}")
-                .setArguments(message)
-                .setThrowable(throwable)
-        );
+        if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat("MCP tool error: {}")
+                    .setArguments(message)
+                    .setThrowable(throwable)
+            );
+        }
         return errorResult(message);
     }
 

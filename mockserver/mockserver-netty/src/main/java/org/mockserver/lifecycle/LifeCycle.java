@@ -743,7 +743,7 @@ public abstract class LifeCycle implements Stoppable {
             String caCertificatePath = keyAndCertificateFactory.writeCertificateAuthorityToDisk();
             org.mockserver.socket.tls.ProxySetupInfo proxySetupInfo =
                 new org.mockserver.socket.tls.ProxySetupInfo(caCertificatePath, ports, configuration, System.getProperty("os.name"));
-            if (mockServerLogger != null) {
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(proxySetupInfo.usingDefaultCa() ? WARN : INFO)) {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setType(SERVER_CONFIGURATION)

@@ -97,12 +97,14 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
             if (response.getFirstHeader(DEADLINE_RESPONSE_HEADER).isEmpty()) {
                 GrpcPendingRequests pendingRequests = GrpcPendingRequests.existingForChannel(ctx.channel());
                 if (pendingRequests != null && pendingRequests.consumeDeadlineExceeded(response.getStreamId())) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.INFO)
-                            .setMessageFormat("dropping gRPC response for a stream that already ended with"
-                                + " DEADLINE_EXCEEDED - the configured delay outlasted the client's grpc-timeout")
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.INFO)
+                                .setMessageFormat("dropping gRPC response for a stream that already ended with"
+                                    + " DEADLINE_EXCEEDED - the configured delay outlasted the client's grpc-timeout")
+                        );
+                    }
                     io.netty.util.ReferenceCountUtil.release(msg);
                     promise.trySuccess();
                     return;
@@ -181,12 +183,14 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
                 }
                 out.add(converted);
             } catch (Exception e) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setMessageFormat("failed to convert response to gRPC for {}/{}:{}")
-                        .setArguments(grpcService, grpcMethod, e.getMessage())
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setMessageFormat("failed to convert response to gRPC for {}/{}:{}")
+                            .setArguments(grpcService, grpcMethod, e.getMessage())
+                    );
+                }
                 // Drop the body. It is whatever failed to convert -- typically unframed JSON --
                 // and advertising content-type: application/grpc over it makes a strict client
                 // fail deframing BEFORE it reads the trailer, masking the INTERNAL status behind
@@ -309,13 +313,15 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
             // on a stream the client expects framed, with no terminal status: exactly the #2419
             // shape, reported to the client as "Missing grpc-status". Emit a proper error instead,
             // matching the sibling conversion-failure path in encode().
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("no gRPC descriptor for {}/{} when encoding the response"
-                        + " (descriptors changed mid-exchange?) - returning UNIMPLEMENTED")
-                    .setArguments(serviceName, methodName)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("no gRPC descriptor for {}/{} when encoding the response"
+                            + " (descriptors changed mid-exchange?) - returning UNIMPLEMENTED")
+                        .setArguments(serviceName, methodName)
+                );
+            }
             HttpResponse missingDescriptorResponse = stripGrpcMetadata(response.clone())
                 .withStatusCode(200)
                 .withReasonPhrase(null)
@@ -352,12 +358,14 @@ public class GrpcToHttpResponseHandler extends MessageToMessageEncoder<HttpRespo
                         bodyString = synthesized;
                     }
                 } catch (Exception e) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.WARN)
-                            .setMessageFormat("failed to synthesize gRPC example response for {}/{}:{}")
-                            .setArguments(serviceName, methodName, e.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.WARN)
+                                .setMessageFormat("failed to synthesize gRPC example response for {}/{}:{}")
+                                .setArguments(serviceName, methodName, e.getMessage())
+                        );
+                    }
                 }
             }
             if (bodyString == null || bodyString.isEmpty()) {

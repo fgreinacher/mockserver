@@ -103,12 +103,14 @@ public class OpenAPIConverter {
                 try {
                     exampleRequests.put(operation.getOperationId(), buildExampleRequest(openAPI, method, pathTemplate, operation, generationOptions));
                 } catch (Exception e) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("failed to build example request for {} {} - {}")
-                            .setArguments(method, pathTemplate, e.getMessage())
-                    );
+                    if (mockServerLogger.isEnabledForInstance(WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("failed to build example request for {} {} - {}")
+                                .setArguments(method, pathTemplate, e.getMessage())
+                        );
+                    }
                 }
             }
         }
@@ -286,12 +288,14 @@ public class OpenAPIConverter {
                         }
                         afterActions.add(new AfterAction().withHttpRequest(callbackRequest));
                     } catch (Exception e) {
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setLogLevel(WARN)
-                                .setMessageFormat("failed to build callback after-action for {} {} - {}")
-                                .setArguments(method, callbackUrl, e.getMessage())
-                        );
+                        if (mockServerLogger.isEnabledForInstance(WARN)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(WARN)
+                                    .setMessageFormat("failed to build callback after-action for {} {} - {}")
+                                    .setArguments(method, callbackUrl, e.getMessage())
+                            );
+                        }
                     }
                 }
             }
@@ -415,12 +419,14 @@ public class OpenAPIConverter {
             return exactMatch;
         }
         Optional<Map.Entry<String, io.swagger.v3.oas.models.responses.ApiResponse>> fallback = apiResponses.entrySet().stream().findFirst();
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("requested OpenAPI response status code {} not defined for operation - available response keys are {} - falling back to {}")
-                .setArguments(apiResponseKey, apiResponses.keySet(), fallback.map(Map.Entry::getKey).orElse("none"))
-        );
+        if (mockServerLogger.isEnabledForInstance(WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("requested OpenAPI response status code {} not defined for operation - available response keys are {} - falling back to {}")
+                    .setArguments(apiResponseKey, apiResponses.keySet(), fallback.map(Map.Entry::getKey).orElse("none"))
+            );
+        }
         return fallback;
     }
 
@@ -445,12 +451,14 @@ public class OpenAPIConverter {
         if (key.matches("[1-5][xX]{2}")) {
             return (key.charAt(0) - '0') * 100;
         }
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("unable to parse OpenAPI response status code key {} - leaving default status code")
-                .setArguments(key)
-        );
+        if (mockServerLogger.isEnabledForInstance(WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("unable to parse OpenAPI response status code key {} - leaving default status code")
+                    .setArguments(key)
+            );
+        }
         return null;
     }
 
@@ -592,12 +600,14 @@ public class OpenAPIConverter {
     }
 
     private void warnExampleNameNotFound(String exampleName, Map<String, Example> availableExamples) {
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("requested OpenAPI example name {} not defined - available example names are {} - falling back to the first defined example")
-                .setArguments(exampleName, availableExamples != null ? availableExamples.keySet() : Collections.emptySet())
-        );
+        if (mockServerLogger.isEnabledForInstance(WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("requested OpenAPI example name {} not defined - available example names are {} - falling back to the first defined example")
+                    .setArguments(exampleName, availableExamples != null ? availableExamples.keySet() : Collections.emptySet())
+            );
+        }
     }
 
     private Object findHeaderExample(Header value, OpenAPI openAPI, String exampleName) {
@@ -668,33 +678,39 @@ public class OpenAPIConverter {
         // refDepth guard below); truncation is logged at WARN, matching the ref-depth and cycle guards,
         // so a silently-truncated example never goes unreported
         if (structureDepth >= MAX_STRUCTURE_DEPTH) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(WARN)
-                    .setMessageFormat("example structure exceeded maximum nesting depth of {} — returning literal value")
-                    .setArguments(MAX_STRUCTURE_DEPTH)
-            );
+            if (mockServerLogger.isEnabledForInstance(WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(WARN)
+                        .setMessageFormat("example structure exceeded maximum nesting depth of {} — returning literal value")
+                        .setArguments(MAX_STRUCTURE_DEPTH)
+                );
+            }
             return value;
         }
         if (value instanceof ObjectNode node) {
             if (node.size() == 1 && node.has("$ref")) {
                 String ref = node.get("$ref").asText();
                 if (activeRefChain.contains(ref)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("cyclic $ref detected for {} — returning literal value")
-                            .setArguments(ref)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("cyclic $ref detected for {} — returning literal value")
+                                .setArguments(ref)
+                        );
+                    }
                     return value;
                 }
                 if (refDepth >= MAX_REF_DEPTH) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("$ref resolution exceeded maximum depth of {} for {} — returning literal value")
-                            .setArguments(MAX_REF_DEPTH, ref)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("$ref resolution exceeded maximum depth of {} for {} — returning literal value")
+                                .setArguments(MAX_REF_DEPTH, ref)
+                        );
+                    }
                     return value;
                 }
                 Object resolved = resolveRef(ref, openAPI);
@@ -734,21 +750,25 @@ public class OpenAPIConverter {
             if (map.size() == 1 && map.containsKey("$ref")) {
                 String ref = String.valueOf(map.get("$ref"));
                 if (activeRefChain.contains(ref)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("cyclic $ref detected for {} — returning literal value")
-                            .setArguments(ref)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("cyclic $ref detected for {} — returning literal value")
+                                .setArguments(ref)
+                        );
+                    }
                     return value;
                 }
                 if (refDepth >= MAX_REF_DEPTH) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(WARN)
-                            .setMessageFormat("$ref resolution exceeded maximum depth of {} for {} — returning literal value")
-                            .setArguments(MAX_REF_DEPTH, ref)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(WARN)
+                                .setMessageFormat("$ref resolution exceeded maximum depth of {} for {} — returning literal value")
+                                .setArguments(MAX_REF_DEPTH, ref)
+                        );
+                    }
                     return value;
                 }
                 Object resolved = resolveRef(ref, openAPI);
@@ -805,12 +825,14 @@ public class OpenAPIConverter {
                 }
             }
         }
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(WARN)
-                .setMessageFormat("unable to resolve $ref {} in example — dropping unresolved reference")
-                .setArguments(ref)
-        );
+        if (mockServerLogger.isEnabledForInstance(WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(WARN)
+                    .setMessageFormat("unable to resolve $ref {} in example — dropping unresolved reference")
+                    .setArguments(ref)
+            );
+        }
         return null;
     }
 

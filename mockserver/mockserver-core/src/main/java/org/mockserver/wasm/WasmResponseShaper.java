@@ -127,7 +127,7 @@ public class WasmResponseShaper {
 
     private void warnOnce(String moduleName, Exception e) {
         String key = moduleName == null ? "" : moduleName;
-        if (WARNED_MODULES.add(key)) {
+        if (WARNED_MODULES.add(key) && mockServerLogger.isEnabledForInstance(WARN)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(WARN)

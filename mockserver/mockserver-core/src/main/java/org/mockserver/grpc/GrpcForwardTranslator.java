@@ -210,7 +210,8 @@ public class GrpcForwardTranslator {
             // "the upstream just returned protobuf". Log at WARN with the service/method so the
             // fallback is at least diagnosable. (Narrowing the catch is a separate change: some of
             // what it currently absorbs may be load-bearing on the proxy path.)
-            if (store.getMockServerLogger() != null) {
+            if (store.getMockServerLogger() != null
+                && store.getMockServerLogger().isEnabledForInstance(org.slf4j.event.Level.WARN)) {
                 store.getMockServerLogger().logEvent(
                     new org.mockserver.log.model.LogEntry()
                         .setType(org.mockserver.log.model.LogEntry.LogMessageType.WARN)

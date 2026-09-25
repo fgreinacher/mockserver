@@ -108,12 +108,14 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by MCP handler" + sniDescription(ctx.channel()))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by MCP handler" + sniDescription(ctx.channel()))
+                        .setThrowable(cause)
+                );
+            }
         }
         ctx.close();
     }
@@ -213,13 +215,15 @@ public class McpStreamableHttpHandler extends ChannelInboundHandlerAdapter {
             }
             return result;
         } catch (AuthenticationException e) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("MCP authentication failed: {}")
-                    .setArguments(e.getMessage())
-                    .setThrowable(e)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("MCP authentication failed: {}")
+                        .setArguments(e.getMessage())
+                        .setThrowable(e)
+                );
+            }
             writeUnauthorized(ctx, streamId);
             return null;
         }

@@ -69,12 +69,14 @@ public abstract class SocksProxyHandler<T> extends SimpleChannelInboundHandler<T
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by SOCKS proxy handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by SOCKS proxy handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
+                        .setThrowable(cause)
+                );
+            }
         }
         ctx.close();
     }

@@ -457,15 +457,17 @@ public class HttpActionHandler {
         try {
             List<String> requestErrors = OpenAPIRequestValidator.validate(openAPIDefinition.getSpecUrlOrPayload(), request, mockServerLogger);
             if (!requestErrors.isEmpty()) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(OPENAPI_REQUEST_VALIDATION_FAILED)
-                        .setLogLevel(Level.WARN)
-                        .setCorrelationId(request.getLogCorrelationId())
-                        .setHttpRequest(request)
-                        .setMessageFormat("request matched by OpenAPI-backed expectation does not conform to OpenAPI spec{}errors:{}")
-                        .setArguments(request, String.join("; ", requestErrors))
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(OPENAPI_REQUEST_VALIDATION_FAILED)
+                            .setLogLevel(Level.WARN)
+                            .setCorrelationId(request.getLogCorrelationId())
+                            .setHttpRequest(request)
+                            .setMessageFormat("request matched by OpenAPI-backed expectation does not conform to OpenAPI spec{}errors:{}")
+                            .setArguments(request, String.join("; ", requestErrors))
+                    );
+                }
                 return response()
                     .withStatusCode(400)
                     .withBody("OpenAPI request validation failed: " + String.join("; ", requestErrors));
@@ -975,17 +977,19 @@ public class HttpActionHandler {
                     .withStatusCode(PROXY_AUTHENTICATION_REQUIRED.code())
                     .withHeader(PROXY_AUTHENTICATE.toString(), "Basic realm=\"" + StringEscapeUtils.escapeJava(configuration.proxyAuthenticationRealm()) + "\", charset=\"UTF-8\"");
                 responseWriter.writeResponse(request, response, false);
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(AUTHENTICATION_FAILED)
-                        .setLogLevel(Level.INFO)
-                        .setCorrelationId(request.getLogCorrelationId())
-                        .setHttpRequest(request)
-                        .setHttpResponse(response)
-                        .setExpectation(request, response)
-                        .setMessageFormat("proxy authentication failed so returning response:{}for forwarded request:{}")
-                        .setArguments(response, request)
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(AUTHENTICATION_FAILED)
+                            .setLogLevel(Level.INFO)
+                            .setCorrelationId(request.getLogCorrelationId())
+                            .setHttpRequest(request)
+                            .setHttpResponse(response)
+                            .setExpectation(request, response)
+                            .setMessageFormat("proxy authentication failed so returning response:{}for forwarded request:{}")
+                            .setArguments(response, request)
+                    );
+                }
 
             } else {
 
@@ -2625,17 +2629,19 @@ public class HttpActionHandler {
                     mockServerLogger
                 );
                 if (!validationErrors.isEmpty()) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
-                            .setLogLevel(Level.WARN)
-                            .setCorrelationId(request.getLogCorrelationId())
-                            .setHttpRequest(request)
-                            .setHttpResponse(response)
-                            .setExpectationId(action.getExpectationId())
-                            .setMessageFormat("OpenAPI response validation failed for operation " + openAPIDefinition.getOperationId() + ":{}for request:{}for response:{}")
-                            .setArguments(String.join(NEW_LINE, validationErrors), request, response)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
+                                .setLogLevel(Level.WARN)
+                                .setCorrelationId(request.getLogCorrelationId())
+                                .setHttpRequest(request)
+                                .setHttpResponse(response)
+                                .setExpectationId(action.getExpectationId())
+                                .setMessageFormat("OpenAPI response validation failed for operation " + openAPIDefinition.getOperationId() + ":{}for request:{}for response:{}")
+                                .setArguments(String.join(NEW_LINE, validationErrors), request, response)
+                        );
+                    }
                     if (Boolean.TRUE.equals(configuration.enforceResponseValidationForMocks())) {
                         return response()
                             .withStatusCode(502)
@@ -3350,13 +3356,15 @@ public class HttpActionHandler {
             if (closestDiff != null && !closestDiff.isEmpty()) {
                 String diffBody = org.mockserver.matchers.MatchDifferenceFormatter.formatDifferences(closestDiff);
                 if (isNotBlank(diffBody)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.DEBUG)
-                            .setHttpRequest(request)
-                            .setMessageFormat("closest match diff for unmatched request:{}")
-                            .setArguments(diffBody)
-                    );
+                    if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setLogLevel(Level.DEBUG)
+                                .setHttpRequest(request)
+                                .setMessageFormat("closest match diff for unmatched request:{}")
+                                .setArguments(diffBody)
+                        );
+                    }
                 }
             }
         } catch (Exception e) {
@@ -3912,15 +3920,17 @@ public class HttpActionHandler {
         try {
             List<String> requestErrors = OpenAPIRequestValidator.validate(spec, request, mockServerLogger);
             if (!requestErrors.isEmpty()) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(OPENAPI_REQUEST_VALIDATION_FAILED)
-                        .setLogLevel(Level.WARN)
-                        .setCorrelationId(request.getLogCorrelationId())
-                        .setHttpRequest(request)
-                        .setMessageFormat("validation proxy: request does not conform to OpenAPI spec{}errors:{}")
-                        .setArguments(request, String.join("; ", requestErrors))
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(OPENAPI_REQUEST_VALIDATION_FAILED)
+                            .setLogLevel(Level.WARN)
+                            .setCorrelationId(request.getLogCorrelationId())
+                            .setHttpRequest(request)
+                            .setMessageFormat("validation proxy: request does not conform to OpenAPI spec{}errors:{}")
+                            .setArguments(request, String.join("; ", requestErrors))
+                    );
+                }
                 if (Boolean.TRUE.equals(configuration.validateProxyEnforce())) {
                     return response()
                         .withStatusCode(400)
@@ -3973,16 +3983,18 @@ public class HttpActionHandler {
             }
             List<String> responseErrors = OpenAPIResponseValidator.validate(spec, operationId, response, mockServerLogger);
             if (!responseErrors.isEmpty()) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
-                        .setLogLevel(Level.WARN)
-                        .setCorrelationId(request.getLogCorrelationId())
-                        .setHttpRequest(request)
-                        .setHttpResponse(response)
-                        .setMessageFormat("validation proxy: upstream response does not conform to OpenAPI spec{}errors:{}")
-                        .setArguments(request, String.join("; ", responseErrors))
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setType(OPENAPI_RESPONSE_VALIDATION_FAILED)
+                            .setLogLevel(Level.WARN)
+                            .setCorrelationId(request.getLogCorrelationId())
+                            .setHttpRequest(request)
+                            .setHttpResponse(response)
+                            .setMessageFormat("validation proxy: upstream response does not conform to OpenAPI spec{}errors:{}")
+                            .setArguments(request, String.join("; ", responseErrors))
+                    );
+                }
                 if (!streaming && Boolean.TRUE.equals(configuration.validateProxyEnforce())) {
                     return response()
                         .withStatusCode(502)

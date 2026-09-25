@@ -24,6 +24,7 @@ import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.openapi.examples.models.*;
+import org.slf4j.event.Level;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -172,11 +173,13 @@ public class ExampleBuilder {
             String ref = property.get$ref();
             ref = ref.substring(ref.lastIndexOf("/") + 1);
             if (modelsStartedProcessing.contains(ref) && !processedModels.containsKey(ref)) {
-                MOCK_SERVER_LOGGER.logEvent(
-                    new LogEntry()
-                        .setMessageFormat("unable to create example for{}due to forward reference or circular reference")
-                        .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
-                );
+                if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                    MOCK_SERVER_LOGGER.logEvent(
+                        new LogEntry()
+                            .setMessageFormat("unable to create example for{}due to forward reference or circular reference")
+                            .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
+                    );
+                }
                 return null;
             }
             modelsStartedProcessing.add(ref);
@@ -417,12 +420,14 @@ public class ExampleBuilder {
                 try {
                     output = Json.mapper().readValue(example.toString(), ObjectExample.class);
                 } catch (IOException e) {
-                    MOCK_SERVER_LOGGER.logEvent(
-                        new LogEntry()
-                            .setMessageFormat("unable to convert{}to JsonNode")
-                            .setArguments(example)
-                            .setArguments(example)
-                    );
+                    if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                        MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                .setMessageFormat("unable to convert{}to JsonNode")
+                                .setArguments(example)
+                                .setArguments(example)
+                        );
+                    }
                     output = new ObjectExample();
                 }
             } else {
@@ -446,12 +451,14 @@ public class ExampleBuilder {
                 try {
                     output = Json.mapper().readValue(example.toString(), ArrayExample.class);
                 } catch (IOException e) {
-                    MOCK_SERVER_LOGGER.logEvent(
-                        new LogEntry()
-                            .setMessageFormat("unable to create example for{}because unable to convert{}to JsonNode")
-                            .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
-                            .setArguments(example)
-                    );
+                    if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                        MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                .setMessageFormat("unable to create example for{}because unable to convert{}to JsonNode")
+                                .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
+                                .setArguments(example)
+                        );
+                    }
                     output = new ArrayExample();
                 }
             } else {
@@ -561,11 +568,13 @@ public class ExampleBuilder {
                 try {
                     output = Json.mapper().readValue(example.toString(), ObjectExample.class);
                 } catch (IOException e) {
-                    MOCK_SERVER_LOGGER.logEvent(
-                        new LogEntry()
-                            .setMessageFormat("unable to convert{}to JsonNode")
-                            .setArguments(example)
-                    );
+                    if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                        MOCK_SERVER_LOGGER.logEvent(
+                            new LogEntry()
+                                .setMessageFormat("unable to convert{}to JsonNode")
+                                .setArguments(example)
+                        );
+                    }
                     output = new ObjectExample();
                 }
             } else {
@@ -1115,11 +1124,13 @@ public class ExampleBuilder {
                     try {
                         yield Json.mapper().readValue(example.toString(), ObjectExample.class);
                     } catch (IOException e) {
-                        MOCK_SERVER_LOGGER.logEvent(
-                            new LogEntry()
-                                .setMessageFormat("unable to convert{}to JsonNode")
-                                .setArguments(example)
-                        );
+                        if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                            MOCK_SERVER_LOGGER.logEvent(
+                                new LogEntry()
+                                    .setMessageFormat("unable to convert{}to JsonNode")
+                                    .setArguments(example)
+                            );
+                        }
                         yield new ObjectExample();
                     }
                 }
@@ -1141,12 +1152,14 @@ public class ExampleBuilder {
                     try {
                         yield Json.mapper().readValue(example.toString(), ArrayExample.class);
                     } catch (IOException e) {
-                        MOCK_SERVER_LOGGER.logEvent(
-                            new LogEntry()
-                                .setMessageFormat("unable to create example for{}because unable to convert{}to JsonNode")
-                                .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
-                                .setArguments(example)
-                        );
+                        if (MOCK_SERVER_LOGGER.isEnabledForInstance(Level.INFO)) {
+                            MOCK_SERVER_LOGGER.logEvent(
+                                new LogEntry()
+                                    .setMessageFormat("unable to create example for{}because unable to convert{}to JsonNode")
+                                    .setArguments(StringUtils.substringBeforeLast(location.toString(), "."))
+                                    .setArguments(example)
+                            );
+                        }
                         yield new ArrayExample();
                     }
                 }

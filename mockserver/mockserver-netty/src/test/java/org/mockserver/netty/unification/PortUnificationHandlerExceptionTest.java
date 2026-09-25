@@ -18,6 +18,7 @@ import static org.hamcrest.Matchers.is;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.any;
 
 /**
  * Verifies that {@link PortUnificationHandler#exceptionCaught} no longer silently drops a plain
@@ -30,6 +31,7 @@ public class PortUnificationHandlerExceptionTest {
     public void shouldLogWarnOnPlainDecoderFault() {
         // given - a handler whose logger is a mock so the log level can be asserted
         MockServerLogger logger = mock(MockServerLogger.class);
+        when(logger.isEnabledForInstance(any(Level.class))).thenReturn(true);
         HttpState httpState = mock(HttpState.class);
         when(httpState.getMockServerLogger()).thenReturn(logger);
         PortUnificationHandler handler = new PortUnificationHandler(

@@ -231,19 +231,23 @@ public class StreamingAwareHttpObjectAggregator extends HttpObjectAggregator {
         if (forwardedNanos != null) {
             long ttfbMs = (System.nanoTime() - forwardedNanos) / 1_000_000L;
             String requestLine = ctx.channel().attr(REQUEST_LINE).get();
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.DEBUG)
-                    .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{} ttfbMs:{} request:{}")
-                    .setArguments(decision, response.status().code(), contentTypeDescription, trigger, ttfbMs, requestLine != null ? requestLine : "<unknown>")
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.DEBUG)
+                        .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{} ttfbMs:{} request:{}")
+                        .setArguments(decision, response.status().code(), contentTypeDescription, trigger, ttfbMs, requestLine != null ? requestLine : "<unknown>")
+                );
+            }
         } else {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.DEBUG)
-                    .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{}")
-                    .setArguments(decision, response.status().code(), contentTypeDescription, trigger)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.DEBUG)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.DEBUG)
+                        .setMessageFormat("streaming decision:{} status:{} content-type:{} trigger:{}")
+                        .setArguments(decision, response.status().code(), contentTypeDescription, trigger)
+                );
+            }
         }
     }
 

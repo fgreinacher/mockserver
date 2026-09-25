@@ -174,7 +174,7 @@ public class DnsRequestHandler extends SimpleChannelInboundHandler<DatagramDnsQu
         // resolver can recover the intended hostname for by-IP connections.
         recordDnsIntentMappings(query, dnsResponse);
 
-        if (truncated) {
+        if (truncated && mockServerLogger.isEnabledForInstance(Level.WARN)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.WARN)

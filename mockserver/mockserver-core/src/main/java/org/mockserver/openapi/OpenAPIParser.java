@@ -177,7 +177,7 @@ public class OpenAPIParser {
             disambiguated = candidate + " (" + suffix + ")";
             suffix++;
         } while (!seenOperationIds.add(disambiguated));
-        if (mockServerLogger != null) {
+        if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(org.slf4j.event.Level.WARN)) {
             mockServerLogger.logEvent(
                 new org.mockserver.log.model.LogEntry()
                     .setLogLevel(org.slf4j.event.Level.WARN)

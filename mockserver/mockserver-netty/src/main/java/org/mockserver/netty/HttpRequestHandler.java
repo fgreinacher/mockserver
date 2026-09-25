@@ -477,17 +477,19 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                             .withHeader(PROXY_AUTHENTICATE.toString(), "Basic realm=\"" + StringEscapeUtils.escapeJava(configuration.proxyAuthenticationRealm()) + "\", charset=\"UTF-8\"")
                             .withStreamId(request.getStreamId());
                         ctx.writeAndFlush(response);
-                        mockServerLogger.logEvent(
-                            new LogEntry()
-                                .setType(AUTHENTICATION_FAILED)
-                                .setLogLevel(Level.INFO)
-                                .setCorrelationId(request.getLogCorrelationId())
-                                .setHttpRequest(request)
-                                .setHttpResponse(response)
-                                .setExpectation(request, response)
-                                .setMessageFormat("proxy authentication failed so returning response:{}for forwarded request:{}")
-                                .setArguments(response, request)
-                        );
+                        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setType(AUTHENTICATION_FAILED)
+                                    .setLogLevel(Level.INFO)
+                                    .setCorrelationId(request.getLogCorrelationId())
+                                    .setHttpRequest(request)
+                                    .setHttpResponse(response)
+                                    .setExpectation(request, response)
+                                    .setMessageFormat("proxy authentication failed so returning response:{}for forwarded request:{}")
+                                    .setArguments(response, request)
+                            );
+                        }
                     } else {
                         setProxyingRequest(ctx, Boolean.TRUE);
                         // The tunnelled protocol is unknown here: the client sends its ClientHello (TLS),
@@ -847,12 +849,14 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     .setThrowable(cause)
             );
         } else if (isSslOrDecoderFault(cause)) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.WARN)
-                    .setMessageFormat("SSL or decoder fault caught by " + server.getClass() + " handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
-                    .setThrowable(cause)
-            );
+            if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.WARN)
+                        .setMessageFormat("SSL or decoder fault caught by " + server.getClass() + " handler -> closing pipeline " + ctx.channel() + sniDescription(ctx.channel()))
+                        .setThrowable(cause)
+                );
+            }
         }
         closeOnFlush(ctx.channel());
     }

@@ -56,12 +56,14 @@ public class FileWatcher {
         final long pollPeriod = Math.max(1L, pollPeriodMillis);
         final Path path = filePath.getParent() != null ? filePath : Paths.get(new File(".").getAbsolutePath(), filePath.toString());
         final AtomicReference<Integer> fileHash = new AtomicReference<>(getFileHash(path));
-        mockServerLogger.logEvent(
-            new LogEntry()
-                .setLogLevel(INFO)
-                .setMessageFormat("watching file:{}with file fingerprint:{}")
-                .setArguments(path, fileHash)
-        );
+        if (mockServerLogger.isEnabledForInstance(INFO)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(INFO)
+                    .setMessageFormat("watching file:{}with file fingerprint:{}")
+                    .setArguments(path, fileHash)
+            );
+        }
         scheduledFuture = getScheduler().scheduleAtFixedRate(() -> {
             // Skip the iteration entirely if this watcher has been stopped but
             // the already-scheduled task has not yet been cancelled.

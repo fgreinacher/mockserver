@@ -38,12 +38,14 @@ public class HttpForwardClassCallbackActionHandler extends HttpForwardAction {
                 Constructor<? extends T> constructor = expectationCallbackClass.getConstructor();
                 return constructor.newInstance();
             } else {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.WARN)
-                        .setHttpRequest(null)
-                        .setMessageFormat(httpClassCallback.getCallbackClass() + " does not implement " + callbackClass.getName() + " required for forwarded requests with class callback")
-                );
+                if (mockServerLogger.isEnabledForInstance(Level.WARN)) {
+                    mockServerLogger.logEvent(
+                        new LogEntry()
+                            .setLogLevel(Level.WARN)
+                            .setHttpRequest(null)
+                            .setMessageFormat(httpClassCallback.getCallbackClass() + " does not implement " + callbackClass.getName() + " required for forwarded requests with class callback")
+                    );
+                }
             }
         } catch (ClassNotFoundException e) {
             mockServerLogger.logEvent(
