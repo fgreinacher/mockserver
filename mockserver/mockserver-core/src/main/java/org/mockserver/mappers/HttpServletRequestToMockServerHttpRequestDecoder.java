@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.model.NottableString.string;
+import static org.mockserver.model.NottableString.headerName;
 import static org.mockserver.model.NottableString.strings;
 
 /**
@@ -109,7 +110,7 @@ public class HttpServletRequestToMockServerHttpRequestDecoder {
                 }
                 // literal name and values — an actual incoming request, not a matcher, so a header
                 // named or valued "!foo" is recorded verbatim rather than read as a negation
-                headers.withEntry(string(headerName, false), strings(mappedHeaderValues, false));
+                headers.withEntry(headerName(headerName), strings(mappedHeaderValues, false));
             }
             httpRequest.withHeaders(headers);
         }

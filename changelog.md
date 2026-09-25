@@ -81,6 +81,10 @@ changes except smaller downloads.
 - **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
   copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
   life of the entry.
+- **Header and parameter names cost less to hold.** The wrapper around every header and parameter
+  name and value shrank by about a third, and well-known header names now share one instance instead
+  of allocating a fresh wrapper per request. An unrecognised header name still allocates as before,
+  so a client sending many distinct names cannot make the server hold more.
 - A served request no longer leaves behind a synthetic expectation object. Every request built one
   from the request and response the log entry already held, and kept it for the entry's lifetime,
   even though it is only read when log entries are serialised. It is now derived on demand, so a

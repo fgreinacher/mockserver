@@ -26,6 +26,7 @@ import java.util.Set;
 import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static io.netty.handler.codec.http.HttpUtil.isKeepAlive;
 import static org.mockserver.model.NottableString.string;
+import static org.mockserver.model.NottableString.headerName;
 import static org.mockserver.model.NottableString.strings;
 
 /**
@@ -148,7 +149,7 @@ public class FullHttpRequestToMockServerHttpRequest {
                 // named "!foo" (or valued "!foo") must be recorded verbatim, not read as a negation
                 // matcher. The withEntry(String, ...) overloads route through NottableString.string(name)
                 // which strips a leading !/? — correct for matcher input, wrong for a real message.
-                headers.withEntry(string(headerName, false), strings(httpHeaders.getAll(headerName), false));
+                headers.withEntry(headerName(headerName), strings(httpHeaders.getAll(headerName), false));
             }
             httpRequest.withHeaders(headers);
         }

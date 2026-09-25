@@ -21,9 +21,8 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     private static final String EMPTY_STRING = "";
     private final String value;
     private final boolean isBlank;
-    private final Boolean not;
+    private final boolean not;
     private final int hashCode;
-    private final String json;
     // volatile so the lazily-compiled patterns are safely published across threads. The matcher is
     // called concurrently from request-matching worker threads on a single shared NottableString;
     // without volatile the non-final writes here can be seen as a half-constructed/never-visible
@@ -33,8 +32,9 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     // see a fully-built Pattern.
     private volatile Pattern pattern;
     private volatile Pattern caseSensitivePattern;
-    private final ParameterStyle parameterStyle;
-    private final String schemaType;
+    // null for every recorded-traffic string; set only on the expectation/OpenAPI path, so the two
+    // rarely-used references are collapsed into one that is absent on the data plane
+    private final StyleAndSchema styleAndSchema;
 
     NottableString(String value, Boolean not) {
         this(value, not, null, null);
@@ -43,30 +43,22 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     NottableString(String value, Boolean not, ParameterStyle parameterStyle, String schemaType) {
         this.value = value;
         this.isBlank = StringUtils.isBlank(value);
-        if (not != null) {
-            this.not = not;
-        } else {
-            this.not = Boolean.FALSE;
-        }
+        this.not = not != null && not;
         this.hashCode = Objects.hash(this.value, this.not);
-        this.json = serialise();
-        this.parameterStyle = parameterStyle;
-        this.schemaType = schemaType;
+        this.styleAndSchema = StyleAndSchema.of(parameterStyle, schemaType);
     }
 
     NottableString(String value) {
         this.isBlank = StringUtils.isBlank(value);
         if (!this.isBlank && value.charAt(0) == NOT_CHAR) {
             this.value = value.substring(1);
-            this.not = Boolean.TRUE;
+            this.not = true;
         } else {
             this.value = value;
-            this.not = Boolean.FALSE;
+            this.not = false;
         }
         this.hashCode = Objects.hash(this.value, this.not);
-        this.json = serialise();
-        this.parameterStyle = null;
-        this.schemaType = null;
+        this.styleAndSchema = null;
     }
 
     private String serialise() {
@@ -109,6 +101,46 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
 
     public static NottableString string(String value, Boolean not) {
         return new NottableString(value, not);
+    }
+
+    // A fixed vocabulary of well-known HTTP header names, each pre-wrapped once. Incoming requests
+    // draw their header names from this small set overwhelmingly, so recording literal traffic can
+    // share one immutable wrapper per name rather than allocating a fresh one per request. The set is
+    // fixed rather than a growing cache so an attacker sending unbounded distinct header names cannot
+    // grow it; an unknown name simply allocates as before. Sharing is only safe because NottableString
+    // is immutable — every derived form (withStyle/withSchemaType/lowercase/...) returns a copy.
+    private static final Map<String, NottableString> COMMON_HEADER_NAMES;
+
+    static {
+        String[] names = {
+            "Host", "User-Agent", "Accept", "Accept-Encoding", "Accept-Language", "Accept-Charset",
+            "Content-Type", "Content-Length", "Content-Encoding", "Content-Disposition", "Content-Language",
+            "Connection", "Cache-Control", "Cookie", "Set-Cookie", "Authorization", "Proxy-Authorization",
+            "Date", "Expires", "Last-Modified", "ETag", "If-None-Match", "If-Modified-Since", "If-Match",
+            "Location", "Referer", "Origin", "Server", "Vary", "Via", "Age", "Allow", "Pragma", "Range",
+            "Transfer-Encoding", "Upgrade", "Warning", "WWW-Authenticate", "Keep-Alive", "TE", "Trailer", "Expect",
+            "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto", "X-Requested-With", "X-Frame-Options",
+            "Access-Control-Allow-Origin", "Access-Control-Allow-Methods", "Access-Control-Allow-Headers",
+            "Access-Control-Allow-Credentials", "Access-Control-Max-Age", "Access-Control-Request-Method",
+            "Access-Control-Request-Headers"
+        };
+        Map<String, NottableString> map = new HashMap<>();
+        for (String name : names) {
+            map.put(name, new NottableString(name, Boolean.FALSE));
+            String lower = name.toLowerCase(Locale.ROOT);
+            map.putIfAbsent(lower, new NottableString(lower, Boolean.FALSE));
+        }
+        COMMON_HEADER_NAMES = Collections.unmodifiableMap(map);
+    }
+
+    /**
+     * Wrap a literal, non-matcher HTTP header name, sharing one immutable instance for the well-known
+     * names that dominate real traffic. Equivalent in every observable way to {@code string(name, false)}
+     * — a name outside the fixed vocabulary allocates exactly as that call would.
+     */
+    public static NottableString headerName(String name) {
+        NottableString shared = COMMON_HEADER_NAMES.get(name);
+        return shared != null ? shared : new NottableString(name, Boolean.FALSE);
     }
 
     public static NottableString string(String value) {
@@ -191,19 +223,19 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
     }
 
     public ParameterStyle getParameterStyle() {
-        return parameterStyle;
+        return styleAndSchema == null ? null : styleAndSchema.parameterStyle;
     }
 
     public NottableString withStyle(ParameterStyle style) {
-        return copyWith(style, this.schemaType);
+        return copyWith(style, getSchemaType());
     }
 
     public String getSchemaType() {
-        return schemaType;
+        return styleAndSchema == null ? null : styleAndSchema.schemaType;
     }
 
     public NottableString withSchemaType(String schemaType) {
-        return copyWith(this.parameterStyle, schemaType);
+        return copyWith(getParameterStyle(), schemaType);
     }
 
     // copy of the same runtime type carrying the given style/schemaType; overridden per subclass
@@ -349,11 +381,29 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
 
     @Override
     public String toString() {
-        return json;
+        return serialise();
     }
 
     @Override
     public int compareTo(NottableString other) {
         return other.getValue().compareTo(this.getValue());
+    }
+
+    // Holds the two matcher-only attributes together so a data-plane string, which never has either,
+    // costs a single null reference rather than two. Immutable, so a shared instance is safe to reuse.
+    private static final class StyleAndSchema {
+        private final ParameterStyle parameterStyle;
+        private final String schemaType;
+
+        private StyleAndSchema(ParameterStyle parameterStyle, String schemaType) {
+            this.parameterStyle = parameterStyle;
+            this.schemaType = schemaType;
+        }
+
+        private static StyleAndSchema of(ParameterStyle parameterStyle, String schemaType) {
+            return parameterStyle == null && schemaType == null
+                ? null
+                : new StyleAndSchema(parameterStyle, schemaType);
+        }
     }
 }
