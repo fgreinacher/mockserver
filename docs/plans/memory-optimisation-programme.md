@@ -59,8 +59,8 @@ the 277 the weigher charges.
 | 4a | KeysToMultiValues characterisation corpus (93 tests) | — | **landed** `ddb1061a1` |
 | 1 | Text bodies no longer retained twice (`String` + `byte[]`) | occupancy | **landed** `b413de937` |
 | 2 | `NottableString` immutable | correctness, unblocks 3 | **landed** `0f8758cd7` |
-| A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | reviewed PASS, site-1 test added, awaiting verify + commit |
-| 5 | Synthetic per-request `Expectation` derived lazily | both | verified (11,069 tests), awaiting review + commit |
+| A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | **landed** `1122561d7` |
+| 5 | Synthetic per-request `Expectation` derived lazily | both | **BLOCKED** — review found an unsafe-publication race; fix in progress |
 | 3 | Header-name dedup + `NottableString` field diet | both | to do — unblocked by 2 |
 | 4b | Flat insertion-ordered array replacing the Guava multimap | both | to do — gated on 4a, which is landed |
 | 6 | `estimatedHeapSize()` to count headers and expectation | accounting | to do, **after** 5 |
@@ -118,6 +118,20 @@ This is the part that makes the rest mean anything.
    reuse/pooling needs a cross-talk test at real concurrency; caching needs the
    invalidation path tested; laziness needs concurrent first-use; a structural
    swap needs a differential corpus.
+
+The `mockserver-netty verify` gate has passed once, on the batch containing units
+1, 2, 4a, A/B and 5: **1,261 unit plus 2,278 integration tests, 0 failures, leak
+detection clean**. Two things that run taught us:
+
+- `MainCliTest.shouldStartWithNewPortFlag` failed the first attempt and passed
+  the second. It is the known find-then-bind port race, not a regression — but
+  note the first failure aborted the build **in surefire**, so the integration
+  tests never ran and the gate had told us nothing. A gate that aborts before
+  reaching what it exists to test is not a pass.
+- That same green run contained unit 5's unsafe-publication race. **A passing
+  integration suite did not clear it**; only the review did, because no test
+  exercises `getExpectation()` concurrently. Green is not evidence about a
+  hazard nothing exercises.
 
 Negative controls run so far:
 
