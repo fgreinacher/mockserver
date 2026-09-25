@@ -152,6 +152,27 @@ function tear-down() {
   rm -f "$(port-forward-log "${1:-mockserver}" "${2:-1080}")" 2>/dev/null || true
 }
 
+# Dump everything needed to diagnose a pod that never became Ready.
+# --previous matters because a CrashLoopBackOff pod's useful log is the PREVIOUS
+# attempt, not the one currently backing off. The full log is deliberately not
+# capped with --tail: a startup failure is at the START of the log, so a tail
+# discards exactly the part worth keeping.
+function pod-diagnostics() {
+  local namespace="${1:-mockserver}"
+  printMessage "pod diagnostics for namespace ${namespace}"
+  kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" get pods -o wide 2>&1 || true
+  kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" get events --sort-by=.lastTimestamp 2>&1 | tail -40 || true
+  local p
+  for p in $(kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" get po -o name 2>/dev/null); do
+    printMessage "describe ${p}"
+    kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" describe "${p}" 2>&1 | tail -40 || true
+    printMessage "logs ${p} (full)"
+    kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" logs "${p}" --all-containers 2>&1 || true
+    printMessage "logs ${p} (previous attempt, if any)"
+    kubectl --context "${KUBE_CONTEXT}" -n "${namespace}" logs "${p}" --all-containers --previous 2>&1 || true
+  done
+}
+
 function container-logs() {
   printMessage "${1:-mockserver} logs"
   runCommand "kubectl --context ${KUBE_CONTEXT} --namespace ${1:-mockserver} logs $(kubectl --context ${KUBE_CONTEXT} --namespace ${1:-mockserver} get po -l app=mockserver,release=${1:-mockserver} -o=jsonpath='{.items[0].metadata.name}')"

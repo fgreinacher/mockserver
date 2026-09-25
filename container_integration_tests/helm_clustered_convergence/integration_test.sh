@@ -206,6 +206,7 @@ function integration_test() {
     --debug --wait --timeout 180s \
     "${RELEASE_NAME}" "${SCRIPT_DIR}/../../helm/mockserver" || {
     printFailureMessage "Helm install failed"
+    pod-diagnostics "${NAMESPACE}" || true
     TEST_EXIT_CODE=1
   }
 

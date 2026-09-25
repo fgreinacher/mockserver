@@ -202,3 +202,37 @@ physical-core counts (siblings counted once) are now recorded in `perf-result.js
 | Dating and provenance rule; a populated field is not a correct one | [docs/code/startup-performance.md](../code/startup-performance.md) |
 | k6 README corrections (`forward.js` was described as running when it never did) | `mockserver-performance-test/k6/README.md` |
 | Hazard-class table, evidence standard, and the `rig_valid_peak_achieved_rps` wrong-subject lesson | [docs/code/optimisation-safety.md](../code/optimisation-safety.md) |
+
+## Known consequence: the log-guard sweep cost diff coverage
+
+The diff-coverage gate reported **47.7% against a 70% threshold** on `b0430b627`
+(431 uncovered changed lines). The gate is soft-fail, so it notified rather than
+blocked, and the number is real rather than spurious.
+
+**Mechanism.** Before the sweep, `logEvent(new LogEntry()...)` was *executed* on
+every path and discarded inside `logEvent` when the level was disabled — so the
+lines counted as covered. After it, the guard is false at the suite's default
+`ERROR` level and the body is never reached. The uncovered lines are precisely the
+guarded log bodies (`MTLSAuthenticationHandler:78-102,152-157`,
+`StreamingAwareHttpObjectAggregator:234-237`, and so on across the sweep).
+
+**The real cost, stated honestly.** This is mostly a measurement artefact — the
+same behaviour is tested, the lines just are not reached. But not entirely: a
+latent fault inside one of those statements (a bad `setArguments` index, an NPE in
+a message expression) used to surface as a test failure because the statement ran.
+At `ERROR` it no longer does. The protection was weak — no test asserted those
+messages, so it only ever caught an exception, not a wrong message — but it was
+not nothing.
+
+**Why the ledger is the wrong instrument here.** `.buildkite/diff-coverage-ledger.json`
+has a staleness ratchet: an entry whose line later becomes covered fails the build.
+These lines become covered the moment any test runs below `INFO`, so bulk-recording
+431 of them would both hide the trade and create a latent build break. Recording a
+number instead of raising coverage is the antipattern the ledger exists to prevent.
+
+**Options, none taken yet — this is a judgement call:**
+1. Accept it. The gate is notify-only by design, and this is a deliberate trade:
+   allocation on the hot path against execution coverage of log statements.
+2. Run a subset of the suite at `DEBUG`/`TRACE` so the guarded bodies execute.
+   Restores the incidental protection; costs suite time and log noise.
+3. Add targeted tests per site. ~180 sites of low-value assertions — rejected.

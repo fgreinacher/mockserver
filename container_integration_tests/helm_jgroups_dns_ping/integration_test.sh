@@ -254,11 +254,7 @@ function integration_test() {
 
   # Diagnostics on failure
   if [[ "${TEST_EXIT_CODE}" -ne 0 ]]; then
-    local p
-    for p in $(get_pod_names 2>/dev/null || echo ""); do
-      printMessage "Diagnostic logs from ${p}:"
-      kubectl --context "${KUBE_CONTEXT}" -n "${NAMESPACE}" logs "${p}" 2>/dev/null | tail -30 || true
-    done
+    pod-diagnostics "${NAMESPACE}" || true
   fi
 
   logTestResult "${TEST_EXIT_CODE}" "${TEST_CASE}"
