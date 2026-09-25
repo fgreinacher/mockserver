@@ -137,6 +137,8 @@ steps:
   #     perf-run        ─▶ perf-compare ─▶ publish
   #     perf-microbench ┄▶ perf-compare
   #     perf-h2multiplex┄▶ perf-compare
+  #     perf-allocprofile  (NO edge — standalone by design: a deep, throughput-degraded
+  #                         run must never be waited on, gated, or baselined)
   #
   #   DO NOT "tidy" this back into a plain `- wait: ~`: that reintroduces the
   #   exact build-306 bug where a notify-only red throws away a valid baseline.
@@ -185,6 +187,19 @@ steps:
     # streams over one h2c connection. NOTIFY-ONLY, no threshold (recorded only); a
     # NON-zero exit means the harness self-validation failed (bad measurement), not a
     # slowdown, so it surfaces as a red build.
+    timeout_in_minutes: 30
+    agents:
+      queue: "perf"
+  - label: ":microscope: perf regression — allocation profile (deep JFR)"
+    key: "perf-allocprofile"
+    command: ".buildkite/scripts/steps/perf-test-allocprofile.sh"
+    # Runs perf-test-run.sh with PERF_JVM_DIAGNOSTICS=deep to answer "what allocates?".
+    # It is DELIBERATELY NOT a dependency of perf-compare and NOTHING depends on it: its
+    # throughput is depressed by the profiling, so it must never be waited on, gated, or
+    # baselined. Its artifacts are name-prefixed (PERF_RUN_NAME=allocprofile), so they
+    # cannot match compare's exact-name `perf-result.json` download. soft_fail so a
+    # throughput number here never reds the build — only a genuine harness fault shows.
+    soft_fail: true
     timeout_in_minutes: 30
     agents:
       queue: "perf"

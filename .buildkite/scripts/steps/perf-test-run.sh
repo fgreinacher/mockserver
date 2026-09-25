@@ -23,6 +23,31 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+# --- artifact-name prefixing (run identity) -----------------------------------
+# Every Buildkite artifact this script uploads is named from PERF_RUN_NAME. UNSET
+# (the standard daily `perf-run` step) leaves names byte-identical to before
+# (perf-result.json, perf-sweep.json, perf-jvm-diagnostics.tgz, ...), which
+# perf-test-compare.sh downloads build-wide by EXACT name and persists to S3, and
+# which perf-website-publish.sh reads from S3. A separate, throughput-degrading step
+# (perf-test-allocprofile.sh) sets PERF_RUN_NAME=allocprofile so its artifacts
+# (allocprofile-perf-result.json, ...) cannot match any consumer's exact-name
+# download and so can never enter or poison the rolling baseline.
+PERF_RUN_NAME="${PERF_RUN_NAME:-}"
+ARTIFACT_PREFIX="${PERF_RUN_NAME:+${PERF_RUN_NAME}-}"
+
+# Upload $1 (a file already at $REPO_ROOT) under ARTIFACT_PREFIX. With no prefix this
+# is byte-identical to `buildkite-agent artifact upload "$1" || true`; with a prefix
+# the file is copied to the prefixed name first so the STORED artifact carries it.
+bk_upload_artifact() {
+  local base="$1"
+  if [ -z "$ARTIFACT_PREFIX" ]; then
+    buildkite-agent artifact upload "$base" || true
+    return 0
+  fi
+  cp "$REPO_ROOT/$base" "$REPO_ROOT/${ARTIFACT_PREFIX}${base}" 2>/dev/null || return 0
+  buildkite-agent artifact upload "${ARTIFACT_PREFIX}${base}" || true
+}
+
 K6_IMAGE="grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f"
 # The SUT runs the -graaljs snapshot variant so the JavaScript response-template
 # arm (regression.js item 15a) has the GraalVM JS engine available; the engine is
@@ -360,8 +385,8 @@ upload_diag_bundle() {
     gz="$hprof.gz"; gzip -f "$hprof" >/dev/null 2>&1 || continue
     szmb=$(( ( $(wc -c < "$gz" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
     if [ "$szmb" -le "$PERF_HEAPDUMP_MAX_UPLOAD_MB" ]; then
-      cp "$gz" "$REPO_ROOT/${sub}-heapdump.hprof.gz" 2>/dev/null \
-        && buildkite-agent artifact upload "${sub}-heapdump.hprof.gz" 2>/dev/null \
+      cp "$gz" "$REPO_ROOT/${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz" 2>/dev/null \
+        && buildkite-agent artifact upload "${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz" 2>/dev/null \
         && echo "--- uploaded heap dump ($sub, ${szmb} MiB gzipped)" >&2
     else
       echo "--- heap dump $sub is ${szmb} MiB gzipped (> ${PERF_HEAPDUMP_MAX_UPLOAD_MB} MiB cap) — NOT uploaded; the class histogram (in the bundle) names the retaining class, and the raw dump is on the volume" >&2
@@ -369,8 +394,8 @@ upload_diag_bundle() {
   done
   # Everything else (small) as one tarball. Heap dumps are EXCLUDED — they are uploaded (or not)
   # separately above under the size cap, so they must never bloat this always-uploaded bundle.
-  ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
-    && buildkite-agent artifact upload "perf-jvm-diagnostics.tgz" 2>/dev/null \
+  ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
+    && buildkite-agent artifact upload "${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" 2>/dev/null \
     && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR'))" >&2 || true
 }
 
@@ -465,9 +490,9 @@ emit_invalid_result() {
       timestamp_utc:$ts, build_number:$build_number, build_url:$build_url,
       mockserver_image:$image,
       aborted:"sut_died", baseline_eligible:false, validity:$validity}' \
-    > "$REPO_ROOT/perf-result.json" 2>/dev/null || true
+    > "$REPO_ROOT/${ARTIFACT_PREFIX}perf-result.json" 2>/dev/null || true
   command -v buildkite-agent >/dev/null 2>&1 \
-    && buildkite-agent artifact upload "perf-result.json" >/dev/null 2>&1 || true
+    && buildkite-agent artifact upload "${ARTIFACT_PREFIX}perf-result.json" >/dev/null 2>&1 || true
 }
 
 # Liveness checkpoint, called at every phase boundary. If the sampler recorded the
@@ -3381,11 +3406,11 @@ fi
 
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
-  buildkite-agent artifact upload "perf-result.json" || true
-  buildkite-agent artifact upload "perf-sweep.json" || true
+  bk_upload_artifact "perf-result.json"
+  bk_upload_artifact "perf-sweep.json"
   upload_diag_bundle
-  [ -f "$REPO_ROOT/serving-percore.json" ] && buildkite-agent artifact upload "serving-percore.json" || true
-  [ -f "$REPO_ROOT/serving-multiproc.json" ] && buildkite-agent artifact upload "serving-multiproc.json" || true
+  [ -f "$REPO_ROOT/serving-percore.json" ] && bk_upload_artifact "serving-percore.json" || true
+  [ -f "$REPO_ROOT/serving-multiproc.json" ] && bk_upload_artifact "serving-multiproc.json" || true
   # Record the HARNESS commit this run executed against — deliberately NOT the
   # attributed (image-revision) `$COMMIT`. perf-test-guard.sh reads this (via
   # last_perf_run_commit) and compares it to the current git HEAD to decide "has
