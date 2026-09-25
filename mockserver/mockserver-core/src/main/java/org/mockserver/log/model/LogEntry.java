@@ -130,20 +130,25 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private transient long estimatedHeapSize = -1;
 
     // Per-entry structural overhead of the retained LogEntry graph beyond the request/response bodies:
-    // the LogEntry object itself, its id (UUID)/timestamp/messageFormat/correlationId strings, the
-    // arguments and httpRequests arrays, and the ConcurrentLinkedDeque node that holds it. Charged once
-    // per entry that carries at least one HTTP message (a pure diagnostic entry with no request/response
-    // retains none of this graph and stays weightless, so the ring in-flight bound continues to ignore
-    // it). Empirically ~0.9 KB on a HotSpot heap dump (compressed oops); see estimatedHeapSize().
-    private static final long BASE_ENTRY_OVERHEAD_BYTES = 896;
-    // Structural overhead of ONE retained HttpRequest or HttpResponse model object beyond its body and
-    // header bytes: the model object, its method/path/statusCode/reasonPhrase NottableStrings, the Body
-    // wrapper (e.g. JsonBody), and the Headers container. Charged per request definition and once for
-    // the response. Empirically ~1.15 KB per message on a HotSpot heap dump; see estimatedHeapSize().
-    private static final long PER_HTTP_MESSAGE_OVERHEAD_BYTES = 1152;
-    // Per-header-value overhead beyond the name and value characters themselves: the Header/NottableString
-    // objects and the multimap entry that holds them. Added to the summed name+value character counts.
-    private static final long HEADER_ENTRY_OVERHEAD_BYTES = 64;
+    // the LogEntry object itself, its correlationId/messageFormat strings, the arguments and httpRequests
+    // arrays, and the ConcurrentLinkedDeque node that holds it. Charged once per entry that carries at
+    // least one HTTP message (a pure diagnostic entry with no request/response retains none of this graph
+    // and stays weightless, so the ring in-flight bound continues to ignore it). Derived from a live
+    // class-histogram of a filled event log (compressed oops); see estimatedHeapSize().
+    private static final long BASE_ENTRY_OVERHEAD_BYTES = 256;
+    // Structural overhead of ONE retained HttpRequest model object beyond its body and header bytes: the
+    // model object, its method/path NottableStrings (and typical path characters, which are not counted
+    // separately), the Body wrapper (e.g. JsonBody), and the empty header/parameter/cookie containers.
+    private static final long PER_REQUEST_MESSAGE_OVERHEAD_BYTES = 256;
+    // The same for an HttpResponse. Smaller than a request because it has no path/method/parameters, only
+    // a status code and its containers.
+    private static final long PER_RESPONSE_MESSAGE_OVERHEAD_BYTES = 128;
+    // Per-header-value overhead beyond the name and value characters themselves. Covers the VALUE side's
+    // freshly-retained structure: the value NottableString, its backing String and byte[] headers, and the
+    // two flat-store array slots. The header NAME's NottableString is deliberately NOT charged here: for
+    // real recorded traffic the name is a shared well-known instance (see NottableString.headerName), so
+    // retaining an entry does not retain a new one. Added to the summed name+value character counts.
+    private static final long HEADER_ENTRY_OVERHEAD_BYTES = 128;
 
     public LogEntry() {
 
@@ -161,16 +166,23 @@ public class LogEntry implements EventTranslator<LogEntry> {
      *   <li>any decoded String view still cached on the body ({@code retainedDerivedFormBytes()}); a
      *   retained live-traffic body has released this, so it usually adds nothing (see {@code releaseDerivedForms});</li>
      *   <li>the header name + value characters, plus a small fixed overhead per header value;</li>
-     *   <li>a fixed structural overhead ({@link #PER_HTTP_MESSAGE_OVERHEAD_BYTES}) for the model object,
-     *   its method/path/status NottableStrings and its Body/Headers wrappers.</li>
+     *   <li>a fixed structural overhead ({@link #PER_REQUEST_MESSAGE_OVERHEAD_BYTES} /
+     *   {@link #PER_RESPONSE_MESSAGE_OVERHEAD_BYTES}) for the model object, its method/path/status
+     *   NottableStrings and its Body/Headers wrappers.</li>
      * </ul>
      * plus a fixed per-entry structural overhead ({@link #BASE_ENTRY_OVERHEAD_BYTES}) for the LogEntry
      * graph itself, charged only when the entry carries at least one HTTP message (a pure diagnostic
      * entry with no request/response retains almost none of this and stays weightless, so the ring
-     * in-flight bound keeps ignoring the overwhelming majority of small control entries).
+     * in-flight bound keeps ignoring the overwhelming majority of small control entries), and — only when
+     * a REAL expectation has been attached via {@link #setExpectation(Expectation)} — that expectation's
+     * own {@link Expectation#estimatedHeapSize()}. A served request's expectation is synthetic and derived
+     * lazily (nothing is retained), so it adds nothing; a closest-match expectation attached to a
+     * not-matched entry is genuinely retained and is counted.
      * <p>
-     * The constants were calibrated against a HotSpot live heap dump (compressed oops) of a filled event
-     * log: at {@code WARN} this brings the estimate to within a few percent of the real retained heap.
+     * The constants were derived from a live class-histogram (compressed oops) of a filled event log:
+     * at {@code WARN} the estimate closely tracks the real retained heap. It errs slightly high for
+     * well-known header names (whose shared name instance it does not charge) and can err low for traffic
+     * with many custom header names or long distinct paths, whose per-message structure it under-counts.
      * <p>
      * <strong>What is deliberately NOT counted, and why.</strong> The lazily-derived {@code httpUpdated*}
      * copies and the rendered {@code arguments} are transient (rebuilt at render time, not retained), so
@@ -201,7 +213,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
                     if (rd instanceof HttpRequest) {
                         HttpRequest request = (HttpRequest) rd;
                         hasHttpMessage = true;
-                        size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
+                        size += PER_REQUEST_MESSAGE_OVERHEAD_BYTES;
                         byte[] b = request.getBodyAsRawBytes();
                         if (b != null) {
                             size += b.length;
@@ -213,7 +225,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             }
             if (httpResponse != null) {
                 hasHttpMessage = true;
-                size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
+                size += PER_RESPONSE_MESSAGE_OVERHEAD_BYTES;
                 byte[] b = httpResponse.getBodyAsRawBytes();
                 if (b != null) {
                     size += b.length;
@@ -224,6 +236,12 @@ public class LogEntry implements EventTranslator<LogEntry> {
             if (hasHttpMessage) {
                 size += BASE_ENTRY_OVERHEAD_BYTES;
             }
+            // A REAL expectation (setExpectation(Expectation)) is retained and otherwise invisible to the
+            // budget; charge its own memoised estimate. The synthetic serve-path expectation is null here
+            // (it is derived lazily in getExpectation and never retained), so it adds nothing.
+            if (expectation != null) {
+                size += expectation.estimatedHeapSize();
+            }
             estimatedHeapSize = size;
         }
         return estimatedHeapSize;
@@ -231,10 +249,11 @@ public class LogEntry implements EventTranslator<LogEntry> {
 
     /**
      * Sum the retained bytes of a {@link Headers} block: the name and value characters of every header
-     * value, plus {@link #HEADER_ENTRY_OVERHEAD_BYTES} per value for the Header/NottableString objects.
-     * Iterates the backing multimap directly (no {@code getHeaderList()} allocation) and is skipped
-     * entirely when the block is null or empty, so a header-less entry pays nothing here. Deterministic:
-     * the header content of a retained entry does not change after it is built.
+     * value, plus {@link #HEADER_ENTRY_OVERHEAD_BYTES} per value for the value-side NottableString graph
+     * and the flat-store array slots (the shared header-name instance is not charged; see the constant).
+     * Iterates the flat store's read-only projection directly (no {@code getHeaderList()} allocation) and
+     * is skipped entirely when the block is null or empty, so a header-less entry pays nothing here.
+     * Deterministic: the header content of a retained entry does not change after it is built.
      */
     private static long headerBytes(Headers headers) {
         if (headers == null || headers.isEmpty()) {
@@ -651,6 +670,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         this.expectationIsSynthetic = false;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
+        this.estimatedHeapSize = -1;
         return this;
     }
 

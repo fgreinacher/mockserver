@@ -104,9 +104,12 @@ changes except smaller downloads.
   carries**. A connection-pooling client, load balancer or browser made the heap grow in proportion
   to the number of requests on that connection, ending in an `OutOfMemoryError`.
 - The event log now bounds itself honestly in bytes at both sites where it holds memory, and its
-  weigher counts what an entry actually holds: the budget tracks real usage within a measured
-  **2–3x**, instead of the 2.6–4.8x the body-only accounting produced. The default budget is sized
-  from that measurement rather than guessed.
+  weigher counts what an entry actually holds — per-entry and per-message structure, header bytes, and
+  any retained closest-match expectation, not raw body bytes alone. The overheads were re-derived from
+  a live heap histogram once the header store became a flat array (above), so the estimate now tracks
+  real retained heap closely: typically within about **10–15%** at `WARN`, and slightly high for traffic
+  using well-known header names; traffic with many custom header names or long distinct paths can push it
+  lower. The default budget is sized from that measurement rather than guessed.
 - Container heap default corrected from **75% to 60%** of the container memory limit. A committed
   heap needs roughly 1.5x that in real memory, so the old default did not fit — producing OOM-kills
   with no `OutOfMemoryError` in the logs.
@@ -376,19 +379,24 @@ changes except smaller downloads.
   longer re-resolves `logLevelOverrides` on every log entry — past the saturation knee this was
   measured taking over 20% of the writer thread's time; the resolved overrides are now cached and
   re-resolved only when the configuration actually changes, so a runtime change still takes effect from
-  the next entry. Separately, the byte weigher that enforces `maxEventLogSizeInBytes` now counts header
-  bytes and a fixed structural overhead (~2 KB) for each log entry and request/response model object,
-  rather than raw body bytes alone. The previous body-only accounting caused a heap dump of 20,000
-  retained ~1 KB-body entries to show 2.6× the declared budget in use at `WARN`/`ERROR`/`OFF`, and
-  4.8x at `INFO`/`DEBUG`/`TRACE`. With accurate counting, re-measured on live heaps, those ratios are
-  **2.0x** at `WARN`/`ERROR`/`OFF` and **3.0x** at `INFO`/`DEBUG`/`TRACE`. (An earlier note here put the
-  `WARN` figure at ~1.0x; that is the ratio for a body retained ONCE, which is what a binary body does —
-  not what the decode path produces for the text and JSON workloads a byte budget exists to bound.) **This is a behaviour change, and it applies only if you SET
-  `maxEventLogSizeInBytes` explicitly** — the property existed before but was off by default, so this
-  affects the value you chose, not the new heap-derived default described above. For an explicit value,
-  the same number now retains fewer entries, because the old accounting under-counted what an entry
-  holds; raise it to compensate if you relied on the previous retention volume. The count bound
-  (`maxLogEntries`) and entries with no request/response body are unaffected.
+  the next entry. Separately, the byte weigher that enforces `maxEventLogSizeInBytes` now counts what a
+  retained entry really holds — the header name/value bytes and value-side wrapper, a re-derived
+  per-entry and per-request/response structural overhead of a few hundred bytes each, and any retained
+  closest-match expectation — rather than raw body bytes alone. The overheads were re-derived from a
+  live heap histogram once the header store became a flat array (above); the earlier overheads had been
+  calibrated against the old multimap and badly over-stated a lean entry's cost, so the same explicit
+  budget was retaining roughly half the history it should. With the corrected accounting the estimate
+  tracks real retained heap typically within about **10–15%** at `WARN` — slightly high for traffic using
+  well-known header names, and lower for traffic with many custom header names or long distinct paths. The rendered
+  message string is deliberately still not counted, so at `INFO`/`DEBUG`/`TRACE` the estimate runs under
+  real by the size of that message — unchanged, and covered by the log-level-aware default divisor.
+  **This is a behaviour change, and it applies only if you SET `maxEventLogSizeInBytes` explicitly** —
+  the property existed before but was off by default, so this affects the value you chose, not the new
+  heap-derived default described above. Against the last release's body-only accounting the same value
+  now retains fewer entries, because structure and headers are now counted; the effect grows as bodies
+  shrink (for large bodies the raw body bytes still dominate the charge). Raise the value if you relied
+  on the previous retention volume. The count bound (`maxLogEntries`) and entries with no
+  request/response body are unaffected.
 - **The JUnit integrations now enable "dev mode" by default** (`mockserver-junit-jupiter`
   `MockServerExtension` and `mockserver-junit-rule` `MockServerRule`). Dev mode fixes the two
   in-memory store sizes at `maxLogEntries=1000` and `maxExpectations=1000` instead of deriving them

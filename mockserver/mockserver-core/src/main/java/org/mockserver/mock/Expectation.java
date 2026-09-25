@@ -112,7 +112,7 @@ public class Expectation extends ObjectWithJsonToString {
     @JsonIgnore
     private transient long estimatedHeapSize = -1;
 
-    // Fixed overheads for the byte-budget estimate; see estimatedHeapSize(). Mirror LogEntry's.
+    // Fixed overheads for the byte-budget estimate; see estimatedHeapSize().
     private static final long BASE_EXPECTATION_OVERHEAD_BYTES = 512;
     private static final long PER_HTTP_MESSAGE_OVERHEAD_BYTES = 1152;
     private static final long HEADER_ENTRY_OVERHEAD_BYTES = 64;

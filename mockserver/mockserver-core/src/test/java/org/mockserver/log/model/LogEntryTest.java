@@ -394,4 +394,76 @@ public class LogEntryTest {
             pool.shutdownNow();
         }
     }
+
+    // ---- estimatedHeapSize (the maxEventLogSizeInBytes weigher) ----
+
+    @Test
+    public void estimatedHeapSizeChargesPerHeaderOverheadPlusCharacters() {
+        // each header value costs a fixed structural overhead (value NottableString + backing string +
+        // flat-store slots) plus the name and value characters; the name STRUCTURE is not charged.
+        LogEntry noHeader = new LogEntry()
+            .setHttpRequest(request().withMethod("GET").withPath("/p"));
+        LogEntry oneHeader = new LogEntry()
+            .setHttpRequest(request().withMethod("GET").withPath("/p").withHeader("X-Test", "value123"));
+
+        long delta = oneHeader.estimatedHeapSize() - noHeader.estimatedHeapSize();
+        // HEADER_ENTRY_OVERHEAD_BYTES (128) + "X-Test".length() (6) + "value123".length() (8)
+        assertThat(delta, is(128L + 6 + 8));
+    }
+
+    @Test
+    public void estimatedHeapSizeChargesARealAttachedExpectation() {
+        // a real (closest-match) expectation attached via setExpectation(Expectation) is retained, so it
+        // is charged its own estimatedHeapSize on top of the entry's request/response weight.
+        HttpResponse response = response().withStatusCode(200).withBody("ok");
+        Expectation expectation = new Expectation(request().withPath("/api").withBody("{\"x\":1}"))
+            .thenRespond(response().withStatusCode(201).withBody("created"));
+
+        LogEntry synthetic = new LogEntry()
+            .setHttpRequest(request().withPath("/p"))
+            .setHttpResponse(response)
+            .setExpectation(request().withPath("/p"), response);
+        LogEntry withRealExpectation = new LogEntry()
+            .setHttpRequest(request().withPath("/p"))
+            .setHttpResponse(response)
+            .setExpectation(expectation);
+
+        assertThat(
+            withRealExpectation.estimatedHeapSize() - synthetic.estimatedHeapSize(),
+            is(expectation.estimatedHeapSize()));
+    }
+
+    @Test
+    public void estimatedHeapSizeIgnoresTheSyntheticExpectation() {
+        // the serve-path synthetic expectation is derived lazily and never retained, so recording it must
+        // add nothing to the weight.
+        HttpResponse response = response().withStatusCode(200).withBody("ok");
+        LogEntry withoutExpectation = new LogEntry()
+            .setHttpRequest(request().withPath("/p"))
+            .setHttpResponse(response);
+        LogEntry withSyntheticExpectation = new LogEntry()
+            .setHttpRequest(request().withPath("/p"))
+            .setHttpResponse(response)
+            .setExpectation(request().withPath("/p"), response);
+
+        assertThat(withSyntheticExpectation.estimatedHeapSize(), is(withoutExpectation.estimatedHeapSize()));
+    }
+
+    @Test
+    public void estimatedHeapSizeIsRecomputedWhenARealExpectationIsAttachedLater() {
+        // the memoised weight must pick up a real expectation attached after the weight was first computed.
+        HttpResponse response = response().withStatusCode(200).withBody("ok");
+        Expectation expectation = new Expectation(request().withPath("/api").withBody("{\"x\":1}"))
+            .thenRespond(response().withStatusCode(201).withBody("created"));
+
+        LogEntry entry = new LogEntry()
+            .setHttpRequest(request().withPath("/p"))
+            .setHttpResponse(response)
+            .setExpectation(request().withPath("/p"), response);
+        long before = entry.estimatedHeapSize();
+
+        entry.setExpectation(expectation);
+
+        assertThat(entry.estimatedHeapSize(), is(before + expectation.estimatedHeapSize()));
+    }
 }
