@@ -100,7 +100,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     # Build the module and its dependencies (produces the fat JAR the suites mount
     # into the sibling container via findFatJar); the main build covers unit tests.
     ./mvnw -pl ${MODULE} -am install \
-      -DskipTests -Djacoco.skip=true -Dmaven.javadoc.skip=true \
+      -DskipTests -DskipITs -Djacoco.skip=true -Dmaven.javadoc.skip=true \
       -Dmaven.gitcommitid.skip=true -P '!build-ui' \
       --batch-mode --no-transfer-progress
 

@@ -116,7 +116,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     # build step already covers those, and this step must stay scoped to the
     # live-broker suites.
     ./mvnw -pl ${MODULE} -am install \
-      -DskipTests -Djacoco.skip=true -Dmaven.javadoc.skip=true \
+      -DskipTests -DskipITs -Djacoco.skip=true -Dmaven.javadoc.skip=true \
       -Dmaven.gitcommitid.skip=true -P '!build-ui' \
       --batch-mode --no-transfer-progress
 
