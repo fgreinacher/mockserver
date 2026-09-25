@@ -126,7 +126,29 @@ To investigate or manage AWS infrastructure:
 bk api "pipelines/mockserver-release/builds/<N>/jobs/<JOB_ID>/log" \
   | python3 -c "import sys,json; print(json.load(sys.stdin).get('content',''))" \
   | sed 's/\x1b\[[0-9;]*m//g; s/_bk;t=[0-9]*//g; s/\r//g'
+
+# Artifacts: use `bk artifacts`, NOT `bk api .../artifacts/<id>/download`.
+# The api form returns 0 bytes for BINARY artifacts (a .tgz, a PNG). It appears to
+# work for JSON ones, which is how the limitation gets missed.
+# Note the PLURAL `artifacts`: `bk artifact download` (singular, as some Buildkite
+# docs show) does not exist in this CLI and errors with "unexpected argument artifact".
+# The positional is an artifact ID, not a filename glob — list first to get it.
+bk artifacts list --build <N> -p <pipeline-slug>
+bk artifacts download <ARTIFACT_ID> --build <N> -p <pipeline-slug>
 ```
+
+Strip the bell character too when grepping a log — lines are prefixed with a bare
+`\x07`, so `^---` style anchors silently match nothing: `tr -d '\007' < log > clean`.
+
+**Before concluding a perf build is stuck waiting for an agent:** the `perf` queue runs a
+SINGLE scale-to-zero agent, and `mockserver-performance-test` has a **scheduled daily run
+at 04:00** plus Buildkite's *skip-intermediate-builds* behaviour. So a manual run can be
+(a) legitimately queued behind the daily run, which is easy to miss because the Buildkite
+UI lists only the most recent pipeline runs by default, or (b) `skipped` outright because
+a newer build was created after it. Check the agent's `job` field
+(`bk api "agents?per_page=50"`) to see what is actually holding it, and check each build's
+`state` is not `skipped` — `bk build create` reports success either way. Trigger perf runs
+ONE at a time and confirm each reaches `running`.
 
 Use the API token (via `aws secretsmanager get-secret-value` + `curl`) only for build state, creating builds, and retrying jobs. Driving the Buildkite UI through the `chrome-devtools` MCP does **not** work for logs: that automation browser is a separate, logged-out profile from the developer's own browser. See [docs/infrastructure/ci-cd.md](docs/infrastructure/ci-cd.md).
 

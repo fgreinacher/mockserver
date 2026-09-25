@@ -230,6 +230,29 @@ function test() {
 # source=download path. The download path resolves the latest RELEASE from
 # Maven Central, which doesn't exist for in-development versions (e.g.,
 # 6.1.1-SNAPSHOT before publication) and would always 404 in CI.
+# The -graaljs image exists to evaluate JavaScript response templates. Assert the
+# RENDERED body: a template that fails to evaluate can still return a response, so
+# only the computed value distinguishes a working engine from a broken one.
+function assert_javascript_template() {
+  local host_port="$1" container="$2"
+  local expectation
+  expectation='{"httpRequest":{"path":"/js-template"},"httpResponseTemplate":{"templateType":"JAVASCRIPT","template":"return { statusCode: 200, body: request.method + request.path };"}}'
+  if ! curl -sf -o /dev/null -X PUT "http://localhost:${host_port}/mockserver/expectation" -d "${expectation}"; then
+    printFailureMessage "graaljs: could not create the JavaScript-template expectation"
+    runCommand "docker logs ${container} 2>&1 || true"
+    return 1
+  fi
+  local body
+  body=$(curl -sf "http://localhost:${host_port}/js-template" 2>/dev/null || true)
+  if [[ "${body}" != "GET/js-template" ]]; then
+    printFailureMessage "graaljs: JavaScript template did not evaluate - got \"${body}\", expected \"GET/js-template\""
+    runCommand "docker logs ${container} 2>&1 || true"
+    return 1
+  fi
+  printPassMessage "graaljs: JavaScript response template evaluated correctly"
+  return 0
+}
+
 function smoke_test_variant() {
   local variant="$1"
   local tag="mockserver/mockserver:smoke-${variant}"
@@ -294,8 +317,14 @@ function smoke_test_variant() {
       done
       if [[ "${status}" != "200" ]]; then
         printFailureMessage "${variant}: /mockserver/status returned \"${status}\" (expected 200)"
-        runCommand "docker logs ${container} | tail -30 || true"
+        runCommand "docker logs ${container} 2>&1 || true"
         exit_code=1
+      fi
+      # Answering /mockserver/status proves the container boots, NOT that the feature
+      # the variant exists for works — the clustered image passed readiness while
+      # Infinispan could not start at all. Exercise what distinguishes this variant.
+      if [[ ${exit_code} -eq 0 ]] && [[ "${variant}" == "graaljs" ]]; then
+        assert_javascript_template "${host_port}" "${container}" || exit_code=1
       fi
     fi
     runCommand "docker rm -f ${container} >/dev/null 2>&1 || true"
@@ -364,7 +393,7 @@ function smoke_test_variant_nonblocking() {
       done
       if [[ "${status}" != "200" ]]; then
         printFailureMessage "${variant}: /mockserver/status returned \"${status}\" (expected 200)"
-        runCommand "docker logs ${container} | tail -30 || true"
+        runCommand "docker logs ${container} 2>&1 || true"
         exit_code=1
       fi
     fi
@@ -399,7 +428,7 @@ function test_healthcheck() {
       break
     elif [[ "${health_status}" == "unhealthy" ]]; then
       printFailureMessage "HEALTHCHECK: container reached 'unhealthy' state"
-      runCommand "docker logs ${container} | tail -30 || true"
+      runCommand "docker logs ${container} 2>&1 || true"
       exit_code=1
       break
     fi
@@ -407,7 +436,7 @@ function test_healthcheck() {
   done
   if [[ "${exit_code}" -eq 0 && "${health_status}" != "healthy" ]]; then
     printFailureMessage "HEALTHCHECK: container never reached 'healthy' (last status: ${health_status})"
-    runCommand "docker logs ${container} | tail -30 || true"
+    runCommand "docker logs ${container} 2>&1 || true"
     exit_code=1
   fi
 
@@ -534,7 +563,7 @@ function smoke_test_clustered() {
     done
     if [[ "${status}" != "200" ]]; then
       printFailureMessage "clustered: /mockserver/status returned \"${status}\" (expected 200)"
-      runCommand "docker logs ${container} | tail -30 || true"
+      runCommand "docker logs ${container} 2>&1 || true"
       exit_code=1
     fi
   fi
