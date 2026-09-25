@@ -71,8 +71,11 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         if (logEntry.getHttpError() != null) {
             jgen.writeObjectField("httpError", logEntry.getHttpError());
         }
-        if (logEntry.getExpectation() != null) {
-            jgen.writeObjectField("expectation", logEntry.getExpectation());
+        // getExpectation() derives the synthetic expectation on demand (see LogEntry), so read it once
+        // rather than building it twice per serialize.
+        org.mockserver.mock.Expectation expectation = logEntry.getExpectation();
+        if (expectation != null) {
+            jgen.writeObjectField("expectation", expectation);
         }
         if (logEntry.getExpectationId() != null) {
             jgen.writeStringField("expectationId", logEntry.getExpectationId());

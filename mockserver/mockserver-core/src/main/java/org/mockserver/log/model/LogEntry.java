@@ -86,7 +86,26 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private HttpResponse httpResponse;
     private HttpResponse httpUpdatedResponse;
     private HttpError httpError;
+    // Holds a REAL expectation supplied via setExpectation(Expectation) (a closest-match or matched
+    // expectation). It is null for the synthetic two-argument form, which is derived on demand from the
+    // entry's own request/response instead of being built and retained per served request - see
+    // expectationIsSynthetic and getExpectation().
     private Expectation expectation;
+    // Set by the synthetic setExpectation(RequestDefinition, HttpResponse) form used on the serving path.
+    // The synthetic Expectation is a pure function of the entry's request/response, so it is derived
+    // lazily rather than allocated and retained per request (which added a full Expectation + Timing graph
+    // to every log entry). Equality-relevant, so an entry that carries a synthetic expectation stays
+    // unequal to one that carries none, matching the previous behaviour where the field was non-null.
+    private boolean expectationIsSynthetic;
+    // Memoized synthetic Expectation, materialized lazily by getExpectation(). One retained LogEntry is
+    // read concurrently by multiple off-consumer threads (logQueryExecutor scans, parallel /retrieve
+    // serializations), so this cache is written on reader threads with no mutual happens-before. It MUST
+    // stay volatile: Expectation is a mutable model without all-final fields, so only the volatile write
+    // of the reference after construction safely publishes the referent's fields to another reader - a
+    // plain field could hand a second reader a partially constructed object (NPE / torn serialized output).
+    // Double construction under contention is benign (the divergent random id is already random). NOT
+    // equality-relevant: it caches a value fully derivable from equality-relevant fields.
+    private transient volatile Expectation derivedSyntheticExpectation;
     private String expectationId;
     private Throwable throwable;
     private Runnable consumer;
@@ -304,6 +323,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
         httpUpdatedResponse = null;
         httpError = null;
         expectation = null;
+        expectationIsSynthetic = false;
+        derivedSyntheticExpectation = null;
         expectationId = null;
         throwable = null;
         consumer = null;
@@ -527,6 +548,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     public LogEntry setHttpRequests(RequestDefinition[] httpRequests) {
         this.httpRequests = httpRequests;
         this.httpUpdatedRequests = null;
+        this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
         return this;
@@ -551,6 +573,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             this.httpRequests = DEFAULT_REQUESTS_DEFINITIONS;
         }
         this.httpUpdatedRequests = null;
+        this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
         return this;
@@ -587,6 +610,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     public LogEntry setHttpResponse(HttpResponse httpResponse) {
         this.httpResponse = httpResponse;
         this.httpUpdatedResponse = null;
+        this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
         return this;
@@ -604,19 +628,54 @@ public class LogEntry implements EventTranslator<LogEntry> {
     }
 
     public Expectation getExpectation() {
-        return expectation;
+        if (expectation != null) {
+            return expectation;
+        }
+        if (expectationIsSynthetic) {
+            Expectation derived = derivedSyntheticExpectation;
+            if (derived == null) {
+                // Build fully, THEN publish via the volatile write so any concurrent reader that observes
+                // a non-null reference also observes the fully-constructed referent. Two threads racing may
+                // each build one; each returns its own safely-published instance (benign - see field).
+                derived = new Expectation(getHttpRequest(), Times.once(), TimeToLive.unlimited(), 0).thenRespond(httpResponse);
+                derivedSyntheticExpectation = derived;
+            }
+            return derived;
+        }
+        return null;
     }
 
     @JsonIgnore
     public LogEntry setExpectation(Expectation expectation) {
         this.expectation = expectation;
+        this.expectationIsSynthetic = false;
+        this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         return this;
     }
 
+    /**
+     * Records that this entry carries the synthetic expectation historically built as
+     * {@code new Expectation(httpRequest, once, unlimited, 0).thenRespond(httpResponse)}. The object is no
+     * longer allocated or retained here (that added a per-request Expectation + Timing graph to every log
+     * entry); it is derived on demand in {@link #getExpectation()} from the entry's own request/response,
+     * which every caller sets to these same instances via {@code setHttpRequest}/{@code setHttpResponse}
+     * immediately before this call. The arguments are therefore only a marker of intent - the derivation
+     * reads the fields - so callers must set the request/response before calling this.
+     */
     @JsonIgnore
     public LogEntry setExpectation(RequestDefinition httpRequest, HttpResponse httpResponse) {
-        this.expectation = new Expectation(httpRequest, Times.once(), TimeToLive.unlimited(), 0).thenRespond(httpResponse);
+        this.expectation = null;
+        this.expectationIsSynthetic = true;
+        this.derivedSyntheticExpectation = null;
+        this.hashCode = 0;
+        return this;
+    }
+
+    private LogEntry copyExpectationFrom(LogEntry source) {
+        this.expectation = source.expectation;
+        this.expectationIsSynthetic = source.expectationIsSynthetic;
+        this.derivedSyntheticExpectation = source.derivedSyntheticExpectation;
         this.hashCode = 0;
         return this;
     }
@@ -917,7 +976,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setHttpRequests(getHttpRequests())
             .setHttpResponse(getHttpResponse())
             .setHttpError(getHttpError())
-            .setExpectation(getExpectation())
+            .copyExpectationFrom(this)
             .setExpectationId(getExpectationId())
             .setMessageFormat(getMessageFormat())
             .setArguments(getRawArguments())
@@ -941,7 +1000,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setHttpRequests(getHttpRequests())
             .setHttpResponse(getHttpResponse())
             .setHttpError(getHttpError())
-            .setExpectation(getExpectation())
+            .copyExpectationFrom(this)
             .setExpectationId(getExpectationId())
             .setMessageFormat(getMessageFormat())
             .setArguments(getRawArguments())
@@ -974,6 +1033,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             Objects.equals(httpResponse, logEntry.httpResponse) &&
             Objects.equals(httpError, logEntry.httpError) &&
             Objects.equals(expectation, logEntry.expectation) &&
+            expectationIsSynthetic == logEntry.expectationIsSynthetic &&
             Objects.equals(expectationId, logEntry.expectationId) &&
             Objects.equals(consumer, logEntry.consumer) &&
             Arrays.equals(arguments, logEntry.arguments) &&
@@ -983,7 +1043,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     @Override
     public int hashCode() {
         if (hashCode == 0) {
-            int result = Objects.hash(epochTime, deleted, type, logLevel, alwaysLog, messageFormat, httpResponse, httpError, expectation, expectationId, consumer);
+            int result = Objects.hash(epochTime, deleted, type, logLevel, alwaysLog, messageFormat, httpResponse, httpError, expectation, expectationIsSynthetic, expectationId, consumer);
             result = 31 * result + Arrays.hashCode(arguments);
             result = 31 * result + Arrays.hashCode(httpRequests);
             hashCode = result;

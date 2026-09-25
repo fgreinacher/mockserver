@@ -81,6 +81,10 @@ changes except smaller downloads.
 - **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
   copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
   life of the entry.
+- A served request no longer leaves behind a synthetic expectation object. Every request built one
+  from the request and response the log entry already held, and kept it for the entry's lifetime,
+  even though it is only read when log entries are serialised. It is now derived on demand, so a
+  server under load no longer carries one per logged request. Serialised output is unchanged.
 - A retained log entry no longer holds each text body **twice**. Every JSON, string and XML body
   kept both the decoded `String` and the raw bytes; the raw bytes are now canonical and the string
   is re-derived only when something reads it back. Requests in flight are unaffected — they keep the
