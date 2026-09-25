@@ -195,7 +195,6 @@ public class Main {
                         .setMessageFormat("exception while starting:{}")
                         .setThrowable(ex)
                 );
-                showUsage(null);
                 if (ConfigurationProperties.disableSystemOut()) {
                     new RuntimeException("exception while starting: " + ex.getMessage()).printStackTrace(System.err);
                 }
@@ -228,7 +227,6 @@ public class Main {
                     .setMessageFormat("exception while starting:{}")
                     .setThrowable(throwable)
             );
-            showUsage(null);
             if (ConfigurationProperties.disableSystemOut()) {
                 new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
             }
@@ -640,7 +638,6 @@ public class Main {
                         .setMessageFormat("exception while starting:{}")
                         .setThrowable(throwable)
                 );
-                showUsage(null);
                 if (ConfigurationProperties.disableSystemOut()) {
                     new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
                 }

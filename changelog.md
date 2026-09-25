@@ -382,6 +382,12 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **A failed startup now ends with the error, not a page of command-line help.** When MockServer
+  could not start, it printed the exception and then a forty-line usage banner, pushing the actual
+  cause off the end of any truncated log view — which is exactly where you look first in a container
+  or CI job. The banner still appears for genuine usage mistakes such as an invalid port or log
+  level; it no longer appears when the server failed to start for some other reason.
+
 - **A valid custom key and certificate could stop the server from starting when the certificate was
   issued by a CA using a different key algorithm — and the error told you to throw the good key
   away.** When you configure `privateKeyPath` and `x509CertificatePath`, MockServer checks the key
