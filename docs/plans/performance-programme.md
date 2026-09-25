@@ -300,3 +300,35 @@ pauses, so a 1,047 ms p95 cycle is concurrent work, consistent with a request p9
 `-Xlog:gc+phases`, or the allocation-profile step (JFR `settings=profile` plus periodic
 `GC.class_histogram`), which is the only thing here that can also name the allocation
 sources.
+
+## The rig is out of physical cores, and that caps what can be measured
+
+The perf box is a `c5.12xlarge`: 48 logical CPUs but **24 physical cores**, with
+hyperthread siblings at `N` and `N+24` (read off the cpuset guard's own topology dump,
+not assumed). Every core is already allocated:
+
+| arm | server | upstream | k6 max | total |
+|---|---|---|---|---|
+| six vCPU | 6 | 1 | **17** | 24 |
+| ten vCPU | 10 | 1 | **13** | 24 |
+
+k6 had 13 (`11-23`) throughout. At the six-core knee it drew a **mean 1294% of its 1300%
+pin**, so the 56,000 rung — the most interesting one — was excluded as client-limited.
+Widening it to `11-23,30-47` does NOT help and the guard correctly refused the run:
+`30-47` are the hyperthread twins of `6-23`, so k6 would have been overlapping itself and
+colliding with upstream on physical core 6. More logical CPUs, no more compute.
+
+**Consequence, and it is structural rather than a tuning problem:**
+
+- **Six cores can be measured.** k6 can have `7-23` = 17 physical cores, its maximum here.
+- **Ten cores cannot.** Server 0-9 plus upstream 10 leaves exactly `11-23` = 13, which is
+  what build 436 already used and which demonstrably saturates at the knee. No cpuset
+  arrangement changes the arithmetic.
+
+A diagnostic worth remembering: k6's CPU is **non-monotonic in offered load** — 1294% at
+56,000 but ~851% at 64,000 and 72,000. That is not noise. Past the knee the server is slow,
+so k6's VUs block on I/O rather than working; the client works hardest at the LAST healthy
+rung. Peak client CPU therefore locates the knee rather than indicating a bad measurement.
+
+This makes "run k6 on a separate box from the SUT" the blocking prerequisite for any
+ten-core figure, not an improvement to schedule later.
