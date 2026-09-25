@@ -240,6 +240,77 @@ public class KeysToMultiValuesInsertionOrderTest {
     }
 
     @Test
+    public void removeOfTailKeyPreservesGlobalOrderOfSurvivors() {
+        // removing the last entry of [A,B,C,D] must leave the head order intact
+        Headers headers = new Headers();
+        headers.withEntry("A", "1");
+        headers.withEntry("B", "2");
+        headers.withEntry("C", "3");
+        headers.withEntry("D", "4");
+        headers.remove("D");
+        assertThat(entriesAsPairs(headers), is(java.util.Arrays.asList("A=1", "B=2", "C=3")));
+        assertThat(keySetValues(headers), is(java.util.Arrays.asList("A", "B", "C")));
+    }
+
+    @Test
+    public void replaceEntryOfAbsentKeyAppendsAtTheTail() {
+        // replaceEntry of a key that is not present removes nothing and appends the new entry last
+        Headers headers = new Headers();
+        headers.withEntry("A", "1");
+        headers.withEntry("B", "2");
+        headers.replaceEntry(header("C", "X"));
+        assertThat(entriesAsPairs(headers), is(java.util.Arrays.asList("A=1", "B=2", "C=X")));
+        assertThat(keySetValues(headers), is(java.util.Arrays.asList("A", "B", "C")));
+    }
+
+    @Test
+    public void removeOfKeyAtFirstAndLastPositionsLeavesMiddleSurvivorsInGlobalOrder() {
+        // A occupies both the first and last positions; removing it must leave the middle survivors ordered
+        Headers headers = new Headers();
+        headers.withEntry("A", "1");
+        headers.withEntry("B", "2");
+        headers.withEntry("C", "3");
+        headers.withEntry("A", "4");
+        headers.remove("A");
+        assertThat(entriesAsPairs(headers), is(java.util.Arrays.asList("B=2", "C=3")));
+        assertThat(keySetValues(headers), is(java.util.Arrays.asList("B", "C")));
+    }
+
+    @Test
+    public void parametersRemoveOfTailKeyPreservesGlobalOrderOfSurvivors() {
+        Parameters parameters = new Parameters();
+        parameters.withEntry("A", "1");
+        parameters.withEntry("B", "2");
+        parameters.withEntry("C", "3");
+        parameters.withEntry("D", "4");
+        parameters.remove("D");
+        assertThat(entriesAsPairs(parameters), is(java.util.Arrays.asList("A=1", "B=2", "C=3")));
+        assertThat(keySetValues(parameters), is(java.util.Arrays.asList("A", "B", "C")));
+    }
+
+    @Test
+    public void parametersReplaceEntryOfAbsentKeyAppendsAtTheTail() {
+        Parameters parameters = new Parameters();
+        parameters.withEntry("A", "1");
+        parameters.withEntry("B", "2");
+        parameters.replaceEntry(param("C", "X"));
+        assertThat(entriesAsPairs(parameters), is(java.util.Arrays.asList("A=1", "B=2", "C=X")));
+        assertThat(keySetValues(parameters), is(java.util.Arrays.asList("A", "B", "C")));
+    }
+
+    @Test
+    public void parametersRemoveOfKeyAtFirstAndLastPositionsLeavesMiddleSurvivorsInGlobalOrder() {
+        Parameters parameters = new Parameters();
+        parameters.withEntry("A", "1");
+        parameters.withEntry("B", "2");
+        parameters.withEntry("C", "3");
+        parameters.withEntry("A", "4");
+        parameters.remove("A");
+        assertThat(entriesAsPairs(parameters), is(java.util.Arrays.asList("B=2", "C=3")));
+        assertThat(keySetValues(parameters), is(java.util.Arrays.asList("B", "C")));
+    }
+
+    @Test
     public void serializedJsonIsSortedDescendingByKeyNotInsertionOrder() throws Exception {
         // Surprising but current reality: KeysToMultiValuesSerializer SORTS keys, and
         // NottableString.compareTo is reversed, so JSON field order is DESCENDING by key and

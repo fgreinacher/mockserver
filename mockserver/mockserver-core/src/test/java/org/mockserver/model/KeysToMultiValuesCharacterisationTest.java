@@ -11,7 +11,6 @@ import java.util.Map;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThrows;
 import static org.mockserver.model.Header.header;
 import static org.mockserver.model.NottableString.not;
 import static org.mockserver.model.NottableString.string;
@@ -205,14 +204,29 @@ public class KeysToMultiValuesCharacterisationTest {
     }
 
     @Test
-    public void withEntryNullStringListStoresANullValued_SUSPECTED_BUG() {
-        // SUSPECTED BUG: withEntry(String, List) with a null/empty list stores a literal null value
-        // (multimap.put(name, null)). getValues(String) then throws NPE while serialising the null.
-        // Pinning current reality; do not "fix" here.
+    public void withEntryNullStringListStoresAnEmptyValue() {
+        // withEntry(String, List) with a null/empty list stores an empty value (string("")), matching
+        // withEntry(String, String...); it preserves the entry's presence and getValues does not throw.
         Headers headers = new Headers();
         headers.withEntry("n", (List<String>) null);
-        assertThat(pairs(headers), is(Collections.singletonList("n=null")));
-        assertThrows(NullPointerException.class, () -> headers.getValues("n"));
+        assertThat(pairs(headers), is(Collections.singletonList("n=")));
+        assertThat(headers.getValues("n"), is(Collections.singletonList("")));
+        assertThat(headers.containsEntry("n"), is(true));
+    }
+
+    @Test
+    public void withEntryOfAnEmptiedMultiValueEntryStoresAnEmptyValue() {
+        // The only route to withEntry(T) seeing an empty value list: a multi-value entry keeps its values in a
+        // mutable list, so replaceValues can empty it. One or zero values yield an immutable singleton instead.
+        Header emptied = header("n", "a", "b");
+        emptied.replaceValues(Collections.emptyList());
+
+        Headers headers = new Headers();
+        headers.withEntry(emptied);
+
+        assertThat(pairs(headers), is(Collections.singletonList("n=")));
+        assertThat(headers.getValues("n"), is(Collections.singletonList("")));
+        assertThat(headers.containsEntry("n"), is(true));
     }
 
     @Test
@@ -312,23 +326,21 @@ public class KeysToMultiValuesCharacterisationTest {
     }
 
     @Test
-    public void getFirstValueReturnsEmptyStringWhenMatchedKeyHasANullFirstValue() {
-        // SUSPECTED BUG surface: when the only matched key's first value is null, getFirstValue skips
-        // it (does not return the value) and, finding no further matching key, returns "" rather than
-        // surfacing the null. Pinned as current reality.
+    public void getFirstValueReturnsTheEmptyValueStoredForANullList() {
+        // withEntry(String, null-list) stores an empty value, so getFirstValue returns that empty string.
         Headers headers = new Headers();
         headers.withEntry("n", (List<String>) null);
         assertThat(headers.getFirstValue("n"), is(""));
     }
 
     @Test
-    public void getFirstValueSkipsANullFirstValueKeyAndContinuesToTheNextMatchingKey() {
-        // when a matched key has a null first value, the scan continues to the next case-insensitively
-        // matching key and returns its value
+    public void getFirstValueReturnsTheEmptyValueOfTheFirstMatchingKeyNotALaterKeysValue() {
+        // the first case-insensitively matching key holds an empty value (not null), so getFirstValue
+        // returns "" from it and does not skip ahead to the later "real" value.
         Headers headers = new Headers();
         headers.withEntry("n", (List<String>) null);
         headers.withEntry("N", "real");
-        assertThat(headers.getFirstValue("n"), is("real"));
+        assertThat(headers.getFirstValue("n"), is(""));
     }
 
     // ---- equals / hashCode ---------------------------------------------------------------------

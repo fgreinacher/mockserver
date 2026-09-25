@@ -99,13 +99,12 @@ public class KeysToMultiValuesConvertedMatcherTest {
     }
 
     @Test
-    public void withKeyMatchStyleDoesNotClearCache_SURPRISING() {
-        // SURPRISING: withKeyMatchStyle does not call isModified, so it does NOT invalidate the cache
-        // even though it changes matching behaviour. Pinned as current reality.
+    public void withKeyMatchStyleClearsCache() {
+        // withKeyMatchStyle changes matching behaviour, so it invalidates the cache like any other mutation.
         Headers headers = new Headers();
         headers.setConvertedMatcher(false, "data");
         headers.withKeyMatchStyle(KeyMatchStyle.MATCHING_KEY);
-        assertThat(headers.getConvertedMatcher(false), is("data"));
+        assertThat(headers.getConvertedMatcher(false), is(nullValue()));
     }
 
     @Test

@@ -81,6 +81,7 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
 
     @SuppressWarnings("UnusedReturnValue")
     public KeysToMultiValues<T, K> withKeyMatchStyle(KeyMatchStyle keyMatchStyle) {
+        isModified();
         this.keyMatchStyle = keyMatchStyle;
         return this;
     }
@@ -119,7 +120,7 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
         if (entry != null) {
             isModified();
             if (entry.getValues().isEmpty()) {
-                multimap.put(entry.getName(), null);
+                multimap.put(entry.getName(), string(""));
             } else {
                 multimap.putAll(entry.getName(), entry.getValues());
             }
@@ -140,7 +141,7 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
     public K withEntry(final String name, final List<String> values) {
         isModified();
         if (values == null || values.size() == 0) {
-            multimap.put(string(name), null);
+            multimap.put(string(name), string(""));
         } else {
             multimap.putAll(string(name), deserializeNottableStrings(values));
         }

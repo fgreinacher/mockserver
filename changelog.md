@@ -394,6 +394,15 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **Adding a header or query parameter with no value no longer throws when you later read it back.**
+  Adding an entry with an empty or null value list stored an internal `null`, so reading that entry's
+  values with `getValues(name)` threw a `NullPointerException`. The entry is now stored with an empty
+  string value, matching the varargs form, so the header or parameter is still present and can be read
+  back safely.
+- **Changing a header or parameter's key-match style now takes effect immediately.** `withKeyMatchStyle`
+  did not clear the memoized matcher, so a collection that had already been matched once could keep
+  using the previous match style and return a stale result. The cached matcher is now invalidated on
+  this change, like every other mutation.
 - **A failed startup now ends with the error, not a page of command-line help.** When MockServer
   could not start, it printed the exception and then a forty-line usage banner, pushing the actual
   cause off the end of any truncated log view — which is exactly where you look first in a container
