@@ -51,7 +51,7 @@ echo "--- building mockserver-netty + its upstream reactor deps"
 # so Maven cannot select it as a reactor project ("Could not find the selected project
 # in the reactor"). The install target must therefore name an in-reactor module.
 ( cd "${REPO_ROOT}/mockserver" \
-  && mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -Djacoco.skip=true -Dcheckstyle.skip=true )
+  && mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -P '!build-ui' -Djacoco.skip=true -Dcheckstyle.skip=true )
 mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
 
 CP="target/classes:$(cat target/classpath.txt)"

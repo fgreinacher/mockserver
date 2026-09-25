@@ -185,7 +185,7 @@ echo "--- building mockserver-netty + upstream (the benchmark's compile deps), t
     # gains an org.mock-server dependency OUTSIDE the upstream of mockserver-netty, the
     # mvn compile below fails to resolve it and the annotate_on_failure trap surfaces that
     # LOUDLY as a red build instead of the silent red square this step became.
-    mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -Djacoco.skip=true -Dcheckstyle.skip=true
+    mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -P '!build-ui' -Djacoco.skip=true -Dcheckstyle.skip=true
     cd mockserver-benchmark
     mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
     CP="target/classes:$(cat target/classpath.txt)"

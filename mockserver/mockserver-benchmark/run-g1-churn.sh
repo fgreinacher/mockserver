@@ -70,7 +70,7 @@ run_ci() {
   # module is deliberately absent from the parent <modules> (its JMH annotation processor
   # must not enter the default build), so Maven cannot select it as a reactor project.
   ( cd "${REPO_ROOT}/mockserver" \
-    && mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -Djacoco.skip=true -Dcheckstyle.skip=true )
+    && mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -P '!build-ui' -Djacoco.skip=true -Dcheckstyle.skip=true )
   build_classpath
 
   # MECHANISM SANITY CHECK (supplementary, NOT the dead-writer guard). CandidateIndexChurnRebuildProof
