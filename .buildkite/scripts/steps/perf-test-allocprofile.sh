@@ -81,6 +81,21 @@ emit_allocation_annotation() {
 
   local jdir jfile out; jdir="$(dirname "$jfr")"; jfile="$(basename "$jfr")"; out="$work/alloc.txt"
   : > "$out"
+  # Retained first — it is the question the allocation views cannot answer. JFR's own retention
+  # views (object-statistics, memory-leaks-by-class) are EMPTY under ZGC, so do not add them here;
+  # the live-set answer comes from the jcmd histogram the harness samples during the run.
+  local histo="$work/sut/live-heap-histogram.txt"
+  {
+    echo "### live heap — last sample (what the heap RETAINS)"
+    echo '```'
+    if [ -s "$histo" ]; then
+      awk '/^===== elapsed_s=/{buf=""} {buf = buf $0 "\n"} END{printf "%s", buf}' "$histo"
+    else
+      echo "(no live-heap histogram — the jcmd sidecar could not attach; see the step log)"
+    fi
+    echo '```'
+    echo
+  } >> "$out"
   local view
   for view in allocation-by-site allocation-by-class; do
     {
@@ -107,6 +122,9 @@ echo "--- :microscope: allocation profile — deep JFR run (PERF_RUN_NAME=${RUN_
 # Short + modest: a small sweep ladder and trimmed durations, deep diagnostics on, and
 # the throughput-only auxiliary profiles off. Everything is overridable so a deeper
 # investigation can widen the ladder without editing this file.
+# The ladder's TOP rung must reach the load where the heap is genuinely full — a histogram
+# of an idle heap attributes nothing. It brackets the measured healthy ceiling rather than
+# sitting below it; this run's own throughput is irrelevant, only the heap composition is.
 rc=0
 PERF_RUN_NAME="$RUN_NAME" \
 PERF_JVM_DIAGNOSTICS=deep \
@@ -116,7 +134,8 @@ PERF_INFO_ARM="${PERF_INFO_ARM:-false}" \
 PERF_LAPTOP_PROFILE="${PERF_LAPTOP_PROFILE:-false}" \
 PERF_STREAMING="${PERF_STREAMING:-false}" \
 PERF_PROXY_PROFILE="${PERF_PROXY_PROFILE:-false}" \
-K6_SWEEP_RATES="${K6_SWEEP_RATES:-500,2000,8000,16000}" \
+K6_SWEEP_RATES="${K6_SWEEP_RATES:-8000,24000,48000}" \
+PERF_LIVE_HISTO_INTERVAL_S="${PERF_LIVE_HISTO_INTERVAL_S:-30}" \
 K6_REG_DURATION="${K6_REG_DURATION:-45s}" \
 K6_GROWTH_DURATION="${K6_GROWTH_DURATION:-2m}" \
   "$SCRIPT_DIR/perf-test-run.sh" || rc=$?

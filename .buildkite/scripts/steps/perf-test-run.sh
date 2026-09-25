@@ -210,9 +210,10 @@ SAMPLE_LOG="$OUT_DIR/samples.csv"
 #                                   (survive even a hard OOM exit), ~2-8% depending on event settings
 #     -XX:NativeMemoryTracking=summary + -XX:+PrintNMTStatistics  precise native breakdown printed to
 #                                   stdout at JVM exit (captured by the docker-logs follower), ~5-10%
-#     periodic jcmd sampling        GC.heap_info / GC.class_histogram / Thread.print / VM.native_memory
-#                                   from a JDK sidecar sharing the SUT PID namespace (best-effort; the
-#                                   shipped image is distroless with no jcmd of its own)
+#     live-heap class histogram     periodic jcmd GC.class_histogram from a JDK sidecar sharing the
+#                                   SUT PID namespace -> /diag/<sut>/live-heap-histogram.txt. This is
+#                                   the ONLY live-set attribution available here: JFR's retention
+#                                   views are empty under ZGC (see live_heap_histo_sampler below).
 PERF_JVM_DIAGNOSTICS="${PERF_JVM_DIAGNOSTICS:-standard}"   # standard = tier 1 only; deep = tier 1 + tier 2
 PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to see the cliff APPROACH, not just its aftermath
 # Heap dumps are large (a 1.5 GiB heap dumps > 1 GiB); upload only when gzipped size is within this
@@ -230,6 +231,10 @@ PERF_HISTO_ENABLED="${PERF_HISTO_ENABLED:-true}"
 PERF_HISTO_JDK_IMAGE="${PERF_HISTO_JDK_IMAGE:-eclipse-temurin:21-jdk}"
 PERF_HISTO_TOPN="${PERF_HISTO_TOPN:-40}"
 PERF_HISTO_DEADLINE_S="${PERF_HISTO_DEADLINE_S:-90}" # linear read of a 2.4 GB dump is ~1-2s locally; 90s is huge headroom, and a timeout yields a TRUNCATED top-N rather than nothing
+# Live-heap class histogram (deep runs only) — see live_heap_histo_sampler(). Each sample forces a
+# full GC, so the interval is a throughput/resolution trade-off on an already-degraded run.
+PERF_LIVE_HISTO_INTERVAL_S="${PERF_LIVE_HISTO_INTERVAL_S:-45}"
+PERF_LIVE_HISTO_TOPN="${PERF_LIVE_HISTO_TOPN:-25}"
 DIAG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-diag.XXXXXX")"
 # The SUT container's JVM (non-root user in the shipped image) writes gc.log / heap dump / JFR here,
 # same reason $OUT_DIR is world-writable for k6. Only diagnostics land here (no secrets).
@@ -293,6 +298,7 @@ echo "--- file-backed body: $(wc -c < "$FILE_BODY_HOST_PATH") bytes -> ${FILE_BO
 SAMPLER_PID=""
 SWEEP_SAMPLER_PID=""
 DIAG_SAMPLER_PID=""   # dense resource-trajectory sampler (JVM-internals diagnostics)
+LIVE_HISTO_PID=""     # live-heap class histogram sampler (deep runs only)
 SUT_LOG_PID=""        # docker-logs follower for the main SUT
 INFO_LOG_PID=""       # docker-logs follower for the INFO SUT
 SUT_DIAG_CAPTURED=""  # one-shot guard so the post-mortem capture runs at most once
@@ -396,7 +402,7 @@ upload_diag_bundle() {
   # separately above under the size cap, so they must never bloat this always-uploaded bundle.
   ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
     && buildkite-agent artifact upload "${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" 2>/dev/null \
-    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR'))" >&2 || true
+    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR, live-heap histogram'))" >&2 || true
 }
 
 # Capture the SUT (and INFO SUT) post-mortem BEFORE the container is removed — the single piece --rm
@@ -436,6 +442,7 @@ cleanup() {
   [ -n "$SAMPLER_PID" ] && kill "$SAMPLER_PID" >/dev/null 2>&1 || true
   [ -n "$SWEEP_SAMPLER_PID" ] && kill "$SWEEP_SAMPLER_PID" >/dev/null 2>&1 || true
   [ -n "$DIAG_SAMPLER_PID" ] && kill "$DIAG_SAMPLER_PID" >/dev/null 2>&1 || true
+  [ -n "$LIVE_HISTO_PID" ] && kill "$LIVE_HISTO_PID" >/dev/null 2>&1 || true
   [ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true
   [ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true
   [ -n "${HS_CPU_PID:-}" ] && kill "$HS_CPU_PID" >/dev/null 2>&1 || true
@@ -1369,6 +1376,48 @@ diag_sampler() {
 }
 echo "--- starting dense resource-trajectory sampler (every ${PERF_DIAG_SAMPLE_INTERVAL}s -> diag-samples.csv)"
 diag_sampler & DIAG_SAMPLER_PID=$!
+
+# --- live-heap class histogram sampler (deep runs only) ------------------------------------------
+# Answers what the heap RETAINS, which diag-samples.csv cannot: it reports heap_used against the
+# event log's own gauges, so anything outside the log is an unattributed remainder. JFR's two
+# retention views (object-statistics, memory-leaks-by-class) stay EMPTY under ZGC — the SUT's
+# collector — so jcmd GC.class_histogram is the only instrument left. The distroless SUT ships no
+# jcmd, hence a JDK sidecar in its PID namespace; the attach handshake demands an exact uid match
+# (root is rejected), so the uid is read from the target's own /proc entry rather than assumed.
+live_heap_histo_sampler() { # container, diag_subdir
+  local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" ug uid gid t0
+  ug="$(docker run --rm --pid="container:$target" --user 0:0 "$PERF_HISTO_JDK_IMAGE" \
+        sh -c 'awk "/^Uid:/{print \$2} /^Gid:/{print \$2}" /proc/1/status' 2>/dev/null || true)"
+  uid="$(printf '%s\n' "$ug" | sed -n 1p)"; gid="$(printf '%s\n' "$ug" | sed -n 2p)"
+  if ! printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
+    echo "WARNING: could not resolve the $target JVM uid from its PID namespace — no live-heap histogram" >&2
+    return 0
+  fi
+  # Prove the attach before the sampling loop starts, so a broken sidecar is one loud line
+  # rather than a file of stack traces discovered after the run.
+  if ! timeout 60 docker run --rm --pid="container:$target" --user "${uid}:${gid}" \
+         "$PERF_HISTO_JDK_IMAGE" jcmd 1 VM.version >/dev/null 2>&1; then
+    echo "WARNING: jcmd sidecar cannot attach to $target as uid $uid — no live-heap histogram" >&2
+    return 0
+  fi
+  mkdir -p "$(dirname "$out")"; : > "$out"
+  t0="$(date -u +%s)"
+  echo "--- live-heap histogram sampler attached to $target as uid $uid (every ${PERF_LIVE_HISTO_INTERVAL_S}s -> live-heap-histogram.txt)"
+  while true; do
+    sleep "$PERF_LIVE_HISTO_INTERVAL_S"
+    [ "$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null || echo false)" = "true" ] || return 0
+    {
+      echo "===== elapsed_s=$(( $(date -u +%s) - t0 ))"
+      timeout 90 docker run --rm --pid="container:$target" --user "${uid}:${gid}" \
+        "$PERF_HISTO_JDK_IMAGE" jcmd 1 GC.class_histogram 2>&1 \
+        | head -n "$(( PERF_LIVE_HISTO_TOPN + 3 ))"
+      echo
+    } >> "$out" 2>&1 || true
+  done
+}
+if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ]; then
+  live_heap_histo_sampler "$SERVER" "sut" & LIVE_HISTO_PID=$!
+fi
 
 run_regression "http" "http://${SERVER_ALIAS}:1080" "false" "regression-http.json"
 run_regression "https_h2" "https://${SERVER_ALIAS}:1080" "true" "regression-https.json"
@@ -3403,6 +3452,7 @@ fi
 [ -n "$DIAG_SAMPLER_PID" ] && kill "$DIAG_SAMPLER_PID" >/dev/null 2>&1 || true; DIAG_SAMPLER_PID=""
 [ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true; SUT_LOG_PID=""
 [ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true; INFO_LOG_PID=""
+[ -n "$LIVE_HISTO_PID" ] && kill "$LIVE_HISTO_PID" >/dev/null 2>&1 || true; LIVE_HISTO_PID=""
 
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"

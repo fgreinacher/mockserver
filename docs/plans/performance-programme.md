@@ -332,3 +332,42 @@ rung. Peak client CPU therefore locates the knee rather than indicating a bad me
 
 This makes "run k6 on a separate box from the SUT" the blocking prerequisite for any
 ten-core figure, not an improvement to schedule later.
+
+## JFR cannot attribute a retained heap under ZGC
+
+**Both of JFR's retention instruments emit nothing under ZGC.** That is why the
+deep-diagnostics runs up to build 439 could say what *allocated* but never what the
+heap *held* — and why the ~1.8 GB of build 439's 2,336 MiB peak that the event-log
+gauges do not account for stayed unattributed.
+
+Verified directly on JDK 25 (`eclipse-temurin:25-jdk`), same program, same JFR
+settings, only the collector changed:
+
+| Instrument | `jfr view` | `-XX:+UseG1GC` | `-XX:+UseZGC` |
+|---|---|---|---|
+| `jdk.ObjectCount` | `object-statistics` | populated | **empty** |
+| `jdk.OldObjectSample` | `memory-leaks-by-class` / `-by-site` | populated | **empty** |
+
+Explicitly enabling them (`jdk.ObjectCount#enabled=true`,
+`jdk.OldObjectSample#cutoff=0 ns`) changes nothing under ZGC — the JVM accepts the
+options silently and emits no events. **Do not add these views to the allocation
+annotation**: they would run, pass, and report nothing, while looking like coverage.
+
+The SUT runs generational ZGC, so the only live-set instrument left is
+`jcmd GC.class_histogram`, which does work under ZGC. The harness now samples it
+during every deep run (`live_heap_histo_sampler` in `perf-test-run.sh`), writing
+`sut/live-heap-histogram.txt` into the uploaded diagnostics bundle, and the
+allocation-profile step reports the last sample in its annotation.
+
+Two constraints that the implementation encodes and a future change must preserve:
+
+- **The attach handshake requires an exact uid match.** Running the sidecar as root
+  fails with `Unable to open socket file /tmp/.java_pid1`; root is not privileged for
+  HotSpot attach. The uid is therefore read from the target's own `/proc/1/status`
+  inside the shared PID namespace, never assumed to be 65532.
+- **`GC.class_histogram` forces a full GC.** It is deep-only and must never run on a
+  baselined measurement.
+
+The tier-2 comment block in `perf-test-run.sh` previously described this periodic jcmd
+sampling as though it existed. It did not; the comment was the specification, not the
+implementation.
