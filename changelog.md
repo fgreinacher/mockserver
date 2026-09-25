@@ -81,6 +81,11 @@ changes except smaller downloads.
 - **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
   copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
   life of the entry.
+- **Headers and query parameters use about half the memory.** The collection behind them held one
+  general-purpose multimap per message - a structure built for large collections, holding four
+  headers. It is now a flat insertion-ordered store: about 560 bytes less per request or response,
+  with the container itself down by roughly four fifths. Header order on the wire, duplicate headers
+  and matching behaviour are unchanged.
 - **Header and parameter names cost less to hold.** The wrapper around every header and parameter
   name and value shrank by about a third, and well-known header names now share one instance instead
   of allocating a fresh wrapper per request. An unrecognised header name still allocates as before,

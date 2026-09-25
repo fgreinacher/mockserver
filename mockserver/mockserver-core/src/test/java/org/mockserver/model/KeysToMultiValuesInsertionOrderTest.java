@@ -11,6 +11,8 @@ import java.util.Map;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.mockserver.model.Header.header;
+import static org.mockserver.model.NottableString.not;
+import static org.mockserver.model.NottableString.string;
 import static org.mockserver.model.Parameter.param;
 
 /**
@@ -319,5 +321,23 @@ public class KeysToMultiValuesInsertionOrderTest {
         // change the serialized shape.
         assertThat(objectMapper.writeValueAsString(interleaved()),
             is("{\"Set-Cookie\":[\"c1\",\"c2\"],\"Host\":[\"h\",\"h2\"],\"Accept\":[\"a\"]}"));
+    }
+
+    @Test
+    public void parametersNotKeyAndEqualPlainKeyCoexistAsSeparateOrderedEntries() {
+        // NOT keys are common in parameter matching; a "!pName" key and a differently-valued plain key
+        // compare equal yet hash differently, so the container keeps them as two ordered entries rather
+        // than merging them (an equals-only scan would collapse this).
+        assertThat(not("pName").equals(string("qName")), is(true));
+        assertThat(not("pName").hashCode() == string("qName").hashCode(), is(false));
+
+        Parameters parameters = new Parameters();
+        parameters.withEntry(not("pName"), string("1"));
+        parameters.withEntry(string("qName"), string("2"));
+
+        assertThat(parameters.getEntries().size(), is(2));
+        assertThat(entriesAsPairs(parameters), is(java.util.Arrays.asList("pName=1", "qName=2")));
+        assertThat(new ArrayList<>(parameters.getValues(not("pName"))), is(java.util.Collections.singletonList(string("1"))));
+        assertThat(new ArrayList<>(parameters.getValues(string("qName"))), is(java.util.Collections.singletonList(string("2"))));
     }
 }

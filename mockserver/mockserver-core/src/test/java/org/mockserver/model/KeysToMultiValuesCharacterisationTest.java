@@ -435,4 +435,81 @@ public class KeysToMultiValuesCharacterisationTest {
         Header built = headers.build(string("name"), Collections.<NottableString>emptyList());
         assertThat(built.getValues(), is(Collections.singletonList(string(".*"))));
     }
+
+    // ---- NOT-key identity (key grouping is hashCode-then-equals, not equals alone) --------------
+    //
+    // NottableString deliberately breaks the equals/hashCode contract for negation matching: a NOT
+    // key equals a DIFFERENTLY-valued plain key (a "!x" matches anything that is not x) yet hashes
+    // differently. The container keys the way a HashMap does — hash first, then equals — so such keys
+    // stay DISTINCT. An equals-only scan would merge them, which is exactly the bug these tests guard.
+
+    @Test
+    public void notKeyAndPlainKeyThatCompareEqualButHashDifferentlyRemainSeparateEntries() {
+        // precondition: the two keys compare equal yet hash differently (the contract violation)
+        assertThat(not("secret").equals(string("other")), is(true));
+        assertThat(not("secret").hashCode() == string("other").hashCode(), is(false));
+
+        Headers headers = new Headers();
+        headers.withEntry(not("secret"), string("1"));
+        headers.withEntry(string("other"), string("2"));
+
+        // they are kept as two distinct keys/entries, each with only its own value
+        assertThat(headers.getEntries().size(), is(2));
+        assertThat(headers.keySet().size(), is(2));
+        assertThat(new ArrayList<>(headers.getValues(not("secret"))), is(Collections.singletonList(string("1"))));
+        assertThat(new ArrayList<>(headers.getValues(string("other"))), is(Collections.singletonList(string("2"))));
+    }
+
+    @Test
+    public void getValuesByNottableStringIsExactIdentityNotEqualsAlone() {
+        // a plain key that .equals() the stored NOT key but hashes differently retrieves NOTHING
+        Headers headers = new Headers();
+        headers.withEntry(not("secret"), string("1"));
+        assertThat(not("secret").equals(string("other")), is(true));
+        assertThat(headers.getValues(string("other")).isEmpty(), is(true));
+        // a NOT key and a plain key of the SAME value are NOT equal, so this also retrieves nothing
+        assertThat(headers.getValues(string("secret")).isEmpty(), is(true));
+    }
+
+    @Test
+    public void equalityIsNotFooledByNotKeysThatCompareEqualToPlainKeys() {
+        Headers a = new Headers();
+        a.withEntry(not("secret"), string("1"));
+        Headers b = new Headers();
+        b.withEntry(string("other"), string("1"));
+        // the keys compare equal to each other ...
+        assertThat(not("secret").equals(string("other")), is(true));
+        // ... but the collections do not, because grouping is by hashCode-then-equals
+        assertThat(a.equals(b), is(false));
+        assertThat(a.hashCode() == b.hashCode(), is(false));
+    }
+
+    @Test
+    public void replaceEntryWithANotKeyRemovesEveryEqualsIgnoreCaseMatchThenAppends() {
+        // CURRENT REALITY (case-insensitive-lookup axis, distinct from key identity): replaceEntry
+        // removes by equalsIgnoreCase, which carries NOT semantics — replacing "!secret" also drops the
+        // plain "other" entry, because "!secret" case-insensitively matches the string "other".
+        Headers headers = new Headers();
+        headers.withEntry(not("secret"), string("1"));
+        headers.withEntry(string("other"), string("2"));
+        headers.replaceEntry(header(not("secret"), string("X")));
+        List<Header> entries = headers.getEntries();
+        assertThat(entries.size(), is(1));
+        assertThat(entries.get(0).getName(), is(not("secret")));
+        assertThat(new ArrayList<>(entries.get(0).getValues()), is(Collections.singletonList(string("X"))));
+    }
+
+    @Test
+    public void removeAndContainsEntryOnNotKeysUseCaseInsensitiveNotMatching() {
+        // CURRENT REALITY (case-insensitive-lookup axis): remove/containsEntry match on equalsIgnoreCase,
+        // so a "!secret" key matches any lookup string that is not "secret".
+        Headers headers = new Headers();
+        headers.withEntry(not("secret"), string("1"));
+        headers.withEntry(string("other"), string("2"));
+        assertThat(headers.containsEntry("other"), is(true));
+        assertThat(headers.containsEntry("secret"), is(false));
+        // remove("other") therefore drops BOTH the "!secret" entry (it is not "secret") and "other"
+        assertThat(headers.remove("other"), is(true));
+        assertThat(headers.isEmpty(), is(true));
+    }
 }

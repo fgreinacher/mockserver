@@ -61,8 +61,8 @@ the 277 the weigher charges.
 | 2 | `NottableString` immutable | correctness, unblocks 3 | **landed** `0f8758cd7` |
 | A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | **landed** `1122561d7` |
 | 5 | Synthetic per-request `Expectation` derived lazily | both | **landed** `4d09ceb55` |
-| 3 | Header-name dedup + `NottableString` field diet | both | to do — unblocked by 2 |
-| 4b | Flat insertion-ordered array replacing the Guava multimap | both | to do — gated on 4a, which is landed |
+| 3 | Header-name dedup + `NottableString` field diet | both | **landed** `37a8fb023` |
+| 4b | Flat insertion-ordered array replacing the Guava multimap | both | **landed** — 1,213 to 654 bytes per message |
 | 6 | `estimatedHeapSize()` to count headers and expectation | accounting | to do, **after** 5 |
 | 7 | Boxed `Long`, per-entry `Object[]`, `AtomicInteger`, `KeyToMultiValue.hashCode` | churn | to do |
 | 8 | Audit all of `org.mockserver.model` | both | to do, after 1-7 |
