@@ -249,7 +249,7 @@ echo "--- building mockserver-netty + upstream (benchmark compile deps), then ru
   -- -c '
     set -euo pipefail
     cd /build/mockserver
-    mvn -q -pl mockserver-netty -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true
+    mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -Djacoco.skip=true -Dcheckstyle.skip=true
     cd mockserver-benchmark
     mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
     CP="target/classes:$(cat target/classpath.txt)"

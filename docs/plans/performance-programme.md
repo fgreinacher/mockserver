@@ -24,8 +24,9 @@ All programme work has landed. The commits below are the ones the programme dire
 
 ## What remains
 
-Four items are open. Three need a run or an observed event; one needs a build to verify a fix
-that already landed.
+Five items are open. Three need a run or an observed event; one needs a build to verify a fix
+that already landed; one is a large-heap profile whose instrument has landed and needs a run plus
+a product decision.
 
 ### 1. The unattributed latency tail — OPEN (held until after the next release)
 
@@ -71,6 +72,55 @@ JDK class. The metric has been dead in every shipped jar since it was added, and
 `63a7a9833` is the shade-relocation fix. What remains is adding `com.sun.management` explicitly to
 the shade exclusions and verifying the metric fires on a snapshot image.
 
+### 5. Large-heap event-log profile — INSTRUMENT LANDED (needs a run + a cap decision)
+
+The instrument is in `perf-test-run.sh`: a large-heap profile plus a fail-closed proportionality
+assertion. It exists to answer one question — when the heap grows, does the event log actually
+retain more, or only gain headroom?
+
+**How to run it.** A large-heap run is expressed through levers that already existed —
+`PERF_SERVER_MEMORY` (container memory and hence the MaxRAMPercentage heap), `PERF_SERVER_JAVA_OPTS`
+(carry the GC here, e.g. `-XX:+UseZGC`, and an explicit `-Xmx`/`-XX:MaxRAMPercentage` if wanted),
+and `PERF_MAX_EVENT_LOG_BYTES` (the log byte budget) — plus the new `PERF_LARGE_HEAP_PROFILE=true`,
+which turns the assertion into a build gate. Any of these now flips `config_profile` to `tuned`
+(previously only `PERF_SO_BACKLOG` did), so such a run is recorded but never persisted to the
+default-configuration baseline.
+
+**What it records.** Every run now emits an `event_log_scaling` block in `perf-result.json` carrying
+the EFFECTIVE, gauge-resolved `maxLogEntries` and `maxEventLogSizeInBytes`, the heap ceiling the JVM
+actually saw, the peak observed retained bytes/entries, the mean entry size, and which bound bound
+(`count` / `bytes` / `neither`).
+
+**How it fails closed** (only on a `PERF_LARGE_HEAP_PROFILE` run — a normal run records the block
+and asserts nothing): the run REDS if the SUT exposed no event-log gauges (cannot verify), if the
+resolved byte budget is below the heap-derived floor `(heapKB/divisor)*1024` (the budget did not
+scale with the heap), or if neither bound was approached (utilisation below `PERF_EVENT_LOG_APPROACH_RATIO`,
+default 0.90, on both bounds with no evictions — the workload never filled the log, so the run is
+not evidence of proportionality).
+
+**The two bounds scale differently — this is the point.** Both derive from the heap ceiling, but:
+
+| heap | `maxLogEntries` | byte budget @ERROR (`heap/8`) | count cap binds when mean entry < |
+|---|---|---|---|
+| 1.2 GiB | 100,000 (capped) | 154 MiB | 1.6 KiB |
+| 8 GiB | 100,000 (capped) | 1024 MiB | 10.5 KiB |
+
+`maxLogEntries = min(heapKB/8, 100000)` reaches the 100,000 cap at **0.76 GiB** of heap and never
+grows again; `maxEventLogSizeInBytes = (heapKB/divisor)*1024` (divisor 8 at WARN/ERROR/OFF, 12 at
+INFO/DEBUG/TRACE) scales linearly with the heap without limit. So for the perf workload's small
+bodies the COUNT cap binds, and moving 1.2 GiB → 8 GiB yields no additional retention at all: a
+large-heap run tests "same live set, much more headroom", not "bigger log". The assertion makes the
+harness measure that rather than assume it.
+
+**Recommendation on the 100,000 `maxLogEntries` cap — deferred to the maintainer (a product
+default with user-visible memory consequences).** On a large heap the count cap, not the heap, is
+what limits retention for small-bodied traffic. At 8 GiB the byte budget is ~1 GiB but 100,000
+entries of, say, 2 KiB occupy only ~195 MiB — the log stops growing at ~2.4 % of the heap while
+~800 MiB of budgeted headroom goes unused. Raising or heap-deriving the cap for large heaps (e.g.
+`min(heapKB/8, <higher-or-unbounded>)`) would let a big-heap deployment retain proportionally more
+evidence, at the cost of more heap under sustained load and a larger disruptor ring. This is the
+maintainer's call; the instrument now produces the numbers to make it with.
+
 ## Durable findings
 
 These are lessons that cost effort to learn. The ones that belong in permanent documentation have
@@ -99,8 +149,50 @@ physical-topology check that fails the run if cpusets share a physical core.
 
 **`vus_active_max` is right-censored by the pool.** A pileup that briefly touches the ceiling
 makes a rung read as client-limited even when the pool sat at 1% utilisation for 95% of the
-measurement. Fixed by using `vus_active_p95 < pool` instead. Documented in
-[docs/code/performance-measurement.md](../code/performance-measurement.md) under `sweep.js`.
+measurement. First addressed by using `vus_active_p95` instead of the max; later refined into the
+occupancy-knee discriminator below (a bare `vus_active_p95 < pool` still discarded the saturating
+knee). Documented in [docs/code/performance-measurement.md](../code/performance-measurement.md)
+under `sweep.js`.
+
+**The rig-validity criteria measured the wrong thing, capping every reported figure at ~24,000
+rps.** Two exclusion criteria in `derive_saturation` (`.buildkite/scripts/steps/perf-test-run.sh`)
+were each answering the wrong question:
+
+- *k6 CPU aggregated with MAX over a window that included container startup.* `docker stats
+  --no-stream`'s cold read is inflated, and the per-rung CPU was the MAX sample, so a single spike
+  read as sustained client saturation — build 420's 8,000 rung recorded 1,173 % CPU against a VU
+  pool 1 % occupied, and the CPU series was pure noise (270 → 663 → 457 → 682 %). Fixed by gating
+  on the MEAN over the steady window and dropping the sampler's first (startup) reading; the max is
+  still recorded alongside (`k6_cpu_pct_max`) so the spread is visible. The mean, not a high
+  percentile, because a rung's window holds only ~4 samples where a p95 ≈ the max.
+- *the drop criterion could not tell a slow server from a slow client.* A dropped iteration means
+  the arrival executor found no free VU. The old rule excluded any rung whose drops exceeded a 1 %
+  fraction, judged against a bare `vus_active_p95 < pool` — true even at 95 % occupancy — so it
+  discarded the exact saturating knee it existed to find (build 420's 48,000 rung: p95 3,646 / pool
+  3,840, 9 % drops, excluded). Fixed by making the discriminator an occupancy RATIO
+  (`vus_active_p95 / pool`): at or above an 0.80 knee the pool is the binding constraint (VUs
+  blocked on server responses → server-limited → KEEP and label the knee); below it, drops over
+  tolerance are a client-side scheduling stall → EXCLUDE. 0.80 sits in the widest gap of the
+  observed occupancy ladder (a pinned rung reads ~0.86–0.95; a client-limited idle pool ~0.01–0.02).
+  When `vus_active_p95`/`pool_per_rung` are absent (older artifacts) the rule stays STRICT
+  zero-drop — never lenient on drops it cannot corroborate.
+
+Replaying builds 420 and 426 through the new logic lifts rig-valid rungs from 2 to 8–12 and the
+rig-valid peak from ~23,900 to between 40,886 (worst case — the fixtures carry only the recorded
+CPU max, replayed as mean=max) and 43,672 (with the CPU spikes averaged out, which is what the mean
+fix does). Only the 8,000 rung (idle pool, drops → client stall) and the 28,000 rung (73–79 %
+occupancy, a blip just over tolerance) stay excluded; everything pool-pinned from 32,000 up is
+kept. This reconciles the gate with the already-published all-rungs headline (43,671): the headline
+was always the true server peak; it was this gate that was capping at ~24,000.
+
+**k6's cpuset was 12 of 48 vCPUs.** Widened to `11-23` (thirteen physical cores). It starts at 11,
+not 7, so a planned second arm with the server on ten vCPUs (0-9) plus upstream (10) needs no k6
+move — one k6 cpuset shares no physical core with the server or upstream in either the six- or the
+ten-vCPU arm. The sibling pairing is NOT assumed: `lib/perf-cpu-topology.sh` resolves it from sysfs
+at run time, the disjointness guard fails the run closed on overlap, and the resolved
+physical-core counts (siblings counted once) are now recorded in `perf-result.json`
+(`config.cpusets.physical_cores`, `agent.server_physical_cores`/`k6_physical_cores`) so a published
+"on N cores" figure can cite real cores, not vCPUs.
 
 ## What was moved
 

@@ -126,3 +126,22 @@ cpusets_physically_disjoint() {
   echo "--- verified: $roles occupy ${count} distinct physical cores, none shared"
   return 0
 }
+
+# Count the DISTINCT physical cores a cpuset spec occupies, resolved from real
+# sysfs topology (two hyperthread siblings count ONCE). This is a REPORTING helper
+# for perf-result.json so a published figure can state real cores rather than vCPUs
+# — it never fails the run (cpusets_physically_disjoint above is the fail-closed
+# guard). Echoes:
+#   an integer  the number of distinct physical cores in the spec (0 for an empty spec);
+#   "null"      topology could not be read for some cpu in the spec (e.g. off-CI on
+#               macOS with no /sys) — the caller records null, not a guessed count.
+# bash-3.2-safe: distinct keys are counted via sort -u, no `local -A`.
+phys_core_count() {
+  local spec="$1" cpu key keys=""
+  [ -z "$spec" ] && { echo 0; return; }
+  for cpu in $(expand_cpuset "$spec"); do
+    if ! key="$(phys_core_key "$cpu")"; then echo "null"; return; fi
+    keys="$keys$key"$'\n'
+  done
+  printf '%s' "$keys" | sort -u | sed '/^$/d' | wc -l | tr -d ' '
+}

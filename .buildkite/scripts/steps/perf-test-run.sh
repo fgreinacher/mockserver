@@ -119,11 +119,29 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # EVERY SUT that runs regression.js with the MB arms: the main SUT here and the clustered
 # A/B nodes (start_clu) — the clustered image runs the same large_1mb/large_10mb arms on
 # a 1.5 GB heap and was at the identical risk.
+# Set-ness must be captured BEFORE the default below overwrites it: the CONFIG_PROFILE
+# trigger needs to know whether the caller set it, not what it resolved to.
+PERF_MAX_EVENT_LOG_BYTES_SET="${PERF_MAX_EVENT_LOG_BYTES+set}"
 PERF_MAX_EVENT_LOG_BYTES="${PERF_MAX_EVENT_LOG_BYTES:-268435456}" # 256 MiB
 
 # Accept-queue depth for the SUT. Unset by default so the headline figure describes the
 # shipped configuration; setting it labels the result config_profile "tuned".
 PERF_SO_BACKLOG="${PERF_SO_BACKLOG:-}"
+
+# --- large-heap profile: measure the event log against a big heap + a low-pause GC ---------------
+# A large-heap run is expressed entirely through the levers that already exist: PERF_SERVER_MEMORY
+# (container --memory and hence the MaxRAMPercentage heap), PERF_SERVER_JAVA_OPTS (the SUT's
+# JAVA_TOOL_OPTIONS — carry the GC here, e.g. -XX:+UseZGC, and an explicit -Xmx/-XX:MaxRAMPercentage
+# if wanted), and PERF_MAX_EVENT_LOG_BYTES (the event-log byte budget). Each of these now flips
+# config_profile to "tuned" on its own (see the trigger below), so such a run is never baselined.
+# PERF_LARGE_HEAP_PROFILE=true additionally turns the event-log proportionality assertion into a
+# fail-closed gate (see the event-log scaling block near result assembly): it is the operator's
+# declaration that this run exists to prove the log scaled with the heap, so a run that leaves the
+# byte budget un-scaled, or never fills the log, must RED rather than pass silently.
+PERF_LARGE_HEAP_PROFILE="${PERF_LARGE_HEAP_PROFILE:-false}"
+# Fraction of a resolved event-log bound the observed peak must reach for that bound to count as
+# "exercised". Below this on BOTH bounds (and with no evictions) the workload never filled the log.
+PERF_EVENT_LOG_APPROACH_RATIO="${PERF_EVENT_LOG_APPROACH_RATIO:-0.90}"
 
 OUT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-result.XXXXXX")"
 # The k6 image runs as a NON-root user (uid 12345); mktemp -d creates the dir
@@ -547,38 +565,50 @@ assert_cpusets_physically_disjoint() {
 CORES="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
 SERVER_CPUS=""; UPSTREAM_CPUS=""; K6_CPUS=""
 if [ "$CORES" -ge 16 ]; then
-  # Defaults: server=0-5 upstream=6 k6=8-19. NOTE these are LOGICAL cpu ids; the
-  # guard below is what establishes they land on distinct physical cores, because
-  # this list alone cannot tell you that.
+  # Defaults: server=0-5 upstream=6 k6=11-23. These are LOGICAL cpu ids; the
+  # topology guard below is what PROVES they land on distinct PHYSICAL cores — this
+  # list alone cannot, and the sibling pairing is NOT assumed (it is read from sysfs
+  # at run time by lib/perf-cpu-topology.sh, and the run fails closed if it cannot be
+  # read in CI). Every id here is in the lower half (0-23), which on the perf queue's
+  # c5.12xlarge is one thread per physical core (24 cores, 48 threads), so k6 never
+  # lands on the server's hyperthread siblings — those live in the upper half and are
+  # left IDLE, which is also what keeps the published "six real cores" honest.
   #
-  # k6 holds TWELVE cores, not the six it had on the old box. That is not tuning
-  # for its own sake — build 397, the first run on the 24-core c5.12xlarge, came
-  # back with only the rungs up to 4,000 rps rig-valid and k6 shedding 203, then
-  # 3,908, then 103,558, then 343,971, then 558,068 iterations as the ladder
-  # climbed. The server was not refusing that load; the client could not generate
-  # it. The box had grown from 8 physical cores to 24 and this line had not moved,
-  # so eleven cores sat idle while the measurement stayed client-bound.
+  # k6 spans cores 11-23 (thirteen cores) so the client keeps ample headroom above
+  # the server's ceiling and the knee measured is the SERVER's, not the load
+  # generator's. It deliberately starts at 11, not 7, to leave cores 7-10 free: the
+  # core-scaling plan runs a SECOND arm with the server widened to ten vCPUs
+  # (server=0-9, upstream=10), and this one k6 cpuset must share no physical core
+  # with the server or upstream in EITHER arm. The SERVER's cpuset itself is not
+  # changed here — widening it is a separate unit — but k6 is placed so that unit
+  # needs no k6 move. Any wider server arm still overrides PERF_SERVER_CPUS and the
+  # guard re-proves disjointness for whatever cpusets are actually active.
   #
-  # The SERVER's cpuset is deliberately unchanged at six cores. Widening it would
-  # change the subject of the measurement and reset the baseline again; the point
-  # here is to let the client saturate the same six-core server, not to measure a
-  # bigger one.
+  # In use (6-vCPU arm): 6 (server) + 1 (upstream) + 13 (k6) physical cores, highest
+  # id 23, so the box needs 24 physical cores; c5.12xlarge has exactly 24. A smaller
+  # box trips the guard (fail-closed) rather than letting k6 share the server's
+  # cores. If the perf queue moves to a smaller box, narrow PERF_K6_CPUS to match
+  # instead of disabling the guard.
   #
-  # These defaults now need a box with at least NINETEEN physical cores (6 + 1 +
-  # 12). c5.12xlarge has 24. A c5.9xlarge has only 18, so the guard below would
-  # fail the run rather than let k6 quietly share the server's cores again —
-  # verified against a simulated 18-core topology. If the perf queue is ever moved
-  # to a smaller box, narrow PERF_K6_CPUS to match instead of disabling the guard.
-  #
-  # Each cpuset is overridable via PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS
-  # so a re-run can, e.g., hand k6 more cores to drive higher arrival rates.
-  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-8-19}"
+  # Each cpuset is overridable via PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS.
+  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-11-23}"
   echo "--- core-pinning enabled (${CORES} logical cpus): server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS"
   assert_cpusets_physically_disjoint || exit 1
 else
   echo "--- WARNING: ${CORES} logical cpus (<16) — core-pinning skipped; numbers will be noisier"
 fi
 cpuset_arg() { [ -n "$1" ] && printf -- '--cpuset-cpus=%s' "$1"; }
+
+# Resolved PHYSICAL-core counts per role (two hyperthread siblings count once),
+# read from real sysfs topology — recorded in perf-result.json so a published
+# core-scaling figure states real cores, not vCPUs. "null" when topology is
+# unreadable (off-CI); the fail-closed check is assert_cpusets_physically_disjoint
+# above, not this reporting helper. jq --argjson needs a JSON literal, so an empty
+# helper output degrades to null rather than crashing the assembly.
+SERVER_PHYS_CORES="$(phys_core_count "${SERVER_CPUS:-}")"; SERVER_PHYS_CORES="${SERVER_PHYS_CORES:-null}"
+UPSTREAM_PHYS_CORES="$(phys_core_count "${UPSTREAM_CPUS:-}")"; UPSTREAM_PHYS_CORES="${UPSTREAM_PHYS_CORES:-null}"
+K6_PHYS_CORES="$(phys_core_count "${K6_CPUS:-}")"; K6_PHYS_CORES="${K6_PHYS_CORES:-null}"
+echo "--- resolved physical cores: server=$SERVER_PHYS_CORES upstream=$UPSTREAM_PHYS_CORES k6=$K6_PHYS_CORES (vcpu ids server=${SERVER_CPUS:-none} upstream=${UPSTREAM_CPUS:-none} k6=${K6_CPUS:-none})"
 
 docker network create "$NETWORK" >/dev/null
 
@@ -841,7 +871,19 @@ MAX_EVENT_LOG_VAL="$(container_env MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES)"
 # empty is not an error — but declared-yet-unapplied is, since the run would be labelled
 # tuned while measuring a default server.
 SO_BACKLOG_VAL="$(container_env MOCKSERVER_SO_BACKLOG)"
-CONFIG_PROFILE="default"; [ -n "$PERF_SO_BACKLOG" ] && CONFIG_PROFILE="tuned"
+# ANY tuning lever flips the profile to "tuned" so a non-default run can never poison the baseline.
+# Keyed on whether the user-facing PERF_* env var was SET (not on the resolved SERVER_MEMORY /
+# PERF_MAX_EVENT_LOG_BYTES, which always hold a default), so the daily guard-dispatched run — which
+# sets none of these — stays "default", while a run that raises the heap, changes the GC, resizes the
+# log budget, sets the backlog, or opts into the large-heap profile is correctly excluded.
+CONFIG_PROFILE="default"
+if [ -n "${PERF_SO_BACKLOG:-}" ] \
+   || [ -n "${PERF_SERVER_JAVA_OPTS:-}" ] \
+   || [ -n "${PERF_SERVER_MEMORY:-}" ] \
+   || [ -n "${PERF_MAX_EVENT_LOG_BYTES_SET:-}" ] \
+   || [ "$PERF_LARGE_HEAP_PROFILE" = "true" ]; then
+  CONFIG_PROFILE="tuned"
+fi
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
 # k6 container CPU allocation (cores * 100%) from its cpuset pin.
@@ -1074,6 +1116,7 @@ CONFIG_JSON="$(jq -n \
   --arg jto "$JAVA_TOOL_OPTS_VAL" --arg psjo "${PERF_SERVER_JAVA_OPTS:-}" \
   --arg k6_image "$K6_IMAGE" --arg k6_digest "$K6_IMAGE_DIGEST" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg upstream_cpus "${UPSTREAM_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
+  --argjson server_phys_cores "$SERVER_PHYS_CORES" --argjson upstream_phys_cores "$UPSTREAM_PHYS_CORES" --argjson k6_phys_cores "$K6_PHYS_CORES" \
   --argjson k6_pin_pct "$K6_CFG_PIN_PCT" \
   '{
     mockserver_version: $version,
@@ -1130,7 +1173,12 @@ CONFIG_JSON="$(jq -n \
     perf_server_java_opts: $psjo,
     k6_image: $k6_image,
     k6_image_digest: (if $k6_digest=="" then null else $k6_digest end),
-    cpusets: { server: $server_cpus, upstream: $upstream_cpus, k6: $k6_cpus },
+    # cpusets are LOGICAL cpu ids; physical_cores is the DISTINCT physical-core count
+    # each occupies (hyperthread siblings counted once), resolved from sysfs — this is
+    # what a published "on N cores" figure must cite, not the vCPU-id span. null when
+    # topology was unreadable (off-CI).
+    cpusets: { server: $server_cpus, upstream: $upstream_cpus, k6: $k6_cpus,
+               physical_cores: { server: $server_phys_cores, upstream: $upstream_phys_cores, k6: $k6_phys_cores } },
     k6_cpu_pin_pct: $k6_pin_pct,
     sources: {
       mockserver_version:"observed", mockserver_git_hash:"observed",
@@ -1331,9 +1379,10 @@ K6_CORES="$(k6_core_count "$K6_CPUS")"
 K6_PIN_PCT=$((K6_CORES * 100))
 SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
 # Fractional drop TOLERANCE for rig-validity (see derive_saturation). A rung's
-# dropped_iterations are forgiven only when they are BELOW this fraction of the
-# rung's intended iterations AND the rung's VU pool had headroom — never on the
-# fraction alone. 0.01 = 1% is DERIVED, not picked: it sits above the largest
+# dropped_iterations are forgiven either when the VU pool was PINNED (a server-side
+# knee — see $pool_pinned) OR, when the pool was NOT pinned, only if they are BELOW
+# this fraction of the rung's intended iterations — never on the fraction alone.
+# 0.01 = 1% is DERIVED, not picked: it sits above the largest
 # recorded blip (build #322's 2,000 rung, 133 drops = 0.44%, client 13.6% CPU) with
 # >2x margin and below the smallest recorded genuine shortfall (build #347's 8,000
 # rung at 1.83%; native 16k at 2.5%; build #290 16k at 3.3%) with >1.8x margin, and
@@ -1345,6 +1394,17 @@ SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
 # rung HAS headroom (peak 301 < pool 640), so it is the FRACTION term that correctly
 # excludes it at 1.83%, which is exactly why this threshold must stay below that.
 SWEEP_DROP_TOL="${PERF_SWEEP_DROP_TOL:-0.01}"
+# Occupancy KNEE threshold for the drop discriminator (see derive_saturation). A
+# dropped iteration means the constant-arrival executor found no free VU (active ==
+# pool). When vus_active_p95 / pool_per_rung is AT OR ABOVE this, the pool was the
+# binding constraint for the bulk of the rung — VUs were blocked waiting on server
+# responses, i.e. the SERVER saturating — so the rung is KEPT and labelled the knee
+# rather than discarded. Below it, drops over tolerance with an idle pool are a
+# CLIENT-side scheduling stall (the client could not schedule though VUs were free)
+# and stay excluded. 0.80 sits in the widest gap of the observed occupancy ladder
+# (a pinned rung reads ~0.86-0.95; a client-limited idle pool reads ~0.01-0.02), so
+# p95 noise cannot flip a rung across it. Overridable.
+SWEEP_OCC_KNEE="${PERF_SWEEP_OCC_KNEE:-0.80}"
 
 # Background sampler of the k6 CLIENT container's CPU while a sweep runs — the
 # missing "was the client the bottleneck?" evidence. A rung where k6 is near its
@@ -1352,13 +1412,20 @@ SWEEP_DROP_TOL="${PERF_SWEEP_DROP_TOL:-0.01}"
 # derive_saturation. Parameterised by container name + output CSV so the ERROR and
 # INFO sweeps each get their own sampler against their own k6 container.
 sweep_cpu_sampler() { # k6_container_name  out_csv
-  local cname="$1" out_csv="$2"
+  local cname="$1" out_csv="$2" first_seen=0
   echo "ts,cpu_pct" > "$out_csv"
   while true; do
     local ts cpu
     ts="$(date -u +%s)"
     cpu="$(docker stats --no-stream --format '{{.CPUPerc}}' "$cname" 2>/dev/null | tr -d '% ' || echo '')"
-    [ -n "$cpu" ] && printf '%s,%s\n' "$ts" "$cpu" >> "$out_csv"
+    # DROP the first successful reading: `docker stats --no-stream` computes CPU%
+    # over the interval since the container STARTED, so its cold read is inflated
+    # and lands in the first rung's window. The k6 container runs ONCE for the whole
+    # ladder, so this discards exactly one startup artifact, off the first rung only.
+    if [ -n "$cpu" ]; then
+      if [ "$first_seen" -eq 0 ]; then first_seen=1;
+      else printf '%s,%s\n' "$ts" "$cpu" >> "$out_csv"; fi
+    fi
     sleep "${PERF_SWEEP_SAMPLE_INTERVAL:-3}"
   done
 }
@@ -1403,63 +1470,71 @@ run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_hos
 }
 
 # --- derive saturation_rps from a sweep (item: prove the client had headroom) ---
-# Per rung: attribute the max k6-container CPU seen during that rung's hold window
+# Per rung: attribute the MEAN k6-container CPU seen during that rung's hold window
 # (from the sampler log + the known ladder schedule anchored at $t0), pair it with
 # k6's per-rung dropped_iterations, and mark the rung CLEAN iff achieved >=
-# 0.95*offered AND the client had CPU headroom (< 85% of its pin) AND k6 dropped no
-# iterations. The highest CLEAN rung's offered rate is saturation_rps. If nothing is
-# clean, the client was the bottleneck everywhere (the caller flags the run invalid).
-# Echoes the SATURATION_JSON object on stdout.
+# 0.95*offered AND the client had CPU headroom (mean < 85% of its pin) AND k6's
+# drops were not client-limited (see $no_drops). The gate is the MEAN, not the max:
+# a single inflated docker-stats sample (or the container-startup cold read) must
+# not read as sustained client saturation. The per-rung max is recorded ALONGSIDE
+# so a reader can see the spread. The highest CLEAN rung's offered rate is
+# saturation_rps. If nothing is rig-valid, the client was the bottleneck everywhere
+# (the caller flags the run invalid). Echoes the SATURATION_JSON object on stdout.
 derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
   local sweep_json="$1" cpu_log="$2" t0="$3"
-  local cpu_map="{}" i r ws we maxcpu
+  local cpu_map="{}" i r ws we cpustats cpumean cpumax
   local -a rate_arr
   IFS=',' read -ra rate_arr <<< "$SWEEP_RATES"
   for i in "${!rate_arr[@]}"; do
     r="${rate_arr[$i]}"
     ws=$(( t0 + i * (STEP_S + GAP_S) + SETTLE_S ))
     we=$(( t0 + i * (STEP_S + GAP_S) + STEP_S ))
-    maxcpu="$(awk -F',' -v a="$ws" -v b="$we" 'NR>1 && $1>=a && $1<=b { if($2+0>m) m=$2+0 } END{ printf "%.1f", m+0 }' "$cpu_log" 2>/dev/null || echo 0)"
-    cpu_map="$(jq -c --arg k "$r" --argjson v "${maxcpu:-0}" '. + {($k): $v}' <<<"$cpu_map")"
+    cpustats="$(awk -F',' -v a="$ws" -v b="$we" 'NR>1 && $1>=a && $1<=b { s+=$2+0; n++; if($2+0>m) m=$2+0 } END{ if(n>0) printf "%.1f %.1f", s/n, m+0; else printf "0 0" }' "$cpu_log" 2>/dev/null || echo "0 0")"
+    cpumean="${cpustats%% *}"; cpumax="${cpustats##* }"
+    cpu_map="$(jq -c --arg k "$r" --argjson mean "${cpumean:-0}" --argjson max "${cpumax:-0}" '. + {($k): {mean:$mean, max:$max}}' <<<"$cpu_map")"
   done
   # A rung is RIG-VALID when the measurement itself is trustworthy: the k6 client
-  # had CPU headroom, dropped no more than a small tolerated FRACTION of iterations
-  # (and only when its VU pool had headroom — see the $no_drops derivation below),
-  # and the server was not returning fast errors (a rung "achieves" its offered rate
-  # even while erroring, so error_rate is part of validity, not just throughput).
+  # had CPU headroom (MEAN k6 CPU below its pin), its drops were not a client-side
+  # scheduling failure (either the pool was pinned — a server-side knee — or the
+  # drops were a small tolerated FRACTION with pool headroom; see $no_drops), and the
+  # server was not returning fast errors (a rung "achieves" its offered rate even
+  # while erroring, so error_rate is part of validity, not just throughput).
   # The BUDGETED metric is rig_valid_peak_achieved_rps = max achieved over rig-valid rungs.
   #
-  # rig_valid_peak_achieved_rps IS A PROPERTY OF THE RIG, NOT OF THE SERVER. An earlier version of
-  # this comment called it "CONTINUOUS (it moves proportionally with the real ceiling,
-  # e.g. 36,324 achieved at 48,000 offered)". The data falsifies that: in build 325 the
-  # server achieved 28,377.4 at 48,000 offered with zero errors, and this field still read
-  # 2,000.1 — the same value build 306 reported for a different run whose server peak also
-  # differed. It CANNOT track the server ceiling, because the rig-validity filter
-  # structurally caps it at whichever rung the CLIENT stops being clean, and on this rig k6
-  # starts dropping iterations at the 4,000 rung. Two runs agreeing on "peak achieved" while
-  # their servers disagree is the tell. A documented rationale contradicted by shipped
-  # behaviour is worse than none, because it tells the next reader not to check.
+  # rig_valid_peak_achieved_rps CAN now track the server ceiling. It could not before: the
+  # old criteria excluded a rung the moment the k6 CPU MAX touched its pin (a startup/
+  # docker-stats artifact) or the moment drops appeared with the VU pool merely non-empty,
+  # so the peak was structurally capped at the first client blip (~2,000 on this rig) even
+  # while the server served far more. Gating CPU on the MEAN and forgiving drops that occur
+  # with the VU pool PINNED removes that cap, so this field rises with the highest rung the
+  # server actually served. It is still a rig-valid PEAK, not a promise the server was clean
+  # at that rung (see saturation_rps for the clean knee).
   #
-  # BEWARE: two different quantities share this name. THIS one is the rig-valid peak
-  # (2,000.1). lib/perf-website-figures.jq independently recomputes max achieved over ALL
-  # rungs (28,377.4) and that is what is published to the website. Same name, different
+  # BEWARE: two quantities share this name. THIS one is the rig-valid peak.
+  # lib/perf-website-figures.jq independently recomputes max achieved over ALL rungs from
+  # the raw sweep points, and that is what is published to the website. Same name, different
   # subject, different consumer — do not reconcile one against the other.
   #
-  # saturation_rps is ladder-QUANTISED (only ever a rung's offered value, 16k/32k/... — its
-  # smallest move is a factor of two, so it cannot carry a percentage floor) and is kept as
-  # a DESCRIPTIVE figure only (the knee), not budgeted.
+  # saturation_rps is ladder-QUANTISED (only ever a rung's offered value) and is kept as a
+  # DESCRIPTIVE figure only (the highest CLEAN knee), not budgeted.
   jq -n \
     --slurpfile sweep "$sweep_json" \
     --argjson cpu "$cpu_map" \
     --argjson pin "$K6_PIN_PCT" \
     --argjson cores "$K6_CORES" \
     --argjson err_eps "$SWEEP_ERR_EPS" \
-    --argjson drop_tol "$SWEEP_DROP_TOL" '
+    --argjson drop_tol "$SWEEP_DROP_TOL" \
+    --argjson occ_knee "$SWEEP_OCC_KNEE" '
     ($pin * 0.85) as $cpu_ceiling
     | (($sweep[0].points) // []) as $points
     | (($sweep[0].vus_diagnostics.pool_per_rung) // {}) as $pools
     | [ $points[]
-        | ($cpu[(.offered_rps|tostring)]) as $c
+        | ($cpu[(.offered_rps|tostring)]) as $cobj
+        # Gate on the MEAN k6 CPU over the steady window, record the max alongside.
+        # A single docker-stats spike (or the container-startup cold read) must not
+        # read as sustained client saturation - see the sampler + awk above.
+        | ($cobj.mean) as $c
+        | ($cobj.max)  as $cmax
         | (.dropped_iterations // 0) as $drops
         | (.sample_count // 0) as $completed
         | (.error_rate // 0) as $err
@@ -1473,48 +1548,47 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         # (drops + completed) is the intended iteration count and this is the exact
         # fraction of the offered load the client failed to deliver.
         | (if ($drops + $completed) > 0 then ($drops / ($drops + $completed)) else 0 end) as $drop_frac
-        # VU-pool headroom, keyed off the p95 concurrency rather than the max. vus_active_max
-        # is RIGHT-CENSORED: it cannot exceed the pool, so a single stall pileup touching the
-        # ceiling makes any rung read as client-limited however idle the pool actually was -
-        # build 419 excluded a rung whose p95 was 9 against a pool of 640. The p95 answers the
-        # question actually being asked: was the pool the constraint for the bulk of the rung.
-        # Falls back to the max when p95 is absent (older artifact), never the other way.
-        | (if ($vp95 != null) and ($pool != null) then ($vp95 < $pool)
-           elif ($vmax != null) and ($pool != null) then ($vmax < $pool)
-           else false end) as $vu_headroom
-        # $no_drops (the rig-validity drop clause): forgive drops ONLY when they are a
-        # small FRACTION *and* the VU pool had headroom. A tolerance on the fraction
-        # ALONE would admit a genuinely VU-starved rung whose achieved rate is a
-        # CLIENT ceiling (the exact dishonesty rig_valid exists to prevent), so the
-        # corroborating headroom signal is required, not optional. When either signal
-        # is unavailable (an older artifact with no vus_active_max, or no pool_per_rung
-        # recorded) fall back to the strict zero-drop rule — never lenient on drops we
-        # cannot corroborate. This voids build #322 no longer: its 2,000 rung dropped
-        # 133 of ~30,000 (0.44% < 1%) with the pool barely touched, a blip; but build
-        # #347s 8,000 rung (1.83%) and every high-rung collapse stay excluded on the
-        # fraction, and any rung that reached its pool ceiling stays excluded on the
-        # headroom term even below tolerance.
+        # VU-pool OCCUPANCY = p95 active VUs / pool. p95 (not max) because vus_active_max
+        # is RIGHT-CENSORED at the pool: a single stall pileup touching the ceiling makes
+        # any rung look pool-bound however idle it was for the bulk of the window (build
+        # build 419 with p95=9 against pool 640). Falls back to max only when p95 is absent (older
+        # artifact); null when neither p95/max nor a pool is available.
+        | (if ($vp95 != null) and ($pool != null) and ($pool > 0) then ($vp95 / $pool)
+           elif ($vmax != null) and ($pool != null) and ($pool > 0) then ($vmax / $pool)
+           else null end) as $occ
+        # Pool PINNED = occupancy at/above the knee threshold: the pool was the binding
+        # constraint, so VUs were blocked waiting on SERVER responses. Drops there are the
+        # server saturating, not the client failing to schedule.
+        | (($occ != null) and ($occ >= $occ_knee)) as $pool_pinned
+        # $no_drops (rig-validity drop clause). A dropped iteration is a client failure to
+        # SCHEDULE only when the pool was NOT the constraint. So: no drops -> fine; drops
+        # with the pool pinned -> SERVER-limited, keep (the knee this sweep exists to find);
+        # drops with pool headroom -> forgive only a small FRACTION (a blip); no occupancy
+        # signal (older artifact, no pool) -> STRICT zero-drop, never lenient on drops we
+        # cannot corroborate.
         | (if $drops <= 0 then true
-           elif $vu_headroom then ($drop_frac <= $drop_tol)
+           elif $pool_pinned then true
+           elif ($occ != null) then ($drop_frac <= $drop_tol)
            else false end) as $no_drops
+        # knee = a KEPT rung whose drops were server-limited (pool pinned). Purely a label.
+        | (($drops > 0) and $pool_pinned) as $knee
         | ($err <= $err_eps) as $low_err
         # rig_valid: the measurement itself is trustworthy (says nothing about the
         # server verdict). clean: rig_valid AND the server actually kept up (knee).
         | ($headroom and $no_drops and $low_err) as $rig_valid
         | ($rig_valid and ($off > 0) and ($ach >= 0.95 * $off)) as $clean
-        | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c,
+        | { offered_rps:$off, achieved_rps:$ach, k6_cpu_pct:$c, k6_cpu_pct_max:$cmax,
             dropped_iterations:$drops, dropped_fraction:($drop_frac|.*100000|round/100000),
-            vus_active_max:$vmax, vus_active_p95:$vp95, pool_per_rung:$pool, error_rate:$err,
-            rig_valid:$rig_valid, clean:$clean,
+            vus_active_max:$vmax, vus_active_p95:$vp95, pool_per_rung:$pool,
+            vu_occupancy:(if $occ == null then null else ($occ*100000|round/100000) end),
+            error_rate:$err, rig_valid:$rig_valid, clean:$clean, knee:($rig_valid and $knee),
             exclude_reason:(
               if $rig_valid then null
-              elif ($headroom|not) then "k6 client CPU \($c)% >= 85% of \($pin)% pin (client bottleneck)"
+              elif ($headroom|not) then "k6 client CPU mean \($c)% (max \($cmax)%) >= 85% of \($pin)% pin (client bottleneck)"
               elif ($no_drops|not) then
                 "k6 dropped \($drops) iterations = \(($drop_frac*1000|round)/10)% of offered"
-                + (if $vu_headroom then " (> \(($drop_tol*100))% tolerance despite VU-pool headroom - too sustained to be a blip)"
-                   elif (($vp95 != null) and ($pool != null)) then " with VU pool exhausted (vus_active_p95 \($vp95) >= pool \($pool), client-limited)"
-                   elif (($vmax != null) and ($pool != null)) then " with VU pool exhausted (vus_active_max \($vmax) >= pool \($pool), client-limited)"
-                   else " (no VU-pool diagnostics to corroborate a blip; strict zero-drop applied)" end)
+                + (if ($occ != null) then " with VU pool only \(($occ*1000|round)/10)% occupied at p95 (< \(($occ_knee*100))% knee) but above the \(($drop_tol*100))% blip tolerance - client could not schedule, not the server saturating"
+                   else " (no VU-pool diagnostics to corroborate a server-side knee; strict zero-drop applied)" end)
               else "server error_rate \($err) > \($err_eps) (fast errors inflate achieved)" end) } ]
     | . as $rungs
     | ([ $rungs[] | select(.rig_valid) | .achieved_rps ] | max // 0) as $peak
@@ -1525,7 +1599,7 @@ derive_saturation() { # sweep_json_host_path  cpu_log_host_path  t0_epoch
         client_pin_pct:$pin, client_cores:$cores,
         ladder:$rungs,
         excluded:[ $rungs[] | select(.rig_valid|not)
-                   | {offered_rps, achieved_rps, k6_cpu_pct, dropped_iterations, dropped_fraction, vus_active_max, vus_active_p95, pool_per_rung, error_rate, reason:.exclude_reason} ] }'
+                   | {offered_rps, achieved_rps, k6_cpu_pct, k6_cpu_pct_max, dropped_iterations, dropped_fraction, vus_active_max, vus_active_p95, pool_per_rung, vu_occupancy, error_rate, reason:.exclude_reason} ] }'
 }
 
 echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
@@ -1557,7 +1631,7 @@ echo "--- rig_valid_peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURAT
 # print it instead of guessing.
 RIG_VALID_RUNGS="$(jq -r '.rig_valid_rungs // 0' <<<"$SATURATION_JSON")"
 if awk -v v="$RIG_VALID_RUNGS" 'BEGIN{exit !(v+0>0)}'; then
-  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no dropped iterations, low errors (rig_valid_peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
+  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no client-limited drops, low errors (rig_valid_peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
 else
   SWEEP_EXCLUSIONS="$(jq -r '[.ladder[] | "\(.offered_rps): \(.exclude_reason // "?")"] | join("; ")' <<<"$SATURATION_JSON")"
   add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
@@ -2744,6 +2818,116 @@ CPU_RATIO="$(ratio "$CPU_END" "$CPU_START")"
 # no forced GC and much less noise. REPLACES the old instantaneous heap ratio.
 HEAP_RATIO="$(ratio "$HEAP_MIN_LAST" "$HEAP_MIN_FIRST")"
 
+# --- event-log scaling: resolved bounds vs observed peak, and which bound bound ------------------
+# Both event-log bounds derive from the heap ceiling but scale DIFFERENTLY: maxLogEntries is
+# min(heapKB/8, 100000) and CAPS at 100000 (reached by ~0.76 GiB of heap), while maxEventLogSizeInBytes
+# is (heapKB/divisor)*1024 (divisor 8 at WARN/ERROR/OFF, 12 at INFO/DEBUG/TRACE) and scales with the
+# heap without limit. For the perf workload's small bodies the COUNT cap binds, so a bigger heap buys
+# no extra retention — this block MEASURES that rather than assuming it. Resolved values come from the
+# server's own gauges (max_retained_entries / max_retained_bytes in diag-samples.csv), the EFFECTIVE
+# figures the JVM applied, not the requested ones. On an older SUT image without those gauges the
+# columns are blank and samples_with_log_data is 0. Reads are safe here: the load phases (regression /
+# sweep / growth) are complete, so the retained peak is settled even though the sampler still runs.
+case "$LOG_LEVEL_VAL" in
+  INFO|DEBUG|TRACE) ELS_DIVISOR=12 ;;
+  *)                ELS_DIVISOR=8 ;;
+esac
+# Default heap-derived byte budget the server WOULD pick with no override: (heapKB/divisor)*1024.
+# On a large-heap run the resolved budget must be at least this, i.e. the log budget scaled with the
+# heap at least as fast as the shipped default would have.
+ELS_EXPECTED_DEFAULT_BYTES="$(awk -v h="$HEAP_MAX_BYTES" -v d="$ELS_DIVISOR" 'BEGIN{ hk=int(h/1024); printf "%.0f", int(hk/d)*1024 }')"
+read -r ELS_MAX_ENTRIES ELS_MAX_BYTES ELS_PEAK_ENTRIES ELS_PEAK_BYTES ELS_PEAK_INFLIGHT ELS_EVICTED ELS_LOG_ROWS <<EOF
+$(awk -F',' '
+  NR>1 && $20!="" { if ($20+0>me) me=$20; lr++ }
+  NR>1 && $19!="" { if ($19+0>mb) mb=$19 }
+  NR>1 && $17!="" { if ($17+0>pe) pe=$17 }
+  NR>1 && $18!="" { if ($18+0>pb) pb=$18 }
+  NR>1 && $15!="" { if ($15+0>pif) pif=$15 }
+  NR>1 && $21!="" { if ($21+0>ev) ev=$21 }
+  END { printf "%.0f %.0f %.0f %.0f %.0f %.0f %d", me+0, mb+0, pe+0, pb+0, pif+0, ev+0, lr+0 }
+' "$DIAG_SAMPLE_LOG" 2>/dev/null)
+EOF
+read -r ELS_COUNT_UTIL ELS_BYTES_UTIL ELS_MEAN_ENTRY ELS_BINDING ELS_BOUND_REACHED <<EOF
+$(awk -v me="$ELS_MAX_ENTRIES" -v mb="$ELS_MAX_BYTES" -v pe="$ELS_PEAK_ENTRIES" -v pb="$ELS_PEAK_BYTES" \
+      -v ev="$ELS_EVICTED" -v thr="$PERF_EVENT_LOG_APPROACH_RATIO" 'BEGIN{
+  cu = (me>0)? pe/me : 0; bu = (mb>0)? pb/mb : 0; mean = (pe>0)? pb/pe : 0;
+  reached = (ev>0 || cu>=thr || bu>=thr) ? "true" : "false";
+  binding = (reached=="false") ? "neither" : ((cu>=bu)? "count" : "bytes");
+  printf "%.4f %.4f %.0f %s %s", cu, bu, mean, binding, reached }')
+EOF
+[ "$PERF_LARGE_HEAP_PROFILE" = "true" ] && ELS_LARGE_HEAP_BOOL=true || ELS_LARGE_HEAP_BOOL=false
+EVENT_LOG_SCALING_JSON="$(jq -n \
+  --argjson heap_max_bytes "${HEAP_MAX_BYTES:-0}" \
+  --arg log_level "$LOG_LEVEL_VAL" \
+  --argjson heap_divisor "$ELS_DIVISOR" \
+  --argjson resolved_max_log_entries "$ELS_MAX_ENTRIES" \
+  --argjson resolved_max_event_log_bytes "$ELS_MAX_BYTES" \
+  --argjson requested_max_event_log_bytes "${MAX_EVENT_LOG_VAL:-0}" \
+  --argjson expected_default_budget_bytes "$ELS_EXPECTED_DEFAULT_BYTES" \
+  --argjson peak_retained_entries "$ELS_PEAK_ENTRIES" \
+  --argjson peak_retained_bytes "$ELS_PEAK_BYTES" \
+  --argjson peak_in_flight_bytes "$ELS_PEAK_INFLIGHT" \
+  --argjson evicted_log_entries "$ELS_EVICTED" \
+  --argjson count_utilisation "$ELS_COUNT_UTIL" \
+  --argjson bytes_utilisation "$ELS_BYTES_UTIL" \
+  --argjson mean_entry_bytes "$ELS_MEAN_ENTRY" \
+  --arg binding_constraint "$ELS_BINDING" \
+  --argjson bound_reached "$ELS_BOUND_REACHED" \
+  --argjson approach_ratio "$PERF_EVENT_LOG_APPROACH_RATIO" \
+  --argjson samples_with_log_data "$ELS_LOG_ROWS" \
+  --argjson large_heap_profile "$ELS_LARGE_HEAP_BOOL" \
+  '{
+    # resolved_* are the EFFECTIVE bounds read from the server gauges; requested_max_event_log_bytes is
+    # what the container was handed (MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES). expected_default_budget_bytes
+    # is the heap-derived budget the server would pick unbidden — the floor the resolved budget must clear
+    # on a large-heap run. binding_constraint is which bound the observed peak actually reached
+    # ("count" | "bytes" | "neither"); bound_reached is false when the log never filled (utilisation below
+    # approach_ratio on both bounds and no evictions) — which is NOT evidence of proportionality.
+    heap_max_bytes: $heap_max_bytes,
+    log_level: $log_level,
+    heap_divisor: $heap_divisor,
+    resolved_max_log_entries: $resolved_max_log_entries,
+    resolved_max_event_log_bytes: $resolved_max_event_log_bytes,
+    requested_max_event_log_bytes: $requested_max_event_log_bytes,
+    expected_default_budget_bytes: $expected_default_budget_bytes,
+    peak_retained_entries: $peak_retained_entries,
+    peak_retained_bytes: $peak_retained_bytes,
+    peak_in_flight_bytes: $peak_in_flight_bytes,
+    evicted_log_entries: $evicted_log_entries,
+    count_utilisation: $count_utilisation,
+    bytes_utilisation: $bytes_utilisation,
+    mean_entry_bytes: $mean_entry_bytes,
+    binding_constraint: $binding_constraint,
+    bound_reached: $bound_reached,
+    approach_ratio: $approach_ratio,
+    samples_with_log_data: $samples_with_log_data,
+    large_heap_profile: $large_heap_profile
+  }')"
+echo "--- event-log scaling: heap=${HEAP_MAX_BYTES}B maxLogEntries=${ELS_MAX_ENTRIES} maxEventLogSizeInBytes=${ELS_MAX_BYTES} (expected_default_floor=${ELS_EXPECTED_DEFAULT_BYTES}) peak_entries=${ELS_PEAK_ENTRIES}(util ${ELS_COUNT_UTIL}) peak_bytes=${ELS_PEAK_BYTES}(util ${ELS_BYTES_UTIL}) evicted=${ELS_EVICTED} binding=${ELS_BINDING} bound_reached=${ELS_BOUND_REACHED} large_heap_profile=${PERF_LARGE_HEAP_PROFILE}"
+# Fail-closed assertions ONLY on an opted-in large-heap run (a normal run records the block and adds
+# no check — its log may legitimately never fill). Three ways to red: gauges absent (cannot verify);
+# byte budget did not scale with the heap; or neither bound was exercised (measured more headroom, not
+# a bigger log). Each is a distinct add_check so compare reddens with the reason.
+if [ "$PERF_LARGE_HEAP_PROFILE" = "true" ]; then
+  if [ "${ELS_LOG_ROWS:-0}" -eq 0 ]; then
+    add_check "event_log_scaling_measurable" false "large-heap profile requested but the SUT exposed no event-log gauges (mock_server_event_log_max_retained_entries/_bytes) in any diag sample — cannot verify proportionality; the image predates the gauges or /mockserver/metrics was unreachable for the whole load window"
+  else
+    add_check "event_log_scaling_measurable" true "event-log gauges present in ${ELS_LOG_ROWS} sample(s); resolved maxLogEntries=${ELS_MAX_ENTRIES}, maxEventLogSizeInBytes=${ELS_MAX_BYTES}"
+    if [ "${HEAP_MAX_BYTES:-0}" -le 0 ]; then
+      add_check "event_log_byte_budget_scaled_with_heap" false "heap ceiling unresolved (HEAP_MAX_BYTES=${HEAP_MAX_BYTES:-}), so the heap-derived floor cannot be computed and scaling cannot be verified — a 0 floor would pass trivially"
+    elif awk -v b="$ELS_MAX_BYTES" -v e="$ELS_EXPECTED_DEFAULT_BYTES" 'BEGIN{exit !(b+0>=e+0)}'; then
+      add_check "event_log_byte_budget_scaled_with_heap" true "resolved byte budget ${ELS_MAX_BYTES} >= heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B / divisor ${ELS_DIVISOR}) — the log byte budget scaled with the heap"
+    else
+      add_check "event_log_byte_budget_scaled_with_heap" false "resolved byte budget ${ELS_MAX_BYTES} is BELOW the heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B / divisor ${ELS_DIVISOR}) — on a large-heap run the log byte budget MUST scale with the heap (raise PERF_MAX_EVENT_LOG_BYTES), else the run measures more headroom rather than a bigger log"
+    fi
+    if [ "$ELS_BOUND_REACHED" = "true" ]; then
+      add_check "event_log_bound_exercised" true "binding constraint was '${ELS_BINDING}' (count_util=${ELS_COUNT_UTIL}, bytes_util=${ELS_BYTES_UTIL}, evicted=${ELS_EVICTED}, mean_entry=${ELS_MEAN_ENTRY}B) — a bound was actually reached, so the run exercised event-log retention"
+    else
+      add_check "event_log_bound_exercised" false "neither event-log bound was approached (count_util=${ELS_COUNT_UTIL}, bytes_util=${ELS_BYTES_UTIL} both below approach_ratio ${PERF_EVENT_LOG_APPROACH_RATIO}, evicted=0) — the workload never filled the log, so this large-heap run is NOT evidence of proportionality (raise load/duration or lower the bounds so a bound actually binds)"
+    fi
+  fi
+fi
+
 abort_if_sut_died
 # --- item 18: req/s per core for the SERVING path -----------------------------
 # Pin ONE SUT to C cores in {1,2,4,8,16} and drive the sweep ladder against it
@@ -2972,6 +3156,7 @@ jq -n \
   --arg build_number "${BUILDKITE_BUILD_NUMBER:-}" --arg build_url "${BUILDKITE_BUILD_URL:-}" \
   --arg instance_type "$INSTANCE_TYPE" --arg instance_type_src "$INSTANCE_TYPE_SRC" --arg image "$MOCKSERVER_IMAGE" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
+  --argjson server_phys_cores "$SERVER_PHYS_CORES" --argjson k6_phys_cores "$K6_PHYS_CORES" \
   --slurpfile http "$OUT_DIR/regression-http.json" \
   --slurpfile https "$OUT_DIR/regression-https.json" \
   --argjson growth "$GROWTH_JSON" \
@@ -2992,6 +3177,7 @@ jq -n \
   --argjson validity "$VALIDITY_JSON" \
   --argjson baseline_eligible "$BASELINE_ELIGIBLE" \
   --argjson config "$CONFIG_JSON" \
+  --argjson event_log_scaling "$EVENT_LOG_SCALING_JSON" \
   --argjson laptop "$LAPTOP_JSON" \
   --argjson laptop_attempted "$LAPTOP_ATTEMPTED" \
   --argjson laptop_parallel "$LAPTOP_PARALLEL_JSON" \
@@ -3021,8 +3207,15 @@ jq -n \
     schema_version: 3,
     commit: $commit, harness_commit: $harness_commit, branch: $branch, timestamp_utc: $ts,
     build_number: $build_number, build_url: $build_url,
-    agent: { instance_type: $instance_type, instance_type_source: $instance_type_src, queue: "perf", server_cpus: $server_cpus, k6_cpus: $k6_cpus },
+    agent: { instance_type: $instance_type, instance_type_source: $instance_type_src, queue: "perf",
+             server_cpus: $server_cpus, k6_cpus: $k6_cpus,
+             server_physical_cores: $server_phys_cores, k6_physical_cores: $k6_phys_cores },
     config: $config,
+    # Event-log scaling profile: the EFFECTIVE (gauge-resolved) maxLogEntries and
+    # maxEventLogSizeInBytes, the heap ceiling, the observed retained peak, and which bound actually
+    # bound. Always recorded; the fail-closed proportionality assertions ride .validity and fire only
+    # on a PERF_LARGE_HEAP_PROFILE run. Compare reads this head-driven, so it is inert until charted.
+    event_log_scaling: $event_log_scaling,
     mockserver_image: $image,
     # regression (http + https_h2) + proxy.js FORWARD arms all live in .behaviours
     # (same shape), so the compare step behaviours.* budgets cover them with no jq

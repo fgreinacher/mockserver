@@ -84,7 +84,7 @@ echo "--- building mockserver-netty, then running the HTTP/2 multiplex + per-con
   -- -c '
     set -euo pipefail
     cd /build/mockserver                       # the Maven reactor root (pom.xml lives here, not /build)
-    mvn -q -pl mockserver-netty -am install -DskipTests -Djacoco.skip=true -Dcheckstyle.skip=true
+    mvn -q -pl mockserver-netty -am install -DskipTests -DskipITs -Djacoco.skip=true -Dcheckstyle.skip=true
     cd mockserver-benchmark
     mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
     CP="target/classes:$(cat target/classpath.txt)"
