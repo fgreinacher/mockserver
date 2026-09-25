@@ -56,20 +56,46 @@ the 277 the weigher charges.
 
 | # | Unit | Lever | Status |
 |---|---|---|---|
-| 1 | Text bodies no longer retained twice (`String` + `byte[]`) | occupancy | landed `b413de937` |
-| 2 | `NottableString` immutable | correctness, unblocks 3 | landed `0f8758cd7` |
-| 4a | KeysToMultiValues characterisation corpus (93 tests) | — | landed `ddb1061a1` |
-| A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | reviewed, awaiting commit |
-| 5 | Synthetic per-request `Expectation` derived lazily | both | verified, awaiting commit |
-| 3 | Header-name dedup + `NottableString` field diet | both | to do |
-| 4b | Flat insertion-ordered array replacing the Guava multimap | both | to do |
-| 6 | `estimatedHeapSize()` to count headers and expectation | accounting | to do, after 5 |
+| 4a | KeysToMultiValues characterisation corpus (93 tests) | — | **landed** `ddb1061a1` |
+| 1 | Text bodies no longer retained twice (`String` + `byte[]`) | occupancy | **landed** `b413de937` |
+| 2 | `NottableString` immutable | correctness, unblocks 3 | **landed** `0f8758cd7` |
+| A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | reviewed PASS, site-1 test added, awaiting verify + commit |
+| 5 | Synthetic per-request `Expectation` derived lazily | both | verified (11,069 tests), awaiting review + commit |
+| 3 | Header-name dedup + `NottableString` field diet | both | to do — unblocked by 2 |
+| 4b | Flat insertion-ordered array replacing the Guava multimap | both | to do — gated on 4a, which is landed |
+| 6 | `estimatedHeapSize()` to count headers and expectation | accounting | to do, **after** 5 |
 | 7 | Boxed `Long`, per-entry `Object[]`, `AtomicInteger`, `KeyToMultiValue.hashCode` | churn | to do |
-| 8 | Audit all of `org.mockserver.model` | both | after 1-7 |
+| 8 | Audit all of `org.mockserver.model` | both | to do, after 1-7 |
+
+Expected size of the remaining work, from the histogram above: unit 3 targets the
+60.6 MB of `NottableString` (~80 bytes each, of which four fields are matcher-only
+and null on the data plane); unit 4b targets ~70 MB of multimap container
+machinery; unit 5 removes ~20 MB of synthetic `Expectation` and `Timing`.
 
 Units 1, 5 and 6 all edit `LogEntry.estimatedHeapSize()` and **must run
 sequentially** — concurrent edits to one method are how a gate-passed change gets
 silently dropped.
+
+## Carried over from the earlier performance work
+
+These predate this programme and are **not** addressed by it. Recorded here so
+they survive its completion.
+
+| Item | Why it still matters |
+|---|---|
+| **Published figures are stale** — the site shows build 420: JDK 17, G1, 1,230 MiB heap, 39,033 req/s at p95 74.4 ms | The product now ships JDK 25 with generational ZGC. Build 441 measured 47,412 req/s at p95 17.8 ms on the same hardware — better on both axes |
+| **The publish step cannot push** | `perf-website-publish.sh` regenerates `perf_figures.json` and the charts, then attaches a `git format-patch` artifact, because the `perf` queue holds no git/gh credentials. Builds have been emitting patches nobody applies. Either grant credentials or make applying the patch an explicit step |
+| **The default ladder cannot resolve the knee** | It jumps 32,000 to 48,000. The last cleanly-served rung is 32,000, so a mechanical publish would headline a figure *worse* than what is already published. A fine ladder is needed before publishing |
+| **Ladder anchor rule** | Always include a rung below the expected knee. A ladder starting above the cleanly-served region reports `saturation_rps=0`, which looks like a defect and is not |
+| **Ten cores is unmeasurable on this rig** | 10 server + 1 upstream + 13 k6 = 24 physical cores, and 13 is demonstrably insufficient for the client. A ten-core headline needs k6 on a separate box |
+| **`perf-test-h2multiplex.sh` UI skip** | Deliberately deferred; review confirmed it would be safe |
+| **Master is red** | `:docker: container integration tests` fails on build 2528. The `-DskipITs` fix (`a1db68d43`) cured the blob-store timeout but unmasked this, which had been `waiting_failed` and never running |
+| **Comment hygiene backlog** | `docs/plans/comment-hygiene-sweep.md` — historical run narrative in comments across CI scripts and k6 config. Not started |
+
+Two earlier items are now closed by this programme: the ~2 GB of unattributed
+heap is explained (it is header machinery plus the double-retained bodies, not a
+leak), and GC pause data is available because the deep tier's `-Xlog:gc*` already
+includes `gc+phases`.
 
 ## Testing standard
 
