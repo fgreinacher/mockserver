@@ -83,7 +83,15 @@
 
 <h3>Why Does MockServer Slow Down?</h3>
 
-<p>Every HTTP request that MockServer processes generates 2-3 log entries that are stored in memory regardless of the configured log level. These entries record the received request, expectation match result, and response &mdash; they are always stored to support request verification. Each log entry consumes approximately 4-10 KB of heap for small request/response bodies, scaling proportionally for larger bodies. Under sustained high-throughput load, log entry allocation drives significant GC pressure:</p>
+<p>MockServer keeps a record of every request it processes and every response it sends. This is a deliberate feature, not a side-effect of logging &mdash; it is what makes <span class="inline_code">verify</span>, <span class="inline_code">retrieveRecordedRequests</span>, and the dashboard work. Because these entries exist to support verification, <strong>they are stored regardless of the configured log level</strong>. Lowering the log level reduces the diagnostic output written to stdout and cuts per-matcher allocation on the matching hot path (see the note on log level below), but the request and response records themselves are always written to the in-memory store. Many users reach for the log level first when they notice slowness; that will not fix this cause.</p>
+
+<p>The store is bounded: when it fills up, the oldest entries are evicted to make room for new ones. Under sustained load, entries are evicted and replaced continuously, and the JVM must reclaim the memory those evicted entries held. It does this by periodically stopping all application threads briefly &mdash; a garbage collection pause. Most requests land between pauses and see very low latency. But the small fraction of requests that arrive just as a collection starts must wait for it to finish. This is why a load test can show a comfortable median alongside an alarming p99: the median reflects the majority of requests that were never affected, while the tail captures the unlucky few that waited behind a pause.</p>
+
+<p><strong>Request rate, not response body size, is the primary driver.</strong> Even a response of just a few bytes creates a log entry dominated by request metadata, headers, and match context &mdash; each entry occupies roughly 4&ndash;10&nbsp;KB of heap regardless of whether the body is 6 bytes or 6 kilobytes. At high request rates the ring buffer turns over quickly, triggering eviction and collection more and more often. Measured on a deliberately heap-constrained server to make collections visible: garbage collection consumed 6.6% of wall-clock time at around 48,000 requests per second, with pauses averaging around 56&nbsp;ms each. The number of collections rose almost perfectly in step with request rate; each individual pause stayed roughly the same length. More load means more pauses, not longer ones &mdash; but as the rate climbs, more requests fall inside them and the tail grows. A workload returning a 6-byte response at 8,000 req/s showed a sub-millisecond median alongside a p99 in the tens of milliseconds. Response body size shifts the numbers but does not change the pattern. The constrained-heap figures here are from a test server sized to make collections frequent and visible; on a larger production heap the allocation volumes per minute are the same, but each collection comes less often against a bigger budget.</p>
+
+<p>There is a further practical point. At around 40,000 req/s, the default store holds roughly one second of history &mdash; at 8,000 req/s the same store holds roughly five seconds. At high throughput, the store is costing latency tail to retain a window that most users could never query in time anyway. This is the sharpest argument for reducing <a href="/mock_server/configuration_properties.html#button_configuration_request_log_size"><span class="inline_code">maxLogEntries</span></a> when running at high rates: the GC pressure drops, and the history window you give up is already far too short to be useful.</p>
+
+<p>The table below shows log allocation throughput at a range of rates and body sizes. The high-rate figure is derived from the per-entry cost above at its lower bound (two entries of 4&nbsp;KB per request) and is therefore a floor, not a ceiling &mdash; larger headers or a third entry per request push it higher. The high-rate row shows that at 8,000 req/s even a tiny response generates the better part of four gigabytes of allocation per minute &mdash; far more than any of the body-size comparisons.</p>
 
 <table>
     <tr>
@@ -111,11 +119,14 @@
         <td>1 MB+</td>
         <td>~120 MB</td>
     </tr>
+    <tr>
+        <td>8,000 req/s</td>
+        <td>~10 bytes (body barely matters; metadata dominates)</td>
+        <td>~3,750 MB or more</td>
+    </tr>
 </table>
 
-<p>Log entries are stored in a bounded circular queue (<span class="inline_code">maxLogEntries</span>), so total memory usage does not grow indefinitely. However, the constant allocation and eviction of log entries creates GC pressure. When the JVM heap fills up, the garbage collector runs more frequently and for longer, causing pauses that make MockServer appear to freeze. In extreme cases, the JVM may spend almost all of its time in garbage collection, effectively halting request processing.</p>
-
-<p><strong>Large response bodies amplify this problem significantly.</strong> A single expectation returning a 10 MB response at 1 request per second generates over 600 MB of log data per minute &mdash; far more than a default heap can handle. Even with ring buffer eviction, the JVM must allocate and then garbage-collect these large objects continuously.</p>
+<p>Large response bodies increase the per-entry cost and make the problem worse at any given rate &mdash; a single expectation returning a very large response at even a modest rate can generate a significant volume of log allocation. But body size is a multiplier on a pattern that is already present at high request rates with tiny responses.</p>
 
 <p><strong>Note:</strong> Expectations with large response bodies also consume heap proportionally (e.g., a 50 KB response body results in ~55-75 KB per stored expectation). If you have many expectations with large bodies, reduce <span class="inline_code">maxExpectations</span> as well.</p>
 
@@ -131,12 +142,12 @@
     </tr>
     <tr>
         <td>Increase JVM heap size</td>
-        <td>Always recommended for large responses or high request rates</td>
+        <td>Gives the GC more headroom so it collects less often &mdash; useful at high request rates and with large response bodies</td>
         <td>Uses more container/host memory</td>
     </tr>
     <tr>
         <td>Reduce <span class="inline_code">maxLogEntries</span></td>
-        <td>The single most effective fix &mdash; fewer entries means less memory and less GC pressure</td>
+        <td>The single most effective fix at high request rates &mdash; fewer entries to evict means less collection work. At high rates (thousands of req/s) the default store already holds only seconds of history, so you are giving up very little by bounding it tightly</td>
         <td>Fewer requests available for verification</td>
     </tr>
     <tr>
@@ -151,7 +162,7 @@
     </tr>
 </table>
 
-<p><strong>Note on GC selection:</strong> Java 17 makes ZGC production-ready in every JDK distribution MockServer supports. For deployments with deep ring buffers (high <span class="inline_code">maxLogEntries</span>) or large heaps, <span class="inline_code">-XX:+UseZGC</span> can reduce p99 matcher latency by holding stop-the-world pauses to the single-digit-millisecond range (typically 1&ndash;5 ms in Java 17's non-generational ZGC). For small-fixture deployments (a sidecar in a test pipeline), the default GC is fine &mdash; ZGC's fixed overhead isn't worth it below ~4 GB heap. In containerised deployments using ZGC, size the container memory limit at ~1.5&times; your <span class="inline_code">-Xmx</span> value to leave headroom for JVM overhead (code cache, metaspace, thread stacks) and Netty's direct buffer pool. Note that ZGC multi-maps the same physical pages for its coloured-pointer scheme; under some cgroup RSS-accounting modes those pages are counted multiple times against the container limit, so the process can be OOM-killed even though the actual physical footprint fits (e.g. <span class="inline_code">-Xmx4g</span> &rarr; <span class="inline_code">--memory=6g</span>). Shenandoah is not recommended &mdash; it is not available in Oracle JDK 17 and not universally available across all JDK distributions, so ZGC is the simpler choice.</p>
+<p><strong>Note on GC selection:</strong> ZGC has been production-ready since Java 17, and <span class="inline_code">-XX:+UseZGC</span> can cut p99 matcher latency for deployments with deep ring buffers (high <span class="inline_code">maxLogEntries</span>) or large heaps, by holding stop-the-world pauses to the single-digit-millisecond range. <strong>Which ZGC you get depends on the Java version.</strong> From Java 23 onwards ZGC defaults to <em>generational</em> and <span class="inline_code">-XX:+UseZGC</span> alone selects it &mdash; that is what the MockServer Docker images give you, since they bundle Java 25 or later (the <span class="inline_code">-clustered</span> image bundles Java 21). On Java 22 and earlier, including Java 21, the same flag gives the older non-generational collector unless you add <span class="inline_code">-XX:+ZGenerational</span>; on Java 17 only the non-generational collector exists. Java 24 removed the non-generational mode altogether. Generational ZGC reaches noticeably shorter pauses than the 1&ndash;5&nbsp;ms typical of the non-generational one. The separate <span class="inline_code">-XX:+ZGenerational</span> flag was removed in Java 24 &mdash; passing it there does no harm, but it is ignored with a warning, so drop it. For small-fixture deployments (a sidecar in a test pipeline), the default GC is fine &mdash; ZGC’s fixed overhead isn’t worth it below ~4&nbsp;GB heap. In containerised deployments using ZGC, size the container memory limit at ~1.5&times; your <span class="inline_code">-Xmx</span> value to leave headroom for JVM overhead (code cache, metaspace, thread stacks) and Netty’s direct buffer pool. Note that ZGC multi-maps the same physical pages for its coloured-pointer scheme; under some cgroup RSS-accounting modes those pages are counted multiple times against the container limit, so the process can be OOM-killed even though the actual physical footprint fits (e.g. <span class="inline_code">-Xmx4g</span> &rarr; <span class="inline_code">--memory=6g</span>). Shenandoah is not recommended &mdash; it is not available in every JDK distribution, so ZGC is the simpler choice.</p>
 
 <p><strong>Note on <span class="inline_code">logLevel</span> and <span class="inline_code">disableLogging</span>:</strong> the <em>received-request and response</em> log entries &mdash; the ones a <span class="inline_code">verify</span> reads &mdash; are always stored regardless of log level, so lowering the level never breaks verification. But the per-expectation <em>match / did-not-match</em> diagnostic entries are stored only at <span class="inline_code">INFO</span> or more verbose: at <span class="inline_code">WARN</span> they are neither produced nor retained. So on a workload with many expectations, running at <span class="inline_code">WARN</span> genuinely reduces the number of entries retained per request (a request that scans <em>N</em> expectations before matching can log up to <em>N</em> diagnostic entries at <span class="inline_code">INFO</span>), which lowers memory and eviction pressure without affecting what <span class="inline_code">verify</span> can find &mdash; the cheapest safe lever when a memory-constrained server is under load. It does <strong>not</strong> reduce the memory held by large request/response <em>bodies</em>, which are on the always-retained entries; for those, the byte budget (<a href="/mock_server/configuration_properties.html#button_configuration_max_event_log_size_in_bytes"><span class="inline_code">maxEventLogSizeInBytes</span></a>, on by default) bounds both the ring's in-flight backlog and the deque — at <span class="inline_code">INFO</span> the server now drops entries rather than OOM-ing when the budget is reached (see the heap-sizing section below). <span class="inline_code">WARN</span> widens the budget by half again (the default is log-level-aware) and drains the ring faster, so it remains the cheapest lever for large-body workloads. <span class="inline_code">maxLoggedBodyBytes</span> (per-entry body truncation) reduces the deque's steady-state body footprint — truncation runs in the consumer, after the ring, so it does not reduce the ring's in-flight byte contribution — and <strong>breaks verification against body content</strong> &mdash; a verify that matches on body will fail against a truncated entry; verification by path, method, and header is unaffected. <span class="inline_code">disableLogging</span> only suppresses system-out output and does not reduce memory usage.</p>
 
@@ -159,7 +170,7 @@
 
 <h3>Recommended Configurations</h3>
 
-<p><strong>High-throughput with small responses</strong> (e.g., API mocking at &gt;10 req/s with &lt;10 KB bodies):</p>
+<p><strong>High-throughput workloads</strong> (any response size &mdash; this applies regardless of body size; request rate is the driver):</p>
 <pre class="code" style="padding: 2px;"><code class="code">docker run -d --rm -p 1080:1080 \
   -e MOCKSERVER_MAX_LOG_ENTRIES=5000 \
   mockserver/mockserver</code></pre>
@@ -253,6 +264,12 @@
   mockserver/mockserver</code></pre>
 
 <p>This creates a <span class="inline_code">memoryUsage_&lt;date&gt;.csv</span> file that records heap usage, log entry count, and expectation count over time. If you see heap usage consistently near the maximum, increase <span class="inline_code">-Xmx</span> or reduce <span class="inline_code">maxLogEntries</span>.</p>
+
+<a id="ongoing_optimisation" class="anchor" href="#ongoing_optimisation">&nbsp;</a>
+
+<h3>Ongoing Optimisation Work</h3>
+
+<p>We are actively investigating further options to reduce the latency tail under high request rates, including changes to garbage collector strategy and JVM runtime configuration. No specific outcomes or timelines are available yet. This section will be updated when measurements confirm an improvement that users should act on.</p>
 
 <a id="proxying_large_bodies" class="anchor" href="#proxying_large_bodies">&nbsp;</a>
 

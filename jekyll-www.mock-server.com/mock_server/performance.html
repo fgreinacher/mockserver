@@ -19,7 +19,7 @@ schema_faq:
   - question: "Does MockServer slow down with many expectations?"
     answer: "No. MockServer indexes expectations so each request is compared only against a small candidate set rather than scanning every expectation. At 5,000 expectations matching is up to 177× faster than a naive linear scan, keeping matching cost nearly flat as expectations grow."
   - question: "How do I tune MockServer for high throughput?"
-    answer: "The most impactful lever is the in-memory request log: set maxLogEntries lower or disable logging (disableLogging=true) to free heap and reduce GC pressure. Additional levers include the native epoll transport on Linux, thread-pool sizes, and forward-proxy connection pooling. See the Scalability Configuration section for details."
+    answer: "The most impactful lever is the in-memory request log: lower maxLogEntries, or set maxEventLogBytes, so fewer recorded requests are retained on the heap. Note that disableLogging and disableSystemOut only silence console output — they do not stop requests being recorded, so neither reduces heap or GC pressure. Additional levers include the native epoll transport on Linux, thread-pool sizes, and forward-proxy connection pooling. See the Scalability Configuration section for details."
 ---
 
 <!--
@@ -154,7 +154,7 @@ schema_faq:
 </table>
 <p style="font-size:0.9em">{{ prov.note }}</p>
 {% endif %}
-<p>Real-world throughput and latency depend on your hardware, core count, payload size, expectation complexity and JVM/configuration tuning &mdash; more CPU cores raise peak throughput, and reducing request logging (<span class="inline_code">logLevel</span>, <span class="inline_code">disableSystemOut</span>, or <span class="inline_code">maxLogEntries</span>) frees heap and cuts allocation on the matching path &mdash; so treat these as a solid, dated reference and benchmark your own workload.</p>
+<p>Real-world throughput and latency depend on your hardware, core count, payload size, expectation complexity and JVM/configuration tuning &mdash; more CPU cores raise peak throughput, and reducing what the request log retains (<span class="inline_code">logLevel</span> or <span class="inline_code">maxLogEntries</span>) frees heap and cuts allocation on the matching path, while <span class="inline_code">disableSystemOut</span> and <span class="inline_code">disableLogging</span> only silence console output and change neither &mdash; so treat these as a solid, dated reference and benchmark your own workload.</p>
 
 <h2>Detailed results</h2>
 
@@ -188,7 +188,7 @@ schema_faq:
 
 <p>Over the five-minute measured window the JVM spent <strong>6.6% of wall-clock time in garbage collection</strong>: 345 collections with a mean pause of 56.5&nbsp;ms. Peak heap in use was 931&nbsp;MB of the 1,230&nbsp;MB available. Of that, <strong>256&nbsp;MB was held by the recorded-request store</strong> at its configured limit of around 87,500 entries. The evidence points to GC pauses freezing the server&rsquo;s event loops: requests arriving during a pause queue before reaching the handler, and that queue time is what the tail measures. A 56.5&nbsp;ms mean pause is consistent with a 75&ndash;90&nbsp;ms client tail. The correlation between individual pauses and individual slow requests has not been directly measured, so this is a well-supported belief rather than a settled cause.</p>
 
-<p><strong>The recorded-request store is not application logging.</strong> Reducing the log level does nothing to it. It is the store behind request verification (<span class="inline_code">verify</span>), the <span class="inline_code">retrieveRecordedRequests</span> API, and the dashboard &mdash; it fills regardless of log level, and reaching for <span class="inline_code">disableLogging=true</span> when you see latency spikes will not help.</p>
+<p><strong>The recorded-request store is not application logging.</strong> The received-request and response entries it holds &mdash; the ones a <span class="inline_code">verify</span> reads &mdash; are stored whatever the log level, so lowering the level does not shrink them. It does drop the per-expectation match/did-not-match diagnostics, which are only produced at <span class="inline_code">INFO</span> or finer, so on a workload with many expectations a lower level still helps. It is the store behind request verification (<span class="inline_code">verify</span>), the <span class="inline_code">retrieveRecordedRequests</span> API, and the dashboard &mdash; it fills regardless of log level, and reaching for <span class="inline_code">disableLogging=true</span> when you see latency spikes will not help.</p>
 
 <p><strong>This measurement uses a deliberately constrained heap.</strong> The server ran with 1.2&nbsp;GB specifically to exercise garbage collection. A deployment with a larger heap collects far less often; the figures above are not an inherent property of MockServer at this throughput.</p>
 
@@ -341,7 +341,7 @@ touches the queue.</p>
 
 <pre class="prettyprint lang-bash code"><code class="code">java -Xmx500m -Dmockserver.logLevel=WARN -Dmockserver.disableLogging=true -jar ~/.m2/repository/org/mock-server/mockserver-netty/{{ site.mockserver_version }}/mockserver-netty-{{ site.mockserver_version }}-no-dependencies.jar -serverPort 1080</code></pre>
 
-<p><strong>Note:</strong> the benchmark used <span class="inline_code">-Dmockserver.disableLogging=true</span> to disable all logging and log event processing, with <span class="inline_code">-Dmockserver.logLevel=WARN</span> as a safeguard. To suppress only system-out while still recording log events for verification, use <span class="inline_code">-Dmockserver.disableSystemOut=true</span> instead.</p>
+<p><strong>Note:</strong> the benchmark used <span class="inline_code">-Dmockserver.disableLogging=true</span> and <span class="inline_code">-Dmockserver.logLevel=WARN</span> to keep console output off the measurement. Neither setting stops requests being recorded into the in-memory request log — that is bounded by <span class="inline_code">maxLogEntries</span> and <span class="inline_code">maxEventLogBytes</span>, not by the logging switches.</p>
 
 <a id="apache_bench" class="anchor" href="#apache_bench">&nbsp;</a>
 <h3>Apache Bench results</h3>
