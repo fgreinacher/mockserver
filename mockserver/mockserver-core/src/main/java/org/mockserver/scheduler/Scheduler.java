@@ -365,7 +365,7 @@ public class Scheduler {
                 }
                 run(command, port);
             } else {
-                future.getHttpResponse().whenCompleteAsync((httpResponse, throwable) -> {
+                boundedForwardResponse(future).whenCompleteAsync((httpResponse, throwable) -> {
                     if (throwable != null && mockServerLogger.isEnabledForInstance(Level.INFO) && logException.test(throwable)) {
                         mockServerLogger.logEvent(
                             new LogEntry()
@@ -425,9 +425,22 @@ public class Scheduler {
                     }
                 }
             } else {
-                future.getHttpResponse().whenCompleteAsync(consumer, scheduler);
+                boundedForwardResponse(future).whenCompleteAsync(consumer, scheduler);
             }
         }
+    }
+
+    /**
+     * Backstops the async wait on a forward/proxy response future so a connected-but-silent upstream (which has
+     * no read timeout when {@code maxSocketTimeout=0} or on a pooled channel) cannot leave the continuation
+     * pending and hang the client forever. It restores, without pinning a pool thread, the completion guarantee
+     * the removed blocking {@code get(maxFutureTimeout)} gave: {@code orTimeout} completes the future
+     * exceptionally with a {@link TimeoutException} that the caller maps to a 502. The read timeout at
+     * {@code maxSocketTimeout} normally completes the future first. Safe for streaming - the future completes at
+     * the response head, where {@code orTimeout} is cancelled, so a long SSE body is never truncated.
+     */
+    private CompletableFuture<HttpResponse> boundedForwardResponse(HttpForwardActionResult future) {
+        return future.getHttpResponse().orTimeout(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
     }
 
 }

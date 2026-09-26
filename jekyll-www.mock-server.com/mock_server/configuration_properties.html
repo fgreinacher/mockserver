@@ -118,7 +118,7 @@ mockserver.enableCORSForAllResponses=false</code></pre>
             <td><span class="inline_code">maxSocketTimeout</span></td>
             <td><span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT</span></td>
             <td><span class="this_value">20,000 ms</span></td>
-            <td>Maximum time to wait for the first response byte when forwarding/proxying. Increase when your system-under-test is slow to start responding — e.g. a reasoning LLM backend can take minutes to emit its first token, so a low value 502s a healthy call; decrease to fail fast in unit tests. Also accepted as <span class="inline_code">maxSocketTimeoutInMillis</span> / <span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS</span> (the same setting under the name used by the Java API and the configuration JSON)</td>
+            <td>Maximum time to wait for the first response byte when forwarding/proxying. Increase when your system-under-test is slow to start responding — e.g. a reasoning LLM backend can take minutes to emit its first token, so a low value 502s a healthy call; decrease to fail fast in unit tests. Setting it to <span class="inline_code">0</span> disables this first-byte timeout, but a stalled forward is still bounded by <span class="inline_code">maxFutureTimeout</span> (default 90 seconds), after which it returns a <span class="inline_code">502 Bad Gateway</span> rather than hanging. Also accepted as <span class="inline_code">maxSocketTimeoutInMillis</span> / <span class="inline_code">MOCKSERVER_MAX_SOCKET_TIMEOUT_IN_MILLIS</span> (the same setting under the name used by the Java API and the configuration JSON)</td>
         </tr>
         <tr>
             <td><span class="inline_code">enableCORSForAPI</span></td>

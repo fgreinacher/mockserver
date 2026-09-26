@@ -420,6 +420,15 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **A forwarded or proxied request can no longer hang forever when `maxSocketTimeout` is `0`.** The
+  performance programme made the forward and reverse-proxy paths consume the upstream response without
+  blocking a worker thread, but that left the response wait bounded only by the upstream socket read
+  timeout. Setting `maxSocketTimeout` to `0` disables that read timeout, so an upstream that accepted the
+  connection but never replied left the client request hanging with no response at all. The wait is now
+  also bounded by `maxFutureTimeout` (default 90 seconds): a stalled forward completes with a `502 Bad
+  Gateway` once that limit is reached, exactly as it did before the change. This affects only the forward
+  and proxy paths; a normal upstream response is unaffected, and a streaming (Server-Sent Events) response
+  is not cut off because its wait ends when the response head arrives, not when the stream finishes.
 - **`redactSecretsInLog` now also redacts the `message` and `arguments` fields, not just
   `httpRequest` and `httpResponse`.** With redaction enabled a JSON log entry had its
   `httpRequest` masked while the `message` and `arguments` fields on the **same entry** still
