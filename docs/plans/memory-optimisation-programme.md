@@ -234,6 +234,198 @@ retainers, which is exactly why it has stayed unexplained. Take the heap dump th
 rig already captures and get the immediate-dominators / paths-to-GC-roots view for
 `java.lang.Long`.
 
+## Phase three — beyond the model objects
+
+Phase one cut retained heap hard and barely moved peak throughput. Phase two found
+why: a shared monitor sat on the hot path. The lesson reframes this phase — **look
+for blocking and setup cost, not only bytes**.
+
+Ordered by expected value. Units 16 and 17 are the two biggest available wins and
+neither is primarily an allocation fix.
+
+| # | Unit | Lever | Status |
+|---|---|---|---|
+| 16 | Stop the INFO-level serialise-and-reparse per request | CPU + churn | to do |
+| 17 | Reconsider the shipped GC default | **GC length → p95** | to do |
+| 18 | Response write path | churn | to do |
+| 19 | Dashboard WebSocket handler | occupancy + threads | to do |
+| 20 | Matching path — per-candidate churn | churn → GC frequency | audited, see below |
+| 21 | Forwarding client — blocking proxy paths | **throughput** (thread occupancy) | audited, see below |
+| 22 | Templating and callback paths | churn + CPU | to do |
+
+### 16 — the default log level does double work on every request
+
+At `INFO`, which is the **shipped default**, every served request and response body
+is `toString()`-serialised to JSON and then, for a `JsonBody`, immediately re-parsed
+via `readTree` — a serialise-then-reparse of the same content, twice per request
+(`LogEntry.java:762-811` and `:891-958`, reached from `getMessage()` →
+`getArguments()` → `updateBody`).
+
+`MockServerLogger.java:215-216` short-circuits before `getMessage()` when the level
+is not enabled, so `WARN` and `ERROR` never pay it.
+
+**Every measurement in this programme was taken at `ERROR`.** The figures are
+honest about what they measured, but they describe a configuration users do not
+run. This is the clearest gap between what we optimised and what ships.
+
+Fix by not calling `toString()` on that path, or by avoiding the JSON → String →
+JSON round trip for a body that is already parsed. **Not** by caching the JSON —
+`toString()` must keep emitting JSON (it is real UX value in logs and assertion
+failures) and caching it would retain memory, fighting the occupancy goal.
+
+### 17 — the shipped GC default
+
+Two runs, same commit, same hardware, same ladder, differing only in collector and
+heap:
+
+| | throughput at 48k offered | p95 |
+|---|---:|---:|
+| build 443 — G1, 1,230 MiB (the shipped default) | 47,209 | 34.4 ms |
+| build 442 — generational ZGC, 4 GB | 47,580 | 16.3 ms |
+
+Essentially the same throughput at **less than half the tail latency**, from what
+would be a one-line change to the image default.
+
+This is not yet a recommendation, because **the comparison changes two variables at
+once**: 442 used ZGC *and* a 4 GB container (2,458 MiB heap), 443 used G1 *and* the
+default container (1,230 MiB). Either could be the cause.
+
+The decisive question is narrower than a full matrix. The change actually on the
+table is "flip the collector, leave the heap alone" — so the cell that settles it is
+**ZGC at the default heap**:
+
+| | G1 | generational ZGC |
+|---|---|---|
+| default heap (1,230 MiB) | build 443 / 445 | **build 446 — the decisive cell** |
+| 4 GB container (2,458 MiB) | not measured | build 442 |
+
+Build 446 runs the same full-span ladder, same commit, same cpusets and the same
+default heap as 445, differing **only** in the collector. If ZGC still wins there,
+the collector is the cause and the default change is justified. If it does not, 442's
+advantage came from the heap, and flipping the collector alone would not help — and
+could hurt, since ZGC carries more per-object overhead and wants headroom that a
+1,230 MiB heap may not have.
+
+Both runs set `PERF_SERVER_JAVA_OPTS`, so they are `config_profile=tuned` and not
+baseline-eligible. That is correct: these are experiments, not publishable figures.
+
+Single samples either way, so a clear result should be repeated before the image
+default changes. This remains a product decision rather than a code one.
+
+### 18 — the response write path
+
+`NettyResponseWriter` and `BodyDecoderEncoder.bodyToBytes` have not been examined
+except to rule out the matcher-side bodies. Note `premerge_alloc.ResponseWriteBenchmark`
+and `InboundDecodeBenchmark` already gate allocation-per-op, so regressions are
+ratcheted — but a ratchet prevents drift, it does not find existing waste.
+
+### 19 — the dashboard WebSocket handler
+
+`DashboardWebSocketHandler` carries 8 synchronized sites, and the `@Sharable`
+handler is effectively per-channel in practice: N open dashboards means N
+listeners, N walks and 2N threads, and its `CircularHashMap(100)` bounds nothing.
+Not the request path, but it degrades a live server precisely while someone is
+watching it.
+
+### 20 — the matching path
+
+My own first read of this file concluded it was "probably already optimised". That
+was **half right, and the wrong half was load-bearing.**
+
+Right: none of the nine `synchronized` sites in `RequestMatchers` is inline on the
+match read path. `:1748` (`removeHttpRequestMatcher`) is the only one the serve path
+can reach, and the expiry and lazy-removal routes dispatch through
+`scheduler.submit(...)` off the event loop. The one inline route is `postProcess`
+removing a *just-served* expectation that is now inactive — so only `once()` or
+limited-`Times` expectations, which the perf rig does not use.
+
+Wrong: that says nothing about **allocation**, and the match path is exactly where
+this programme's untouched churn lives. Allocation here multiplies by **candidate
+count**, not request count.
+
+| Finding | Location | Scope |
+|---|---|---|
+| `containsSubset` allocates a `HashSet<Integer>` for the match **plus one per matcher entry**, boxing every superset index, plus a `stream().filter().filter().count()` on the success path | `SubSetMatcher.java:30,54,43-46` | **fires on the winning match**, for any header/query/param-constrained expectation |
+| `addDifference(logger, msg, arg, arg, …)` builds a varargs `Object[]` **at the call site, before the guard runs**, then discards it on the default path | 60 sites, e.g. `RegexStringMatcher.java:207`, `MultiValueMapMatcher.java:56`, `HashMapMatcher.java:56` | per candidate, per failed field |
+| `new MatchDifferenceCount(request)` per candidate, with a **boxed `Integer`** counter incremented by `++` | `HttpRequestPropertiesMatcher.java:351`, `MatchDifferenceCount.java:8,19` | per candidate |
+| `string(request.getProtocol().name())` wraps a `NottableString` per candidate reaching the PROTOCOL field, even when the expectation does not constrain protocol | `HttpRequestPropertiesMatcher.java:441` | per candidate |
+
+The first is the one to do: it fires on the **winning** match, not only on misses.
+A primitive bitset over the superset reproduces the distinct-index semantics exactly.
+
+**Do not** cache the candidate-index bucket re-sort (`CandidateIndex.java:348-360`) —
+it only engages above 64 expectations, the bucket is small, and caching adds an
+invalidation surface for little gain.
+
+**Already optimal, do not touch:** the request-side header/cookie/query multimap is
+memoised per request via `getConvertedMatcher(controlPlaneMatcher)`, so headers are
+*not* rebuilt per candidate; `MatchDifference` uses a shared instance with a lazy map
+and an `emptyMap()` fast path; `RegexStringMatcher` already has a literal
+short-circuit and an ASCII bypass; `toSortedList()` is cached and rebuilt only on
+mutation.
+
+These move **GC frequency**, hence the tail — not peak throughput, which is
+dispatch- and contention-bound. State any win as churn or tail latency, gated on
+`premerge_alloc.MatchingBenchmark.alloc_bytes_per_op`, which already ratchets exactly
+this. Do not headline a throughput number.
+
+### 21 — the forwarding client
+
+**Connections are already pooled**, so the obvious worry does not apply.
+`forwardConnectionPoolEnabled` defaults true, the pool is keyed by
+`host:port:secure` and **bounded** at 8 idle per key with 30s idle eviction, and the
+TLS `SslContext` is cached per key with a lock-free read — **not** built per request.
+A fresh connection happens only for HTTP/2, HTTP/3, binary or streaming forwards,
+tunnelled proxying, `Connection: close`, or pooling explicitly disabled.
+
+**The real ceiling is a blocking wait on a bounded pool.** The *matched* forward path
+is fully asynchronous — `writeForwardActionResponse` hands off via
+`Scheduler.submit(future, …)` using `whenCompleteAsync`, so no thread parks. But
+three other paths do a genuine blocking `.get()` on the thread that issued the
+request:
+
+- `handleUnmatchedProxyForward` — `HttpActionHandler.java:1115`
+- the breakpoint-continuation unmatched forward — `:1330`
+- the proxy-pass reverse-proxy mapping — `:1552`
+
+That thread comes from a `ScheduledThreadPoolExecutor` sized `max(5, cores)`
+(`Scheduler.java:111-115`). So for a proxy workload with upstream latency L,
+sustained forward concurrency is capped at roughly `poolSize / L` — about six on a
+six-core box — **regardless of the connection pool**, because each in-flight forward
+pins a pool thread for the whole round trip. The matched path has no such cap.
+
+The fix is to consume the future via the same `whenCompleteAsync(scheduler)`
+continuation the matched path already uses. Treat it as structural: it must preserve
+ordering, breakpoint, validation and chaos semantics and error mapping, and needs the
+Extended/WebSocket/proxy integration suites run **with pooling on**.
+
+**The benefit is inferred, not measured** — the perf rig exercises the mock path, not
+the proxy path. Size it with a proxy-workload benchmark before claiming a figure.
+
+Secondary, cheap, worth folding in: `HopByHopHeaderFilter` does a full
+`request.clone()` **then** rebuilds and replaces the filtered `Headers` — a double
+header copy per hop, twice per proxied request (`HopByHopHeaderFilter.java:40-55,58-73`);
+and response header mapping is O(headers²) via `names()` then `getAll(name)` per name
+(`FullHttpResponseToMockServerHttpResponse.java:91-119`).
+
+`BodyDecoderEncoder.java:103-125` double-stores a forwarded response body as both
+`byte[]` and `String` — the same defect class as unit 1, on the forward-decode funnel.
+Check whether unit 1's release hook already covers it before doing anything.
+
+**Do not** add pooling (it exists), do not bound `localCallbackExecutor` (its lack of
+bound is a deliberate self-deadlock defence), and do not touch the outbound request
+body path — it is already near-zero-copy via `Unpooled.wrappedBuffer`.
+
+Latent hazard worth knowing: `@Sharable` on `HttpClientInitializer` and
+`HttpClientHandler` is **misleading** — both hold per-connection state. It is harmless
+only because `connectFresh` news a fresh initializer per connect. Anyone who "fixes"
+that by reusing one will break it.
+
+### 22 — templating and callbacks
+
+Velocity, Mustache and GraalJS response templating, and the class/object callback
+dispatch, are per-request when used and none has been examined.
+
 ## The daily run's configuration, and a break in its history
 
 The daily 04:00 regression run costs the same agent and the same wall-clock as any
