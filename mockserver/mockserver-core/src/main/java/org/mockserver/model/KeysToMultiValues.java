@@ -192,9 +192,11 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
     public K withEntries(final Map<String, List<String>> entries) {
         isModified();
         clearStore();
-        for (String name : entries.keySet()) {
-            for (String value : entries.get(name)) {
-                append(NottableString.string(name, false), NottableString.string(value, false));
+        reserve(entries.size());
+        for (Map.Entry<String, List<String>> entry : entries.entrySet()) {
+            final NottableString name = NottableString.string(entry.getKey(), false);
+            for (String value : entry.getValue()) {
+                append(name, NottableString.string(value, false));
             }
         }
         return k;

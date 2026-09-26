@@ -15,6 +15,7 @@ import java.util.List;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.iterableWithSize;
 import static org.hamcrest.collection.IsIterableContainingInAnyOrder.containsInAnyOrder;
+import static org.hamcrest.collection.IsIterableContainingInOrder.contains;
 import static org.hamcrest.core.Is.is;
 import static org.mockserver.configuration.Configuration.configuration;
 import static org.mockserver.model.NottableString.string;
@@ -1147,6 +1148,37 @@ public class ExpandedParameterDecoderTest {
             .retrieveFormParameters("q=1&q=1&q=2", false).getEntries();
         assertThat(actual, containsInAnyOrder(
             param("q", "1", "1", "2")
+        ));
+    }
+
+    @Test
+    public void shouldReturnQueryParametersInWireOrderWithRawStringPreserved() {
+        Parameters parameters = new ExpandedParameterDecoder(configuration, mockServerLogger)
+            .retrieveQueryParameters("/path?charlie=1&alpha=3&alpha=4&bravo=1&delta=2", true);
+        // distinct-key order now follows wire order rather than HashMap hash order
+        assertThat(parameters.getEntries(), contains(
+            param("charlie", "1"),
+            param("alpha", "3", "4"),
+            param("bravo", "1"),
+            param("delta", "2")
+        ));
+        // raw query string preserved for the forwarded-URI rebuild
+        assertThat(parameters.getRawParameterString(), is("charlie=1&alpha=3&alpha=4&bravo=1&delta=2"));
+    }
+
+    @Test
+    public void shouldReturnFormParameterContentsIdenticalWithoutIntermediateCopy() {
+        List<Parameter> actual = new ExpandedParameterDecoder(configuration, mockServerLogger)
+            .retrieveFormParameters("charlie=1&alpha=3&alpha=4&bravo=1", false).getEntries();
+        assertThat(actual, containsInAnyOrder(
+            param("charlie", "1"),
+            param("alpha", "3", "4"),
+            param("bravo", "1")
+        ));
+        assertThat(actual, contains(
+            param("charlie", "1"),
+            param("alpha", "3", "4"),
+            param("bravo", "1")
         ));
     }
 

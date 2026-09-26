@@ -35,11 +35,11 @@ public class ExpandedParameterDecoder {
 
     public Parameters retrieveFormParameters(String parameterString, boolean hasPath) {
         Parameters parameters = new Parameters();
-        Map<String, List<String>> parameterMap = new HashMap<>();
+        Map<String, List<String>> parameterMap = Collections.emptyMap();
         if (isNotBlank(parameterString)) {
             try {
                 hasPath = parameterString.startsWith("/") || parameterString.contains("?") || hasPath;
-                parameterMap.putAll(new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, hasPath, Integer.MAX_VALUE, !configuration.useSemicolonAsQueryParameterSeparator()).parameters());
+                parameterMap = new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, hasPath, Integer.MAX_VALUE, !configuration.useSemicolonAsQueryParameterSeparator()).parameters();
             } catch (IllegalArgumentException iae) {
                 mockServerLogger.logEvent(
                     new LogEntry()
@@ -56,10 +56,10 @@ public class ExpandedParameterDecoder {
     public Parameters retrieveQueryParameters(String parameterString, boolean hasPath) {
         if (isNotBlank(parameterString)) {
             String rawParameterString = parameterString.contains("?") ? StringUtils.substringAfter(parameterString, "?") : parameterString;
-            Map<String, List<String>> parameterMap = new HashMap<>();
+            Map<String, List<String>> parameterMap = Collections.emptyMap();
             try {
                 hasPath = parameterString.startsWith("/") || parameterString.contains("?") || hasPath;
-                parameterMap.putAll(new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, parameterString.contains("/") || hasPath, Integer.MAX_VALUE, true).parameters());
+                parameterMap = new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, parameterString.contains("/") || hasPath, Integer.MAX_VALUE, true).parameters();
             } catch (IllegalArgumentException iae) {
                 mockServerLogger.logEvent(
                     new LogEntry()
