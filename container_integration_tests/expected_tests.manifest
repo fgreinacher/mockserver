@@ -74,6 +74,7 @@ docker_variant docker_variant_smoke_snapshot
 docker_variant docker_variant_smoke_local
 docker_variant docker_variant_smoke_graaljs
 docker_variant docker_variant_smoke_root-snapshot
+docker_variant docker_variant_smoke_aot
 
 # ---- helm: Helm chart deployment tests (SKIP_HELM_TESTS) ----
 helm helm_default_config
