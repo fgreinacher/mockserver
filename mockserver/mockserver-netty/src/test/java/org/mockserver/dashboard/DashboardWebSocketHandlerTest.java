@@ -2465,6 +2465,23 @@ public class DashboardWebSocketHandlerTest {
     }
 
     @Test
+    public void isDashboardUpgradeUriMatchesThePathIgnoringQueryOrFragmentButNotASharedPrefix() {
+        // 19a: the per-request check that used to allocate a QueryStringDecoder now matches the path with
+        // regionMatches. It must reproduce QueryStringDecoder.rawPath().equals(constant) exactly: accept the
+        // bare path and the path followed by a query string or a fragment (rawPath ends at the first '?' or
+        // '#'), and reject a foreign path, a shared-prefix path, a trailing segment and a too-short URI.
+        assertThat("bare path", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket"), is(true));
+        assertThat("path with query", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket?logLimit=250"), is(true));
+        assertThat("path with empty query", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket?"), is(true));
+        assertThat("path with fragment", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket#frag"), is(true));
+        assertThat("shared-prefix path", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket_evil"), is(false));
+        assertThat("trailing segment", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket/extra"), is(false));
+        assertThat("trailing segment with query", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mockserver_ui_websocket/extra?x=1"), is(false));
+        assertThat("foreign path", DashboardWebSocketHandler.isDashboardUpgradeUri("/foo"), is(false));
+        assertThat("too short", DashboardWebSocketHandler.isDashboardUpgradeUri("/_mock"), is(false));
+    }
+
+    @Test
     public void populateLogSectionsHonoursClientLogLimit() {
         // The split log limit actually caps the log sections at the client-supplied value - and can go
         // ABOVE the old fixed 100. Drive the extracted consumer directly for an exact assertion.

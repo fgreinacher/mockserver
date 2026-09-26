@@ -456,13 +456,24 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     }
 
     // Match the dashboard upgrade on the PATH component only, so a query string (e.g. the client's
-    // requested log limit) does not break the match - the equality it replaces would have rejected any
-    // /_mockserver_ui_websocket?... entirely. QueryStringDecoder.rawPath() returns the undecoded path
-    // before '?'; a bare URI has rawPath()==uri, so existing clients that send no query string are
-    // unaffected. Deliberately an EXACT equality on the path, not a prefix/startsWith, so this does not
-    // widen what counts as the dashboard upgrade path.
-    private static boolean isDashboardUpgradeUri(String uri) {
-        return UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI.equals(new QueryStringDecoder(uri).rawPath());
+    // requested log limit) does not break the match. This runs for EVERY inbound request, so it avoids
+    // allocating a QueryStringDecoder (four objects) just to read the path: an exact regionMatches over the
+    // constant's length plus a terminator check reproduces QueryStringDecoder.rawPath().equals(constant)
+    // with no allocation. rawPath() ends the path at the first '?' OR '#' (Netty's findPathEndIndex), so
+    // the char after the constant must be end-of-string, '?' or '#'. Deliberately an EXACT match on the
+    // path, not a prefix/startsWith, so a shared-prefix path such as /_mockserver_ui_websocket_evil is NOT
+    // the dashboard upgrade.
+    @VisibleForTesting
+    static boolean isDashboardUpgradeUri(String uri) {
+        int pathLength = UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI.length();
+        if (uri.length() < pathLength || !uri.regionMatches(0, UPGRADE_CHANNEL_FOR_UI_WEB_SOCKET_URI, 0, pathLength)) {
+            return false;
+        }
+        if (uri.length() == pathLength) {
+            return true;
+        }
+        char next = uri.charAt(pathLength);
+        return next == '?' || next == '#';
     }
 
     // First value of the named query-string parameter, or null when absent.
