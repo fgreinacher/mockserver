@@ -15,10 +15,18 @@ import org.slf4j.event.Level;
 import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
@@ -26,6 +34,7 @@ import static org.hamcrest.Matchers.anyOf;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 import static org.mockserver.configuration.ConfigurationProperties.logLevel;
 
 public class ConfigurationTest {
@@ -3510,6 +3519,100 @@ public class ConfigurationTest {
             assertThat(configuration.rebuildServerTLSContext(), equalTo(true));
         } finally {
             ConfigurationProperties.sslSubjectAlternativeNameIps(original);
+        }
+    }
+
+    @Test
+    public void shouldNotRebuildTlsContextWhenReAddingAlreadyPresentSubjectAlternativeName() {
+        Set<String> originalDomains = ConfigurationProperties.sslSubjectAlternativeNameDomains();
+        Set<String> originalIps = ConfigurationProperties.sslSubjectAlternativeNameIps();
+        try {
+            // add a new domain + IP so the sets are initialised and modified
+            configuration.addSubjectAlternativeName("mock-server.co.uk");
+            configuration.addSubjectAlternativeName("1.2.3.4");
+            assertThat(configuration.sslSubjectAlternativeNameDomains(), equalTo(ImmutableSet.of("localhost", "mock-server.co.uk")));
+            assertThat(configuration.sslSubjectAlternativeNameIps(), equalTo(ImmutableSet.of("127.0.0.1", "0.0.0.0", "1.2.3.4")));
+
+            // re-adding already-present hosts must be a no-op (fast path) and must not signal a rebuild
+            configuration.rebuildServerTLSContext(false);
+            configuration.addSubjectAlternativeName("mock-server.co.uk");
+            configuration.addSubjectAlternativeName("mock-server.co.uk:443");
+            configuration.addSubjectAlternativeName("1.2.3.4");
+            configuration.addSubjectAlternativeName("1.2.3.4:8443");
+            assertThat(configuration.rebuildServerTLSContext(), equalTo(false));
+            assertThat(configuration.sslSubjectAlternativeNameDomains(), equalTo(ImmutableSet.of("localhost", "mock-server.co.uk")));
+            assertThat(configuration.sslSubjectAlternativeNameIps(), equalTo(ImmutableSet.of("127.0.0.1", "0.0.0.0", "1.2.3.4")));
+        } finally {
+            ConfigurationProperties.sslSubjectAlternativeNameDomains(originalDomains);
+            ConfigurationProperties.sslSubjectAlternativeNameIps(originalIps);
+        }
+    }
+
+    @Test
+    public void shouldNotLoseSubjectAlternativeNamesUnderConcurrentAdds() throws Exception {
+        // Unit 10 (defect C7 regression guard): the lock-free read fast path in addSubjectAlternativeName
+        // must never drop an entry. Many threads add distinct hosts plus one shared host concurrently; every
+        // distinct host and the shared host must survive. A lost-entry race is timing-dependent and may not
+        // reproduce on every run, so this backs the safe-publication reasoning rather than proving the race
+        // impossible.
+        Set<String> originalDomains = ConfigurationProperties.sslSubjectAlternativeNameDomains();
+        Set<String> originalIps = ConfigurationProperties.sslSubjectAlternativeNameIps();
+        try {
+            for (int iteration = 0; iteration < 25; iteration++) {
+                Configuration config = new Configuration();
+                config.maxSubjectAlternativeNames(0); // disable eviction so every add must be retained
+
+                final int threadCount = 16;
+                final int hostsPerThread = 20;
+                final String sharedDomain = "shared.example.com";
+                final String sharedIp = "9.9.9.9";
+                CyclicBarrier barrier = new CyclicBarrier(threadCount);
+                ExecutorService pool = Executors.newFixedThreadPool(threadCount);
+                List<Future<?>> futures = new ArrayList<>();
+                Set<String> expectedDomains = ConcurrentHashMap.newKeySet();
+                Set<String> expectedIps = ConcurrentHashMap.newKeySet();
+                for (int t = 0; t < threadCount; t++) {
+                    final int threadId = t;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            barrier.await(30, TimeUnit.SECONDS);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                        for (int j = 0; j < hostsPerThread; j++) {
+                            String domain = "t" + threadId + "-h" + j + ".example.com";
+                            config.addSubjectAlternativeName(domain);
+                            expectedDomains.add(domain);
+                            String ip = "10." + threadId + "." + (j / 256) + "." + (j % 256);
+                            config.addSubjectAlternativeName(ip);
+                            expectedIps.add(ip);
+                        }
+                        // every thread races to add the same host, exercising the concurrent same-host path
+                        config.addSubjectAlternativeName(sharedDomain);
+                        config.addSubjectAlternativeName(sharedIp);
+                    }));
+                }
+                for (Future<?> f : futures) {
+                    f.get(30, TimeUnit.SECONDS);
+                }
+                pool.shutdown();
+                assertTrue("executor did not terminate", pool.awaitTermination(30, TimeUnit.SECONDS));
+
+                Set<String> domains = config.sslSubjectAlternativeNameDomains();
+                for (String expected : expectedDomains) {
+                    assertTrue("iteration " + iteration + " lost domain SAN " + expected, domains.contains(expected));
+                }
+                assertTrue("iteration " + iteration + " lost shared domain SAN", domains.contains(sharedDomain));
+
+                Set<String> ips = config.sslSubjectAlternativeNameIps();
+                for (String expected : expectedIps) {
+                    assertTrue("iteration " + iteration + " lost IP SAN " + expected, ips.contains(expected));
+                }
+                assertTrue("iteration " + iteration + " lost shared IP SAN", ips.contains(sharedIp));
+            }
+        } finally {
+            ConfigurationProperties.sslSubjectAlternativeNameDomains(originalDomains);
+            ConfigurationProperties.sslSubjectAlternativeNameIps(originalIps);
         }
     }
 

@@ -6428,9 +6428,27 @@ public class Configuration {
         if (isNotBlank(host)) {
             String hostWithoutPort = substringBefore(host, ":");
             if (isNotBlank(hostWithoutPort)) {
+                // Lock-free read fast path (this runs on every request with a Host header): skip the shared
+                // monitor when the host is already registered, rather than serialising every event-loop
+                // thread on it to re-add a known host. Safe against defect C7 (why the add methods are
+                // synchronized) because it never mutates, so it cannot lose an entry. The set fields are
+                // volatile, so a reader sees either null (fall through to the synchronized add, which
+                // initialises under the monitor) or a fully-published ConcurrentHashMap-backed set safe to
+                // query unlocked. The lookup value is normalised/trimmed identically to the add, so a hit
+                // here is exactly the case where boundedAdd would find it present and no-op (no eviction, no
+                // rebuild); the boundedMax cap governs additions only and so does not apply.
                 if (InetAddresses.isInetAddress(hostWithoutPort)) {
+                    Set<String> ips = sslSubjectAlternativeNameIps;
+                    if (ips != null && ips.contains(hostWithoutPort.trim())) {
+                        return;
+                    }
                     addSslSubjectAlternativeNameIps(hostWithoutPort);
                 } else {
+                    String normalised = normaliseSubjectAlternativeNameDomain(hostWithoutPort);
+                    Set<String> domains = sslSubjectAlternativeNameDomains;
+                    if (normalised != null && domains != null && domains.contains(normalised)) {
+                        return;
+                    }
                     addSslSubjectAlternativeNameDomains(hostWithoutPort);
                 }
             }
