@@ -30,6 +30,56 @@ flowchart TD
     F --> E
 ```
 
+## What is left
+
+Everything not listed here has landed or been closed. **17 units landed, 5 declined with reasons,
+6 items of work remain, plus 4 defects and 4 missing instruments.** Every remaining item has been
+audited, so each row names a concrete change rather than a question.
+
+### Code work remaining
+
+| # | What | Lever | Ready? | Note |
+|---|---|---|---|---|
+| **21** | Three blocking proxy paths | **throughput** | **done, unmerged** | the only **measured** win: 24 concurrent forwards went 4 → 24 in-flight, wall ~3,110 ms → ~505 ms. Needs rebase + review + merge |
+| **14c** | Per-connection address strings rebuilt per request | churn | yes | 16 allocations/request counted from JDK source, 14 garbage. Memoise on the mapper (per pipeline and per h2 child channel). Keep-alive HTTP/1.1 only, nothing for h2 — say so in the commit. Do **not** reformat from `getHostString()` |
+| **19a-19e** | Dashboard: 2 request-path allocations, 2 wasted walks, 1 retention | occupancy + churn | yes | 19e is the biggest — rendering memoises a clone + Jackson tree **onto the retained entry** with no release path, partly undoing unit 1, and the byte budget excludes it on a false premise. 19b has a trap: capacity 1 ships, capacity 10 is what the tests exercise |
+| **13c** | Three one-line adjacents | churn | yes | `Host` read 3× in one expression; unconditional `ImmutableList.Builder`; `Objects.hash` `Object[2]` |
+| **14b** | Query-map copy | churn | after 13a | a second `HashMap` + `putAll` for nothing; reuses 13a's `reserve` so that class is edited once |
+| **22A** | A4, then A2+A3 | churn | yes | A4 (Mustache copies ~26 bindings per render) is smallest and output-identical. A1 needs a **product decision** — whether an edited `templateFile` should still take effect per request |
+| **18a** | Three small `ResponseWriter` items | churn | **blocked** | extend the benchmark first (see instruments) |
+
+### Defects — fix ahead of the churn work
+
+| | What | State |
+|---|---|---|
+| **D1** | Unbounded 1/sec task accumulation on an unauthenticated endpoint, which also removed the throttle it enforces | **fixed + test + negative control** |
+| **D3** | `redactSecretsInLog` leaves secrets in `message` and `arguments` | **fixed + 3 tests**, verifying |
+| **D2** | Split WebSocket handler teardown | latent — unreachable today, consolidate into `handlerRemoved` |
+| **D4** | Forward class-callback ignores `contextClassLoaderOverride` | not independently verified |
+
+### Missing instruments — these gate the work above
+
+| Gap | Blocks | Why it matters |
+|---|---|---|
+| `ResponseWriteBenchmark` enters at the encoder, never calls `ResponseWriter` | **18a** | 18a would land and the ratchet would report no change |
+| No template allocation benchmark exists | **22A** | no figure can honestly be claimed for A2/A3/A4 |
+| Rig exercises no proxy and no callback workload | 21, 22B | 21's win is measured at unit level only; 22B's would be pure inference |
+| Heap dump analysis not yet run | **15** | the dump **already exists** on the /diag volume with a parser — no new run needed. Check the validity control first: `Long` and `Object[2]` proportional to `NottableString` means no full collection preceded it and every retention conclusion is unsafe |
+
+### Declined, with reasons recorded — do not re-propose
+
+**16** (the `readTree` produces the rendered output; in tension with unit 1), **16b** (four parses
+feeding four distinct output fields, and the two levers point in opposite directions), **14a**
+(unit 12's gate made it stale, and the future is load-bearing for three async routes that
+self-deadlock inline), **22B** (off the measured workload entirely), and **18 as originally
+scoped** (its named files were already optimal).
+
+### Then, and only then: new figures
+
+Re-run the ladder. **445 remains the publishable curve** until a new baseline-eligible run exists.
+Unit 17 (ZGC as the shipped default) is decision-ready — it won at both 6 and 2 cores — but wants
+a repeat on **matched images**, since no two cells so far shared a binary.
+
 ## Measured evidence
 
 Live-heap class histogram at peak load, CI build 441 (6 vCPU, generational ZGC,
@@ -54,27 +104,8 @@ the 277 the weigher charges.
 
 ## Units
 
-| # | Unit | Lever | Status |
-|---|---|---|---|
-| 4a | KeysToMultiValues characterisation corpus (93 tests) | — | **landed** `ddb1061a1` |
-| 1 | Text bodies no longer retained twice (`String` + `byte[]`) | occupancy | **landed** `b413de937` |
-| 2 | `NottableString` immutable | correctness, unblocks 3 | **landed** `0f8758cd7` |
-| A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | **landed** `1122561d7` |
-| 5 | Synthetic per-request `Expectation` derived lazily | both | **landed** `4d09ceb55` |
-| 3 | Header-name dedup + `NottableString` field diet | both | **landed** `37a8fb023` |
-| 4b | Flat insertion-ordered array replacing the Guava multimap | both | **landed** `c381a0303` — 1,213 to 654 bytes per message |
-| 6 | `estimatedHeapSize()` to count headers and expectation | accounting | **landed** `d4f9a9bdc` — over-charge 2.35x to 1.14x |
-| 7 | Boxed `Long`, per-entry `Object[]`, `AtomicInteger`, `KeyToMultiValue.hashCode` | churn | **landed** `3c7aa9ae3` |
-| 8 | Audit all of `org.mockserver.model` | both | to do, after 1-7 |
-
-Expected size of the remaining work, from the histogram above: unit 3 targets the
-60.6 MB of `NottableString` (~80 bytes each, of which four fields are matcher-only
-and null on the data plane); unit 4b targets ~70 MB of multimap container
-machinery; unit 5 removes ~20 MB of synthetic `Expectation` and `Timing`.
-
-Units 1, 5 and 6 all edit `LogEntry.estimatedHeapSize()` and **must run
-sequentially** — concurrent edits to one method are how a gate-passed change gets
-silently dropped.
+**Phase one is complete** — units 4a, 1, 2, A/B, 5, 3, 4b, 6, 7 all landed, and unit 8 closed as
+subsumed. The commits are in git history; they are not re-listed here.
 
 ## Outcome — measured, build 442
 
@@ -160,7 +191,7 @@ Units are ordered by expected value, not by ease.
 | 12 | Cheapest-first gate for the control-plane decision | churn + CPU | **landed** `d605a3cb6` |
 | 13 | Single-pass header ingest | churn | 13b **landed** `f95991cc0`; 13a/13c to do |
 | 14 | Per-connection address strings recomputed per request | churn | audited — 14a declined, 14b folded into 13, 14c is the unit |
-| 15 | Identify the boxed `Long` and `Integer` residuals from a dominator tree | occupancy | to do |
+| 15 | Boxed residuals | occupancy | audited — `Integer` **located (I1)**; `Long` not located; two prior conclusions corrected |
 
 ### 10 — the per-request lock
 
@@ -367,48 +398,92 @@ in 13c. A lead for unit 15: `SocketAddress.withPort(Integer)` is fed
 `Http3RequestBridge.java:401-417` does not percent-decode query names or values unlike
 the netty path, which looks like a correctness gap rather than a performance one.
 
-### 15 — the residuals, and how to actually find them
+### 15 — the residuals: the Integer is located, and two earlier conclusions were wrong
 
-A live histogram shows about **1.5 boxed `Long` and 1.0 boxed `Integer` retained per
-request**, identical under G1 and ZGC.
+Audited statically. **The `Integer` is found. The `Long` is not, and the "1.5 per request"
+framing itself is now in doubt.** Two conclusions recorded earlier in this plan are corrected.
 
-For `Integer`, `LogEntry.port` was **ruled out**: it looks like the obvious
-per-entry box but is a shared instance threaded through a `ThreadLocal`
-(`HttpState.java:211-218`, copied by reference at `LogEntry.java:995`). The real
-candidates are `HttpResponse.statusCode` (autoboxed above the 127 cache, retained
-per logged response) and, under HTTP/2 only, `HttpRequest.streamId` /
-`HttpResponse.streamId` from `headers().getInt(...)`.
+#### I1 — the `Integer`: the port is unboxed and re-boxed on every request
 
-For `Long`, **no retained per-request field was found.** Every candidate was
-checked and excluded: `receivedTimestamp` and `LogEntry.epochTime` are primitive,
-the deque tracks weight as primitive, `Timing` early-returns without allocating on
-the default path, and `Expectation` has left the live set. There is real transient
-`Long` churn at `withReceivedTimestamp(Long)`, but transient objects do not survive
-the full GC that a class histogram forces.
+`HttpRequest.java:397,399,401` each read
+`port != null ? port : <int expression>`. One operand is `Integer` and the other `int`, so by
+JLS 15.25 this is a *numeric* conditional expression: binary numeric promotion makes the result
+`int`, **unboxing `port`** — and the `Integer` parameter of
+`withSocketAddress(String, Integer, Scheme)` (`:355`) immediately **re-boxes it**. So a fresh
+`Integer` is allocated per request *even though the mapper's cached port is non-null*, which it
+always is on the netty path. At the rig's port 1080 that is outside the `Integer` cache, so it
+is a real allocation. (Verified by reading the JLS rule against both signatures.)
 
-**Do not attribute this by inspection.** A class histogram names classes, not
-retainers, which is exactly why it has stayed unexplained. Take the heap dump the
-rig already captures and get the immediate-dominators / paths-to-GC-roots view for
-`java.lang.Long`.
+It is then retained: `HttpState.java:322-326` stashes **that instance** in `LOCAL_PORT` and
+**nulls `request.socketAddress` at `:325`**; `MockServerEventLog.java:251` copies the reference
+into `LogEntry.port`; `Scheduler.java:183,223,232-237` re-sets the same instance on the async
+response thread, so both log entries of a request hold it. Ordering is provable — the netty
+handler calls `httpState.handle(…)` before `processAction` creates the `RECEIVED_REQUEST` entry.
 
-## Phase three — beyond the model objects
+**This corrects two things this plan asserted.** `LogEntry.port` was recorded as *positively
+ruled out* as the `Integer` source — it is in fact the retainer. And `SocketAddress.withPort`
+was recorded as the lead — it cannot be, because the field is nulled before any log entry
+exists. Same box, wrong retainer named on both counts.
 
-Phase one cut retained heap hard and barely moved peak throughput. Phase two found
-why: a shared monitor sat on the hot path. The lesson reframes this phase — **look
-for blocking and setup cost, not only bytes**.
+#### The `Long` is not located, and an arithmetic constraint narrows the hunt
 
-Ordered by expected value. Units 17 and 21 are the two biggest available wins and
-neither is primarily an allocation fix — 16 was declined once its premise was tested.
+Between builds 441 and 442 the **absolute** `Long` count *fell* 168,982 → 150,588 (−11%) while
+live requests *rose* 19% (84,223 → 100,005). **A population that is genuinely ~1.5 per retained
+request cannot fall while requests rise.** So either the normalisation denominator is wrong, or
+the population tracks something pinned near a constant — the obvious candidate being the entry
+count, which `maxLogEntries` pins at 100,000. **Resolve this before attributing the `Long` to
+anything.** Best remaining candidate is `NettyHttpClient.java:260-266` → `Timing` (≥3 epoch-milli
+boxes per *forwarded* response), which is inert on the workload that fills the log.
 
-| # | Unit | Lever | Status |
-|---|---|---|---|
-| 16 | Stop the INFO-level serialise-and-reparse per request | — | **declined, see below** |
-| 17 | Reconsider the shipped GC default | **GC length → p95** | collector settled by 446 — awaiting the low-core cell |
-| 18 | Response write path | churn | to do |
-| 19 | Dashboard WebSocket handler | occupancy + threads | to do |
-| 20 | Matching path — per-candidate churn | churn → GC frequency | **landed** — 20a `53689793f`, findings 2-4 `3b5753d56` |
-| 21 | Forwarding client — blocking proxy paths | **throughput** (thread occupancy) | audited, see below |
-| 22 | Templating and callback paths | churn + CPU | to do |
+#### The measurement condition is load-bearing and was never recorded
+
+The histogram sampler runs across **all** phases, but the phase that fills the log to ~100k
+entries drives only `GET /simple` — a **mocked** response over **plain HTTP/1.1**. Under exactly
+those conditions the HTTP/2 stream id, the forwarded-response status code, `Timing`, injected
+delays and streaming chunk timestamps are **all inert**, and `socketAddress` is null. **I1 is
+the only per-request retained box that exists in that phase.** Which phase produced the 1.5/1.0
+figures must be recorded next to them before anything is attributed. `AutoBoxCacheMax` is not
+set anywhere in the rig, so the cache is the default −128..127.
+
+#### Ranked candidates, all gated
+
+| # | Site | Retained | Per request | Live on the growth phase? |
+|---|---|---|---|---|
+| **I1** | `HttpRequest.java:397-401` → `LogEntry.port` | yes | 1, shared by the request's ~2 entries | **yes — the only one** |
+| I2 | stream id → `HttpRequest`/`HttpResponse` | yes | 1 per HTTP/2 request, 0 on HTTP/1.1 | no |
+| I3 | forwarded-response `statusCode` | yes | 1 per forwarded response | no |
+| L1 | `Timing`'s 6 `Long` fields | yes | ≥3 per forwarded response | no |
+| L2/L3 | injected delays; streaming chunk timestamps | yes | gated off by default | no |
+
+#### Positively ruled out — as valuable as the finds
+
+- **`NottableString.java:47`** — `not` is a **primitive `boolean`** (`:24`), so the varargs box
+  is `Boolean.valueOf` and shared. Only a transient `Object[2]`, **no retained box**. That is a
+  churn item of unit 7's class, not occupancy. (Verified.)
+- **Every `Boolean` field** — all written from an autoboxed primitive or literal, so
+  `Boolean.valueOf`; zero allocation, zero retained cost.
+- **Mocked-path `statusCode`** — `clone()` copies the *reference*, so every served response
+  shares the one box deserialised from the seeded expectation. Only forwarded responses allocate.
+- **`withReceivedTimestamp(Long)`** — boxed to satisfy the parameter, immediately unboxed into a
+  primitive field. Pure churn, nothing retained.
+- **`Timing` on the default mock path** (early-returns without injection), the derived synthetic
+  `Expectation` (no boxes at all), and all event-log/deque bookkeeping (primitive or atomic).
+
+#### The dump already exists — no new run needed
+
+The rig keeps the raw `.hprof` on the /diag volume and uploads it gzipped, and
+`.buildkite/scripts/lib/HprofHisto.java` already parses it. Confirmations:
+
+- **I1**: shortest paths from `java.lang.Integer` should reach `LogEntry.port`; a modal `Integer`
+  value equal to the listen port confirms it. Then compare distinct identities reachable from
+  `LogEntry.port` against the entry count — **~0.5 per entry is the predicted signature** (two
+  entries share one box). **~1.0 per entry means a second source is also boxing and I1 is not
+  the whole story.**
+- **Negative control**: `COUNT(java.lang.Boolean)` must be **2**. Anything proportional to
+  request count means a `new Boolean(...)` exists and is a separate finding.
+- **Validity control, check this first**: if `Long` and length-2 `Object[]` appear in proportion
+  to `NottableString`, the dump was not preceded by a full collection and **every retention
+  conclusion here is unsafe**.
 
 ### 16 — declined: the INFO cost is output, not waste
 
@@ -446,16 +521,79 @@ programme published was taken at ERROR. That gap is real and worth stating whene
 a figure is quoted. But the cost is the price of the log output users asked for, not
 waste to be removed.
 
-### 16b — deduplicate the JSON log surface's repeated parses
+## Phase three — beyond the model objects
 
-Found while declining 16, and genuinely safe. On the **JSON log surface**
-(`LogEntrySerializer`), a single serialize re-parses the same body about three times —
-via `getMessage()`, via `getHttpUpdatedRequests`/`Response`, and via `getArguments()`.
-Deduplicating within one serialize is output-preserving.
+Phase one cut retained heap hard and barely moved peak throughput. Phase two found
+why: a shared monitor sat on the hot path. The lesson reframes this phase — **look
+for blocking and setup cost, not only bytes**, and phase three bore that out: the only
+**measured** win in the whole programme is unit 21, which removed waiting rather than bytes.
 
-This helps the **retrieval and dashboard** path, not the console-INFO path unit 16
-targeted, and not the ERROR-configured perf rig. It is a `LogEntrySerializer`
-refactor with its own risk, so size it before committing to it.
+Landed and declined units are not re-tabulated here — see **What is left** near the top.
+
+### 16b — declined: four parses, four output occurrences
+
+**The premise fails the same test unit 16 failed.** Counted from source it is **four**
+parses of the same body per serialize, not three — and each feeds a **different occurrence in
+the emitted JSON**: the `httpRequest` field (redacted), an `arguments[i]` entry
+(unredacted), `expectation.httpRequest`, and the escaped copy inside `message`. Ten
+`readTree` calls per first serialize of one served-request entry, dropping to three on a
+second serialize because two results are memoised. As with unit 16, repeated parses are
+repeated *output*, not waste.
+
+**Only one pair is genuinely redundant**: `getMessage()` and the `arguments` field each build
+the same `Object[]` within one `serialize()`, and `getMessage()` keeps only the formatted
+string. Nothing else can be shared — parse 1 applies the redactor and parse 3 does not, so
+reusing one for the other changes output whenever `redactSecretsInLog` is on.
+
+**The two levers point in opposite directions here**, which is the clearest argument for
+leaving it alone: removing parses means keeping the memo (occupancy up, partly undoing unit
+1), and removing the memo means more parses. `LogEntryDeferredArgumentConversionTest:111-125`
+also pins `getArguments()` returning a **fresh array each call**, so any cache-the-array
+variant goes red — the same failure that killed unit 16.
+
+**And it is off the request path at every log level.** It is reached only from
+`PUT /mockserver/retrieve?format=LOG_ENTRIES` and the throttled dashboard WebSocket. At the
+shipped INFO default the one redundant pair has already collapsed, because `message` is
+memoised at log time; the duplicate exists only at WARN/ERROR/OFF — the configuration the
+perf rig runs, on a surface the perf rig never calls.
+
+**Verdict: declined.** If anything is kept, keep only **16b-i**: hoist one `getArguments()`
+inside `LogEntrySerializer.serialize` and format the message from it. It retains nothing.
+
+### 8 — closed as subsumed: the audit happened unit by unit
+
+`org.mockserver.model` holds **132 classes**; twenty have already been through a perf commit
+(units 1, 2, 3, 4b, 7, A/B, 12, 20, plus master-side work on `Headers`/`Parameters`/
+`KeysAndValues`, `MediaType`, and `Action`/`Not`). Of the remaining ~112 the overwhelming
+majority are control-plane or feature-configuration types built once per expectation, so
+"audit all of `org.mockserver.model`" as one row was always going to be mostly dead weight.
+
+The data-plane-reachable untouched set is small and fully enumerated:
+
+- `HttpResponse` is already in good shape — lazily-null containers, cached hash. Its boxed
+  `statusCode` and `streamId` are **unit 15 candidates**, not new work.
+- `SocketAddress` has no `equals`/`hashCode` and a boxed `port` — **this is unit 15's
+  retained-`Integer` lead, now confirmed.**
+- `KeysAndValues`/`Cookies` never got unit 4b's flat store and still allocate a
+  `LinkedHashMap` eagerly. **But the rig sends no cookies**, so nothing here appears in any
+  published figure and it must not be sized from the existing histograms.
+- Three one-line leftovers, recorded as **8-residual**: `BinaryBody` holds a per-instance
+  `Base64Converter` that is also in its `equals`/`hashCode` (the class has only static state,
+  so making it `static final` and dropping it is behaviour-preserving); `ParameterBody`
+  allocates a `Parameters` its constructor immediately overwrites; and `KeysAndValues` above.
+  **None is visible in any figure this programme published.**
+
+**`toString()` needs no change and the constraint is respected.** Every model class inherits
+the JSON `toString()`, which looks like it builds a mapper per call but returns a **cached
+static writer** when no extra serializers are passed. Caching `toString()` output remains
+explicitly not proposed — it would retain memory and fight the occupancy goal.
+
+**`equals`/`hashCode` is largely already done** — every hot type caches its hash, and the
+reflective fallback survives only on types whose enclosing hash is cached, so each reflective
+call happens at most once per instance. No per-request caller demanding those hashes was
+found, so the cost is latent and sizing it needs measurement, not inspection.
+
+**Verdict: closed as subsumed.** Boxed-field residuals move to unit 15.
 
 ### 16-original — the default log level does double work on every request
 
@@ -637,20 +775,194 @@ repeat on matched images**, and it would also require correcting
 `_includes/performance_configuration.html:165`, which tells users ZGC is not worth it
 below a ~4 GB heap.
 
-### 18 — the response write path
+### 18 — declined as scoped; re-scoped as 18a
 
-`NettyResponseWriter` and `BodyDecoderEncoder.bodyToBytes` have not been examined
-except to rule out the matcher-side bodies. Note `premerge_alloc.ResponseWriteBenchmark`
-and `InboundDecodeBenchmark` already gate allocation-per-op, so regressions are
-ratcheted — but a ratchet prevents drift, it does not find existing waste.
+Audited. **The two files the row names are already optimal.**
+`BodyDecoderEncoder.bodyToBytes` has unit 1's reuse fast path — when the body carries a
+declared charset the materialised `rawBytes` are returned and `bodyToByteBuf` wraps them
+with `Unpooled.wrappedBuffer`, so the outbound body is zero-copy with no re-encode and
+no double store. (`bytesToBody:103-125`, the double-store the plan records, is the
+*inbound* direction — not this path.) `ResponseWriteBenchmark:130-136` pins the array
+identity, so that is guaranteed rather than incidentally true. The load-bearing header
+walk allocates no multimap machinery either: `ReadOnlyInsertionOrderedMultimap`
+(`KeysToMultiValues.java:560-628`) reads the flat arrays directly — `c381a0303` already
+did this work for exactly this path.
+
+**What is actually left sits one layer up, in `ResponseWriter`.** Counted from the source
+(object kinds, not measured volumes), per HTTP/1.1 response with `n` stored headers, the
+model store is walked **seven times and fully copied twice, of which one walk and zero
+copies are load-bearing**:
+
+| Site | Cost |
+|---|---|
+| `ResponseWriter.java:76` `getFirstHeader(CONTENT_LENGTH)` | full scan, O(n²) comparisons — `getFirstValue` re-runs `isFirstOccurrence` per index |
+| `ResponseWriter.java:117` `response.clone()` | a **second** whole-response copy ≈ 7 + n objects |
+| `ResponseWriter.java:122-131` four `replaceHeader(header(CONNECTION, …))` | ≈ 7 objects for two compile-time-constant pairs |
+| `…ToFullHttpResponse.java:276` and `:298` | `Content-Type` resolved **twice** |
+| `…ToFullHttpResponse.java:307` | `Content-Length` resolved **again** (already read at `ResponseWriter:76`) |
+| `…ToFullHttpResponse.java:281-283` | the one load-bearing walk ≈ 4 + n |
+
+**18a — the narrow unit, ascending risk.**
+1. Two `static final Header` constants for `Connection: keep-alive` / `close`. `Header`
+   is immutable and `replaceEntry` only reads it, so sharing is safe by the argument
+   `37a8fb023` used. Removes ~7 objects per response.
+2. Resolve `Content-Type` and `Content-Length` once each, and reorder
+   `ResponseWriter.java:77-80` so the log-level test is the *first* operand — today the
+   scan and an `Integer.parseInt` run before `isEnabledForInstance(INFO)`. **Be honest
+   about this one: INFO is the shipped default, so the reorder is only free at WARN and
+   above.** At INFO it is work for an output, the shape unit 16 was declined for.
+3. Copy only `headers` in the `addConnectionHeader` clone rather than trailers and
+   cookies too. Small, since both are usually null.
+
+**Do not remove the clone entirely inside 18a.** It exists so `replaceHeader(CONNECTION, …)`
+cannot mutate a caller's response, and several of the ~25 `writeResponse` call sites pass
+a response that is *not* a per-request copy (e.g. `HttpActionHandler.java:389`, a stored
+response). Only the mock path is provably pre-cloned. Eliminating it needs a
+"this response is private" contract across every caller — a structural change, not this unit.
+
+**The ratchet does not cover any of this, so extend the benchmark first.**
+`ResponseWriteBenchmark.writeResponseToWire:182-208` enters at
+`channel.writeOutbound(response)` — the encoder only. It never calls
+`ResponseWriter.writeResponse`, so the clone, the CORS pass and the `Content-Length`
+scan are all outside the gate, and its probe response carries one header and no
+`Connection` header so it would not see items 1 or 3 either. **Without extending the
+benchmark to enter at `ResponseWriter`, 18a would land and the ratchet would report no
+change** — an instrument measuring the wrong subject.
+
+**Two wire-order sites this plan did not record — add them before any ordering unit.**
+The plan lists `NettyResponseWriter:157` and `Http3RequestBridge:243` as the
+order-sensitive readers. Also raw-store order: `…ToFullHttpResponse.java:281-283` (the
+**main** HTTP/1.1 and HTTP/2 aggregated leg) and `Http3RequestBridge.java:300-311`
+(trailers). And a divergence that already exists today:
+`MockServerHttpResponseToHttpServletResponseEncoder.java:41-43` reads `getHeaderList()`,
+so **the servlet leg emits name-grouped order while all three netty legs emit raw
+insertion order**. Any unit that changes stored ordering must assert both shapes.
+
+**Already optimal, do not touch:** `sanitizeHeaderValue:339-344` is allocation-free when
+no CR/LF is present (`String.replace` returns `this` on no match); `MediaType.parse` is
+cached and bounded; `AltSvcHeaderHandler` and `TraceContextHandler` are both gated off by
+default; `NettyResponseWriter` already reuses `EMPTY_LAST_CONTENT` when there are no
+trailers. The `withBody(String)`-with-no-charset re-encode at `BodyDecoderEncoder:86` is
+the benchmark's deliberate control arm — leave it.
+
+**Adjacent, smaller:** `HttpResponse.java:689-711` decodes each existing `Set-Cookie`
+header **twice** (once for `.name()`, once for `.value()`); the servlet encoder builds
+`getTrailerList()` three times per trailered response (`:76`, `:80`), and `getEntries()`
+is a real build, not a field read; `NettyResponseWriter:537-538` constructs a fresh
+mapper per chunked-with-delay response where two sibling classes hoist it.
+
+**A lead, not a finding, and unverified:** HTTP/3 emits the body from
+`getBodyAsRawBytes()` (`Http3RequestBridge:318`) while HTTP/1.1 goes through
+`bodyToBytes`' charset resolution. For a `withBody(String)` with no declared charset plus
+a `Content-Type` charset, those could resolve to different bytes. Reachability was not
+confirmed and no test was written — chase it before believing it.
 
 ### 19 — the dashboard WebSocket handler
 
-`DashboardWebSocketHandler` carries 8 synchronized sites, and the `@Sharable`
-handler is effectively per-channel in practice: N open dashboards means N
-listeners, N walks and 2N threads, and its `CircularHashMap(100)` bounds nothing.
-Not the request path, but it degrades a live server precisely while someone is
-watching it.
+Audited. The prior note is **confirmed on its facts and stale on its conclusion**: the
+`@Sharable` handler is effectively per-channel, N dashboards do mean N listeners and 2N
+threads, and `CircularHashMap(100)` bounds nothing — but the file already records all
+three, and the walk depth, pull rate and expectation serialisation have since been
+optimised. What remains is two request-path allocations that fire **whether or not anyone
+is watching**, one retention that **survives the watcher**, and a full-log copy placed on
+the log-ingest thread.
+
+The handler is constructed per HTTP/1.1 channel (`PortUnificationHandler.java:507`) and
+sits *before* the codec and `HttpRequestHandler`, so its `channelRead` runs for every
+inbound request. On HTTP/2 one instance is added to every child stream
+(`Http2MultiplexChildInitializer.java:272`), so `handlerAdded` runs per request.
+
+#### Defect D1 — unbounded task accumulation on an unauthenticated endpoint (FIXED)
+
+Three facts combined, all verified directly:
+
+1. `scheduleAtFixedRate` sat **outside** every `if (x == null)` guard in
+   `registerListeners()`, while the three things above it were each guarded.
+2. `registerListeners()` was called **unconditionally** at the end of `upgradeChannel`,
+   including on the `handshaker == null` branch.
+3. Netty's `sendUnsupportedVersionResponse` only writes a 426 — its bytecode contains no
+   `close()` — so the connection stays an ordinary keep-alive HTTP connection that can
+   send the same request again.
+
+`newHandshaker` returns null when `Sec-WebSocket-Version` is present and is not 13/8/7. So
+`GET /_mockserver_ui_websocket` with `Sec-WebSocket-Version: 99`, repeated M times on one
+keep-alive connection, added **M perpetual 1/second tasks**, released only when the
+connection closed. Heap and CPU grew linearly in M with nothing bounding M, and because
+each task refills the write permit, M tasks **removed the 1/second write throttle** those
+tasks exist to enforce. The endpoint is unauthenticated by default — the file's own
+comment says so — and the failed-handshake branch had no test coverage.
+
+Fixed by moving the schedule inside the guard that creates the executor (which
+`handlerRemoved` already shuts down) and returning without registering anything on a
+failed upgrade.
+
+#### Defect D2 — latent, not live: teardown is split and only the union is correct
+
+`channelInactive` unregisters the listeners but does not stop the executors;
+`handlerRemoved` stops the executors but does not unregister the listeners. Two sites
+remove this handler before the channel goes inactive
+(`CallbackWebSocketServerHandler.java:129`, `WebSocketProxyRelayHandler.java:540`), and a
+handler removed that way never sees `channelInactive`. **Today unreachable** — both sites
+fire only on channels that never upgraded, so nothing was registered. Consolidating both
+halves into `handlerRemoved` removes the hazard with no behaviour change, but read the
+HTTP/2 note first: `handlerRemoved` fires per child stream.
+
+#### The performance findings
+
+| # | Site | Fires |
+|---|---|---|
+| 19a | `:464-466` | a `QueryStringDecoder` per **every** inbound request, only to compare `rawPath()` — 4 objects to answer what a `regionMatches` answers with none. The sibling handler next to it in the pipeline uses a plain `equals` |
+| 19b | `:363-383` | a `ThreadPoolExecutor` + queue + policy + thread factory on **every HTTP/1.1 connection and every HTTP/2 stream** — roughly 20 objects counted from the JDK constructors, none ever used on a non-dashboard channel |
+| 19c | `:898-993`, `:804-805` | the whole DTO walk runs **before** the throttle is consulted, then is discarded and re-walked after a 200 ms sleep, up to twice |
+| 19d | `MockServerEventLog.java:540-542` | every dashboard update copies the **entire retained event log** into a fresh `ArrayList`, **on the single disruptor consumer thread** that ingests every entry for every request |
+| 19e | `DashboardLogEntryDTO.java:57-58` | memoises a derived clone plus a Jackson tree **onto the retained log entry**, with no release path |
+
+**19b has a trap:** the two constructions differ — `handlerAdded` uses
+`LinkedBlockingQueue(1)`, `registerListeners` uses `(10)`. `handlerAdded` always wins in
+production, so capacity **1** ships while capacity **10** is what every unit test
+exercises (the tests never add the handler to a pipeline). The fix must move the
+capacity-1 construction, not simply drop `handlerAdded`, or it silently deepens the
+discard queue tenfold.
+
+**19d can drop the copy entirely.** Retained entries are effectively immutable after
+`cloneAndClear`, and `ConcurrentLinkedDeque.descendingIterator()` is weakly consistent and
+safe to traverse concurrently. The ordering argument that makes it safe: `eventLog.add`
+happens-before `notifyListeners`, so the iterator necessarily observes the triggering
+entry. **Scope it to `retrieveLogEntriesInReverseForUI` only** — verify and retrieve
+depend on a point-in-time snapshot.
+
+**19e is the biggest occupancy item, and the byte budget cannot see it.** Rendering an
+entry re-derives the `String` that `releaseDerivedForms()` had just freed, adds a Jackson
+tree and a second message object, and memoises all of it onto the retained entry with no
+release path — so it outlives the dashboard connection and partly undoes unit 1
+(`b413de937`), whose whole point was not retaining each text body twice. Worse,
+`estimatedHeapSize()` **deliberately excludes** these copies on a premise that is false:
+`LogEntry.java:187-189` calls them "transient (rebuilt at render time, not retained)"
+while `:448-450` on the same field says "the result is memoised on first call". Since
+add-time weight must equal evict-time weight, `maxEventLogSizeInBytes` **silently
+under-counts every entry a dashboard has rendered and cannot evict for it.** Fix: move the
+memo into a per-connection cache bounded to the viewport (`3 × logItemLimit`) rather than
+the log. **One behaviour to choose rather than drift into:** the memo currently means
+toggling redaction does not retroactively change an already-rendered entry; a
+viewport-scoped cache makes an entry that ages out and returns render under the *current*
+setting. Assert the new property deliberately.
+
+**Declined on evidence.** The eight `synchronized` sites are not a contention problem —
+all guard per-instance state on an instance serving one channel, so at most two threads
+contend. Do **not** make `activeExpectationJsonCache` static to "share" it: the comment
+claiming it is shared is wrong and should be corrected, but sharing it across instances
+means sharing across MockServer instances in one JVM. `MAX_LOG_UPDATE_ITEM_LIMIT` is not
+a perf lever.
+
+**Documentation to correct alongside:** `docs/code/dashboard-ui.md:142` and
+`DashboardWebSocketHandler.java:130` call the `Semaphore(1)` a "single global permit" when
+it is one permit **per dashboard**; the same doc line still says the pull path is
+unthrottled, which was fixed; and `LogEntry.java:187-189` contradicts `:448-450` as above.
+
+**Could not determine:** whether the `handlerAdded`/`handlerRemoved` path is exercised
+anywhere — the unit tests reach the executor fields by reflection instead of adding the
+handler to a pipeline, so production queue depth and shutdown may be covered only by
+integration tests. Confirm before 19b lands.
 
 ### 20 — the matching path
 
@@ -756,8 +1068,116 @@ that by reusing one will break it.
 
 ### 22 — templating and callbacks
 
-Velocity, Mustache and GraalJS response templating, and the class/object callback
-dispatch, are per-request when used and none has been examined.
+Audited. **Split it. 22A's headline premise is stale — "the template is re-parsed on every
+request" was fixed three times over before this unit was written. 22B is not on the measured
+workload at all, and its one interesting finding is threading, not churn.**
+
+None of this programme's commits touched `templates/`. Five *earlier* ones did, and they are
+what make the row stale: Velocity parse-once plus hoisted bindings, the Mustache compiled-template
+cache, a shared GraalVM `Engine` with a parsed-`Source` cache, and renders moved onto a dedicated
+bounded pool.
+
+#### 22A — response templating
+
+| # | Site | Per render | Verdict |
+|---|---|---|---|
+| A1 | `HttpTemplate.java:77-85` → `FileReader.java:15-43` | when `templateFile` is used the template is **re-read from disk/classpath every request** — `getCanonicalFile()` syscall, `FileInputStream`, full `byte[]`, new `String` | **biggest item** |
+| A2 | `VelocityTemplateEngine.java:261-284` | an unconditional `putStringResource` **and** an LRU `put` per render — two writes into synchronized maps **keyed by the whole template text**, pure bookkeeping for an already-warm cache | do |
+| A3 | velocity-engine-core `ResourceManagerImpl.getResource:292` | because the repository is keyed by the template **body**, Velocity allocates a full copy of the template string per render just to form `resourceType + resourceName` | do, with A2 |
+| A4 | `MustacheTemplateEngine.java:152-190` | a fresh `ConcurrentHashMap` per render into which **all ~26** built-in functions/helpers are copied. Velocity stopped doing exactly this; Mustache never got the same treatment | **do — smallest and cleanest** |
+| A5 | `HttpTemplateOutputDeserializer.java:37-78` → `JsonSchemaValidator.java:311-334` | rendered output parsed **three times** (lenient `readTree`, networknt's own parse of the re-serialised strict JSON, then `readValue`), a fourth at INFO | size separately |
+| A6/A7 | `StringFormatter.java:38-48`; `HttpRequestTemplateObject.java:51-82` | an uncached `Pattern.compile` per JS render; and the per-render request model, whose `CaseInsensitiveHeaderMap` build is **O(headers²)** by deliberate design | micro |
+
+**No GraalJS leak.** The `Context` is created in try-with-resources and closed on every path;
+the shared process-wide `Engine` is the documented GraalVM pattern and was introduced *to fix* an
+accumulation of native engines; `SOURCE_CACHE` never evicts but is hard-bounded at 500 — bounded
+retention, not a leak.
+
+**The serialise-then-reparse is real, JavaScript-only, and not waste — declined, recorded so it is
+not re-proposed.** `JSON.parse(request)` inside the guest coerces the host object and re-parses it,
+which is the same *shape* as unit 16 and the same conclusion for a different reason: the JSON text
+**is** the template's request model. The documented contract is that a JS template sees a plain JS
+object, so `Object.keys`, `JSON.stringify`, spread and `for-in` all behave as plain-object
+operations, and the case-insensitive header `Proxy` is built on the parsed plain object. Velocity
+and Mustache do not serialise at all.
+
+**Per-request isolation is the hard line, and it is already load-bearing in three places.** A fresh
+Graal `Context` per render stops an implicit global or mutated prototype crossing requests; a fresh
+Velocity `ToolContext` per render exists because `$json`/`$xml` hold per-request parse state. Both
+are pinned by tests. **Any change that shares a render context, realm or request model between
+requests is a cross-request data-leak defect, not an optimisation** — say so on the commit.
+Relatedly, the Graal class filter is per-`Context` while the code cache is shared; moving filtering
+onto the shared `Engine` would break a per-server security boundary tied to a published advisory.
+
+**The GraalJS history is a hazard, not a caution.** An earlier attempt to cache the JS engine hung
+the core Surefire fork on its 1800 s timeout deterministically for seven builds and was reverted;
+the recorded root cause was a concurrency stall on a shape that reused a **per-thread `Context`**.
+The current shape does not reuse contexts, which is why the shared `Engine` could re-land safely.
+**Anything that reuses a `Context` re-enters that failure mode and breaks realm isolation at the
+same time.** Also, a `JAVASCRIPT` templateType throws when graal-js is absent by design, so no JS
+change may be validated only on the `-graaljs` image.
+
+**Order of work: A4 first, then A2+A3, then decide A1.** A4 is output-identical by inspection —
+build the bindings once and pass a two-layer `Map` that reads the per-render layer first, with
+writes confined to it (the per-render map **is mutated during** render, so that confinement is
+required); it must remain a `Map`, because the Mustache collector's fall-throughs only fire for one.
+A2+A3: give each distinct template a short synthetic name from an `AtomicLong` — a counter, **not**
+a hash, so collisions are impossible by construction — and register the body before publishing the
+name, keeping the `getTemplate`-failure fallback that reports against the logical template name.
+A1 needs a **product decision first**: today an edited template file takes effect on the next
+request, and the docs neither promise nor deny it. Note that when `templateFile` is in use the fresh
+`String` per request also defeats hash-based cache lookup in all three engines, so A1 is worth more
+than it looks.
+
+**A5 needs care for the reason unit 16 was declined.** All three parses are currently load-bearing —
+the lenient-to-strict round trip is deliberate and the validation produces the
+`TEMPLATE_GENERATION_FAILED` message. The only safe shape feeds the strict string to both the
+validator and `readValue`, which changes which text the DTO parse sees — precisely the duplicate-key
+edge case unit 16 stopped over. Size it separately.
+
+**Measurement: templating IS on the rig, unlike the proxy path.** `/template` (Velocity) is a
+full-rate regression arm, `/template_mustache` is throttled to 50/s by default, and
+`/template_javascript` runs only on the `-graaljs` image behind a flag. But **there is no template
+allocation benchmark** — the gated `premerge_alloc` set is matching, inbound decode and response
+write — so a render-allocation ratchet must be added before any figure is claimed.
+
+#### 22B — class and object callbacks: declined as a perf unit
+
+Class callbacks resolve the class and construct an instance per request, and **that is correct
+behaviour, not a bug to cache away.** MockServer's own integration callback relies on `public
+static` state precisely because the instance does not survive the request, so **caching the
+instance would share mutable user state across requests — a security-adjacent defect.** Caching the
+resolved `Class`/`Constructor` would be behaviour-preserving but must be keyed by
+`(classLoader, className)` with weak references or it becomes a classloader leak and a
+wrong-class-served bug under a servlet container; and the cost removed is small, since `loadClass`
+on an already-loaded class is a cached lookup.
+
+**The finding that matters is threading, and it is unit-21-shaped.** `Scheduler.schedule` with zero
+delay **runs inline on the calling thread**, so object-callback dispatch does its clone, double JSON
+encode and write on the inbound request's event loop. The reply is worse: the WebSocket frame is
+deserialised and the entire response write performed **inline on the callback channel's event
+loop**, and since every reply for one client arrives on that client's single channel, all of them
+serialise on one event-loop thread that also serves other connections. The client side has the same
+shape. Nothing blocks on a `.get()`, so this is an event-loop occupancy cap rather than pool
+exhaustion. `LocalCallbackRegistry` already avoids it by handing off to a deliberately unbounded
+pool; the WebSocket reply path never got the same hand-off.
+
+**Do not pursue it yet.** The rig does not exercise callbacks at all — the k6 expectations file says
+object and class callbacks are deferred because they need a connected responder — so any benefit
+would be **inferred, not measured**, exactly the error this programme has already had to correct.
+Size it with a callback-under-load workload first.
+
+**Do not** change the WebSocket wire format to remove the double encode: the JSON-in-an-escaped-string
+shape is a cross-process, cross-**version** contract with every client build in the wild, and its
+allow-list is also a deserialisation security control.
+
+**Two separate correctness items found in passing**, neither a perf item: the forward class-callback
+variant reads only the thread-context classloader and does **not** honour the
+`contextClassLoaderOverride` the response variant added; and there is a recorded deferred
+limitation where above `maxWebSocketExpectations` concurrent in-flight callbacks the eldest
+registry entry is silently evicted and its waiting future never completes (documented with a
+reason — cite it rather than rediscovering it).
+
 
 ## The throughput ceiling — build 447 answers 50,000 and 55,000
 
@@ -833,6 +1253,66 @@ changed the rig, and the hardware-mismatch guard keys on `instance_type`, which
 did not change — so nothing in the tooling flags it. Stored `saturation_rps` and
 sweep latencies from before this change are not comparable with those after it.
 The same applies to the added ladder rungs, which have no history at all.
+
+## Defects found by the audits, not performance items
+
+These came out of performance audits but are correctness or security items and should be
+sized and fixed on their own, ahead of the churn work.
+
+### D1 — unbounded task accumulation on an unauthenticated endpoint (FIXED)
+
+See unit 19. `registerListeners()` scheduled a perpetual 1/second task **outside** every
+idempotence guard and was called on **every** upgrade attempt including failures, and netty's
+`sendUnsupportedVersionResponse` does not close the channel. Repeated unsupported-version
+upgrades on one keep-alive connection therefore accumulated tasks without bound and, because
+each refills the write permit, **removed the throttle they exist to enforce**. Endpoint is
+unauthenticated by default. Fixed by scheduling inside the executor's own guard and returning
+without registering on a failed upgrade.
+
+### D2 — split WebSocket handler teardown (latent, not live)
+
+See unit 19. `channelInactive` unregisters listeners without stopping executors;
+`handlerRemoved` stops executors without unregistering listeners. Two sites remove the handler
+before the channel goes inactive, and such a handler never sees `channelInactive` — but both
+fire only on channels that never upgraded, so nothing was registered. Consolidate into
+`handlerRemoved`, reading the HTTP/2 note first: it fires per child stream.
+
+### D3 — `redactSecretsInLog` does not redact the `message` or `arguments` fields
+
+Found while declining 16b, and **verified directly**. `getHttpUpdatedRequests` and
+`getHttpUpdatedResponse` apply `logRedactor(configuration)` (`LogEntry.java:458-462`,
+`:620-621`). `getArguments()` (`:815-831`) applies **none** — it calls only `updateBody`.
+Both reach output on the same log entry: `LogEntrySerializer:92-94` writes `arguments`
+verbatim, and `LogEntry:785` builds the `message` field with
+`formatLogMessage(messageFormat, getArguments())`, emitted at `LogEntrySerializer:86-87`.
+
+So with `redactSecretsInLog` enabled — a documented, user-facing property — a JSON log entry
+has its `httpRequest` redacted while the `message` and `arguments` on the *same* entry still
+carry `Authorization`, `Cookie` and anything else the redactor covers. The dashboard's
+rendered message has the same shape. Neither `LogEntryRedactionTest` nor
+`DashboardLogEntryDTORedactionTest` asserts anything about `arguments`, which is why it
+survived.
+
+This is also why "reuse the redacted copy for the arguments" is **not** a pure dedupe: the two
+paths legitimately differ today, and unifying them is the fix, not an optimisation.
+
+### D4 — the forward class-callback ignores `contextClassLoaderOverride`
+
+Found by the unit 22 audit, not independently verified. The response class-callback handler
+honours `contextClassLoaderOverride`; the forward variant reads only the thread-context
+classloader. Correctness item, own unit.
+
+### Documentation corrections the audits turned up
+
+- `LogEntry.java:187-189` calls the `httpUpdated*` copies "transient (rebuilt at render time,
+  not retained)" while `:448-450` on the same field says the result is memoised on first call.
+  The first is wrong, and it is the premise on which `estimatedHeapSize` excludes them — so
+  `maxEventLogSizeInBytes` under-counts every entry a dashboard or `/retrieve` has rendered.
+- `docs/code/dashboard-ui.md:142` and `DashboardWebSocketHandler.java:130` call the
+  `Semaphore(1)` a "single global permit" when it is one permit **per dashboard**; the same
+  doc line still describes the pull path as unthrottled, which was since fixed.
+- `DashboardWebSocketHandler.java:276-277` claims `activeExpectationJsonCache` is shared
+  across connections; it is an instance field. Fix the comment, not the code.
 
 ## Carried over from the earlier performance work
 

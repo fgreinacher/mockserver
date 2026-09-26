@@ -207,6 +207,42 @@ failed a fourth at 2,211. The code was fine — 2,211 was about 11 x 201, an ins
 summing roughly eleven background scans. An EXACT assertion (201) both fixed the flake and caught a
 degrade the loose one let through. Loose bounds do not make a test robust; they make it blind.
 
+## A Planned Item Is a Hypothesis, Not a Fact
+
+**Verify the premise before implementing it.** A written plan row ages against a moving
+repository, and the row that is wrong costs more than the row that is missing — you build
+something that does not help, or you "fix" behaviour that was deliberate.
+
+This is not a theoretical risk. Two separate exercises measured it:
+
+- A test-coverage audit found **a quarter of its twelve rows had stale premises within a day
+  of being written from a careful re-audit** — one item was already wired up, one was already
+  implemented and documented, one named the wrong pipeline.
+- A performance programme audited its five remaining units and found **three premises stale or
+  wrong**: a "response write path" whose named files were already optimal; a "template is
+  re-parsed per request" row that three earlier commits had already fixed; and a
+  "deduplicate the repeated parses" row whose parses each fed a *different* output field. Two
+  further rows named the wrong retainer for the object they were hunting — one of them had been
+  recorded as "positively ruled out" and was in fact the cause.
+
+In every case the staleness was found by the work verifying its own premise first. So:
+
+- **State what you expect to find, then confirm it in the code before changing anything.** If
+  the premise fails, record that as the outcome — a row closed with evidence is progress.
+- **Check the row against commits since it was written.** Name the commits you checked.
+- **A decline with reasons is a deliverable.** Write down why, or it will be re-proposed.
+
+**Severity labels do not predict value.** In the coverage audit the most valuable find was
+rated MEDIUM: two published client libraries whose CI passed having started no container, one
+of which mounted the Docker socket and then excluded the Docker tests. Wiring it up exposed
+four further defects, every one caught by the new guard failing closed rather than by anything
+passing.
+
+**Absence of a failing test is not absence of a bug.** The same programme found a
+secrets-redaction gap that had shipped because the redaction tests asserted on the redacted
+field and never on the two neighbouring fields that carried the same data unredacted. When a
+defect is found, add the assertion whose absence let it through — not only the fix.
+
 ## Where This Plugs Into the Gate Chain
 
 | Evidence | Where | Why there |

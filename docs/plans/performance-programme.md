@@ -8,25 +8,27 @@ archive. The parts that deserve to outlive it have been moved to permanent docum
 
 ## Closed
 
-All programme work has landed. The commits below are the ones the programme directly produced.
-
-| What | Commit |
-|---|---|
-| Per-connection MCP registry leak (~156 KB/connection) | `2a5999395` |
-| Opt-in `maxExpectationsSizeInBytes` byte budget | `951b84abe` |
-| SUT liveness gate (dead server cannot be reported as throughput) | `ec59fbe23` |
-| p95 VU-headroom criterion replacing the right-censored `vus_active_max` | `bac8a96b7` |
-| Server-side latency histogram capture | `aeaf0c74a` |
-| Expectation-store and accept-queue metrics, charted | `d568695a2` |
-| `com.sun` JDK shade-relocation fix | `63a7a9833` |
-| S3 fixture moved off the gated MinIO image | `0b0ac1d9b` |
-| ECR pull-through enabled | `ce2df52b9` |
+All programme work has landed; the commits are in git history and in `changelog.md`, so the
+table that used to list them has been removed rather than maintained in two places.
 
 ## What remains
 
-Five items are open. Three need a run or an observed event; one needs a build to verify a fix
-that already landed; one is a large-heap profile whose instrument has landed and needs a run plus
-a product decision.
+Five items are open, and **none of them is blocked on code** — every one is waiting on a run, an
+observed event, a build, or a product decision. That is why this plan has not moved: it cannot be
+worked down at a keyboard.
+
+| # | Item | Blocked on |
+|---|---|---|
+| 1 | The unattributed latency tail | a run, held until after the next release |
+| 2 | Low-rate handler latency spike | unexplained — needs a targeted run |
+| 3 | Canceled-child reporting | an observed event |
+| 4 | `jvm_memory_allocated_bytes` shading defect | a build to confirm the landed fix |
+| 5 | Large-heap event-log profile | a run **plus** a cap decision |
+
+**Cross-reference:** the separate `memory-optimisation-programme.md` supersedes this plan for
+allocation and occupancy work, and now also owns the GC-default decision, the published figures,
+and the rig's measurement gates. Items 1 and 2 here are the two latency questions that programme
+has not answered.
 
 ### 1. The unattributed latency tail — OPEN (held until after the next release)
 
