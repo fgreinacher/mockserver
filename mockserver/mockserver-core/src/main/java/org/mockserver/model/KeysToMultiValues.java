@@ -266,6 +266,31 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
         return k;
     }
 
+    /**
+     * Append one already-wrapped literal name/value pair in true wire order, with no matcher parsing and
+     * no intermediate collection. Exists for single-pass message-header ingest, which has already wrapped
+     * the name via {@link NottableString#headerName} and the value via
+     * {@link NottableString#string(String, Boolean)} with {@code not = false}; the public
+     * {@link #withEntry(NottableString, List)} would instead force construction of the very per-name
+     * {@link List} that single-pass ingest removes. Public only because the netty mapper lives in another
+     * package — callers MUST pass literal (non-matcher) strings.
+     */
+    public void appendLiteral(final NottableString name, final NottableString value) {
+        isModified();
+        append(name, value);
+    }
+
+    /**
+     * Pre-grow the flat store to hold at least {@code additionalEntries} further entries, so a caller that
+     * knows the count up front (netty exposes header count as an O(1) size()) sizes the store once instead
+     * of incurring the incremental array-growth garbage of repeated {@link #appendLiteral}.
+     */
+    public void reserve(final int additionalEntries) {
+        if (additionalEntries > 0) {
+            ensureCapacity(size + additionalEntries);
+        }
+    }
+
     public boolean remove(final String name) {
         boolean exists = false;
         if (name != null) {

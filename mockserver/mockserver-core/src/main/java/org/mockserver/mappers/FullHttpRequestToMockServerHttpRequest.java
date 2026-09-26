@@ -20,14 +20,15 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.security.cert.Certificate;
 import java.util.Arrays;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.*;
 import static io.netty.handler.codec.http.HttpUtil.isKeepAlive;
 import static org.mockserver.model.NottableString.string;
 import static org.mockserver.model.NottableString.headerName;
-import static org.mockserver.model.NottableString.strings;
 
 /**
  * @author jamesdbloom
@@ -141,15 +142,21 @@ public class FullHttpRequestToMockServerHttpRequest {
         HttpHeaders httpHeaders = nettyHttpRequest.headers();
         if (!httpHeaders.isEmpty()) {
             Headers headers = new Headers();
-            for (String headerName : httpHeaders.names()) {
-                if (hasPreservedTransferEncoding && headerName.equalsIgnoreCase(CONTENT_LENGTH.toString())) {
+            // One pass: iteratorCharSequence yields netty's HeaderEntry itself, so there is no names()
+            // LinkedHashSet and no getAll() re-walk per name. Presized from the O(1) header count.
+            // Literal name and value - a real request may genuinely carry a header named or valued
+            // "!foo", which the withEntry(String, ...) overloads would parse as a negation matcher.
+            // The store now holds wire order; every wire and JSON view regroups by first-occurrence
+            // key through getEntries(), so nothing observable changes.
+            headers.reserve(httpHeaders.size());
+            Iterator<Map.Entry<CharSequence, CharSequence>> headerIterator = httpHeaders.iteratorCharSequence();
+            while (headerIterator.hasNext()) {
+                Map.Entry<CharSequence, CharSequence> header = headerIterator.next();
+                String name = header.getKey().toString();
+                if (hasPreservedTransferEncoding && name.equalsIgnoreCase(CONTENT_LENGTH.toString())) {
                     continue;
                 }
-                // Literal name and values: this is an actual incoming request, so a header genuinely
-                // named "!foo" (or valued "!foo") must be recorded verbatim, not read as a negation
-                // matcher. The withEntry(String, ...) overloads route through NottableString.string(name)
-                // which strips a leading !/? — correct for matcher input, wrong for a real message.
-                headers.withEntry(headerName(headerName), strings(httpHeaders.getAll(headerName), false));
+                headers.appendLiteral(headerName(name), string(header.getValue().toString(), false));
             }
             httpRequest.withHeaders(headers);
         }
