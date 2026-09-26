@@ -42,6 +42,10 @@ public class FullHttpRequestToMockServerHttpRequest {
     private final Certificate[] clientCertificates;
     private final Integer port;
     private final JDKCertificateToMockServerX509Certificate jdkCertificateToMockServerX509Certificate;
+    private SocketAddress cachedRemoteAddress;
+    private String cachedRemoteAddressString;
+    private SocketAddress cachedLocalAddress;
+    private String cachedLocalAddressString;
 
     public FullHttpRequestToMockServerHttpRequest(Configuration configuration, MockServerLogger mockServerLogger, boolean isSecure, Certificate[] clientCertificates, Integer port) {
         this.mockServerLogger = mockServerLogger;
@@ -207,11 +211,30 @@ public class FullHttpRequestToMockServerHttpRequest {
     private void setSocketAddressFromNettyRequest(HttpRequest httpRequest, io.netty.handler.codec.http.HttpRequest nettyHttpRequest, SocketAddress localAddress, SocketAddress remoteAddress) {
         httpRequest.withSocketAddress(isSecure, nettyHttpRequest.headers().get("host"), port);
         if (remoteAddress instanceof InetSocketAddress) {
-            httpRequest.withRemoteAddress(Strings.CS.removeStart(remoteAddress.toString(), "/"));
+            httpRequest.withRemoteAddress(remoteAddressString(remoteAddress));
         }
         if (localAddress instanceof InetSocketAddress) {
-            httpRequest.withLocalAddress(Strings.CS.removeStart(localAddress.toString(), "/"));
+            httpRequest.withLocalAddress(localAddressString(localAddress));
         }
+    }
+
+    // netty memoises both addresses on the channel, so the instance is stable for the life of the
+    // connection and its identity is a safe cache key. The mapper is per pipeline / per HTTP/2 child
+    // channel and only touched from that channel's event-loop thread, so no synchronisation is needed.
+    private String remoteAddressString(SocketAddress remoteAddress) {
+        if (remoteAddress != cachedRemoteAddress) {
+            cachedRemoteAddress = remoteAddress;
+            cachedRemoteAddressString = Strings.CS.removeStart(remoteAddress.toString(), "/");
+        }
+        return cachedRemoteAddressString;
+    }
+
+    private String localAddressString(SocketAddress localAddress) {
+        if (localAddress != cachedLocalAddress) {
+            cachedLocalAddress = localAddress;
+            cachedLocalAddressString = Strings.CS.removeStart(localAddress.toString(), "/");
+        }
+        return cachedLocalAddressString;
     }
 
     private void setBody(HttpRequest httpRequest, FullHttpRequest fullHttpRequest, byte[] originalRawBody) {

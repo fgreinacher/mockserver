@@ -13,6 +13,9 @@ import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.Protocol;
 
+import org.apache.commons.lang3.Strings;
+
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -609,6 +612,49 @@ public class FullHttpRequestToMockServerHttpRequestTest {
 
             // then - the forged header is ignored: no stream id is captured on an HTTP/1.1 connection
             assertThat(result.getStreamId(), is(nullValue()));
+        } finally {
+            nettyRequest.release();
+        }
+    }
+
+    // --- address string memoisation ---
+
+    @Test
+    public void shouldMemoiseAddressStringsByInstanceAndRecomputeForNewInstance() throws Exception {
+        // given - one mapper reused across requests on the same connection
+        FullHttpRequestToMockServerHttpRequest mapper = createMapper(false, 1080);
+        // remote has no hostname (leading slash stripped); local has a hostname (inner slash survives)
+        InetSocketAddress remote = new InetSocketAddress(InetAddress.getByAddress(new byte[]{1, 2, 3, 4}), 1080);
+        InetSocketAddress local = new InetSocketAddress(InetAddress.getByAddress("myhost", new byte[]{5, 6, 7, 8}), 8080);
+        String expectedRemote = Strings.CS.removeStart(remote.toString(), "/");
+        String expectedLocal = Strings.CS.removeStart(local.toString(), "/");
+
+        // when - mapped twice with the SAME address instances
+        HttpRequest first = mapWithAddresses(mapper, local, remote);
+        HttpRequest second = mapWithAddresses(mapper, local, remote);
+
+        // then - exact current values preserved, including the surviving inner slash
+        assertThat(first.getRemoteAddress(), is(equalTo(expectedRemote)));
+        assertThat(first.getLocalAddress(), is(equalTo(expectedLocal)));
+        assertThat(first.getLocalAddress(), is(equalTo("myhost/5.6.7.8:8080")));
+        // and the memoised String instance is reused across requests on the same connection
+        assertThat(second.getRemoteAddress(), is(sameInstance(first.getRemoteAddress())));
+        assertThat(second.getLocalAddress(), is(sameInstance(first.getLocalAddress())));
+
+        // when - a different address instance of equal value arrives (remote), local instance unchanged
+        InetSocketAddress remoteDifferentInstance = new InetSocketAddress(InetAddress.getByAddress(new byte[]{1, 2, 3, 4}), 1080);
+        HttpRequest third = mapWithAddresses(mapper, local, remoteDifferentInstance);
+
+        // then - remote is recomputed (not the cached instance) but exactly equal; local stays memoised
+        assertThat(third.getRemoteAddress(), is(not(sameInstance(first.getRemoteAddress()))));
+        assertThat(third.getRemoteAddress(), is(equalTo(expectedRemote)));
+        assertThat(third.getLocalAddress(), is(sameInstance(first.getLocalAddress())));
+    }
+
+    private HttpRequest mapWithAddresses(FullHttpRequestToMockServerHttpRequest mapper, InetSocketAddress local, InetSocketAddress remote) {
+        FullHttpRequest nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, "/path");
+        try {
+            return mapper.mapFullHttpRequestToMockServerRequest(nettyRequest, null, local, remote, Protocol.HTTP_1_1);
         } finally {
             nettyRequest.release();
         }
