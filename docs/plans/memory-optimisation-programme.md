@@ -246,7 +246,7 @@ neither is primarily an allocation fix.
 | # | Unit | Lever | Status |
 |---|---|---|---|
 | 16 | Stop the INFO-level serialise-and-reparse per request | — | **declined, see below** |
-| 17 | Reconsider the shipped GC default | **GC length → p95** | to do |
+| 17 | Reconsider the shipped GC default | **GC length → p95** | collector settled by 446 — awaiting the low-core cell |
 | 18 | Response write path | churn | to do |
 | 19 | Dashboard WebSocket handler | occupancy + threads | to do |
 | 20 | Matching path — per-candidate churn | churn → GC frequency | audited, see below |
@@ -346,18 +346,51 @@ table is "flip the collector, leave the heap alone" — so the cell that settles
 | default heap (1,230 MiB) | build 443 / 445 | **build 446 — the decisive cell** |
 | 4 GB container (2,458 MiB) | not measured | build 442 |
 
-Build 446 runs the same full-span ladder, same commit, same cpusets and the same
-default heap as 445, differing **only** in the collector. If ZGC still wins there,
-the collector is the cause and the default change is justified. If it does not, 442's
-advantage came from the heap, and flipping the collector alone would not help — and
-could hurt, since ZGC carries more per-object overhead and wants headroom that a
-1,230 MiB heap may not have.
+**Build 446 answered it: the collector is the cause.** It ran the same full-span
+ladder, the same commit (image revision `c58b367836`), the same cpusets and the same
+default heap (`heap_max_bytes` 1,289,748,480 = 1,230 MiB) as 445, with
+`perf_server_java_opts` set to exactly `-XX:+UseZGC` and nothing else — a genuine
+single-variable cell. All six validity checks passed.
+
+| offered | G1 p95 (445) | ZGC p95 (446) | factor |
+|---:|---:|---:|---:|
+| 16,000 | 0.199 | 0.177 | 1.1× |
+| 24,000 | 4.547 | **0.211** | 22× |
+| 32,000 | 14.060 | **0.624** | 23× |
+| 36,000 | 17.849 | 2.279 | 7.8× |
+| 40,000 | 26.355 | 6.913 | 3.8× |
+| 44,000 | 30.120 | 10.407 | 2.9× |
+| 48,000 | 31.321 | 15.390 | 2.0× |
+
+Throughput is not traded for it: peak `rig_valid_peak_achieved_rps` rises 47,341.9 →
+47,594.1, and the 48,000 rung serves 99.2% rather than 98.6%.
+
+**But ZGC does not reduce GC work — it relocates it off the request threads.** Over
+the same 360 s growth phase, `gc_seconds_delta` is **0.35 s under G1 and 5.135 s
+under ZGC**, and peak CPU is 33% versus 68%. ZGC buys latency with CPU. That is the
+right trade for p95, but it is the opposite of the occupancy/churn lever the rest of
+this programme pulls, and it has a boundary: the advantage peaks at 23× at 32,000 and
+then narrows to 2.0× at 48,000. That narrowing is *consistent with* ZGC's concurrent
+threads contending for the same six pinned cores as the request path, but the
+artifacts carry only aggregate `cpu_pct` and `gc_seconds_delta` — with no per-thread
+breakdown, this is an inference from the CPU delta, not a measured mechanism, and
+the server simply being CPU-bound at the top of the ladder would fit the same data.
+
+**This is why the default should not be flipped on 446 alone.** The rig gives the
+server 6 dedicated cores. MockServer ships as a container that users routinely run
+with 1–2 CPUs, where ZGC's concurrent threads have nowhere to run and it can lose to
+G1 outright. The gating experiment before any image change is therefore a low-core
+cell, not a repeat of 446: the same ladder under both collectors at
+`PERF_SERVER_CPUS=0-1`. If ZGC holds up there, the default change is justified for
+every shipped topology; if it does not, the honest outcome is a documented tuning
+recommendation for multi-core deployments rather than a new default.
 
 Both runs set `PERF_SERVER_JAVA_OPTS`, so they are `config_profile=tuned` and not
-baseline-eligible. That is correct: these are experiments, not publishable figures.
+baseline-eligible. That is correct: these are experiments, not publishable figures —
+the published curve stays 445 (G1, default profile).
 
-Single samples either way, so a clear result should be repeated before the image
-default changes. This remains a product decision rather than a code one.
+Still a product decision rather than a code one, and still single samples, so the
+low-core cell should be run before the default moves.
 
 ### 18 — the response write path
 
@@ -472,6 +505,51 @@ that by reusing one will break it.
 
 Velocity, Mustache and GraalJS response templating, and the class/object callback
 dispatch, are per-request when used and none has been examined.
+
+## The throughput ceiling — build 447 answers 50,000 and 55,000
+
+**Both yes.** Build 447 probed above the previous ladder's top at shipped defaults
+(`config_profile=default`, G1, 1,230 MiB, image `53689793f` — every landed unit
+through 20a), and it is **baseline-eligible** with all six validity checks green.
+
+| offered | achieved | % | p50 | p95 | p99 | errors | VU occupancy |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 44,000 | 42,544 | 96.7% | 0.115 | 29.983 | 55.869 | 0 | 82.0% |
+| 48,000 | 46,877 | 97.7% | 0.117 | 32.039 | 59.672 | 0 | 85.1% |
+| 52,000 | **49,943** | 96.0% | 0.125 | 34.478 | 57.434 | 0 | 89.9% |
+| 56,000 | 52,585 | 93.9% | 0.129 | 35.152 | 59.783 | 0 | 92.1% |
+| 60,000 | **55,725** | 92.9% | 0.144 | 35.532 | 58.640 | 0 | 92.4% |
+| 64,000 | **58,351** | 91.2% | 0.138 | 35.033 | 56.456 | 0 | 93.1% |
+
+`rig_valid_peak_achieved_rps` 58,350.7, `saturation_rps` 52,000.
+
+**What this establishes.** 50,000 is served comfortably (49,943 at 52,000 offered)
+and 55,000 is too (55,725 at 60,000). **Errors are zero at every rung, all the way to
+58,351** — nothing fails, the server simply stops accepting more. p50 stays at
+0.115–0.144 ms throughout, and p95 *plateaus* near 35 ms from 52,000 upward rather
+than running away. p999 is not monotone — it spikes to 126.0 ms at the 48,000 rung
+before settling, then improves across the top four rungs to 75.9 ms at 64,000.
+
+**Why all six rungs are rig-valid despite large `dropped_iterations`.** Every rung sits
+at VU occupancy ≥ 82%, above the `SWEEP_OCC_KNEE` 0.80 threshold, so each is
+`pool_pinned` and labelled the knee. Under the constant-arrival executor a VU is
+occupied only while awaiting a response, so a saturated pool means VUs are blocked on
+*server* responses — the drops are the server saturating, not the client failing to
+schedule. That is the harness's designed discriminator, and it is why these rungs count.
+
+**Two honest limits.**
+
+1. **The ladder has no sub-knee anchor.** All six rungs are knee rungs, so 447 locates
+   the ceiling region but carries no low-rung point to cross-check against 445.
+2. **447's two lowest rungs read slightly BELOW 445's** (42,544 vs 43,626 at 44,000;
+   46,877 vs 47,342 at 48,000) on a *newer* binary. This is not a regression: 447's
+   ladder starts at 44,000 with a cold JVM, where 445 climbed through eight lower rungs
+   first. The p95 at 44,000 is essentially identical (29.98 vs 30.12), which is what a
+   warm-up difference looks like rather than a throughput loss. Do not quote 447's low
+   rungs against 445's.
+
+So the publishable curve stays **445** (its ladder spans the full range and has warm
+low rungs); 447 is the ceiling evidence that sits above it.
 
 ## The daily run's configuration, and a break in its history
 
