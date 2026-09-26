@@ -30,17 +30,24 @@ public class PreserveHeadersNettyRemoves extends MessageToMessageDecoder<HttpObj
     protected void decode(ChannelHandlerContext ctx, HttpObject httpObject, List<Object> out) throws Exception {
         if (httpObject instanceof HttpMessage) {
             final HttpHeaders headers = ((HttpMessage) httpObject).headers();
-            ImmutableList.Builder<Header> builder = ImmutableList.builder();
             boolean hasContentEncoding = headers.contains(HttpHeaderNames.CONTENT_ENCODING);
-            if (hasContentEncoding) {
-                builder.add(new Header(HttpHeaderNames.CONTENT_ENCODING.toString(), headers.getAll(HttpHeaderNames.CONTENT_ENCODING)));
-            }
-            if (headers.contains(HttpHeaderNames.TRANSFER_ENCODING)) {
-                builder.add(new Header(HttpHeaderNames.TRANSFER_ENCODING.toString(), headers.getAll(HttpHeaderNames.TRANSFER_ENCODING)));
+            boolean hasTransferEncoding = headers.contains(HttpHeaderNames.TRANSFER_ENCODING);
+            final List<Header> preservedHeaders;
+            if (hasContentEncoding || hasTransferEncoding) {
+                ImmutableList.Builder<Header> builder = ImmutableList.builder();
+                if (hasContentEncoding) {
+                    builder.add(new Header(HttpHeaderNames.CONTENT_ENCODING.toString(), headers.getAll(HttpHeaderNames.CONTENT_ENCODING)));
+                }
+                if (hasTransferEncoding) {
+                    builder.add(new Header(HttpHeaderNames.TRANSFER_ENCODING.toString(), headers.getAll(HttpHeaderNames.TRANSFER_ENCODING)));
+                }
+                preservedHeaders = builder.build();
+            } else {
+                preservedHeaders = ImmutableList.of();
             }
             // Always reset the preserved headers for each request, even when empty, so that
             // stale values do not leak to later requests sharing the same (pooled) connection.
-            ctx.channel().attr(PRESERVED_HEADERS).set(builder.build());
+            ctx.channel().attr(PRESERVED_HEADERS).set(preservedHeaders);
 
             // Reset the original-body capture for this request. Only capture when the body is
             // content-encoded (compressed), so the original on-the-wire bytes can be preserved

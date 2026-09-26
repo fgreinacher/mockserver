@@ -40,6 +40,19 @@ public class NottableStringTest {
     }
 
     @Test
+    public void hashCodeMatchesObjectsHashArithmetic() {
+        String[] values = {null, "", "value", "!value", "www.mock-server.com", "a"};
+        Boolean[] nots = {null, Boolean.FALSE, Boolean.TRUE};
+        for (String value : values) {
+            for (Boolean not : nots) {
+                boolean normalisedNot = not != null && not;
+                int expected = java.util.Objects.hash(value, normalisedNot);
+                assertThat("value=" + value + " not=" + not, string(value, not).hashCode(), is(expected));
+            }
+        }
+    }
+
+    @Test
     public void shouldParseOptionalOnlyPrefixWithoutThrowing() {
         // when
         NottableString nottableString = string("?");

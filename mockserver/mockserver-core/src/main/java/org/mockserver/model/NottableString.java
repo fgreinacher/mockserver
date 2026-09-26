@@ -44,7 +44,7 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
         this.value = value;
         this.isBlank = StringUtils.isBlank(value);
         this.not = not != null && not;
-        this.hashCode = Objects.hash(this.value, this.not);
+        this.hashCode = 31 * (31 + (this.value == null ? 0 : this.value.hashCode())) + Boolean.hashCode(this.not);
         this.styleAndSchema = StyleAndSchema.of(parameterStyle, schemaType);
     }
 
@@ -57,7 +57,7 @@ public class NottableString extends ObjectWithJsonToString implements Comparable
             this.value = value;
             this.not = false;
         }
-        this.hashCode = Objects.hash(this.value, this.not);
+        this.hashCode = 31 * (31 + (this.value == null ? 0 : this.value.hashCode())) + Boolean.hashCode(this.not);
         this.styleAndSchema = null;
     }
 

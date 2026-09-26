@@ -292,7 +292,8 @@ public class HttpActionHandler {
             }
         };
         final boolean hasConfiguredRemoteProxy = isNotBlank(configuration.proxyRemoteHost()) && configuration.proxyRemotePort() != null;
-        final boolean potentiallyHttpProxy = !proxyingRequest && (hasConfiguredRemoteProxy || (configuration.attemptToProxyIfNoMatchingExpectation() && !isEmpty(request.getFirstHeader(HOST.toString())) && !localAddresses.contains(request.getFirstHeader(HOST.toString())) && !NoProxyHostsUtils.isHostOnNoProxyList(request.getFirstHeader(HOST.toString()), configuration.noProxyHosts())));
+        final String hostHeader = request.getFirstHeader(HOST.toString());
+        final boolean potentiallyHttpProxy = !proxyingRequest && (hasConfiguredRemoteProxy || (configuration.attemptToProxyIfNoMatchingExpectation() && !isEmpty(hostHeader) && !localAddresses.contains(hostHeader) && !NoProxyHostsUtils.isHostOnNoProxyList(hostHeader, configuration.noProxyHosts())));
 
         if (expectation != null && expectation.getAction() != null) {
 
