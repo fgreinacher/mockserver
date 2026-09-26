@@ -22,9 +22,9 @@ import static org.mockserver.model.HttpResponse.response;
 
 /**
  * Tests that the lazily-materialized cached fields of {@link LogEntry}
- * ({@code httpUpdatedRequests}, {@code httpUpdatedResponse}, {@code message} and
- * the cached {@code hashCode}) are invalidated by {@link LogEntry#clear()} and by
- * the setters that feed them.
+ * ({@code message} and the cached {@code hashCode}) are invalidated by {@link LogEntry#clear()} and by
+ * the setters that feed them, and that the {@code getHttpUpdated*} display copies are recomputed on every
+ * call rather than retained on the entry.
  * <p>
  * This matters because {@link LogEntry} instances are reused via the Disruptor ring
  * buffer ({@link LogEntry#translateTo(LogEntry, long)} reuses slots and calls
@@ -70,6 +70,38 @@ public class LogEntryTest {
         // then - the setter invalidated the cache, so the new value is returned
         assertThat(logEntry.getHttpUpdatedRequests()[0].toString(), containsString("/changed"));
         assertThat(logEntry.getHttpUpdatedRequests()[0].toString(), not(containsString("/original")));
+    }
+
+    @Test
+    public void doesNotRetainDerivedUpdatedRequestsOnTheEntry() {
+        // The dashboard / JSON-log render path calls getHttpUpdatedRequests(config), which returns a clone
+        // whose body is a parsed LogEntryBody. That derived form must NOT be memoised onto the retained
+        // entry: a memo there outlived the render with no release path and, being excluded from
+        // estimatedHeapSize, made the byte budget silently under-count every entry a dashboard had rendered.
+        // Recomputing on every call is the observable signature of "nothing derived is retained": each call
+        // yields a fresh array and fresh cloned element while the rendered value is unchanged.
+        LogEntry logEntry = new LogEntry()
+            .setHttpRequest(request().withPath("/api").withBody("{\"x\":1}"));
+
+        RequestDefinition[] first = logEntry.getHttpUpdatedRequests(null);
+        RequestDefinition[] second = logEntry.getHttpUpdatedRequests(null);
+
+        assertThat(second, is(not(sameInstance(first))));
+        assertThat(second[0], is(not(sameInstance(first[0]))));
+        assertThat(second[0].toString(), is(first[0].toString()));
+    }
+
+    @Test
+    public void doesNotRetainDerivedUpdatedResponseOnTheEntry() {
+        // As doesNotRetainDerivedUpdatedRequestsOnTheEntry, for the response display copy.
+        LogEntry logEntry = new LogEntry()
+            .setHttpResponse(response().withBody("{\"ok\":true}"));
+
+        HttpResponse first = logEntry.getHttpUpdatedResponse(null);
+        HttpResponse second = logEntry.getHttpUpdatedResponse(null);
+
+        assertThat(second, is(not(sameInstance(first))));
+        assertThat(second.getBodyAsString(), is(first.getBodyAsString()));
     }
 
     @Test

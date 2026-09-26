@@ -82,9 +82,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private String timestamp;
     private LogMessageType type;
     private RequestDefinition[] httpRequests;
-    private RequestDefinition[] httpUpdatedRequests;
     private HttpResponse httpResponse;
-    private HttpResponse httpUpdatedResponse;
     private HttpError httpError;
     // Holds a REAL expectation supplied via setExpectation(Expectation) (a closest-match or matched
     // expectation). It is null for the synthetic two-argument form, which is derived on demand from the
@@ -184,9 +182,11 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * well-known header names (whose shared name instance it does not charge) and can err low for traffic
      * with many custom header names or long distinct paths, whose per-message structure it under-counts.
      * <p>
-     * <strong>What is deliberately NOT counted, and why.</strong> The lazily-derived {@code httpUpdated*}
-     * copies and the rendered {@code arguments} are transient (rebuilt at render time, not retained), so
-     * they are excluded — as is the memoized {@code message} string. The {@code message} is the one large
+     * <strong>What is deliberately NOT counted, and why.</strong> The {@code getHttpUpdated*} display
+     * copies and the rendered {@code arguments} are transient — recomputed on every call by
+     * {@link #getHttpUpdatedRequests(org.mockserver.configuration.Configuration)} /
+     * {@link #getHttpUpdatedResponse(org.mockserver.configuration.Configuration)} and never retained on the
+     * entry — so they are excluded, as is the memoized {@code message} string. The {@code message} is the one large
      * term that is level-dependent: it is materialized on the retained entry only at a rendering log
      * level ({@code INFO}/{@code DEBUG}/{@code TRACE}, where {@code writeToSystemOut} renders each entry),
      * and it is populated <em>after</em> this weight is first computed and memoized, so it cannot be
@@ -337,9 +337,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         timestamp = null;
         type = null;
         httpRequests = null;
-        httpUpdatedRequests = null;
         httpResponse = null;
-        httpUpdatedResponse = null;
         httpError = null;
         expectation = null;
         expectationIsSynthetic = false;
@@ -445,8 +443,11 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * instance (including via {@code PUT /mockserver/configuration}) applies to the dashboard and the
      * JSON log-message surface. Falls back to the static store when {@code configuration} is {@code null}.
      * <p>
-     * NOTE the result is memoised on first call, so toggling redaction after an entry has already been
-     * rendered does not retroactively change that entry.
+     * The result is recomputed on every call and NOT retained on the entry: the derived clone (and its
+     * parsed {@link LogEntryBody} JSON tree) is a per-render view, so a retained entry sitting in the
+     * event-log deque never pins a second copy of its request bodies for its lifetime — which is what lets
+     * {@link #estimatedHeapSize()} legitimately exclude it. The caller discards the returned array once it
+     * has produced its output.
      *
      * @param configuration the effective server configuration (may be {@code null})
      */
@@ -454,17 +455,13 @@ public class LogEntry implements EventTranslator<LogEntry> {
     public RequestDefinition[] getHttpUpdatedRequests(org.mockserver.configuration.Configuration configuration) {
         if (httpRequests == null) {
             return EMPTY_REQUEST_DEFINITIONS;
-        } else if (httpUpdatedRequests == null) {
-            org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
-            httpUpdatedRequests = Arrays
-                .stream(httpRequests)
-                .map(this::updateBody)
-                .map(requestDefinition -> redactor == null ? requestDefinition : redactor.redactRequestDefinition(requestDefinition))
-                .toArray(RequestDefinition[]::new);
-            return httpUpdatedRequests;
-        } else {
-            return httpUpdatedRequests;
         }
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
+        return Arrays
+            .stream(httpRequests)
+            .map(this::updateBody)
+            .map(requestDefinition -> redactor == null ? requestDefinition : redactor.redactRequestDefinition(requestDefinition))
+            .toArray(RequestDefinition[]::new);
     }
 
     /**
@@ -566,7 +563,6 @@ public class LogEntry implements EventTranslator<LogEntry> {
     @JsonIgnore
     public LogEntry setHttpRequests(RequestDefinition[] httpRequests) {
         this.httpRequests = httpRequests;
-        this.httpUpdatedRequests = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
@@ -591,7 +587,6 @@ public class LogEntry implements EventTranslator<LogEntry> {
         } else {
             this.httpRequests = DEFAULT_REQUESTS_DEFINITIONS;
         }
-        this.httpUpdatedRequests = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
@@ -608,27 +603,22 @@ public class LogEntry implements EventTranslator<LogEntry> {
 
     /**
      * As {@link #getHttpUpdatedResponse()} but consulting {@code configuration} for
-     * {@code redactSecretsInLog}. Memoised on first call, as above.
+     * {@code redactSecretsInLog}. Recomputed on every call and NOT retained on the entry, as above.
      *
      * @param configuration the effective server configuration (may be {@code null})
      */
     public HttpResponse getHttpUpdatedResponse(org.mockserver.configuration.Configuration configuration) {
         if (httpResponse == null) {
             return null;
-        } else if (httpUpdatedResponse == null) {
-            HttpResponse updated = updateBody(httpResponse);
-            org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
-            httpUpdatedResponse = redactor == null ? updated : redactor.redactResponseObject(updated);
-            return httpUpdatedResponse;
-        } else {
-            return httpUpdatedResponse;
         }
+        HttpResponse updated = updateBody(httpResponse);
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
+        return redactor == null ? updated : redactor.redactResponseObject(updated);
     }
 
     @JsonIgnore
     public LogEntry setHttpResponse(HttpResponse httpResponse) {
         this.httpResponse = httpResponse;
-        this.httpUpdatedResponse = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
