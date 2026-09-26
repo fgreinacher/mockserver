@@ -62,9 +62,9 @@ the 277 the weigher charges.
 | A/B | `withEntry` null NPE; `withKeyMatchStyle` cache invalidation | bug fixes | **landed** `1122561d7` |
 | 5 | Synthetic per-request `Expectation` derived lazily | both | **landed** `4d09ceb55` |
 | 3 | Header-name dedup + `NottableString` field diet | both | **landed** `37a8fb023` |
-| 4b | Flat insertion-ordered array replacing the Guava multimap | both | **landed** — 1,213 to 654 bytes per message |
-| 6 | `estimatedHeapSize()` to count headers and expectation | accounting | to do, **after** 5 |
-| 7 | Boxed `Long`, per-entry `Object[]`, `AtomicInteger`, `KeyToMultiValue.hashCode` | churn | to do |
+| 4b | Flat insertion-ordered array replacing the Guava multimap | both | **landed** `c381a0303` — 1,213 to 654 bytes per message |
+| 6 | `estimatedHeapSize()` to count headers and expectation | accounting | **landed** `d4f9a9bdc` — over-charge 2.35x to 1.14x |
+| 7 | Boxed `Long`, per-entry `Object[]`, `AtomicInteger`, `KeyToMultiValue.hashCode` | churn | **landed** `3c7aa9ae3` |
 | 8 | Audit all of `org.mockserver.model` | both | to do, after 1-7 |
 
 Expected size of the remaining work, from the histogram above: unit 3 targets the
@@ -155,9 +155,9 @@ Units are ordered by expected value, not by ease.
 
 | # | Unit | Lever | Status |
 |---|---|---|---|
-| 10 | Stop taking a global lock per request to re-add a known SAN host | **throughput** (contention) | to do |
-| 11 | Precompile the two `URLParser` regexes | churn + CPU | to do |
-| 12 | Cheapest-first gate for the control-plane decision | churn + CPU | to do |
+| 10 | Stop taking a global lock per request to re-add a known SAN host | **throughput** (contention) | **landed** `e498a1592` |
+| 11 | Precompile the two `URLParser` regexes | churn + CPU | **landed** `a8ca82053` |
+| 12 | Cheapest-first gate for the control-plane decision | churn + CPU | **landed** `d605a3cb6` |
 | 13 | Single-pass header ingest | churn | to do |
 | 14 | Per-PUT future, query-map copy, address `toString` | churn | to do |
 | 15 | Identify the boxed `Long` and `Integer` residuals from a dominator tree | occupancy | to do |
@@ -240,8 +240,8 @@ Phase one cut retained heap hard and barely moved peak throughput. Phase two fou
 why: a shared monitor sat on the hot path. The lesson reframes this phase — **look
 for blocking and setup cost, not only bytes**.
 
-Ordered by expected value. Units 16 and 17 are the two biggest available wins and
-neither is primarily an allocation fix.
+Ordered by expected value. Units 17 and 21 are the two biggest available wins and
+neither is primarily an allocation fix — 16 was declined once its premise was tested.
 
 | # | Unit | Lever | Status |
 |---|---|---|---|
@@ -249,7 +249,7 @@ neither is primarily an allocation fix.
 | 17 | Reconsider the shipped GC default | **GC length → p95** | collector settled by 446 — awaiting the low-core cell |
 | 18 | Response write path | churn | to do |
 | 19 | Dashboard WebSocket handler | occupancy + threads | to do |
-| 20 | Matching path — per-candidate churn | churn → GC frequency | audited, see below |
+| 20 | Matching path — per-candidate churn | churn → GC frequency | **20a landed** `53689793f`; findings 2-4 to do |
 | 21 | Forwarding client — blocking proxy paths | **throughput** (thread occupancy) | audited, see below |
 | 22 | Templating and callback paths | churn + CPU | to do |
 
