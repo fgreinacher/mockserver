@@ -88,6 +88,118 @@ public class HttpState {
 
     public static final String LOG_SEPARATOR = NEW_LINE + "------------------------------------" + NEW_LINE;
     public static final String PATH_PREFIX = "/mockserver";
+    private static final String PATH_PREFIX_SLASH = PATH_PREFIX + "/";
+
+    // Every control-plane route lives under PATH_PREFIX but also accepts a bare-path alias without
+    // it (legacy), so this gate over-approximates both forms as a cheap per-request fast reject.
+    // The dispatch chains stay the real routers: returning true is always safe, returning false for
+    // a real control-plane path is the only error. A new route MUST add its bare alias here (or its
+    // bare prefix below) - ControlPlaneGateCoverageTest derives the expected set from the routing
+    // source, so omitting it fails the build.
+    private static final Set<String> CONTROL_PLANE_BARE_ALIASES = Set.of(
+        "/asyncapi",
+        "/asyncapi/http",
+        "/asyncapi/verify",
+        "/audit",
+        "/baseline/compare",
+        "/bind",
+        "/breakpoint/matcher",
+        "/breakpoint/matcher/clear",
+        "/breakpoint/matcher/remove",
+        "/breakpoint/matchers",
+        "/cassettes",
+        "/chaosExperiment",
+        "/chaosExperiment/history",
+        "/chaosExperiment/profiles",
+        "/clear",
+        "/clock",
+        "/cluster",
+        "/config",
+        "/configuration",
+        "/contractTest",
+        "/crud",
+        "/debugMismatch",
+        "/diff",
+        "/drift",
+        "/drift/clear",
+        "/expectation",
+        "/explainUnmatched",
+        "/files/delete",
+        "/files/list",
+        "/files/retrieve",
+        "/files/store",
+        "/generateExpectation",
+        "/graphql",
+        "/grpc/clear",
+        "/grpc/descriptors",
+        "/grpc/health",
+        "/grpc/services",
+        "/grpcChaos",
+        "/http3status",
+        "/import",
+        "/llm/diffRuns",
+        "/llm/optimisationReport",
+        "/loadScenario",
+        "/loadScenario/generateFromOpenAPI",
+        "/loadScenario/generateFromRecording",
+        "/loadScenario/start",
+        "/loadScenario/stop",
+        "/mode",
+        "/oidc",
+        "/openapi",
+        "/pact",
+        "/pact/import",
+        "/pact/verify",
+        "/preemption",
+        "/proxyConfiguration",
+        "/ready",
+        "/recordings/promote",
+        "/replay",
+        "/reset",
+        "/retrieve",
+        "/saml",
+        "/scenario",
+        "/scim",
+        "/serviceChaos",
+        "/status",
+        "/stop",
+        "/tcpChaos",
+        "/trafficValidate",
+        "/verify",
+        "/verifySequence",
+        "/verifySLO",
+        "/wasm/modules",
+        "/wasm/test",
+        "/wsdl"
+    );
+
+    // Bare prefixes of control-plane {name}-style routes (their prefixed forms are covered by
+    // PATH_PREFIX_SLASH). Kept separate from the exact-alias set because they match by prefix.
+    private static final String[] CONTROL_PLANE_BARE_PREFIXES = {
+        "/scenario/", "/loadScenario/", "/chaosExperiment/profiles/", "/chaosExperiment/apply/"
+    };
+
+    /**
+     * Cheap over-approximating gate: {@code true} if {@code path} could be a control-plane route in
+     * either dispatch chain (prefixed under {@link #PATH_PREFIX}, a known bare alias, or a known
+     * bare {name}-route prefix). A {@code false} result guarantees the path is data-plane, so the
+     * caller can skip the linear route scan. Never returns {@code false} for a real control-plane
+     * path; may return {@code true} for a non-route (harmless - the chain then declines it).
+     */
+    public static boolean isControlPlanePathCandidate(String path) {
+        if (path == null) {
+            return false;
+        }
+        if (path.startsWith(PATH_PREFIX_SLASH) || CONTROL_PLANE_BARE_ALIASES.contains(path)) {
+            return true;
+        }
+        for (String prefix : CONTROL_PLANE_BARE_PREFIXES) {
+            if (path.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
     private static final ThreadLocal<Integer> LOCAL_PORT = new ThreadLocal<>();
     private final String uniqueLoopPreventionHeaderValue = "MockServer_" + UUIDService.getUUID();
     private final MockServerEventLog mockServerLog;
@@ -2052,6 +2164,15 @@ public class HttpState {
                     .setMessageFormat(RECEIVED_REQUEST_MESSAGE_FORMAT)
                     .setArguments(request)
             );
+        }
+
+        // Cheapest-first gate: a path that can be no control-plane route skips the whole per-method
+        // scan below and is declined (false) exactly as it would be after falling through it, so the
+        // caller proceeds to data-plane handling. Only fast-reject a definitely-non-candidate path;
+        // a null path keeps the original chain so its behaviour is unchanged.
+        String requestPath = request.getPath() == null ? null : request.getPath().getValue();
+        if (requestPath != null && !isControlPlanePathCandidate(requestPath)) {
+            return false;
         }
 
         if (request.matches("PUT")) {

@@ -575,15 +575,29 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
         return this.method.getValue().equals(method);
     }
 
+    public boolean matches(final String method, final String path) {
+        return this.method.getValue().equals(method) && this.path.getValue().equals(path);
+    }
+
+    public boolean matches(final String method, final String path1, final String path2) {
+        if (!this.method.getValue().equals(method)) {
+            return false;
+        }
+        final String value = this.path.getValue();
+        return value.equals(path1) || value.equals(path2);
+    }
+
     public boolean matches(final String method, final String... paths) {
-        boolean matches = false;
+        if (!this.method.getValue().equals(method)) {
+            return false;
+        }
+        final String value = this.path.getValue();
         for (String path : paths) {
-            matches = this.method.getValue().equals(method) && this.path.getValue().equals(path);
-            if (matches) {
-                break;
+            if (value.equals(path)) {
+                return true;
             }
         }
-        return matches;
+        return false;
     }
 
     public Parameters getPathParameters() {

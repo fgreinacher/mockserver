@@ -235,7 +235,16 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
 
             if (!httpState.handle(request, responseWriter, false)) {
 
-                if (request.matches("GET", PATH_PREFIX + "/ready", "/ready")) {
+                // Cheapest-first gate for the control-plane routes serviced here (all path-based
+                // except CONNECT, which is method-based and tested last). A path that is neither a
+                // control-plane candidate nor the configured liveness probe short-circuits every
+                // branch below straight to the data-plane else. A null path keeps the original chain.
+                final String controlPlanePath = request.getPath() == null ? null : request.getPath().getValue();
+                final boolean controlPlaneCandidate = controlPlanePath == null
+                    || HttpState.isControlPlanePathCandidate(controlPlanePath)
+                    || (isNotBlank(configuration.livenessHttpGetPath()) && request.matches("GET", configuration.livenessHttpGetPath()));
+
+                if (controlPlaneCandidate && request.matches("GET", PATH_PREFIX + "/ready", "/ready")) {
 
                     // Readiness probe — distinct from liveness/status, which answer 200 the instant
                     // the port binds. Stays 503 until the synchronous expectation initializers and
@@ -247,12 +256,12 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         responseWriter.writeResponse(request, SERVICE_UNAVAILABLE, "{\"status\":\"NOT_READY\"}", "application/json");
                     }
 
-                } else if (request.matches("PUT", PATH_PREFIX + "/status", "/status") ||
-                    isNotBlank(configuration.livenessHttpGetPath()) && request.matches("GET", configuration.livenessHttpGetPath())) {
+                } else if (controlPlaneCandidate && (request.matches("PUT", PATH_PREFIX + "/status", "/status") ||
+                    isNotBlank(configuration.livenessHttpGetPath()) && request.matches("GET", configuration.livenessHttpGetPath()))) {
 
                     responseWriter.writeResponse(request, OK, portBindingSerializer.serialize(portBinding(server.getLocalPorts())), "application/json");
 
-                } else if (request.matches("PUT", PATH_PREFIX + "/bind", "/bind")) {
+                } else if (controlPlaneCandidate && request.matches("PUT", PATH_PREFIX + "/bind", "/bind")) {
 
                     // /bind mutates the server's listening ports, so it must take the SAME
                     // control-plane authn + authorization + audit decision as the operations
@@ -282,7 +291,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         completeInFlight(inFlightRequest);
                     }
 
-                } else if (request.matches("PUT", PATH_PREFIX + "/stop", "/stop")) {
+                } else if (controlPlaneCandidate && request.matches("PUT", PATH_PREFIX + "/stop", "/stop")) {
 
                     // /stop shuts the whole server down, so it must take the SAME control-plane
                     // authn + authorization + audit decision as the operations dispatched through
@@ -304,8 +313,8 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     ctx.writeAndFlush(response().withStatusCode(OK.code()).withStreamId(request.getStreamId()));
                     new Scheduler.SchedulerThreadFactory("MockServer Stop").newThread(() -> server.stop()).start();
 
-                } else if (request.matches("GET", PATH_PREFIX + "/configuration", "/configuration")
-                    || request.matches("PUT", PATH_PREFIX + "/configuration", "/configuration")) {
+                } else if (controlPlaneCandidate && (request.matches("GET", PATH_PREFIX + "/configuration", "/configuration")
+                    || request.matches("PUT", PATH_PREFIX + "/configuration", "/configuration"))) {
 
                     // /configuration is serviced here, outside HttpState.handle, but PUT mutates
                     // live configuration — so it must take the SAME authn + authorization + audit
@@ -352,7 +361,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                         }
                     }
 
-                } else if (request.matches("GET", PATH_PREFIX + "/llm/optimisationReport", "/llm/optimisationReport")) {
+                } else if (controlPlaneCandidate && request.matches("GET", PATH_PREFIX + "/llm/optimisationReport", "/llm/optimisationReport")) {
 
                     // This GET is serviced here, outside HttpState.handle. Route it through the
                     // shared core gate (which writes the 401/403 and audits on failure) rather than
@@ -364,7 +373,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     }
                     handleOptimisationReport(request, responseWriter);
 
-                } else if (request.matches("PUT", PATH_PREFIX + "/llm/diffRuns", "/llm/diffRuns")) {
+                } else if (controlPlaneCandidate && request.matches("PUT", PATH_PREFIX + "/llm/diffRuns", "/llm/diffRuns")) {
 
                     // Prompt-level diff of two recorded agent runs. It only READS captured traffic
                     // (never mutates state), but it streams that traffic's decoded prompts, so it
@@ -377,7 +386,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     }
                     handleDiffRuns(request, responseWriter);
 
-                } else if (request.matches("GET", PATH_PREFIX + "/http3status", "/http3status")) {
+                } else if (controlPlaneCandidate && request.matches("GET", PATH_PREFIX + "/http3status", "/http3status")) {
 
                     // Reports the live HTTP/3 listener port and active connection count, so it takes the
                     // SAME control-plane authn + authorization + audit decision as every neighbouring
@@ -395,7 +404,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     String json = "{\"enabled\":" + enabled + ",\"port\":" + http3Port + ",\"activeConnections\":" + activeConnections + "}";
                     responseWriter.writeResponse(request, OK, json, "application/json");
 
-                } else if (request.getMethod().getValue().equals("GET") && request.getPath().getValue().startsWith(PATH_PREFIX + "/dashboard")) {
+                } else if (controlPlaneCandidate && request.getMethod().getValue().equals("GET") && request.getPath().getValue().startsWith(PATH_PREFIX + "/dashboard")) {
 
                     // The dashboard streams all captured traffic (request/response bodies included),
                     // so it must take the SAME control-plane authn + authorization + audit decision as
@@ -414,7 +423,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     completeInFlight(inFlightRequest);
                     dashboardHandler.renderDashboard(ctx, request);
 
-                } else if (request.getMethod().getValue().equals("GET") && request.getPath().getValue().equals(PATH_PREFIX + "/openapi.yaml")) {
+                } else if (controlPlaneCandidate && request.getMethod().getValue().equals("GET") && request.getPath().getValue().equals(PATH_PREFIX + "/openapi.yaml")) {
 
                     // This GET is serviced here, outside HttpState.handle. Route it through the
                     // shared core gate (which writes the 401/403 and audits on failure) rather than
@@ -430,7 +439,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                     completeInFlight(inFlightRequest);
                     openAPISpecHandler.renderOpenAPISpec(ctx, request);
 
-                } else if (request.getMethod().getValue().equals("GET") && request.getPath().getValue().matches(PATH_PREFIX + "/metrics")) {
+                } else if (controlPlaneCandidate && request.getMethod().getValue().equals("GET") && request.getPath().getValue().matches(PATH_PREFIX + "/metrics")) {
 
                     // Always reserve this control-plane path (like /dashboard and /openapi.yaml
                     // above). MetricsHandler serves the metrics when enabled and a CORS-decorated
