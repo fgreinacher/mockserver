@@ -75,6 +75,14 @@ public class HttpRequestTest {
     }
 
     @Test
+    public void passesSuppliedPortIntegerThroughWithoutReboxing() {
+        Integer port = 1080;
+        assertThat(new HttpRequest().withSocketAddress(false, "someHost", port).getSocketAddress().getPort(), is(sameInstance(port)));
+        assertThat(new HttpRequest().withSocketAddress(true, "someHost", port).getSocketAddress().getPort(), is(sameInstance(port)));
+        assertThat(new HttpRequest().withSocketAddress(false, "someHost:9999", port).getSocketAddress().getPort(), is(sameInstance(port)));
+    }
+
+    @Test
     public void returnsKeepAlive() {
         assertThat(new HttpRequest().withKeepAlive(true).isKeepAlive(), is(Boolean.TRUE));
         assertThat(new HttpRequest().withKeepAlive(false).isKeepAlive(), is(Boolean.FALSE));

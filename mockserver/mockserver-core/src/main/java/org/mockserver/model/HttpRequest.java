@@ -394,11 +394,11 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
             String[] hostParts = splitHostPort(host);
             boolean secure = Boolean.TRUE.equals(isSecure);
             if (hostParts.length > 1) {
-                withSocketAddress(hostParts[0], port != null ? port : Integer.parseInt(hostParts[1]), secure ? HTTPS : HTTP);
+                withSocketAddress(hostParts[0], port != null ? port : Integer.valueOf(hostParts[1]), secure ? HTTPS : HTTP);
             } else if (secure) {
-                withSocketAddress(host, port != null ? port : 443, HTTPS);
+                withSocketAddress(host, port != null ? port : Integer.valueOf(443), HTTPS);
             } else {
-                withSocketAddress(host, port != null ? port : 80, HTTP);
+                withSocketAddress(host, port != null ? port : Integer.valueOf(80), HTTP);
             }
         }
         this.hashCode = 0;
