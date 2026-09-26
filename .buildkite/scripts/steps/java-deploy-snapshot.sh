@@ -59,13 +59,15 @@ echo "--- :nexus: Deploying snapshot to Central Portal"
 # transforming...`. 12g clears both; see java-build.sh for the full rationale.
 # REQUIRES a >=32 GiB agent (default queue = m5.2xlarge) — coupled with the
 # terraform instance-type change.
+# -DskipITs as well as -DskipTests: -DskipTests silences surefire only, so without it
+# failsafe re-ran every *IntegrationTest the green build already ran before this step.
 exec "$SCRIPT_DIR/../run-in-docker.sh" \
   -i mockserver/mockserver:maven \
   -m 12g \
   -w /build/mockserver \
   -e "SONATYPE_USERNAME=$SONATYPE_USERNAME" \
   -e "SONATYPE_PASSWORD=$SONATYPE_PASSWORD" \
-  -- ./mvnw -B --no-transfer-progress -T 1C deploy -DskipTests \
+  -- ./mvnw -B --no-transfer-progress -T 1C deploy -DskipTests -DskipITs \
     -Dmaven.javadoc.skip=true \
     -Dmaven.source.skip=true \
     -Dgpg.skip=true \

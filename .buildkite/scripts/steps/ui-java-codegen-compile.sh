@@ -54,7 +54,7 @@ rm -rf "$WORK_DIR"
 mkdir -p "$SAMPLES_DIR" "$CLASSES_DIR"
 echo '--- :maven: building mockserver-client-java (+deps) and dumping classpath'
 cd "$BASE/mockserver"
-./mvnw -q -pl mockserver-client-java -am install -DskipTests -T 1C
+./mvnw -q -pl mockserver-client-java -am install -DskipTests -DskipITs -T 1C
 ./mvnw -q -pl mockserver-client-java dependency:build-classpath -Dmdep.outputFile="$CP_FILE"
 echo "    classpath written to $CP_FILE (\$(wc -c < "$CP_FILE") bytes)"
 EOF

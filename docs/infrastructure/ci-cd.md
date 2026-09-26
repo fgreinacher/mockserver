@@ -352,7 +352,7 @@ Each phase runs inside its own Docker image via `run-in-docker.sh`. Set `CODEGEN
 
 | Phase | Image | What it does |
 |-------|-------|-------------|
-| 1 | `mockserver/mockserver:maven` | `./mvnw install -pl mockserver-client-java -am -DskipTests -T 1C` then `dependency:build-classpath` to a file |
+| 1 | `mockserver/mockserver:maven` | `./mvnw install -pl mockserver-client-java -am -DskipTests -DskipITs -T 1C` then `dependency:build-classpath` to a file |
 | 2 | `node:22` | Runs `mockserver-ui/scripts/emit-java-codegen-samples.mjs` — no `npm ci` needed; `standardCodegen.ts` is dependency-free |
 | 3 | `mockserver/mockserver:maven` | `javac --release 17` on all emitted `.java` files against the Phase 1 classpath |
 
@@ -408,6 +408,8 @@ The `default` agent queue is a mix of on-demand and Spot instances (see [aws-inf
 
 Two complementary mitigations:
 
+- **Artifact-only Maven runs pass `-DskipITs` as well as `-DskipTests`.** In this repo `-DskipTests` silences surefire only; failsafe still runs every `*IntegrationTest`. A step that runs Maven only to assemble artifacts for a later step — the Sonatype snapshot deploy, the UI e2e and codegen jar builds, the maven-plugin build — must pass both, or it silently re-runs the full integration suite the build already ran. The snapshot deploy did this for 23 minutes a build, of which the upload was the last few seconds.
+- **Container integration tests run alongside `:maven: build`, not after it.** They consume only the netty fat jar and the WAR, which `:maven: container-test jars` builds test-free. They sit before the post-build `wait` and are ordered by `depends_on: container-test-jars`; `container-tests-run.sh` downloads with `--step container-test-jars`, so it cannot pick up the same-named copies `:maven: build` also uploads. Master-only, as before.
 - **`automatic_retry` on agent-lost** — the long, non-`soft_fail` command steps (`:maven: build`, deploy snapshot, container integration tests, build-and-push `:snapshot`) declare `retry.automatic` for `exit_status: -1` and `255` (`limit: 2`). A Spot reclaim silently re-queues the job onto a fresh agent instead of reddening the build. **Real test failures exit `1` and are NOT retried**, so this never masks genuine breakage.
 - **Higher on-demand ratio** — the default queue's `on_demand_percentage` was raised from 20% to 60% so a long build is much less likely to land on a Spot instance in the first place (the on-demand base capacity of 1 is unchanged).
 

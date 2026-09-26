@@ -44,7 +44,7 @@ echo "--- :maven: Building the runnable MockServer JAR (bundles current dashboar
   -m 7g \
   --cache maven \
   -w /build/mockserver \
-  -- ./mvnw -q clean install -DskipTests -pl mockserver-netty-no-dependencies -am
+  -- ./mvnw -q clean install -DskipTests -DskipITs -pl mockserver-netty-no-dependencies -am
 
 # newest runnable jar (exclude -sources/-javadoc/original- variants); find+sort avoids `ls | grep` (SC2010)
 JAR=$(find "$REPO_ROOT/mockserver/mockserver-netty-no-dependencies/target" -maxdepth 1 -type f \

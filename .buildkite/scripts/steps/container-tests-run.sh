@@ -17,7 +17,7 @@ set -euo pipefail
 # ":docker: build and push :snapshot" step (java-docker-push-snapshot.sh), not here. This
 # matches how helm-integration-test.sh already stages the default fat jar for docker/clustered.
 echo "--- :buildkite: Downloading default fat JAR artifact"
-buildkite-agent artifact download "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar" .
+buildkite-agent artifact download --step "${CONTAINER_TEST_JARS_STEP:-container-test-jars}" "mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependencies.jar" .
 
 shopt -s nullglob
 FAT_JAR=""
@@ -27,20 +27,20 @@ for f in mockserver/mockserver-netty/target/mockserver-netty-*-jar-with-dependen
 done
 shopt -u nullglob
 if [ -z "$FAT_JAR" ]; then
-  echo "Error: default fat JAR (mockserver-netty-*-jar-with-dependencies.jar) not found after artifact download — the upstream :maven: build step must upload it"
+  echo "Error: default fat JAR (mockserver-netty-*-jar-with-dependencies.jar) not found after artifact download — the \":maven: container-test jars\" step must upload it"
   exit 1
 fi
 echo "Default fat JAR present: $FAT_JAR"
 # Already at the exact path+name integration_tests.sh globs, so no re-stage is needed.
 
 # The docker_compose_war_tomcat case deploys the WAR into a Tomcat container.
-# The WAR is built by the reactor in the ":maven: build" step and uploaded as an
+# The WAR is built by the ":maven: container-test jars" step and uploaded as an
 # artifact there (Buildkite steps share no filesystem). Download it into the path
 # the test globs (mockserver/mockserver-war/target/). Fail closed if it is
 # absent — this case exists to guard WAR deployment (a demonstrated weak spot),
 # so a missing WAR must red the step, never silently skip.
 echo "--- :buildkite: Downloading WAR artifact"
-buildkite-agent artifact download "mockserver/mockserver-war/target/mockserver-war-*.war" .
+buildkite-agent artifact download --step "${CONTAINER_TEST_JARS_STEP:-container-test-jars}" "mockserver/mockserver-war/target/mockserver-war-*.war" .
 shopt -s nullglob
 WARS=( mockserver/mockserver-war/target/mockserver-war-*.war )
 shopt -u nullglob
