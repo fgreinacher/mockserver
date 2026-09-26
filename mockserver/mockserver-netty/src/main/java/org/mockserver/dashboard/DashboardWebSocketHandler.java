@@ -697,7 +697,10 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
             Integer.MAX_VALUE
         ).newHandshaker(httpRequest);
         if (handshaker == null) {
+            // No dashboard on this channel, so register nothing: the listeners and executors below
+            // are only useful to a connected dashboard, and this branch leaves the connection open.
             WebSocketServerHandshakerFactory.sendUnsupportedVersionResponse(ctx.channel());
+            return;
         } else {
             ctx.channel().attr(HANDSHAKER).set(handshaker);
             handshaker.handshake(
@@ -727,6 +730,16 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
         if (throttleExecutorService == null) {
             throttleExecutorService = Executors.newScheduledThreadPool(1);
+            // Scheduled here, inside the guard that creates the executor, because
+            // registerListeners() runs on every upgrade attempt on the channel. Unguarded it
+            // accumulated one perpetual task per attempt - unbounded heap and CPU growth - and each
+            // extra task refilled the write permit again per second, removing the very throttle
+            // these tasks exist to enforce. handlerRemoved shuts the executor down, cancelling it.
+            throttleExecutorService.scheduleAtFixedRate(() -> {
+                if (semaphore.availablePermits() == 0) {
+                    semaphore.release(1);
+                }
+            }, 0, 1, SECONDS);
         }
         if (scheduler == null) {
             scheduler = new ThreadPoolExecutor(
@@ -739,11 +752,6 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 new ThreadPoolExecutor.DiscardOldestPolicy()
             );
         }
-        throttleExecutorService.scheduleAtFixedRate(() -> {
-            if (semaphore.availablePermits() == 0) {
-                semaphore.release(1);
-            }
-        }, 0, 1, SECONDS);
         if (mockServerEventLog == null) {
             mockServerEventLog = httpState.getMockServerLog();
             mockServerEventLog.registerListener(this);

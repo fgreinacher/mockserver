@@ -48,6 +48,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.List;
 import java.util.Map;
@@ -2962,4 +2963,27 @@ public class DashboardWebSocketHandlerTest {
         }
     }
 
+    // registerListeners() runs on EVERY upgrade attempt on a channel, including attempts that fail
+    // the handshake and leave the connection open. The throttle-refill schedule therefore has to be
+    // idempotent: unguarded it accumulated one perpetual task per attempt, which grew without bound
+    // and - because each task refills the write permit - removed the throttle it exists to enforce.
+    @Test
+    public void shouldScheduleTheThrottleRefillOnlyOnceHoweverOftenListenersAreRegistered() throws Exception {
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Scheduler scheduler = track(new Scheduler(configuration(), mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration(), mockServerLogger, scheduler));
+        DashboardWebSocketHandler handler = track(new DashboardWebSocketHandler(httpState, false, true));
+
+        handler.registerListeners();
+        handler.registerListeners();
+        handler.registerListeners();
+
+        java.lang.reflect.Field field = DashboardWebSocketHandler.class.getDeclaredField("throttleExecutorService");
+        field.setAccessible(true);
+        ScheduledThreadPoolExecutor throttle = (ScheduledThreadPoolExecutor) field.get(handler);
+
+        // One periodic task, whatever the number of registrations. A fixed-rate task sits in the
+        // queue between runs, so the queue depth is the number of schedules that were made.
+        assertThat("throttle refill scheduled more than once", throttle.getQueue().size(), is(1));
+    }
 }
