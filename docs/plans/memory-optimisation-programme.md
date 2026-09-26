@@ -590,13 +590,52 @@ signatures. The direction is therefore near-certainly the collector, but build *
 re-runs G1 on arm B's image to settle it, and no default should change until that pair
 is matched.
 
-**What this means for the default, pending 450.** If 450 confirms it, the objection
-that blocked the change is gone: ZGC wins at both 6 and 2 cores, on the shipped default
-heap, without a throughput cost. That would make the image default a justified change
-rather than a tuning note — and it would also contradict the published guidance that
-"ZGC's fixed overhead isn't worth it below ~4 GB heap"
-(`_includes/performance_configuration.html:165`), which needs correcting in the same
-change. Still single samples per cell, so a repeat is warranted before shipping.
+**450 did not give a matched pair — it gave something better.** The snapshot image moved
+again before it ran, so the three cells are: 448 G1 on `53689793f`, 449 ZGC on
+`0e682513f`, 450 G1 on `306017ced`. Arm A-prime therefore carries *more* performance
+code than the ZGC arm — it includes unit 20's findings 2-4 and the response bug fix as
+well as unit 12. Two G1 points on either side of the code delta **bracket** the code
+effect, which closes the confound more directly than a matched pair would have.
+
+| offered | G1 old code p95 | G1 new code p95 | code delta | ZGC p95 | ZGC vs *best* G1 |
+|---:|---:|---:|---:|---:|---:|
+| 8,000 | 0.604 | 0.406 | −0.198 | 0.228 | 1.8× |
+| 12,000 | 15.690 | 4.944 | **−10.746** | 0.460 | 10.7× |
+| 16,000 | 47.562 | 15.376 | **−32.186** | 3.079 | 5.0× |
+| 20,000 | 73.211 | 46.704 | −26.507 | 9.267 | 5.0× |
+| 24,000 | 82.352 | 68.057 | −14.295 | 16.345 | 4.2× |
+
+**Two corrections to what this plan said earlier.**
+
+1. **The code delta is large, and dismissing it was wrong.** I argued unit 12 "cannot
+   plausibly produce" a big p95 change. Units 12 and 20 together cut G1's p95 at 12,000
+   by 3.2× and at 16,000 by 3.1×. That is a substantial code win in its own right — and
+   it means the first ZGC-vs-G1 margin quoted here (34× at 12,000) was inflated by
+   comparing against un-optimised G1. **Against the best G1 the margin is 4-11× at and
+   above the knee.** The direction holds; the magnitude was overstated.
+2. **There is no throughput regression, despite the peak metric.** `rig_valid_peak`
+   reads 23,550 for 448 and 15,876 for 450, which looks like a 33% loss. It is not: 450
+   *achieved* 23,554.8 at 24,000 offered, within noise of 448's 23,550.2. Its top two
+   rungs were excluded as client scheduling stalls (dropped fraction 1.8-1.9% against
+   the 1% tolerance, at occupancy below the 80% knee), so the peak is a max over fewer
+   valid rungs. This is the same trap as the published-excluded-rung defect: the metric
+   describes the load generator, not the server.
+
+**The rig-validity pattern is itself evidence for ZGC.** All seven ZGC rungs are
+rig-valid with a dropped fraction of exactly 0 at 16,000 and 24,000, and occupancy
+1.6-15.4%. Both G1 runs shed rungs to client scheduling stalls with occupancy climbing
+to 55-85%. A client cannot keep its schedule when responses stall, so G1's excluded
+rungs are a symptom of the pauses rather than an unrelated rig problem.
+
+**Verdict for the default.** ZGC wins at both 6 and 2 cores, on the shipped default
+heap, without a throughput cost, and it wins at 2 cores *even against a G1 build
+carrying more optimisation than the ZGC build had*. The objection this cell was built to
+test — that a small container would starve ZGC's concurrent threads — is not supported:
+peak CPU was 48.8% against G1's 34-44%. The remaining honest caveats are that each cell
+is a single sample and no two cells share an image, so **the change should ship with a
+repeat on matched images**, and it would also require correcting
+`_includes/performance_configuration.html:165`, which tells users ZGC is not worth it
+below a ~4 GB heap.
 
 ### 18 — the response write path
 
