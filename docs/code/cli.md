@@ -286,8 +286,9 @@ feature parity is 100% with zero reachability-metadata maintenance.
 
 **Runtime module set** (validated end-to-end — HTTP, HTTPS/BouncyCastle dynamic certs, and DNS
 all confirmed): `java.se` (runtime aggregator) plus `jdk.unsupported` (Netty `sun.misc.Unsafe`),
-`jdk.crypto.ec` + `jdk.crypto.cryptoki` (TLS), `jdk.naming.dns`, `jdk.zipfs`. Trimmed runtime is
-~54 MB.
+`jdk.crypto.ec` + `jdk.crypto.cryptoki` (TLS), `jdk.naming.dns`, `jdk.zipfs`, and `jdk.management`
+(`com.sun.management.ThreadMXBean` for the `jvm_memory_allocated_bytes` Prometheus gauge — `java.se`
+aggregates only `java.*` modules, so this is added explicitly). Trimmed runtime is ~54 MB.
 
 **Launcher** (`bin/mockserver`) execs the bundled `runtime/bin/java -jar lib/mockserver.jar "$@"`,
 so every CLI subcommand and flag documented above works identically; `MOCKSERVER_JAVA_OPTS`

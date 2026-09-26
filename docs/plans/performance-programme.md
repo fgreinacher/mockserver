@@ -75,16 +75,29 @@ null`) was fixed in `ea2336131`. The original question — a child that IS creat
 those states — cannot be answered by editing the repo; it requires a build that actually reaches
 that state.
 
-### 4. Shading defect: `jvm_memory_allocated_bytes` — OPEN (needs a build)
+### 4. Shading defect: `jvm_memory_allocated_bytes` — RESOLVED (pending the first snapshot image from this commit)
 
-`mockserver/pom.xml` relocates `com.sun` wholesale, including `com.sun.management`.
-`JvmMetricsCollector.totalAllocatedBytes()` checks `instanceof com.sun.management.ThreadMXBean`;
-the shade plugin rewrites that class reference to the shaded package, so it never matches the real
-JDK class. The metric has been dead in every shipped jar since it was added, and
-`alloc_kb_per_handshake` has been `null` on every TLS-arm run.
+**Real root cause: the Docker images' jlink runtime lacked `jdk.management`.** The shade fix was
+necessary but not sufficient. `JvmMetricsCollector.totalAllocatedBytes()` needs
+`com.sun.management.ThreadMXBean`, which lives in the `jdk.management` module. The trimmed runtime
+baked into every image (`docker/Dockerfile`, `docker/local/Dockerfile`, `docker/aot/Dockerfile`) was
+`jlink`ed with `--add-modules java.se,…` — and `java.se` aggregates only `java.*` modules, never
+`jdk.management`. So `com.sun.management.ThreadMXBean` was absent from the runtime, the `instanceof`
+check failed, the collector returned `-1`, and the metric line was suppressed from the Prometheus
+scrape with no other symptom (every other `jvm_*` metric present, the server otherwise healthy).
 
-`63a7a9833` is the shade-relocation fix. What remains is adding `com.sun.management` explicitly to
-the shade exclusions and verifying the metric fires on a snapshot image.
+Two independent causes had to be fixed:
+- `63a7a9833` stopped `mockserver/pom.xml` relocating `com.sun.management` in the shaded jar (guarded
+  by `assert-jdk-com-sun-not-relocated.sh`) — required so the reference resolves to the real JDK class.
+- This commit adds `jdk.management` to the `jlink --add-modules` in all three Dockerfiles **and** in
+  `scripts/build-binary-bundle.sh` (which the Dockerfile comments cite as the canonical module set, and
+  which produces the JVM-less release bundles that had the same dead metric). A build-time guard in
+  `.buildkite/scripts/steps/docker-build-verify.sh` now starts the image with metrics enabled and fails
+  the build if `jvm_memory_allocated_bytes` is missing from the scrape.
+
+Verified locally: a `docker/Dockerfile` image built from this commit emits the metric; removing
+`jdk.management` from the module list makes both the metric and the new guard go red. Marked resolved
+pending the first snapshot image built from this commit through the pipeline.
 
 ### 5. Large-heap event-log profile — INSTRUMENT LANDED (needs a run + a cap decision)
 

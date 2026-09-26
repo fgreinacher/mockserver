@@ -36,7 +36,9 @@
 #     via System.loadLibrary finding /usr/lib/libnetty_tcnative_linux_*.so. This is
 #     what guards the `COPY ... /usr/lib/` line against a silent removal;
 #   * the container starts, answers its health check, and completes a real TLS
-#     handshake on its port.
+#     handshake on its port;
+#   * with metrics enabled, the Prometheus scrape includes jvm_memory_allocated_bytes
+#     — the guard that the jlink runtime kept jdk.management (com.sun.management.ThreadMXBean).
 #
 # ARCH TRAP
 #   BuildKit auto-injects TARGETARCH, but the classic builder does NOT and the
@@ -330,6 +332,43 @@ assert_starts_and_serves_tls() {
   echo "    :white_check_mark: TLS handshake + PUT /mockserver/status returned 200"
 }
 
+# ── Assert the jvm_memory_allocated_bytes Prometheus metric is actually emitted ──
+# This is the guard for the jlink module set. jvm_memory_allocated_bytes comes from
+# com.sun.management.ThreadMXBean, which lives in the jdk.management module; java.se
+# aggregates only java.* modules, so a jlink runtime that forgets jdk.management drops
+# the class, JvmMetricsCollector returns -1, and the metric line vanishes from the
+# scrape with NO other symptom (the server starts, every other jvm_* metric is present).
+# It went unnoticed in every shipped image until it was found by hand. We start the
+# image with metrics enabled and assert the line is present in the Prometheus scrape —
+# remove jdk.management from the jlink --add-modules and this goes red.
+assert_jvm_memory_allocated_metric() {
+  echo "--- :bar_chart: asserting jvm_memory_allocated_bytes is emitted (guards the jdk.management jlink module)"
+  local cname port
+  cname="docker-build-verify-metrics-$$"
+  docker run -d --name "$cname" -e MOCKSERVER_METRICS_ENABLED=true -p 0:1080 "$IMAGE_TAG" >/dev/null \
+    || fail "docker run (metrics) failed"
+  CLEANUP+=( "container:$cname" )
+  local healthy=0 attempt
+  for attempt in $(seq 1 60); do
+    : "$attempt"
+    if docker exec "$cname" "$IN_IMAGE_JAVA" -cp "$IN_IMAGE_JAR" org.mockserver.cli.HealthCheck >/dev/null 2>&1; then
+      healthy=1; break
+    fi
+    sleep 1
+  done
+  [ "$healthy" -eq 1 ] || { docker logs "$cname" 2>&1 | tail -30 >&2; fail "metrics container never became healthy — failing closed"; }
+  port="$(docker port "$cname" 1080/tcp | head -n1 | sed 's/.*://')"
+  [ -n "$port" ] || fail "could not determine mapped port for metrics — failing closed"
+  local body
+  body="$(curl -s "http://localhost:${port}/mockserver/metrics" --max-time 15 || true)"
+  if ! printf '%s' "$body" | grep -q 'jvm_memory_allocated_bytes'; then
+    echo "    scrape (first 40 lines):" >&2
+    printf '%s\n' "$body" | head -40 | sed 's/^/    /' >&2
+    fail "jvm_memory_allocated_bytes MISSING from the Prometheus scrape — the jlink runtime is likely missing jdk.management (com.sun.management.ThreadMXBean), failing closed"
+  fi
+  echo "    :white_check_mark: jvm_memory_allocated_bytes present in the Prometheus scrape"
+}
+
 # ══ 1. Build the image (unless asserting against an existing one) ═══════════════
 if [ "${DOCKER_VERIFY_SKIP_BUILD:-}" = "true" ]; then
   echo "--- :fast_forward: DOCKER_VERIFY_SKIP_BUILD=true — asserting against existing image '$IMAGE_TAG' (no build, no derive)"
@@ -365,5 +404,6 @@ assert_so_present
 assert_native_provider
 assert_native_provider_readonly
 assert_starts_and_serves_tls
+assert_jvm_memory_allocated_metric
 
-echo "--- :white_check_mark: docker build verify PASSED (image builds, native tcnative loads incl. under --read-only, TLS serves)"
+echo "--- :white_check_mark: docker build verify PASSED (image builds, native tcnative loads incl. under --read-only, TLS serves, jvm_memory_allocated_bytes emitted)"

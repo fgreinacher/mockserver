@@ -59,9 +59,12 @@ FROM eclipse-temurin:25-jdk-noble AS aot-build
 COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /mockserver-netty-jar-with-dependencies.jar
 
 # Same module set validated end-to-end for the jlink binary bundle (docs/code/cli.md):
-# java.se aggregator + Netty Unsafe + TLS crypto + DNS + zipfs.
+# java.se aggregator + Netty Unsafe + TLS crypto + DNS + zipfs + jdk.management. jdk.management supplies
+# com.sun.management.ThreadMXBean, which the Prometheus jvm_memory_allocated_bytes gauge
+# (JvmMetricsCollector) needs — java.se aggregates only java.* modules, so without it that metric is
+# silently suppressed.
 RUN "$JAVA_HOME/bin/jlink" \
-      --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs \
+      --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management \
       --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
       --output /runtime
 

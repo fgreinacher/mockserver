@@ -231,13 +231,16 @@ COPY --from=jarprep /jarprep/own.jar  /mockserver.jar
 COPY --from=jarprep /jarprep/deps.jar /mockserver-deps.jar
 
 # Same module set validated end-to-end for the jlink binary bundle (scripts/build-binary-bundle.sh,
-# docs/code/cli.md). From JDK 25 onwards jlink uses the --compress=zip-<level> form (zip-6 = the default ZIP
-# level); the legacy numeric --compress=2 form was deprecated after JDK 17 and is removed from JDK 25 onwards.
+# docs/code/cli.md). jdk.management supplies com.sun.management.ThreadMXBean, which the Prometheus
+# jvm_memory_allocated_bytes gauge (JvmMetricsCollector) needs — java.se aggregates only java.*
+# modules, so without it that metric is silently suppressed. From JDK 25 onwards jlink uses the
+# --compress=zip-<level> form (zip-6 = the default ZIP level); the legacy numeric --compress=2 form
+# was deprecated after JDK 17 and is removed from JDK 25 onwards.
 # A jlink image does not carry the JDK's default CDS base archive, so -Xshare:dump regenerates it
 # from the bundled lib/classlist — the dynamic AppCDS archive below is layered on that base, and the
 # base is carried into the runtime image with /runtime.
 RUN "$JAVA_HOME/bin/jlink" \
-      --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs \
+      --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management \
       --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
       --output /runtime \
  && /runtime/bin/java -Xshare:dump

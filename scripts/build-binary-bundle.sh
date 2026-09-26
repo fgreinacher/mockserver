@@ -50,8 +50,10 @@ ANALYTICS_DISTRIBUTION=""
 
 # Validated runtime module set (see the jlink spike: HTTP + HTTPS/BouncyCastle +
 # DNS all confirmed working). java.se is the runtime aggregator; the jdk.* extras
-# cover Netty's sun.misc.Unsafe, EC/PKCS11 crypto for dynamic TLS, DNS, and zipfs.
-MODULES="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs"
+# cover Netty's sun.misc.Unsafe, EC/PKCS11 crypto for dynamic TLS, DNS, zipfs, and
+# jdk.management (com.sun.management.ThreadMXBean for the jvm_memory_allocated_bytes
+# Prometheus gauge — java.se aggregates only java.* modules, so it is omitted otherwise).
+MODULES="java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management"
 
 log()  { printf '\033[1;34m[bundle]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[bundle] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
