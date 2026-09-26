@@ -597,7 +597,7 @@ assert_cpusets_physically_disjoint() {
 CORES="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 0)"
 SERVER_CPUS=""; UPSTREAM_CPUS=""; K6_CPUS=""
 if [ "$CORES" -ge 16 ]; then
-  # Defaults: server=0-5 upstream=6 k6=11-23. These are LOGICAL cpu ids; the
+  # Defaults: server=0-5 upstream=6 k6=7-23. These are LOGICAL cpu ids; the
   # topology guard below is what PROVES they land on distinct PHYSICAL cores — this
   # list alone cannot, and the sibling pairing is NOT assumed (it is read from sysfs
   # at run time by lib/perf-cpu-topology.sh, and the run fails closed if it cannot be
@@ -606,24 +606,27 @@ if [ "$CORES" -ge 16 ]; then
   # lands on the server's hyperthread siblings — those live in the upper half and are
   # left IDLE, which is also what keeps the published "six real cores" honest.
   #
-  # k6 spans cores 11-23 (thirteen cores) so the client keeps ample headroom above
-  # the server's ceiling and the knee measured is the SERVER's, not the load
-  # generator's. It deliberately starts at 11, not 7, to leave cores 7-10 free: the
-  # core-scaling plan runs a SECOND arm with the server widened to ten vCPUs
-  # (server=0-9, upstream=10), and this one k6 cpuset must share no physical core
-  # with the server or upstream in EITHER arm. The SERVER's cpuset itself is not
-  # changed here — widening it is a separate unit — but k6 is placed so that unit
-  # needs no k6 move. Any wider server arm still overrides PERF_SERVER_CPUS and the
-  # guard re-proves disjointness for whatever cpusets are actually active.
+  # k6 spans cores 7-23 (seventeen cores) so the client keeps headroom above the
+  # server's ceiling and the knee measured is the SERVER's, not the load generator's.
+  # Thirteen cores was not enough: the client fell below the 95%-achieved threshold at
+  # 48k offered while the same server served it cleanly with seventeen. Cores 7-10 were
+  # previously held free so a ten-vCPU server arm (server=0-9, upstream=10) would need
+  # no k6 move, but that arm cannot be measured on this box at all — it leaves only
+  # thirteen cores for the client, which is the amount already shown to be too few, so
+  # it needs k6 on a separate machine regardless. A wider server arm still overrides
+  # PERF_SERVER_CPUS and the guard re-proves disjointness for whatever is active.
   #
-  # In use (6-vCPU arm): 6 (server) + 1 (upstream) + 13 (k6) physical cores, highest
+  # Changing this cpuset breaks comparability of the stored saturation series and
+  # nothing in the tooling announces it; see docs/plans/memory-optimisation-programme.md.
+  #
+  # In use (6-vCPU arm): 6 (server) + 1 (upstream) + 17 (k6) physical cores, highest
   # id 23, so the box needs 24 physical cores; c5.12xlarge has exactly 24. A smaller
   # box trips the guard (fail-closed) rather than letting k6 share the server's
   # cores. If the perf queue moves to a smaller box, narrow PERF_K6_CPUS to match
   # instead of disabling the guard.
   #
   # Each cpuset is overridable via PERF_SERVER_CPUS / PERF_UPSTREAM_CPUS / PERF_K6_CPUS.
-  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-11-23}"
+  SERVER_CPUS="${PERF_SERVER_CPUS:-0-5}"; UPSTREAM_CPUS="${PERF_UPSTREAM_CPUS:-6}"; K6_CPUS="${PERF_K6_CPUS:-7-23}"
   echo "--- core-pinning enabled (${CORES} logical cpus): server=$SERVER_CPUS upstream=$UPSTREAM_CPUS k6=$K6_CPUS"
   assert_cpusets_physically_disjoint || exit 1
 else
@@ -1435,7 +1438,7 @@ abort_if_sut_died
 # only a valid server-ceiling candidate if the k6 CLIENT had headroom there, so we
 # sample the k6 container's CPU throughout and read k6's own dropped_iterations per
 # rung, then derive saturation_rps from the highest CLEANLY-served rung.
-SWEEP_RATES="${K6_SWEEP_RATES:-500,1000,2000,4000,8000,16000,32000,48000,64000}"
+SWEEP_RATES="${K6_SWEEP_RATES:-500,1000,2000,4000,8000,16000,24000,32000,36000,40000,44000,48000,64000}"
 SWEEP_STEP="${K6_SWEEP_STEP:-15s}"
 SWEEP_GAP="${K6_SWEEP_GAP:-5s}"
 SWEEP_CPU_LOG="$OUT_DIR/sweep-k6-cpu.csv"

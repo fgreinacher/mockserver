@@ -185,9 +185,11 @@ occupancy, a blip just over tolerance) stay excluded; everything pool-pinned fro
 kept. This reconciles the gate with the already-published all-rungs headline (43,671): the headline
 was always the true server peak; it was this gate that was capping at ~24,000.
 
-**k6's cpuset was 12 of 48 vCPUs.** Widened to `11-23` (thirteen physical cores). It starts at 11,
-not 7, so a planned second arm with the server on ten vCPUs (0-9) plus upstream (10) needs no k6
-move — one k6 cpuset shares no physical core with the server or upstream in either the six- or the
+**k6's cpuset was 12 of 48 vCPUs.** Widened to `11-23` (thirteen physical cores) — since superseded
+by `7-23` (seventeen), because thirteen proved too few and the ten-vCPU arm the reservation protected
+cannot run on this box at all; see docs/plans/memory-optimisation-programme.md. The reasoning at the
+time, now superseded, was: it starts at 11, not 7, so a planned second arm with the server on ten
+vCPUs (0-9) plus upstream (10) needs no k6 move — one k6 cpuset shares no physical core with the server or upstream in either the six- or the
 ten-vCPU arm. The sibling pairing is NOT assumed: `lib/perf-cpu-topology.sh` resolves it from sysfs
 at run time, the disjointness guard fails the run closed on overlap, and the resolved
 physical-core counts (siblings counted once) are now recorded in `perf-result.json`

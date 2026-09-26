@@ -144,6 +144,126 @@ tests caught (4b); and an ARM-reachable torn read in a hash cache (unit 7).
 
 None was found by running tests. The corpus was necessary but **not sufficient**.
 
+## Phase two — the inbound request path
+
+The nine units above cut retained heap hard and barely moved peak throughput. An
+audit of the receive/parse path and the control-plane decision found why that is
+consistent rather than disappointing: **a serialising lock sits on the hot path**,
+and no amount of memory saving lifts a ceiling set by contention.
+
+Units are ordered by expected value, not by ease.
+
+| # | Unit | Lever | Status |
+|---|---|---|---|
+| 10 | Stop taking a global lock per request to re-add a known SAN host | **throughput** (contention) | to do |
+| 11 | Precompile the two `URLParser` regexes | churn + CPU | to do |
+| 12 | Cheapest-first gate for the control-plane decision | churn + CPU | to do |
+| 13 | Single-pass header ingest | churn | to do |
+| 14 | Per-PUT future, query-map copy, address `toString` | churn | to do |
+| 15 | Identify the boxed `Long` and `Integer` residuals from a dominator tree | occupancy | to do |
+
+### 10 — the per-request lock
+
+`HttpRequestHandler.java:234` calls `configuration.addSubjectAlternativeName(...)`
+with the `Host` header on **every** request, before anything else.
+`Configuration.java:6427` has no guard: it does a `substringBefore`, a Guava
+`InetAddresses.isInetAddress` parse, then calls `addSslSubjectAlternativeNameDomains`
+(`:6469`) or `addSslSubjectAlternativeNameIps` (`:6440`) — **both `synchronized` on
+the shared `Configuration` instance**.
+
+So every event loop thread contends on one monitor, per request, to re-add a host
+that is almost always already present. For a mock serving a stable `Host` it is
+pure overhead; for a proxy with many hosts it is genuinely contended.
+
+The fix is a lock-free read fast-path: if the normalised host is already in the
+set, return without locking, and take the lock only for a real addition. The
+correctness constraint is that the SAN set must still end up right — the lock
+exists because of a real defect (noted at `:6441` as C7) where concurrent adds
+raced to read-modify-write separate copies.
+
+### 11 — regexes that are compiled per request
+
+`URLParser.java:10-11` holds `schemeRegex` and `schemeHostAndPortRegex` as `static
+final` **strings**, then `isFullUrl` calls `uri.matches(...)` and `returnPath` calls
+`path.replaceAll(...)`. Both `String` methods compile a fresh `Pattern` on every
+call. One to two compiles plus a `Matcher` per request, for a change with identical
+semantics.
+
+### 12 — the control-plane decision is a linear scan
+
+`HttpRequest.matches(String, String...)` (`:578-587`) allocates a varargs `String[]`
+per comparison, and re-tests the method inside the per-path loop. A data-plane GET
+falls through roughly 22 such calls in `HttpState.handle`, a PUT through 59, and
+then `HttpRequestHandler.channelRead0` (`:238-519`) runs a *second* chain for
+`/ready`, `/status`, `/bind`, `/stop`, `/configuration`, dashboard, openapi,
+metrics, http3status and CONNECT before reaching the data plane. Nothing rejects a
+data-plane path cheaply first.
+
+**The constraint that makes this non-trivial:** every control-plane route also
+accepts a bare-path alias without the prefix — `matches("PUT", PATH_PREFIX +
+"/expectation", "/expectation")` — so a plain `startsWith(PATH_PREFIX)` gate would
+break the bare forms. A correct gate is the prefix test **or** membership of a
+fixed bare-alias set, computed once per request. Enumerating that set completely is
+the whole risk; treat it as a structural change needing a differential corpus.
+
+Note `PATH_PREFIX + "/expectation"` is **not** a per-call allocation — `PATH_PREFIX`
+is `static final`, so the concatenation is a compile-time constant. The churn is the
+varargs array, not the string.
+
+### 15 — the residuals, and how to actually find them
+
+A live histogram shows about **1.5 boxed `Long` and 1.0 boxed `Integer` retained per
+request**, identical under G1 and ZGC.
+
+For `Integer`, `LogEntry.port` was **ruled out**: it looks like the obvious
+per-entry box but is a shared instance threaded through a `ThreadLocal`
+(`HttpState.java:211-218`, copied by reference at `LogEntry.java:995`). The real
+candidates are `HttpResponse.statusCode` (autoboxed above the 127 cache, retained
+per logged response) and, under HTTP/2 only, `HttpRequest.streamId` /
+`HttpResponse.streamId` from `headers().getInt(...)`.
+
+For `Long`, **no retained per-request field was found.** Every candidate was
+checked and excluded: `receivedTimestamp` and `LogEntry.epochTime` are primitive,
+the deque tracks weight as primitive, `Timing` early-returns without allocating on
+the default path, and `Expectation` has left the live set. There is real transient
+`Long` churn at `withReceivedTimestamp(Long)`, but transient objects do not survive
+the full GC that a class histogram forces.
+
+**Do not attribute this by inspection.** A class histogram names classes, not
+retainers, which is exactly why it has stayed unexplained. Take the heap dump the
+rig already captures and get the immediate-dominators / paths-to-GC-roots view for
+`java.lang.Long`.
+
+## The daily run's configuration, and a break in its history
+
+The daily 04:00 regression run costs the same agent and the same wall-clock as any
+other run on the perf queue, but until now produced a figure about a third below
+what the server actually serves. Two causes, both fixed:
+
+- **Its ladder jumped 32,000 to 48,000 to 64,000.** The 48,000 rung lands just
+  under the 95%-achieved threshold, so the highest cleanly-served rung was 32,000
+  and `saturation_rps` came out as 32,000 — against a server that serves 47,209
+  cleanly. Four rungs added (24,000 / 36,000 / 40,000 / 44,000). Each rung is a 15s
+  step plus a 5s gap — the harness overrides the k6 script's own 20s default — and
+  the sweep runs on both the ERROR and INFO arms, so the real cost is about 2.7
+  minutes of a sixty-minute budget, not the under-two I first estimated.
+- **k6 had thirteen physical cores, and thirteen is not enough.** The client fell
+  below the threshold at 48,000 offered while the same server served it cleanly
+  with seventeen. Cores 7-10 were reserved so a ten-vCPU server arm would need no
+  k6 move, but that arm cannot run on this box at all — it leaves the client the
+  same thirteen cores already shown to be too few — so the reservation bought
+  nothing and cost measurement quality every day. k6 now spans 7-23.
+
+Neither change can affect the regression gate: all eight gating budgets are JMH
+micro-benchmark timings, allocation-per-op ratios and `forward.error_rate`. No
+gated metric is keyed on an offered rate and there is no gated saturation metric.
+
+**The saturation series has an unannounced break at this change.** Widening k6
+changed the rig, and the hardware-mismatch guard keys on `instance_type`, which
+did not change — so nothing in the tooling flags it. Stored `saturation_rps` and
+sweep latencies from before this change are not comparable with those after it.
+The same applies to the added ladder rungs, which have no history at all.
+
 ## Carried over from the earlier performance work
 
 These predate this programme and are **not** addressed by it. Recorded here so
