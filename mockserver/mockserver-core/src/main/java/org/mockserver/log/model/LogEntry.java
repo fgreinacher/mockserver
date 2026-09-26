@@ -813,16 +813,32 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * it; {@link #getMessage()} memoises the resulting string and drops the tree).
      */
     public Object[] getArguments() {
+        return getArguments(null);
+    }
+
+    /**
+     * The log arguments, with bodies rendered and secrets redacted.
+     * <p>
+     * Redaction matters here and not only on {@link #getHttpUpdatedRequests}: these arguments reach
+     * output twice — as the {@code arguments} field of a serialized log entry, and formatted into
+     * {@code message}. Without it a redacted {@code httpRequest} sat beside an unredacted copy of the
+     * same headers on the same entry. The no-argument form resolves {@code redactSecretsInLog} from
+     * the static store, which is what the log-time {@code message} build has available.
+     */
+    public Object[] getArguments(org.mockserver.configuration.Configuration configuration) {
         if (arguments == null) {
             return null;
         }
+        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
         return Arrays
             .stream(arguments)
             .map(argument -> {
                 if (argument instanceof HttpRequest) {
-                    return updateBody((HttpRequest) argument);
+                    RequestDefinition updated = updateBody((HttpRequest) argument);
+                    return redactor == null ? updated : redactor.redactRequestDefinition(updated);
                 } else if (argument instanceof HttpResponse) {
-                    return updateBody((HttpResponse) argument);
+                    HttpResponse updated = updateBody((HttpResponse) argument);
+                    return redactor == null ? updated : redactor.redactResponseObject(updated);
                 } else {
                     return argument;
                 }

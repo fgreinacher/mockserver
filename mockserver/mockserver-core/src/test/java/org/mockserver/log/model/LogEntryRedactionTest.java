@@ -252,4 +252,63 @@ public class LogEntryRedactionTest {
             return null;
         }
     }
+
+    // The arguments reach output twice - as the `arguments` field of a serialized log entry, and
+    // formatted into `message` - and neither was redacted, so a redacted httpRequest sat beside an
+    // unredacted copy of the same headers on the SAME entry. No test asserted on either, which is
+    // why it survived; these two are that missing assertion.
+    @Test
+    public void shouldMaskSensitiveHeaderInLogArgumentsWhenFlagOn() {
+        // given
+        ConfigurationProperties.redactSecretsInLog(true);
+        LogEntry logEntry = new LogEntry()
+            .setType(RECEIVED_REQUEST)
+            .setMessageFormat("received request:{}")
+            .setArguments(request()
+                .withHeader("Authorization", "Bearer super-secret-token")
+                .withHeader("Accept", "application/json"));
+
+        // when
+        Object[] displayed = logEntry.getArguments();
+
+        // then - secret masked in the argument, non-sensitive header untouched
+        String rendered = displayed[0].toString();
+        assertThat(rendered, containsString(FixtureRedactor.REDACTED_PLACEHOLDER));
+        assertThat(rendered, not(containsString("super-secret-token")));
+        assertThat(rendered, containsString("application/json"));
+    }
+
+    @Test
+    public void shouldMaskSensitiveHeaderInLogMessageWhenFlagOn() {
+        // given
+        ConfigurationProperties.redactSecretsInLog(true);
+        LogEntry logEntry = new LogEntry()
+            .setType(RECEIVED_REQUEST)
+            .setMessageFormat("received request:{}")
+            .setArguments(request()
+                .withHeader("Authorization", "Bearer super-secret-token"));
+
+        // when - the message is formatted from the arguments
+        String message = logEntry.getMessage();
+
+        // then
+        assertThat(message, containsString(FixtureRedactor.REDACTED_PLACEHOLDER));
+        assertThat(message, not(containsString("super-secret-token")));
+    }
+
+    @Test
+    public void shouldLeaveLogArgumentsUnchangedWhenFlagOff() {
+        // given
+        ConfigurationProperties.redactSecretsInLog(false);
+        LogEntry logEntry = new LogEntry()
+            .setType(RECEIVED_REQUEST)
+            .setMessageFormat("received request:{}")
+            .setArguments(request().withHeader("Authorization", "Bearer super-secret-token"));
+
+        // when
+        Object[] displayed = logEntry.getArguments();
+
+        // then - opt-in only, so nothing is masked with the flag off
+        assertThat(displayed[0].toString(), containsString("super-secret-token"));
+    }
 }

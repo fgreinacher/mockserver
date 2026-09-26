@@ -89,7 +89,7 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         // Hoisted deliberately: getArguments() converts a JSON body to a node tree on every
         // call now that the conversion is deferred out of the retained entry, so calling it
         // twice re-parsed every body twice per serialize. It was a free getter before.
-        Object[] arguments = logEntry.getArguments();
+        Object[] arguments = logEntry.getArguments(configuration);
         if (arguments != null) {
             jgen.writeObjectField("arguments", arguments);
         }

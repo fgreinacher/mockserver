@@ -420,6 +420,14 @@ changes except smaller downloads.
   after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
 
 ### Fixed
+- **`redactSecretsInLog` now also redacts the `message` and `arguments` fields, not just
+  `httpRequest` and `httpResponse`.** With redaction enabled a JSON log entry had its
+  `httpRequest` masked while the `message` and `arguments` fields on the **same entry** still
+  carried the `Authorization`, `Cookie` and any other configured secret in full, so enabling the
+  setting did not actually stop secrets reaching the log. The rendered message shown in the
+  dashboard had the same gap. Both are now redacted, using the effective configuration where the
+  caller supplies one and the configured value otherwise. If you enabled `redactSecretsInLog` and
+  relied on it, treat logs captured before this release as still containing those values.
 - **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded
   literally.** A previous release fixed this for incoming *requests* but missed the response side, so the
   proxy leg still built response header, trailer and `Set-Cookie` names and values through the
