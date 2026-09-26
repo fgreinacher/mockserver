@@ -245,7 +245,7 @@ neither is primarily an allocation fix.
 
 | # | Unit | Lever | Status |
 |---|---|---|---|
-| 16 | Stop the INFO-level serialise-and-reparse per request | CPU + churn | to do |
+| 16 | Stop the INFO-level serialise-and-reparse per request | — | **declined, see below** |
 | 17 | Reconsider the shipped GC default | **GC length → p95** | to do |
 | 18 | Response write path | churn | to do |
 | 19 | Dashboard WebSocket handler | occupancy + threads | to do |
@@ -253,7 +253,54 @@ neither is primarily an allocation fix.
 | 21 | Forwarding client — blocking proxy paths | **throughput** (thread occupancy) | audited, see below |
 | 22 | Templating and callback paths | churn + CPU | to do |
 
-### 16 — the default log level does double work on every request
+### 16 — declined: the INFO cost is output, not waste
+
+**My premise for this unit was wrong and it is not worth doing as specified.** I
+described it as "a serialise-then-reparse of the same content, twice per request",
+implying redundancy. It is not redundant. Three pieces of evidence:
+
+**The `readTree` is load-bearing.** `new LogEntryBody(OBJECT_MAPPER.readTree(body.toString()))`
+produces the pretty-printed, normalised JSON that the log line actually renders.
+Applying the naive "don't parse" change turns three tests red in the existing pin
+`LogEntryDeferredArgumentConversionTest` — the rendered body flips from inline
+pretty JSON to a raw compact string. The parse exists to produce the output.
+
+**The two parses feed two different log lines.** At INFO a served request emits
+`RECEIVED_REQUEST` and `EXPECTATION_RESPONSE`, both `Level.INFO`, both carrying the
+request (`HttpActionHandler.java:202`, `:271`, `:2497`). Each parses the body once.
+Within a single line nothing is parsed twice — "twice per request" is two outputs,
+not duplicated work for one output.
+
+**Removing the second parse requires undoing unit 1.** To parse once and reuse
+across both lines you must cache the parsed `JsonNode` on the request's `JsonBody` —
+which is exactly the retained per-request tree unit 1 removed, and which
+`releaseDerivedForms` now actively nulls. So the two units are in direct tension:
+**low occupancy or single-parse, not both**, given the two-lines-per-request design.
+Dropping the body from one line would be an output change.
+
+The one remaining option — a streaming token copy avoiding the intermediate tree —
+is **not byte-identical**: `readTree` collapses duplicate JSON keys last-wins while a
+streaming copy preserves both (`{"a":1,"a":2}` renders `{"a":2}` versus
+`{"a":1,"a":2}`). Shipping that would knowingly change output on an edge case for a
+benefit that only appears at INFO.
+
+**What remains true:** INFO genuinely costs more than ERROR, and every figure this
+programme published was taken at ERROR. That gap is real and worth stating whenever
+a figure is quoted. But the cost is the price of the log output users asked for, not
+waste to be removed.
+
+### 16b — deduplicate the JSON log surface's repeated parses
+
+Found while declining 16, and genuinely safe. On the **JSON log surface**
+(`LogEntrySerializer`), a single serialize re-parses the same body about three times —
+via `getMessage()`, via `getHttpUpdatedRequests`/`Response`, and via `getArguments()`.
+Deduplicating within one serialize is output-preserving.
+
+This helps the **retrieval and dashboard** path, not the console-INFO path unit 16
+targeted, and not the ERROR-configured perf rig. It is a `LogEntrySerializer`
+refactor with its own risk, so size it before committing to it.
+
+### 16-original — the default log level does double work on every request
 
 At `INFO`, which is the **shipped default**, every served request and response body
 is `toString()`-serialised to JSON and then, for a `JsonBody`, immediately re-parsed

@@ -361,4 +361,53 @@ public class SubSetMatcherTest {
             ))), is(false));
     }
 
+    // ---- distinct-superset-index rule: a single superset entry may not satisfy two subset entries ----
+
+    @Test
+    public void shouldNotContainSubsetWhenTwoRequiredEntriesMatchSameSingleSupersetEntry() {
+        // Two REQUIRED subset entries both match the ONE superset entry (one -> one). The distinct-index
+        // rule requires two DISTINCT superset entries to satisfy two required subset entries, so this
+        // must NOT match. (Guards the count comparison; without it this would falsely match.)
+        assertThat(containsSubset(null, null, regexStringMatcher,
+            Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "one", "o.*"),
+                new ImmutableEntry(regexStringMatcher, "one", ".*e")
+            ),
+            new ArrayList<>(Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "one", "one")
+            ))), is(false));
+    }
+
+    @Test
+    public void shouldContainSubsetWhenTwoRequiredEntriesMatchTwoDistinctSupersetEntries() {
+        // The control for the case above: the SAME two required subset entries DO match when the superset
+        // has two distinct entries to satisfy them, so distinct matched indexes (2) >= required (2).
+        assertThat(containsSubset(null, null, regexStringMatcher,
+            Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "one", "o.*"),
+                new ImmutableEntry(regexStringMatcher, "one", ".*e")
+            ),
+            new ArrayList<>(Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "one", "one"),
+                new ImmutableEntry(regexStringMatcher, "one", "ore")
+            ))), is(true));
+    }
+
+    @Test
+    public void shouldApplyDistinctIndexRuleOnlyToRequiredEntriesWhenNottedAndOptionalAlsoMatchSameEntry() {
+        // A notted and an optional subset entry can also match superset entries, but only the REQUIRED
+        // entry count gates the distinct comparison. Here the single required entry (name -> John) matches
+        // the single superset entry; ?nick is optional-and-not-present and !age is notted-and-not-present,
+        // so neither is required and the match succeeds with one distinct matched index.
+        assertThat(containsSubset(null, null, regexStringMatcher,
+            Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "name", "John"),
+                new ImmutableEntry(regexStringMatcher, "?nick", ".*"),
+                new ImmutableEntry(regexStringMatcher, "!age", ".*")
+            ),
+            new ArrayList<>(Arrays.asList(
+                new ImmutableEntry(regexStringMatcher, "name", "John")
+            ))), is(true));
+    }
+
 }

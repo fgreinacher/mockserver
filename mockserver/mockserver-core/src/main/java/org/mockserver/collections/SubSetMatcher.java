@@ -6,9 +6,7 @@ import org.mockserver.matchers.MatchDifference;
 import org.mockserver.matchers.RegexStringMatcher;
 import org.mockserver.model.NottableString;
 
-import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 
 import static org.mockserver.model.NottableString.string;
 
@@ -26,51 +24,49 @@ public class SubSetMatcher {
      *                                  matching is unchanged.
      */
     static boolean containsSubset(MockServerLogger mockServerLogger, MatchDifference context, RegexStringMatcher regexStringMatcher, List<ImmutableEntry> subset, List<ImmutableEntry> superset, boolean binaryHeaderNormalization) {
-        boolean result = true;
-        Set<Integer> matchingIndexes = new HashSet<>();
+        int supersetSize = superset.size();
+        // Tracks the DISTINCT superset indexes matched across ALL subset entries. The invariant this
+        // preserves (previously held by a HashSet<Integer> of boxed indexes) is that a single superset
+        // entry may not satisfy two different subset entries, so the count of distinct matched indexes
+        // must reach the number of required (non-optional, non-notted) subset entries for a match.
+        boolean[] matchedSupersetIndexes = new boolean[supersetSize];
+        int distinctMatchedCount = 0;
+        int subsetRequiredSize = 0;
         for (ImmutableEntry subsetItem : subset) {
-            Set<Integer> subsetItemMatchingIndexes = matchesIndexes(mockServerLogger, context, regexStringMatcher, subsetItem, superset, binaryHeaderNormalization);
+            NottableString matcherKey = subsetItem.getKey();
+            NottableString matcherValue = subsetItem.getValue();
+            boolean subsetItemMatchedAny = false;
+            for (int i = 0; i < supersetSize; i++) {
+                ImmutableEntry matchedItem = superset.get(i);
+                boolean keyMatches = regexStringMatcher.matches(mockServerLogger, context, matcherKey, matchedItem.getKey());
+                NottableString matchedValue = matchedItem.getValue();
+                // gated on keyMatches: the value comparison is irrelevant when the keys do not match, so
+                // there is no reason to normalise for every unrelated pair in the superset
+                boolean valueMatches;
+                if (keyMatches && binaryHeaderNormalization && BinaryHeaderValueNormalizer.shouldNormalize(matcherKey, matchedItem.getKey(), matcherValue, matchedValue)) {
+                    valueMatches = BinaryHeaderValueNormalizer.matchesIgnoringPadding(
+                        regexStringMatcher, mockServerLogger, context, matcherValue, matchedValue);
+                } else {
+                    valueMatches = regexStringMatcher.matches(mockServerLogger, context, matcherValue, matchedValue);
+                }
+                if (keyMatches && valueMatches) {
+                    subsetItemMatchedAny = true;
+                    if (!matchedSupersetIndexes[i]) {
+                        matchedSupersetIndexes[i] = true;
+                        distinctMatchedCount++;
+                    }
+                }
+            }
             boolean optionalAndNotPresent = subsetItem.isOptional() && !containsKey(regexStringMatcher, subsetItem, superset);
             boolean nottedAndPresent = nottedAndPresent(regexStringMatcher, subsetItem, superset);
-            if ((!optionalAndNotPresent && subsetItemMatchingIndexes.isEmpty()) || nottedAndPresent) {
-                result = false;
-                break;
+            if ((!optionalAndNotPresent && !subsetItemMatchedAny) || nottedAndPresent) {
+                return false;
             }
-            matchingIndexes.addAll(subsetItemMatchingIndexes);
-        }
-
-        if (result) {
-            long subsetRequiredSize = subset.stream()
-                .filter(ImmutableEntry::isNotOptional)
-                .filter(ImmutableEntry::isNotNotted)
-                .count();
-            // this prevents multiple items in the subset from being matched by a single item in the superset
-            result = matchingIndexes.size() >= subsetRequiredSize;
-        }
-        return result;
-    }
-
-    private static Set<Integer> matchesIndexes(MockServerLogger mockServerLogger, MatchDifference context, RegexStringMatcher regexStringMatcher, ImmutableEntry matcherItem, List<ImmutableEntry> matchedList, boolean binaryHeaderNormalization) {
-        Set<Integer> matchingIndexes = new HashSet<>();
-        for (int i = 0; i < matchedList.size(); i++) {
-            ImmutableEntry matchedItem = matchedList.get(i);
-            boolean keyMatches = regexStringMatcher.matches(mockServerLogger, context, matcherItem.getKey(), matchedItem.getKey());
-            NottableString matcherValue = matcherItem.getValue();
-            NottableString matchedValue = matchedItem.getValue();
-            // gated on keyMatches: the value comparison is irrelevant when the keys do not match, so
-            // there is no reason to normalise for every unrelated pair in the superset
-            boolean valueMatches;
-            if (keyMatches && binaryHeaderNormalization && BinaryHeaderValueNormalizer.shouldNormalize(matcherItem.getKey(), matchedItem.getKey(), matcherValue, matchedValue)) {
-                valueMatches = BinaryHeaderValueNormalizer.matchesIgnoringPadding(
-                    regexStringMatcher, mockServerLogger, context, matcherValue, matchedValue);
-            } else {
-                valueMatches = regexStringMatcher.matches(mockServerLogger, context, matcherValue, matchedValue);
-            }
-            if (keyMatches && valueMatches) {
-                matchingIndexes.add(i);
+            if (subsetItem.isNotOptional() && subsetItem.isNotNotted()) {
+                subsetRequiredSize++;
             }
         }
-        return matchingIndexes;
+        return distinctMatchedCount >= subsetRequiredSize;
     }
 
     private static boolean containsKey(RegexStringMatcher regexStringMatcher, ImmutableEntry matcherItem, List<ImmutableEntry> matchedList) {
