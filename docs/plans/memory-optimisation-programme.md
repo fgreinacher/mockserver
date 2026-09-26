@@ -76,6 +76,74 @@ Units 1, 5 and 6 all edit `LogEntry.estimatedHeapSize()` and **must run
 sequentially** — concurrent edits to one method are how a gate-passed change gets
 silently dropped.
 
+## Outcome — measured, build 442
+
+All nine units landed and were measured on the same rig and configuration as the
+pre-programme baseline (build 441): JDK 25, generational ZGC, 6 vCPU, 2.4 GiB
+heap, `ERROR` log level. `image_revision` was confirmed as the commit carrying
+all nine units before any number was read.
+
+| offered | achieved | p50 ms | p95 ms | clean |
+|---:|---:|---:|---:|:--|
+| 32,000 | 30,956 | 0.111 | 0.340 | rig-invalid |
+| 36,000 | 35,990 | 0.111 | 1.234 | yes |
+| 40,000 | 39,981 | 0.112 | 7.571 | yes |
+| 44,000 | 43,817 | 0.115 | 10.374 | yes |
+| 48,000 | **47,580** | **0.119** | 16.282 | yes |
+
+**`saturation_rps` is 48,000, up from 32,000.** In build 441 the 48k rung was
+rig-invalid, so the highest cleanly-served rung was 32,000 and the knee could not
+be located. The fine ladder resolves it: the healthy ceiling is 47,580 req/s at a
+0.119 ms median, and the median is flat across the whole ladder.
+
+The 32,000 rung is rig-invalid here (VU occupancy 0.026) — a bottom-of-ladder
+client artefact, not a server regression; its p95 improved.
+
+### The histogram confirms the units caused it
+
+Build 442 carried 19% more live load than 441 (100,005 versus 84,223 requests),
+so these are normalised per request.
+
+Absent from the top 25 entirely, having totalled ~118 MB in 441:
+`LinkedListMultimap$Node`, `$KeyList`, `LinkedListMultimap`, `$1EntriesImpl`,
+`$1KeySetImpl`, the backing `HashMap`/`$Node`/`$Node[]`, `Expectation`, and
+`AtomicInteger`.
+
+| | 441 | 442 | per request |
+|---|---:|---:|---|
+| Header container machinery | ~118 MB (1,406 B/req) | ~25 MB (252 B/req) | **−82%** |
+| `NottableString` | 60.6 MB, 9.0/req at 80 B | 36.4 MB, 6.5/req at 56 B | **−49%** |
+
+The −82% matches what the local bench predicted, on different hardware. The new
+`NottableString[]` at 16.8 MB *is* the flat store, replacing ~101 MB of linked
+machinery.
+
+### What this did not do, stated plainly
+
+- **The p95 gain at 48k is ~8%** (17.8 → 16.3 ms) from a **single run**. Do not
+  publish it as a definitive delta without repeats.
+- **Throughput is essentially unchanged**, which was the prediction: the
+  programme removed *retained* heap, not per-request allocation rate. Occupancy
+  drives collection *length*; churn drives *frequency*, and churn was barely
+  touched.
+- **`Long` was not eliminated.** 168,982 → 150,588 instances, about 2.0 → 1.5 per
+  request — a 25% cut, not removal. Unit 7 unboxed `receivedTimestamp`; something
+  else still boxes ~1.5 `Long` per request and it is unidentified.
+- **`Integer` appeared** at 101,343 instances (~1 per request), absent from 441's
+  top 25. Unit 7 unboxed `KeyToMultiValue`'s hash, so this is a different source.
+- `byte[]` and `String` rose in absolute terms but are flat per request. Correct —
+  nothing here targeted payload bytes.
+
+### What the reviews caught that the tests did not
+
+Five defects invisible to roughly 11,000 passing tests: four call sites silently
+losing parameter styles (unit 2); unsafe publication of a mutable object across
+reader threads (unit 5); a caller-controlled quadratic reachable through form
+bodies (4b); NOT-key identity, which this plan's own corpus missed and older
+tests caught (4b); and an ARM-reachable torn read in a hash cache (unit 7).
+
+None was found by running tests. The corpus was necessary but **not sufficient**.
+
 ## Carried over from the earlier performance work
 
 These predate this programme and are **not** addressed by it. Recorded here so
