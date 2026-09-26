@@ -21,12 +21,15 @@ import org.slf4j.event.Level;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.fail;
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.collection.IsEmptyCollection.empty;
 import static org.hamcrest.collection.IsIterableContainingInOrder.contains;
 import static org.hamcrest.core.Is.is;
@@ -1098,6 +1101,12 @@ public class MockServerEventLogTest {
         mockServerLogger.logEvent(new LogEntry().setLogLevel(INFO).setType(EXPECTATION_RESPONSE).setHttpRequest(countingRequest(matcherEvaluations, "/four")));
         mockServerLogger.logEvent(new LogEntry().setLogLevel(INFO).setType(RECEIVED_REQUEST).setHttpRequest(countingRequest(matcherEvaluations, "/five")));
 
+        // The UI reverse path no longer takes a disruptor-ordered snapshot, so force the five async
+        // publishes to be processed and visible before the direct traversal, then reset the counter so it
+        // measures ONLY the matcher evaluations the UI retrieve itself performs.
+        retrieveRequestLogEntries(request());
+        matcherEvaluations.set(0);
+
         // when - retrieving in reverse for the UI with a match-everything filter and a RECEIVED_REQUEST predicate
         CompletableFuture<List<LogEntry>> future = new CompletableFuture<>();
         mockServerEventLog.retrieveLogEntriesInReverseForUI(
@@ -1119,5 +1128,58 @@ public class MockServerEventLogTest {
         // ... and the expensive matcher was evaluated only for those 3, NOT for the 2 entries the
         // cheap type predicate discards (before the #2359 fix this would have been 5)
         assertThat(matcherEvaluations.get(), is(3));
+    }
+
+    @Test
+    public void dashboardReverseRetrieveDoesNotWaitOnTheDisruptorConsumerThread() throws Exception {
+        // The dashboard reverse-for-UI retrieve used to take its snapshot on the single disruptor consumer
+        // thread (a RUNNABLE that copied the whole log), so it queued behind everything that thread was
+        // doing. It now traverses the deque's weakly-consistent descendingIterator directly, off that
+        // thread. This proves the change: with the consumer thread pinned, the UI retrieve still completes
+        // and returns the already-visible entry. Reverting to the snapshot copy makes it block behind the
+        // pinned consumer and the future never completes, so the notNullValue assertion fails.
+        configuration.logLevel(Level.INFO);
+
+        // an already-processed, visible entry
+        mockServerLogger.logEvent(new LogEntry().setLogLevel(INFO).setType(RECEIVED_REQUEST).setHttpRequest(request("/before")));
+        retrieveRequestLogEntries(request()); // drain so /before is in the deque
+
+        // pin the single disruptor consumer thread: recordedRequestConsumer runs on it, inside
+        // processLogEntry, BEFORE the entry is added — so blocking here holds the consumer thread.
+        CountDownLatch consumerPinned = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        mockServerEventLog.setRecordedRequestConsumer(entry -> {
+            consumerPinned.countDown();
+            try {
+                release.await(10, SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        mockServerLogger.logEvent(new LogEntry().setLogLevel(INFO).setType(FORWARDED_REQUEST).setHttpRequest(request("/blocker")).setHttpResponse(response()));
+        assertThat("consumer thread is pinned", consumerPinned.await(10, SECONDS), is(true));
+
+        try {
+            CompletableFuture<List<LogEntry>> future = new CompletableFuture<>();
+            mockServerEventLog.retrieveLogEntriesInReverseForUI(
+                request(),
+                entry -> !entry.isDeleted() && entry.getType() == RECEIVED_REQUEST,
+                entry -> entry,
+                stream -> future.complete(stream.collect(Collectors.toList()))
+            );
+            List<LogEntry> entries;
+            try {
+                entries = future.get(5, SECONDS);
+            } catch (TimeoutException timedOut) {
+                entries = null; // blocked behind the pinned consumer thread
+            }
+            assertThat("reverse-for-UI retrieve completed without waiting on the pinned consumer thread", entries, is(notNullValue()));
+            // only the visible RECEIVED_REQUEST is returned (the FORWARDED_REQUEST blocker is filtered by
+            // the predicate and, being pinned before add(), is not in the deque anyway)
+            assertThat(entries.size(), is(1));
+            assertThat(entries.get(0).getHttpRequest(), is(request("/before")));
+        } finally {
+            release.countDown();
+        }
     }
 }

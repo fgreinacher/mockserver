@@ -52,6 +52,7 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.apache.commons.lang3.StringUtils.isBlank;
@@ -1223,11 +1224,21 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     public <T> void retrieveLogEntriesInReverseForUI(RequestDefinition requestDefinition, Predicate<LogEntry> logEntryPredicate, Function<LogEntry, T> logEntryMapper, Consumer<Stream<T>> consumer) {
-        querySnapshot(true, snapshot -> {
+        // The live dashboard does NOT need the point-in-time snapshot that verify/retrieve depend on —
+        // it only has to observe the entry that triggered this update, which processLogEntry guarantees
+        // by adding to eventLog BEFORE notifyListeners fires. So skip querySnapshot, whose copy of the
+        // ENTIRE retained log runs on the single disruptor consumer thread that ingests every request,
+        // and traverse the deque's descendingIterator directly. ConcurrentLinkedDeque's iterators are
+        // weakly consistent and safe to traverse while other threads append, and retained entries are
+        // effectively immutable after cloneAndClear, so the scan reads stable state. It still runs off
+        // the consumer thread so the per-entry match / mapping never blocks log ingestion.
+        runOffConsumer(() -> {
             HttpRequestMatcher httpRequestMatcher = matcherBuilder.transformsToMatcher(requestDefinition);
+            Stream<LogEntry> reverseStream = StreamSupport.stream(
+                Spliterators.spliteratorUnknownSize(eventLog.descendingIterator(), Spliterator.ORDERED),
+                false);
             consumer.accept(
-                snapshot
-                    .stream()
+                reverseStream
                     // cheap predicate before the expensive request matcher — see #2359
                     .filter(logEntryPredicate)
                     .filter(logItem -> logItem.matches(httpRequestMatcher))
