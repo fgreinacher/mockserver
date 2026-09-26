@@ -253,45 +253,14 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
-  - wait: ~
-    continue_on_failure: true
-
-  # NOTE: the junit-annotate plugin step was intentionally removed - per-class
-  # TEST-*.xml are no longer uploaded (only failing-test artefacts under
-  # mockserver/target/failed-tests/** are), so the plugin would have nothing to
-  # consume. The end-of-log pass/fail summary (java-build-and-collect.sh) plus the
-  # failing-test artefacts cover what the annotation used to surface.
-
-  - label: ":chart_with_upwards_trend: coverage summary"
-    command: ".buildkite/scripts/steps/java-summarize.sh"
-    timeout_in_minutes: 5
-    soft_fail: true
-
-  - label: ":shield: diff-coverage gate (70%)"
-    command: ".buildkite/scripts/steps/diff-coverage.sh"
-    timeout_in_minutes: 5
-    soft_fail: true
-
-  - label: ":s3: save maven cache"
-    command: ".buildkite/scripts/cache-save.sh maven"
-    timeout_in_minutes: 15
-    soft_fail: true
-
-  # Save the Gradle distribution + dependency cache populated by the maven reactor's
-  # Gradle integration test, under the "java" scope. This pipeline OWNS the SAVE for
-  # the gradle/java namespace only; the editors pipeline owns gradle/editors, and the
-  # two no longer share a key (see the restore step's note). soft_fail so a failed
-  # upload / missing S3 creds never fails the build.
-  - label: ":s3: save gradle cache"
-    command: ".buildkite/scripts/cache-save.sh gradle java"
-    timeout_in_minutes: 15
-    soft_fail: true
-
   # PER-MERGE allocation backstop (performance-programme item 16). Runs the three
   # allocation JMH benchmarks (MatchingBenchmark, InboundDecodeBenchmark,
   # ResponseWriteBenchmark) at pinned params and FAILS the build if any allocates
   # more bytes/op than its ABSOLUTE committed floor in perf-budgets.json. This is
   # DELIBERATELY:
+  #   * In the build's parallel group: it builds its own reactor from the restored
+  #     cache and consumes nothing from ":maven: build", so waiting for the build
+  #     only delayed the deploy. The plain `- wait` before the deploy still gates on it.
   #   * UNCONDITIONAL (no `if: build.branch == 'master'`) and placed BEFORE the
   #     `- wait` that precedes the master-only block below, so it runs on BOTH PR
   #     builds and the master build. What "BLOCKS" means depends on the path, and
@@ -332,6 +301,40 @@ steps:
         # a PR gate on shared agents.
         - exit_status: 42   # transient Maven Central resolution failure
           limit: 2
+
+  - wait: ~
+    continue_on_failure: true
+
+  # NOTE: the junit-annotate plugin step was intentionally removed - per-class
+  # TEST-*.xml are no longer uploaded (only failing-test artefacts under
+  # mockserver/target/failed-tests/** are), so the plugin would have nothing to
+  # consume. The end-of-log pass/fail summary (java-build-and-collect.sh) plus the
+  # failing-test artefacts cover what the annotation used to surface.
+
+  - label: ":chart_with_upwards_trend: coverage summary"
+    command: ".buildkite/scripts/steps/java-summarize.sh"
+    timeout_in_minutes: 5
+    soft_fail: true
+
+  - label: ":shield: diff-coverage gate (70%)"
+    command: ".buildkite/scripts/steps/diff-coverage.sh"
+    timeout_in_minutes: 5
+    soft_fail: true
+
+  - label: ":s3: save maven cache"
+    command: ".buildkite/scripts/cache-save.sh maven"
+    timeout_in_minutes: 15
+    soft_fail: true
+
+  # Save the Gradle distribution + dependency cache populated by the maven reactor's
+  # Gradle integration test, under the "java" scope. This pipeline OWNS the SAVE for
+  # the gradle/java namespace only; the editors pipeline owns gradle/editors, and the
+  # two no longer share a key (see the restore step's note). soft_fail so a failed
+  # upload / missing S3 creds never fails the build.
+  - label: ":s3: save gradle cache"
+    command: ".buildkite/scripts/cache-save.sh gradle java"
+    timeout_in_minutes: 15
+    soft_fail: true
 
   - wait
 

@@ -402,14 +402,21 @@ self-consistent**; it does not prove the agents still behave that way today. The
 behavioural check is the local commit-workflow gate on AI-component changes
 (`.opencode/rules/evaluation-harness.md`).
 
+### Build Wall-Clock
+
+Steps run in parallel unless a `- wait` or `depends_on` orders them, so a step belongs after a barrier only if it consumes something produced before it.
+
+- **Artifact-only Maven runs pass `-DskipITs` as well as `-DskipTests`.** In this repo `-DskipTests` silences surefire only; failsafe still runs every `*IntegrationTest`. A step that runs Maven only to assemble artifacts for a later step — the Sonatype snapshot deploy, the UI e2e and codegen jar builds, the maven-plugin build — must pass both, or it silently re-runs the full integration suite the build already ran. The snapshot deploy did this for 23 minutes a build, of which the upload was the last few seconds.
+- **Container integration tests run alongside `:maven: build`, not after it.** They consume only the netty fat jar and the WAR, which `:maven: container-test jars` builds test-free. They sit before the post-build `wait` and are ordered by `depends_on: container-test-jars`; `container-tests-run.sh` downloads with `--step container-test-jars`, so it cannot pick up the same-named copies `:maven: build` also uploads. Master-only, as before.
+- **The allocation gate runs alongside `:maven: build`.** `perf-alloc-gate.sh` builds its own reactor from the restored cache and uses nothing the build produces. It still runs on PRs and master, and the plain `wait` before the deploy block still stops a red gate from publishing.
+- **UI build and Playwright e2e run alongside lint and unit tests** in `pipeline-ui.yml`. Neither consumes their output. The trade-off, accepted deliberately: e2e now runs even when the unit tests are red, instead of being skipped.
+
 ### Spot Resilience (agent-lost auto-retry)
 
 The `default` agent queue is a mix of on-demand and Spot instances (see [aws-infrastructure.md](aws-infrastructure.md#scaling-behaviour)). When AWS reclaims a Spot instance mid-build, the Buildkite agent is lost and the running job ends with **exit status `-1`** (or `255`) — an infrastructure kill, not a test failure. The Maven build runs 15–25 minutes, so a reclaim part-way through used to fail the whole build and require a manual re-run (~2 Spot evictions/day were observed).
 
 Two complementary mitigations:
 
-- **Artifact-only Maven runs pass `-DskipITs` as well as `-DskipTests`.** In this repo `-DskipTests` silences surefire only; failsafe still runs every `*IntegrationTest`. A step that runs Maven only to assemble artifacts for a later step — the Sonatype snapshot deploy, the UI e2e and codegen jar builds, the maven-plugin build — must pass both, or it silently re-runs the full integration suite the build already ran. The snapshot deploy did this for 23 minutes a build, of which the upload was the last few seconds.
-- **Container integration tests run alongside `:maven: build`, not after it.** They consume only the netty fat jar and the WAR, which `:maven: container-test jars` builds test-free. They sit before the post-build `wait` and are ordered by `depends_on: container-test-jars`; `container-tests-run.sh` downloads with `--step container-test-jars`, so it cannot pick up the same-named copies `:maven: build` also uploads. Master-only, as before.
 - **`automatic_retry` on agent-lost** — the long, non-`soft_fail` command steps (`:maven: build`, deploy snapshot, container integration tests, build-and-push `:snapshot`) declare `retry.automatic` for `exit_status: -1` and `255` (`limit: 2`). A Spot reclaim silently re-queues the job onto a fresh agent instead of reddening the build. **Real test failures exit `1` and are NOT retried**, so this never masks genuine breakage.
 - **Higher on-demand ratio** — the default queue's `on_demand_percentage` was raised from 20% to 60% so a long build is much less likely to land on a Spot instance in the first place (the on-demand base capacity of 1 is unchanged).
 

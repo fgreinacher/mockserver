@@ -25,6 +25,18 @@ worked down at a keyboard.
 | 4 | `jvm_memory_allocated_bytes` shading defect | a build to confirm the landed fix |
 | 5 | Large-heap event-log profile | a run **plus** a cap decision |
 
+### Pipeline wall-clock
+
+| Change | State |
+|---|---|
+| Snapshot deploy and artifact-only steps pass `-DskipITs` (deploy re-ran 2,278 netty ITs, ~23 min) | landed `ef283860e`; confirm the deploy time on build 2556 |
+| Container integration tests fed by a test-free jar step, alongside the build | landed `ef283860e`; build 2556 ran them from minute 5 to 20, inside the build window |
+| `docker-build-verify.sh` artifact install passes `-DskipITs` | landed with the next commit; the step is not in any pipeline today |
+| Allocation gate moved into the build's parallel group (~3 min off the java critical path) | landed with the next commit; confirm on the first build after it |
+| UI build + Playwright e2e alongside lint/unit tests (~5 min off the UI pipeline; e2e no longer skipped on red unit tests) | landed with the next commit; confirm on the first UI build after it |
+
+Considered and not pursued, by decision: splitting the netty integration tests across parallel JVMs (fixed ports and shared static config make it high-risk), and reusing `:maven: build` output for the deploy (steps do not share a filesystem).
+
 **Cross-reference:** the separate `memory-optimisation-programme.md` supersedes this plan for
 allocation and occupancy work, and now also owns the GC-default decision, the published figures,
 and the rig's measurement gates. Items 1 and 2 here are the two latency questions that programme

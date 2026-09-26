@@ -99,18 +99,9 @@ steps:
         - exit_status: 255  # agent forced shutdown
           limit: 2
 
-  - wait: ~
-    continue_on_failure: true
-
-  - label: ":junit: annotate test results"
-    plugins:
-      - junit-annotate#8a549e5220869601737287b4d6a9293703dc5a6f:  # v2.7.0
-          artifacts: "mockserver-ui/test-reports/*.xml"
-          always-annotate: true
-    timeout_in_minutes: 10
-
-  - wait
-
+  # UI build and end-to-end run alongside lint and unit tests rather than after them:
+  # neither consumes their output, and e2e is the pipeline's longest step. The cost is
+  # that e2e runs even when the unit tests are red.
   - label: ":package: UI build"
     command: ".buildkite/scripts/steps/ui-build.sh"
     timeout_in_minutes: 10
@@ -145,6 +136,18 @@ steps:
         # on a transient Central "Connection reset" fetching angus-activation.)
         - exit_status: 42   # transient Maven Central resolution failure
           limit: 2
+
+  - wait: ~
+    continue_on_failure: true
+
+  - label: ":junit: annotate test results"
+    plugins:
+      - junit-annotate#8a549e5220869601737287b4d6a9293703dc5a6f:  # v2.7.0
+          artifacts: "mockserver-ui/test-reports/*.xml"
+          always-annotate: true
+    timeout_in_minutes: 10
+
+  - wait
 
   - label: ":s3: save npm cache"
     command: ".buildkite/scripts/cache-save.sh npm"

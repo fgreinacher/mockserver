@@ -162,7 +162,7 @@ build_jars() {
   # shellcheck disable=SC2054  # the comma is inside the Maven -pl module list, not an array separator
   local mvn_args=(-q -B --no-transfer-progress
                   -pl mockserver-netty,mockserver-netty-no-dependencies -am
-                  -DskipTests install)
+                  -DskipTests -DskipITs install)
   if command -v java >/dev/null 2>&1 && [ -x "$REACTOR_DIR/mvnw" ]; then
     echo "--- :maven: building server jars on host (mvnw ${mvn_args[*]})" >&2
     ( cd "$REACTOR_DIR" && ./mvnw "${mvn_args[@]}" ) >&2 \
