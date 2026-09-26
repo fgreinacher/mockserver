@@ -1112,6 +1112,11 @@ public class HttpActionHandler {
                         final java.util.function.Function<HttpResponse, HttpResponse> grpcDecode = grpcDecodeOverride(clonedRequest);
                         final HttpRequest requestToSend = grpcEncodeForForward(clonedRequest);
                         final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(requestToSend, remoteAddress, potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()), grpcDecode, remoteAddress);
+                        // Consume the upstream response via the scheduler continuation (as the matched path
+                        // does) instead of a blocking get, so the pool thread is freed during the round trip
+                        // rather than pinned per in-flight forward — the proxy-concurrency cap.
+                        scheduler.submit(responseFuture, () -> {
+                        try {
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
                         long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
                         if (response == null) {
@@ -1225,55 +1230,67 @@ public class HttpActionHandler {
                             );
                             responseWriter.writeResponse(request, response, false);
                         }
+                        } catch (SocketCommunicationException sce) {
+                            returnBadGateway(responseWriter, request, sce.getMessage());
+                        } catch (Throwable throwable) {
+                            handleUnmatchedForwardFailure(throwable, request, responseWriter, ctx, remoteAddress, potentiallyHttpProxy);
+                        }
+                        }, synchronous, throwable -> false);
                     } catch (SocketCommunicationException sce) {
                         returnBadGateway(responseWriter, request, sce.getMessage());
                     } catch (Throwable throwable) {
-                        if (potentiallyHttpProxy && connectionException(throwable)) {
-                            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
-                                mockServerLogger.logEvent(
-                                    new LogEntry()
-                                        .setLogLevel(TRACE)
-                                        .setCorrelationId(request.getLogCorrelationId())
-                                        .setMessageFormat("failed to connect to proxied socket due to exploratory HTTP proxy for:{}due to:{}falling back to no proxy")
-                                        .setArguments(request, throwable.getCause())
-                                );
-                            }
-                            returnBadGateway(responseWriter, request, "failed to connect to proxied socket due to exploratory HTTP proxy");
-                            // SSLException-family faults are surfaced by this sslHandshakeException
-                            // branch (richer TLS diagnostics). A plain DecoderException is NOT matched
-                            // here; it falls through to the !connectionClosedException ERROR branch
-                            // below, so it is still logged (never silently dropped) - no generic
-                            // isSslOrDecoderFault branch is needed.
-                        } else if (sslHandshakeException(throwable)) {
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setLogLevel(Level.ERROR)
-                                    .setCorrelationId(request.getLogCorrelationId())
-                                    .setHttpRequest(request)
-                                    .setMessageFormat("TLS handshake exception while proxying request{}to remote address{}with channel" + (ctx != null ? String.valueOf(ctx.channel()) : ""))
-                                    .setArguments(request, remoteAddress)
-                                    .setThrowable(throwable)
-                                );
-                            returnBadGateway(responseWriter, request, "TLS handshake exception while proxying request to remote address" + remoteAddress);
-                        } else if (!connectionClosedException(throwable)) {
-                            mockServerLogger.logEvent(
-                                new LogEntry()
-                                    .setType(EXCEPTION)
-                                    .setLogLevel(Level.ERROR)
-                                    .setCorrelationId(request.getLogCorrelationId())
-                                    .setHttpRequest(request)
-                                    .setMessageFormat(throwable.getMessage())
-                                    .setThrowable(throwable)
-                            );
-                            returnBadGateway(responseWriter, request, "connection closed while proxying request to remote address" + remoteAddress);
-                        } else {
-                            returnBadGateway(responseWriter, request, throwable.getMessage());
-                        }
+                        handleUnmatchedForwardFailure(throwable, request, responseWriter, ctx, remoteAddress, potentiallyHttpProxy);
                     }
                 }, synchronous);
 
             }
 
+        }
+    }
+
+    /**
+     * Maps a forward/proxy failure to its bad-gateway response and matching diagnostic log entry. Shared
+     * by the unmatched-proxy and breakpoint-continuation forward paths so error handling is identical
+     * whether the failure is raised while issuing the request or delivered later by the response future's
+     * async continuation. {@code ctx} may be null (breakpoint continuation), in which case the TLS
+     * diagnostic omits the channel suffix.
+     */
+    private void handleUnmatchedForwardFailure(Throwable throwable, HttpRequest request, ResponseWriter responseWriter, ChannelHandlerContext ctx, InetSocketAddress remoteAddress, boolean potentiallyHttpProxy) {
+        if (potentiallyHttpProxy && connectionException(throwable)) {
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(TRACE)
+                        .setCorrelationId(request.getLogCorrelationId())
+                        .setMessageFormat("failed to connect to proxied socket due to exploratory HTTP proxy for:{}due to:{}falling back to no proxy")
+                        .setArguments(request, throwable.getCause())
+                );
+            }
+            returnBadGateway(responseWriter, request, "failed to connect to proxied socket due to exploratory HTTP proxy");
+        } else if (sslHandshakeException(throwable)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setCorrelationId(request.getLogCorrelationId())
+                    .setHttpRequest(request)
+                    .setMessageFormat("TLS handshake exception while proxying request{}to remote address{}" + (ctx != null ? "with channel" + ctx.channel() : ""))
+                    .setArguments(request, remoteAddress)
+                    .setThrowable(throwable)
+            );
+            returnBadGateway(responseWriter, request, "TLS handshake exception while proxying request to remote address" + remoteAddress);
+        } else if (!connectionClosedException(throwable)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(EXCEPTION)
+                    .setLogLevel(Level.ERROR)
+                    .setCorrelationId(request.getLogCorrelationId())
+                    .setHttpRequest(request)
+                    .setMessageFormat(throwable.getMessage())
+                    .setThrowable(throwable)
+            );
+            returnBadGateway(responseWriter, request, "connection closed while proxying request to remote address" + remoteAddress);
+        } else {
+            returnBadGateway(responseWriter, request, throwable.getMessage());
         }
     }
 
@@ -1327,6 +1344,11 @@ public class HttpActionHandler {
                     potentiallyHttpProxy ? 1000 : configuration.socketConnectionTimeoutInMillis()),
                 grpcDecode, remoteAddress
             );
+            // Consume the upstream response via the scheduler continuation (as the matched path does)
+            // instead of a blocking get, so the pool thread is freed during the round trip. This path is
+            // async-only (reached from the breakpoint continuation), so it never runs synchronously.
+            scheduler.submit(responseFuture, () -> {
+            try {
             HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
             long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
             if (response == null) {
@@ -1429,49 +1451,16 @@ public class HttpActionHandler {
                 );
                 responseWriter.writeResponse(originalRequest, response, false);
             }
+            } catch (SocketCommunicationException sce) {
+                returnBadGateway(responseWriter, originalRequest, sce.getMessage());
+            } catch (Throwable throwable) {
+                handleUnmatchedForwardFailure(throwable, originalRequest, responseWriter, null, remoteAddress, potentiallyHttpProxy);
+            }
+            }, false, throwable -> false);
         } catch (SocketCommunicationException sce) {
             returnBadGateway(responseWriter, originalRequest, sce.getMessage());
         } catch (Throwable throwable) {
-            if (potentiallyHttpProxy && connectionException(throwable)) {
-                if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(TRACE)
-                            .setCorrelationId(originalRequest.getLogCorrelationId())
-                            .setMessageFormat("failed to connect to proxied socket due to exploratory HTTP proxy for:{}due to:{}falling back to no proxy")
-                            .setArguments(originalRequest, throwable.getCause())
-                    );
-                }
-                returnBadGateway(responseWriter, originalRequest, "failed to connect to proxied socket due to exploratory HTTP proxy");
-                // SSLException-family faults are surfaced by this sslHandshakeException branch
-                // (richer TLS diagnostics). A plain DecoderException is NOT matched here; it falls
-                // through to the !connectionClosedException ERROR branch below, so it is still logged
-                // (never silently dropped) - no generic isSslOrDecoderFault branch is needed.
-            } else if (sslHandshakeException(throwable)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.ERROR)
-                        .setCorrelationId(originalRequest.getLogCorrelationId())
-                        .setHttpRequest(originalRequest)
-                        .setMessageFormat("TLS handshake exception while proxying request{}to remote address{}")
-                        .setArguments(originalRequest, remoteAddress)
-                        .setThrowable(throwable)
-                );
-                returnBadGateway(responseWriter, originalRequest, "TLS handshake exception while proxying request to remote address" + remoteAddress);
-            } else if (!connectionClosedException(throwable)) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setType(EXCEPTION)
-                        .setLogLevel(Level.ERROR)
-                        .setCorrelationId(originalRequest.getLogCorrelationId())
-                        .setHttpRequest(originalRequest)
-                        .setMessageFormat(throwable.getMessage())
-                        .setThrowable(throwable)
-                );
-                returnBadGateway(responseWriter, originalRequest, "connection closed while proxying request to remote address" + remoteAddress);
-            } else {
-                returnBadGateway(responseWriter, originalRequest, throwable.getMessage());
-            }
+            handleUnmatchedForwardFailure(throwable, originalRequest, responseWriter, null, remoteAddress, potentiallyHttpProxy);
         }
     }
 
@@ -1549,6 +1538,10 @@ public class HttpActionHandler {
                         final java.util.function.Function<HttpResponse, HttpResponse> grpcDecode = grpcDecodeOverride(clonedRequest);
                         final HttpRequest requestToSend = grpcEncodeForForward(clonedRequest);
                         final HttpForwardActionResult responseFuture = new HttpForwardActionResult(clonedRequest, httpClient.sendRequest(requestToSend, targetAddress), grpcDecode, targetAddress);
+                        // Consume the upstream response via the scheduler continuation (as the matched path
+                        // does) instead of a blocking get, so the pool thread is freed during the round trip.
+                        scheduler.submit(responseFuture, () -> {
+                        try {
                         HttpResponse response = responseFuture.getHttpResponse().get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
                         long responseTimeMs = (org.mockserver.time.TimeService.nanoTime() - forwardStartNanos) / 1_000_000;
                         if (response == null) {
@@ -1605,6 +1598,10 @@ public class HttpActionHandler {
                             );
                             responseWriter.writeResponse(request, response, false);
                         }
+                        } catch (Throwable throwable) {
+                            returnBadGateway(responseWriter, request, "proxy pass forwarding failed for " + mapping.getTargetUri() + ": " + throwable.getMessage());
+                        }
+                        }, synchronous, throwable -> false);
                     } catch (Throwable throwable) {
                         returnBadGateway(responseWriter, request, "proxy pass forwarding failed for " + mapping.getTargetUri() + ": " + throwable.getMessage());
                     }
