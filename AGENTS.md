@@ -133,7 +133,10 @@ bk api "pipelines/mockserver-release/builds/<N>/jobs/<JOB_ID>/log" \
 # Note the PLURAL `artifacts`: `bk artifact download` (singular, as some Buildkite
 # docs show) does not exist in this CLI and errors with "unexpected argument artifact".
 # The positional is an artifact ID, not a filename glob — list first to get it.
-bk artifacts list --build <N> -p <pipeline-slug>
+# The two subcommands take the build number DIFFERENTLY: `list` takes it as a
+# POSITIONAL, `download` takes it as `--build`. Passing `--build` to `list` prints
+# usage, and passing it positionally to `download` errors "unexpected argument".
+bk artifacts list <N> -p <pipeline-slug>
 bk artifacts download <ARTIFACT_ID> --build <N> -p <pipeline-slug>
 ```
 
