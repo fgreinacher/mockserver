@@ -382,22 +382,31 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
-    // NOTE, because this is a trap for anyone adding HTTP/2 dashboard support: both executors are shut
-    // down here and NOT nulled, so registerListeners cannot recreate them. On an HTTP/1.1 channel that is
-    // correct - PortUnificationHandler builds a fresh handler per channel, so removal means that one
-    // connection is finished. But Http2MultiplexChildInitializer creates ONE instance and adds it to
-    // EVERY child stream, so the first sibling stream to close would permanently disable the throttle
-    // refill and the pull coalescer for all the others (scheduleCoalescedPullFlush would then take its
-    // isShutdown branch and dispatch every frame, losing the bound below).
+    // The SINGLE teardown point. handlerRemoved fires when the channel closes AND when this handler is
+    // removed from the pipeline BEFORE the channel goes inactive (CallbackWebSocketServerHandler and
+    // WebSocketProxyRelayHandler both remove it) - and a handler removed that way never sees
+    // channelInactive. So BOTH halves of teardown live here: unregister the log/matcher listeners AND stop
+    // the executors. They were previously split (channelInactive unregistered the listeners, handlerRemoved
+    // stopped the executors), so only the union was correct and an early removal skipped the listener
+    // unregister. Unreachable today (both early-removal sites fire only on channels that never upgraded, so
+    // nothing was registered), but consolidating removes the hazard with no behaviour change.
     //
-    // That is unreachable TODAY only because a dashboard upgrade over HTTP/2 is refused with 501 in
-    // channelRead, so a stream channel never gets CHANNEL_UPGRADED_FOR_UI_WEB_SOCKET and therefore never
-    // reaches handleWebSocketFrame. (The refusal is itself reliable because HTTP2_ENABLED is in
-    // ConnectionScopeHandler.CONNECTION_SCOPED_ATTRIBUTES and that handler runs FIRST on the child
-    // pipeline, so isHttp2Enabled is true on a stream channel rather than silently defaulting to false.)
-    // If HTTP/2 dashboards are ever supported, make this per-channel before enabling them.
+    // Every step is null-guarded, so on an HTTP/2 child stream - where the @Sharable instance is added but a
+    // dashboard upgrade is refused with 501, so registerListeners never runs and these fields stay null -
+    // all four steps are no-ops (and unregisterListener on a listener that was never registered is itself a
+    // no-op). NOTE the executors are shut down and NOT nulled, so registerListeners cannot recreate them:
+    // correct per HTTP/1.1 channel (PortUnificationHandler builds a fresh handler per channel), but a trap
+    // if HTTP/2 dashboards are ever supported, because handlerRemoved then fires per child stream and the
+    // first sibling to close would permanently disable the throttle refill and the pull coalescer for the
+    // others. Make the executors per-channel before enabling HTTP/2 dashboards.
     @Override
     public void handlerRemoved(ChannelHandlerContext ctx) {
+        if (requestMatchers != null) {
+            requestMatchers.unregisterListener(this);
+        }
+        if (mockServerEventLog != null) {
+            mockServerEventLog.unregisterListener(this);
+        }
         if (this.scheduler != null) {
             scheduler.shutdown();
         }
@@ -874,16 +883,9 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         ctx.close();
     }
 
-    @Override
-    public void channelInactive(ChannelHandlerContext ctx) {
-        if (requestMatchers != null) {
-            requestMatchers.unregisterListener(this);
-        }
-        if (mockServerEventLog != null) {
-            mockServerEventLog.unregisterListener(this);
-        }
-        ctx.fireChannelInactive();
-    }
+    // No channelInactive override: teardown (unregister listeners + stop executors) is consolidated into
+    // handlerRemoved, which fires on channel close too. ChannelInboundHandlerAdapter.channelInactive
+    // already propagates the event.
 
     @Override
     public void updated(MockServerEventLog mockServerLog) {

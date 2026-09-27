@@ -2482,6 +2482,39 @@ public class DashboardWebSocketHandlerTest {
     }
 
     @Test
+    public void handlerRemovedTearsDownListenersAndExecutorsWithoutChannelInactive() throws Exception {
+        // D2: teardown is consolidated into handlerRemoved. Removing the handler from the pipeline BEFORE
+        // the channel goes inactive (as CallbackWebSocketServerHandler / WebSocketProxyRelayHandler do)
+        // never fires channelInactive, so if the listener unregister lived only there it would leak. Prove
+        // handlerRemoved both unregisters the log listener and stops the executors on such a removal.
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Scheduler scheduler = track(new Scheduler(configuration(), mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration(), mockServerLogger, scheduler));
+        MockServerEventLog eventLog = httpState.getMockServerLog();
+        int listenersBefore = eventLog.listenerCount();
+
+        DashboardWebSocketHandler handler = track(new DashboardWebSocketHandler(httpState, false, true));
+        EmbeddedChannel channel = track(new EmbeddedChannel(handler));
+        handler.registerListeners();
+        assertThat("registerListeners registered one log listener", eventLog.listenerCount(), is(listenersBefore + 1));
+
+        // remove from the pipeline WITHOUT closing the channel, so channelInactive never fires
+        channel.pipeline().remove(handler);
+
+        assertThat("handlerRemoved unregistered the log listener", eventLog.listenerCount(), is(listenersBefore));
+
+        java.lang.reflect.Field schedulerField = DashboardWebSocketHandler.class.getDeclaredField("scheduler");
+        schedulerField.setAccessible(true);
+        java.util.concurrent.ExecutorService sched = (java.util.concurrent.ExecutorService) schedulerField.get(handler);
+        assertThat("handlerRemoved shut the scheduler down", sched != null && sched.isShutdown(), is(true));
+
+        java.lang.reflect.Field throttleField = DashboardWebSocketHandler.class.getDeclaredField("throttleExecutorService");
+        throttleField.setAccessible(true);
+        java.util.concurrent.ExecutorService throttle = (java.util.concurrent.ExecutorService) throttleField.get(handler);
+        assertThat("handlerRemoved shut the throttle executor down", throttle != null && throttle.isShutdown(), is(true));
+    }
+
+    @Test
     public void populateLogSectionsHonoursClientLogLimit() {
         // The split log limit actually caps the log sections at the client-supplied value - and can go
         // ABOVE the old fixed 100. Drive the extracted consumer directly for an exact assertion.
