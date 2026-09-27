@@ -298,8 +298,8 @@ MockServer runs the same agent roster under two harnesses, each tiering to its o
 
 | Tier | opencode (`opencode.jsonc`) | Claude Code (`.claude/agents/*.md`) | Agents | Rationale |
 |------|------|------|--------|-----------|
-| Reasoning | `openai/gpt-5` | `claude-opus-4-8` | implementer, review-final, security-auditor, debugger, pipeline-investigator | Production code, binding verdicts, and open-ended investigation |
-| Standard | `openai/gpt-4o` | `claude-sonnet-4-6` | code-reviewer, review-cheap, simplifier, docs-writer, taskify-agent | Strong analysis at moderate cost |
+| Reasoning | `openai/gpt-5` | `claude-opus-5-5` | implementer, review-final, security-auditor, debugger, pipeline-investigator | Production code, binding verdicts, and open-ended investigation |
+| Standard | `openai/gpt-4o` | `claude-sonnet-5` | code-reviewer, review-cheap, simplifier, docs-writer, taskify-agent | Strong analysis at moderate cost |
 | Fast | `openai/gpt-4o-mini` | `claude-haiku-4-5-20251001` | test-runner, council-seat | Rote operations — speed over depth |
 
 The escalation `review-cheap` (gpt-4o / sonnet) → `review-final` (gpt-5 / opus) is a real capability gradient, so the binding gate is a stronger second brain rather than a same-model re-run. But note what the tiering does **not** buy you: within one harness `review-final` runs the *same* model as `implementer`. Its independence comes from a **fresh context**, a **distinct adversarial prompt**, and **restricted tools** (`write`/`edit` denied — though `bash` is granted, so the no-writing rule is partly instruction-level), plus a lower **temperature** on the opencode side — not from model diversity, which is deliberately not pursued (differentiating the models within one provider would mean downgrading the implementer). See `docs/operations/opencode-configuration.md` → Provider Strategy and Reviewer Independence for the reasoning, and for the full per-agent model, `effort`, and `temperature` tables.

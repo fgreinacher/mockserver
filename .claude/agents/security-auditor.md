@@ -1,7 +1,7 @@
 ---
 name: security-auditor
 description: Security-focused code auditor for Java/Netty applications. Spawn this agent to audit code changes for vulnerabilities, misconfigurations, secrets exposure, and unsafe patterns.
-model: claude-opus-4-8
+model: claude-opus-5-5
 effort: high
 tools:
   - Read

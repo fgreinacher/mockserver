@@ -1,7 +1,7 @@
 ---
 name: code-reviewer
 description: Pre-commit code reviewer — checks for correctness, security, and MockServer conventions. Spawn this agent when you need a focused review of staged/unstaged changes before committing.
-model: claude-sonnet-4-6
+model: claude-sonnet-5
 effort: medium
 tools:
   - Read
