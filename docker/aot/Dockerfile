@@ -71,6 +71,9 @@ RUN "$JAVA_HOME/bin/jlink" \
 # Training run (JEP 514 one-step): start the server with -XX:AOTCacheOutput, wait until the
 # status endpoint answers via the bundled HealthCheck, then stop cleanly so the JVM writes
 # the cache at exit. The `ls` fails the build if the cache was not produced.
+# GC: this variant intentionally stays on the JDK default collector (G1), NOT the -XX:+UseZGC the
+# other server images set — ZGC's fixed start-up cost defeats this variant's minimal-time-to-ready
+# purpose. Do not add -XX:+UseZGC here. See docs/code/startup-performance.md for the measurements.
 RUN /runtime/bin/java -XX:AOTCacheOutput=/mockserver.aot \
       -jar /mockserver-netty-jar-with-dependencies.jar -p 1080 & \
     SERVER_PID=$!; \
@@ -100,6 +103,8 @@ USER nonroot
 # because a committed heap costs ~1.48x its size in real RSS, so a 75% cap OOM-killed a 2 GiB
 # container under load). -XX:AOTCache loads the baked cache; if the cache is incompatible (e.g.
 # different CPU arch) the JVM logs a warning and starts normally.
+# GC: kept on the JDK default (G1), unlike the sibling server images' -XX:+UseZGC — see the training
+# stage above. To trade start-up for ZGC's lower tail latency, pass -XX:+UseZGC via JAVA_TOOL_OPTIONS.
 ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080

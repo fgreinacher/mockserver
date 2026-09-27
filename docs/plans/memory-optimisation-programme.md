@@ -43,7 +43,7 @@ publishable repeat and 454 the matched ZGC cell that decides unit 17.**
 |---|---|---|
 | **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
 | **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant |
-| **Unit 17** | Ship ZGC as the Docker default | **awaiting the maintainer's decision.** 453 (G1) vs 454 (ZGC), 6 cores, default heap, same ladder, same image tag (binaries differ only off the plain-GET path: `7261e4ab3` vs `589a65db1`): ZGC clean to 60,000 offered vs G1 52,000; p95 at 48,000 10.5 vs 23.2 ms; p99 30.7 vs 49.1 ms; p99 at 16,000 0.28 vs 20.6 ms; peak 59,706 vs 58,913; zero errors both. Consistent with cells 442, 446 and 449. Recommended: adopt |
+| **Unit 17** | Ship ZGC as the Docker default | **landed.** Decision figures (453 G1 vs 454 ZGC, 6 cores, default heap, same ladder; binaries differ only off the plain-GET path `7261e4ab3` vs `589a65db1`): ZGC clean to 60,000 offered vs G1 52,000; p95 at 48,000 10.5 vs 23.2 ms; p99 30.7 vs 49.1 ms; p99 at 16,000 0.28 vs 20.6 ms; peak 59,706 vs 58,913; zero errors both. ZGC is supplied as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` (clustered: `+ -XX:+ZGenerational`, JDK 21), **not** a hard-coded ENTRYPOINT flag — review-final caught that a hard-coded `-XX:+UseZGC` clashes fatally with a user-prepended `JAVA_TOOL_OPTIONS` GC flag ("multiple GCs selected"); an ENV default is instead replaced wholesale by an override, so the collector stays overridable on the shell-less distroless images. On the standard, `local`, `snapshot`, `root`, `root-snapshot`, `graaljs` and `clustered` images. **`-aot` kept on G1** — local build measured ZGC regressing its cold start ~42% (380→540 ms), defeating its purpose; the AppCDS archive is retrained under ZGC and verified to map under the ENV-supplied ZGC (`-Xshare:on` with the entrypoint `-cp`, exit 0). Standard/local startup within ~7% of G1 (~426–495 ms vs 463 ms), no OOM at `--memory 512m`/`1g`. Verified live: default→ZGC; `-e JAVA_TOOL_OPTIONS=-XX:+UseG1GC`→G1 (starts; archive not used under G1); `-e JAVA_TOOL_OPTIONS=-Xmx512m`→not ZGC (documented footgun); `helm template` default has no `JAVA_TOOL_OPTIONS` (image ENV ZGC stands) and `app.jvmOptions=-XX:+UseG1GC` sets it. Live-smoke ZGC assertion (`jvm_runtime_info` gc label) added to `java-docker-push-snapshot.sh` (control-class, pending approval). |
 | **Ladder** | New figures on current master | **453 (default G1, 8k–64k): rig-valid peak 58,912 req/s, clean to 52,000 offered (50,589 achieved), p95 23.2 ms at 48,000, zero errors** — not baseline-eligible because the cpusets were passed explicitly (even at default values, since `eee0e662c`); 455 is the identical publishable repeat; 454 (ZGC, same commit) decides unit 17 |
 
 ### Landed (2026-09-26/27)
@@ -94,8 +94,9 @@ self-deadlock inline), **22B** (off the measured workload entirely; a callback r
 ### Then, and only then: new figures
 
 Re-run the ladder. **445 remains the publishable curve** until a new baseline-eligible run exists.
-Unit 17 (ZGC as the shipped default) is decision-ready — it won at both 6 and 2 cores — but wants
-a repeat on **matched images**, since no two cells so far shared a binary.
+Unit 17 (ZGC as the shipped default) is **landed** — it won at both 6 and 2 cores. A confirming
+repeat on **matched images** is still worthwhile (no two perf cells so far shared a binary), but the
+image default has flipped to `-XX:+UseZGC` (with `-aot` kept on G1; see the unit table).
 
 ## Measured evidence
 

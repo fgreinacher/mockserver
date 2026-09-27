@@ -28,9 +28,14 @@ app:
   # the image's MaxRAMPercentage. (A different MaxRAMPercentage set via jvmOptions has NO effect:
   # the image's entrypoint flag is applied last and wins.) MockServer's in-memory log ring sizes
   # off the heap, so always pair a heap setting with a matching resources.limits.memory below.
+  # GC: the image runs ZGC by default via its own JAVA_TOOL_OPTIONS. The chart sets the
+  # JAVA_TOOL_OPTIONS env var ONLY when this value is non-empty, and doing so REPLACES the image
+  # default entirely — so a non-empty jvmOptions that omits a collector drops ZGC. Include the
+  # collector when you set jvmOptions for another reason (e.g. "-XX:+UseZGC -Xmx512m"), or set
+  # "-XX:+UseG1GC" to switch to G1.
   # Example - set an explicit heap (overrides the image's 60% MaxRAMPercentage; must fit inside
-  # resources.limits.memory):
-  #   jvmOptions: "-Xmx512m"
+  # resources.limits.memory) while KEEPING ZGC:
+  #   jvmOptions: "-XX:+UseZGC -Xmx512m"
   jvmOptions: ""
   serviceAccountName: default
   # Seconds Kubernetes waits after SIGTERM before SIGKILL. Must comfortably exceed

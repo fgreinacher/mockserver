@@ -173,6 +173,17 @@ The AOT cache is CPU-architecture and JDK-build specific; multi-arch builds prod
 
 Measured gain: −37% (−42% with `proxySetupLogging=false`) versus the standard baseline, on the fat-jar host benchmark. At release time the `-aot` container measured 0.35–0.37 s to ready vs 0.69–1.14 s for the then-untuned standard image; with AppCDS the standard image now reaches ~0.57 s (measured on the previous JDK 17 runtime; the image now runs a JDK 26 runtime and the figure should be re-measured — a single local container observation after the JDK 26 bump was comparable), narrowing the gap.
 
+### ZGC as the default collector — startup impact (unit 17)
+
+The images run ZGC by default for its far lower request-path tail latency (see [memory-optimisation-programme.md](../plans/memory-optimisation-programme.md) unit 17), delivered as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` rather than a hard-coded ENTRYPOINT flag — a hard-coded `-XX:+UseZGC` clashes fatally with any GC flag a user prepends via `JAVA_TOOL_OPTIONS` ("multiple GCs selected"), whereas an ENV default is replaced wholesale by a user override (see [docker.md](../infrastructure/docker.md)). ZGC costs a little at *startup* — it starts more GC threads and reserves a larger address space than G1 — so the collector choice interacts with this document's work. Measured launch → first `PUT /mockserver/status` (medians of 5, arm64, container, `docker run` to first 200):
+
+| Image | G1 | ZGC | Δ | Decision |
+|---|---:|---:|---:|---|
+| standard / `local` (AppCDS, JDK 26) | ~463 ms | ~426–495 ms | ≤ +7% (parity) | ship ZGC — well under the 10% bar, tail-latency win dominates |
+| `-aot` (Leyden AOT cache, JDK 25) | ~380 ms | ~540 ms | **+42%** | **keep G1** — the AOT cache maps under ZGC (`-Xlog:aot` confirms "Opened AOT cache"), but ZGC's fixed start-up cost dominates at this variant's sub-400 ms floor, defeating its only purpose |
+
+The AppCDS archive is trained under ZGC and verified to map under it: running the image's `java` with the entrypoint's `-cp` plus `-XX:SharedArchiveFile=/mockserver.jsa -Xshare:on` (with the ENV supplying `-XX:+UseZGC`) exits 0, with `-Xlog:cds` showing all static, dynamic and Heap regions mapped. A **G1 override is different**: `-e JAVA_TOOL_OPTIONS=-XX:+UseG1GC` starts and serves, but the JVM logs a CDS error and continues via `-Xshare:auto` **without** the archive — so G1 users lose the AppCDS start-up benefit (back to the ~900 ms no-archive cold start). Per-image `JAVA_TOOL_OPTIONS` defaults, the override footgun, and the JDK-version caveats (`-XX:+ZGenerational` required on the JDK 21 `-clustered` image, obsolete on JDK 25/26) live in [docker.md](../infrastructure/docker.md).
+
 ## GraalVM Native Image
 
 ### History: issue #2385 spike (2026-07)

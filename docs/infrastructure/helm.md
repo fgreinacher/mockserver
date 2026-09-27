@@ -299,6 +299,11 @@ Setting a different `-XX:MaxRAMPercentage` via `jvmOptions` has no effect: becau
 
 Without a `resources.limits.memory`, the JVM sizes the heap off total node memory and can be OOM-killed under load.
 
+The image sets **`ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`** (`-clustered`: `"-XX:+UseZGC -XX:+ZGenerational"`), so the pod runs the Z garbage collector by default (lower request tail latency under load; see [docker.md](docker.md)). The chart sets the `JAVA_TOOL_OPTIONS` env var **only when `app.jvmOptions` is non-empty** (`{{- if .Values.app.jvmOptions }}` in `deployment.yaml`), so:
+- **Default (`app.jvmOptions: ""`)** — the chart adds no env var, the image `ENV` stands, and the pod runs ZGC. Verified with `helm template` (no `JAVA_TOOL_OPTIONS` in the rendered Deployment).
+- **`app.jvmOptions: "-XX:+UseG1GC"`** — the chart sets `JAVA_TOOL_OPTIONS: "-XX:+UseG1GC"`, which **replaces the image `ENV` wholesale** (a container env var overrides the image default), so the pod runs G1. This works by *replacement*, not by last-flag-wins — the value never contains both collectors, so there is no "multiple GCs selected" clash. Verified with `helm template`.
+- **Footgun:** any non-empty `app.jvmOptions` replaces the whole `JAVA_TOOL_OPTIONS`, so `app.jvmOptions: "-Xmx512m"` **drops `-XX:+UseZGC`** and the pod falls back to the JDK default collector. When you set `app.jvmOptions` for another reason, include the collector, e.g. `app.jvmOptions: "-XX:+UseZGC -Xmx512m"`.
+
 **Pod securityContext / PVC permissions:** on clusters with restrictive defaults the pod may be unable to write to the mounted volume, so persistence silently fails. Set a pod-level `fsGroup` so the volume is group-owned and writable, e.g. `--set podSecurityContext.fsGroup=2000`. `podSecurityContext` is the general-purpose hook for any pod-level securityContext field (the container-level `securityContext` continues to carry `runAsUser` / `readOnlyRootFilesystem` / `allowPrivilegeEscalation`).
 
 **PVC retention:** Chart-managed PVCs are NOT deleted by `helm uninstall`. Delete the PVC manually if you want to remove persisted data: `kubectl delete pvc <release-name> -n <namespace>`.

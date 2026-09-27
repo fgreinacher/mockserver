@@ -243,14 +243,18 @@ RUN "$JAVA_HOME/bin/jlink" \
       --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management \
       --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
       --output /runtime \
- && /runtime/bin/java -Xshare:dump
+ && /runtime/bin/java -XX:+UseZGC -Xshare:dump
 
 # Training run (dynamic AppCDS, JEP 350): start the server with -XX:ArchiveClassesAtExit, wait until
 # the status endpoint answers via the bundled HealthCheck (which also drives the post-bind warmup),
 # then stop cleanly so the JVM writes the archive at exit. The `ls` fails the build if the archive
 # was not produced. tcnative is not on the training classpath (it is added only at runtime), so the
 # archive covers the JDK-provider path; tcnative classes simply load normally at runtime.
-RUN /runtime/bin/java -XX:ArchiveClassesAtExit=/mockserver.jsa \
+# -XX:+UseZGC MUST match the runtime collector (the ENTRYPOINT below): the base archive was dumped
+# under ZGC above and the dynamic archive layers on it, so training under the same collector keeps
+# the archive mappable. Under a non-ZGC override (e.g. JAVA_TOOL_OPTIONS=-XX:+UseG1GC) the archive is
+# not loaded: -Xshare:auto logs a CDS error and the JVM starts without it (slower cold start, still works).
+RUN /runtime/bin/java -XX:+UseZGC -XX:ArchiveClassesAtExit=/mockserver.jsa \
       -cp /mockserver.jar:/mockserver-deps.jar org.mockserver.cli.Main -p 1080 & \
     SERVER_PID=$!; \
     for i in $(seq 1 240); do \
@@ -311,6 +315,15 @@ USER nonroot
 # -XX:SharedArchiveFile loads the baked AppCDS archive. -Xshare:auto (the JVM default) means a
 # missing or unusable archive (e.g. bind-mounted away, corrupt, or an arch mismatch) logs a warning
 # and starts normally rather than failing.
+# Garbage collector: ZGC is the default, supplied via the JAVA_TOOL_OPTIONS env var below, NOT a
+# hard-coded ENTRYPOINT flag. JAVA_TOOL_OPTIONS is PREPENDED to these args, so a hard-coded
+# -XX:+UseZGC would collide with any GC flag a user prepends ("multiple GCs selected" — fatal). As an
+# ENV default it is instead REPLACED wholesale when the user sets JAVA_TOOL_OPTIONS, keeping the
+# collector overridable on this shell-less distroless image. Switch to G1 with
+# -e JAVA_TOOL_OPTIONS=-XX:+UseG1GC; keep -XX:+UseZGC if you set JAVA_TOOL_OPTIONS for -Xmx etc. The
+# AppCDS archive above is trained under ZGC to match this default; a non-ZGC override starts without it. ZGC is generational on JDK 26 — no -XX:+ZGenerational (obsolete
+# post-JDK 23). See docs/code/startup-performance.md and the memory programme.
+ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"
 ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver.jar:/mockserver-deps.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080

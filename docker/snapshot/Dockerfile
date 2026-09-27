@@ -111,6 +111,13 @@ USER nonroot
 # has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
 # that disables MaxRAMPercentage. A different MaxRAMPercentage via JAVA_TOOL_OPTIONS does NOT take
 # effect: it is prepended before these args, so this entrypoint flag is applied last and wins.
+# Garbage collector: ZGC is the default, supplied via the JAVA_TOOL_OPTIONS env var below, NOT a
+# hard-coded ENTRYPOINT flag — JAVA_TOOL_OPTIONS is prepended, so a hard-coded -XX:+UseZGC would
+# collide with any user GC flag ("multiple GCs selected", fatal). An ENV default is replaced wholesale
+# when the user sets JAVA_TOOL_OPTIONS, keeping the collector overridable on this shell-less image.
+# Switch to G1 with -e JAVA_TOOL_OPTIONS=-XX:+UseG1GC; keep -XX:+UseZGC if you set it for -Xmx etc.
+# JDK 25 ZGC is generational — no -XX:+ZGenerational (obsolete post-JDK 23).
+ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"
 ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
