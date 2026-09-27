@@ -129,8 +129,9 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // BE PRECISE ABOUT WHICH THROTTLE APPLIES, because this is the note a future reader will trust when
     // deciding whether to raise the ceiling again. The Semaphore(1) is a per-connection permit (an
     // instance field on a handler PortUnificationHandler news per HTTP/1.1 channel, see above), NOT a
-    // JVM-global one, refilled ~1/second, and it gates only the JSON serialise-and-write in sendMessage. It does NOT gate the
-    // DTO-construction walk below, which has already run by then. That walk executes per registry entry
+    // JVM-global one, refilled ~1/second, and it is acquired at the TOP of sendUpdate, before the DTO walk,
+    // so it now gates BOTH that walk and the serialise-and-write; a miss defers the update to a trailing send
+    // (see sendUpdate / deliverPendingTrailingUpdates) instead of walking. That walk executes per registry entry
     // on two paths, and BOTH are now rate-bounded per connection: the push path is coalesced by
     // MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS = 250 (~4/second), and the client-pull path (an
     // inbound TextWebSocketFrame, whose rate and filter the client controls) is coalesced PER CHANNEL by
@@ -259,6 +260,8 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     private ThreadPoolExecutor scheduler;
     private ScheduledExecutorService throttleExecutorService;
     private Semaphore semaphore;
+    // Connections whose latest update missed the write permit; the throttle refill re-drives them.
+    private final Set<ChannelOutboundInvoker> pendingTrailingUpdates = ConcurrentHashMap.newKeySet();
     // Memo of the (expensive) ExpectationDTO -> JsonNode serialisation, keyed by expectation id.
     // Rebuilding it for up to EXPECTATION_UPDATE_ITEM_LIMIT expectations on EVERY throttled dashboard update
     // (roughly once a second per connected dashboard) reproduced byte-identical JSON whenever the
@@ -393,6 +396,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         if (this.throttleExecutorService != null) {
             throttleExecutorService.shutdownNow();
         }
+        pendingTrailingUpdates.clear();
     }
 
     @Override
@@ -739,6 +743,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 if (semaphore.availablePermits() == 0) {
                     semaphore.release(1);
                 }
+                deliverPendingTrailingUpdates();
             }, 0, 1, SECONDS);
         }
         if (scheduler == null) {
@@ -787,12 +792,14 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                     synchronized (registry) {
                         registry.remove(ctx);
                     }
+                    pendingTrailingUpdates.remove(ctx);
                 });
             } else {
                 Map<ChannelOutboundInvoker, HttpRequest> registry = getClientRegistry();
                 synchronized (registry) {
                     registry.remove(ctx);
                 }
+                pendingTrailingUpdates.remove(ctx);
                 ctx.close();
             }
         } else if (frame instanceof TextWebSocketFrame) {
@@ -892,6 +899,18 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
+    // One permit per window: at most one pending connection writes; the rest miss again and stay pending.
+    private void deliverPendingTrailingUpdates() {
+        if (pendingTrailingUpdates.isEmpty() || scheduler == null || scheduler.isShutdown()) {
+            return;
+        }
+        for (Map.Entry<ChannelOutboundInvoker, HttpRequest> registryEntry : clientRegistrySnapshot()) {
+            if (pendingTrailingUpdates.remove(registryEntry.getKey())) {
+                sendUpdate(registryEntry.getKey(), registryEntry.getValue());
+            }
+        }
+    }
+
     // Snapshot the registry under its lock so the (off-event-loop) updated(...) callbacks iterate a
     // stable copy without holding the lock across the heavyweight sendUpdate calls and without racing
     // the event-loop put/remove mutations.
@@ -904,29 +923,17 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
 
     @VisibleForTesting
     void sendUpdate(ChannelOutboundInvoker ctx, RequestDefinition httpRequest) {
-        sendUpdate(ctx, httpRequest, 2);
-    }
-
-    private void sendUpdate(ChannelOutboundInvoker ctx, RequestDefinition httpRequest, int retryCount) {
         // Consult the write throttle BEFORE the DTO walk. The Semaphore(1) is the ~1/second write permit;
         // with no permit this update cannot be written anyway, so building the whole DTO tree (retrieve +
-        // walk + serialise the sections) only to discard it - then re-walk after a 200ms sleep, up to twice -
-        // was pure waste. Acquire first: on no permit schedule a bare re-attempt (no walk) up to retryCount,
-        // and only once we hold the permit do we walk and write it. The permit is consumed by the write and
-        // refilled ~1/second by the throttle task, so this now bounds the WALK to the write rate too, not
-        // only the write.
+        // walk + serialise the sections) only to discard it was pure waste. Acquire first; only once we hold
+        // the permit do we walk and write.
         if (!semaphore.tryAcquire()) {
-            if (retryCount >= 0) {
-                scheduler.submit(() -> {
-                    try {
-                        TimeUnit.MILLISECONDS.sleep(200);
-                    } catch (InterruptedException ignore) {
-                    }
-                    sendUpdate(ctx, httpRequest, retryCount - 1);
-                });
-            }
+            // Never drop: without a trailing send, a burst with no follow-up traffic leaves the client stale.
+            pendingTrailingUpdates.add(ctx);
             return;
         }
+        // About to bring this connection up to date; a newer miss during the walk re-adds it.
+        pendingTrailingUpdates.remove(ctx);
         // Client-requested log-row limit for THIS connection (DEFAULT when it requested nothing).
         // Expectations are NOT governed by it - they keep the fixed EXPECTATION_UPDATE_ITEM_LIMIT.
         final int logItemLimit = logItemLimitFor(ctx);

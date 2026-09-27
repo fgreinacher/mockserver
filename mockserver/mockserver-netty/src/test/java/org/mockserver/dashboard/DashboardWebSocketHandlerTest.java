@@ -2112,9 +2112,12 @@ public class DashboardWebSocketHandlerTest {
         return new Fixture(requestMatchers, handler, ctx);
     }
 
-    // Drive updates until the serialisation counter stops moving for a settle window, then return the
-    // settled value. This warms the cache and absorbs the cold-start double-fire race, so that a
-    // subsequent DELTA measures only what the operation under test caused.
+    // Wait until the serialisation counter stops moving for a settle window, then return the settled
+    // value. This warms the cache and absorbs the cold-start double-fire race, so that a subsequent DELTA
+    // measures only what the operation under test caused. The poll interval MUST exceed the ~1/second
+    // write-throttle window: an update that misses the write permit is delivered as a trailing update on
+    // the next refill (see DashboardWebSocketHandler.deliverPendingTrailingUpdates), so a shorter interval
+    // could declare "settled" in the gap before that deferred re-serialisation lands.
     private long quiesce(DashboardWebSocketHandler handler) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 30000;
         long previous = -1;
@@ -2124,7 +2127,7 @@ public class DashboardWebSocketHandlerTest {
                 return current;
             }
             previous = current;
-            Thread.sleep(700);
+            Thread.sleep(1300);
         }
         throw new AssertionError("serialisation count did not settle");
     }
@@ -2856,6 +2859,60 @@ public class DashboardWebSocketHandlerTest {
             Thread.sleep(100);
         }
         assertThat("a write permit lets the walk run", handler.logDtoConstructionCountForTesting() > 0L, is(true));
+    }
+
+    @Test
+    public void aThrottledUpdateIsStillDeliveredAsATrailingUpdateReflectingTheNewestEvent() throws Exception {
+        // dashboard-live-scroll regression: an update that misses the ~1/second write permit must NOT be
+        // dropped. The broken code bounded the retry to a few hundred ms on the send scheduler and then gave
+        // up, so a burst that missed the permit (e.g. the initial snapshot, with no follow-up traffic to
+        // re-drive a send) never reached the client and the dashboard stayed empty - the exact defect the
+        // Playwright live-scroll test times out on. The fix remembers the connection and re-drives a fresh,
+        // latest-state update on the next throttle refill. Assert that, with NO further sends from the test
+        // after the throttled one, the client still receives a frame reflecting an event added AFTER the
+        // connection, within a bounded time.
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Configuration configuration = configuration().maxLogEntries(50000);
+        Scheduler scheduler = track(new Scheduler(configuration, mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration, mockServerLogger, scheduler));
+        MockServerEventLog eventLog = httpState.getMockServerLog();
+        for (int i = 0; i < 20; i++) {
+            eventLog.add(received("/r-" + i));
+        }
+        DashboardWebSocketHandler handler = track(new DashboardWebSocketHandler(httpState, false, true)).registerListeners();
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
+        handler.getClientRegistry().put(ctx, request());
+
+        Thread.sleep(1500); // let the initial post-registration update drain
+        ctx.textWebSocketFrame = null;
+
+        java.lang.reflect.Field semaphoreField = DashboardWebSocketHandler.class.getDeclaredField("semaphore");
+        semaphoreField.setAccessible(true);
+        java.util.concurrent.Semaphore semaphore = (java.util.concurrent.Semaphore) semaphoreField.get(handler);
+
+        // Force the throttled state and pin the permit at zero through the broken code's whole bounded-retry
+        // window (~600ms), so the broken path deterministically gives up with nothing pending. A new event
+        // arrives while throttled; the fixed path remembers the connection and delivers once we stop pinning
+        // and the throttle refill frees a permit.
+        semaphore.drainPermits();
+        eventLog.add(received("/newest-marker")); // a NEW event, arriving while throttled
+        handler.sendUpdate(ctx, request());       // throttled: broken -> retry then drop; fixed -> pending
+
+        long pinUntil = System.currentTimeMillis() + 800;
+        while (System.currentTimeMillis() < pinUntil) {
+            semaphore.drainPermits();
+            Thread.onSpinWait();
+        }
+
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline &&
+            (ctx.textWebSocketFrame == null || !ctx.textWebSocketFrame.text().contains("/newest-marker"))) {
+            Thread.sleep(50);
+        }
+        assertThat("a throttled update is delivered as a trailing update once a permit frees",
+            ctx.textWebSocketFrame, is(org.hamcrest.CoreMatchers.notNullValue()));
+        assertThat("the trailing update reflects the newest event",
+            ctx.textWebSocketFrame.text(), containsString("/newest-marker"));
     }
 
     @Test
