@@ -107,7 +107,12 @@ public class HttpActionHandlerForwardChaosTest {
         configuration = configuration().logLevel(Level.INFO).metricsEnabled(true);
 
         mockHttpStateHandler = mock(HttpState.class);
-        scheduler = spy(new Scheduler(configuration, mockServerLogger));
+        // synchronous=true so the forward-path analyseDrift task (fire-and-forget submit(Runnable))
+        // runs inline instead of on the pool. This test drives processAction synchronously, so an
+        // async scheduler let analyseDrift's allMatchingExpectation(request) race the next
+        // when(firstMatchingExpectation(request)) stub on the same mock, throwing
+        // WrongTypeOfReturnValue. Production always aligns the scheduler flag with the dispatch flag.
+        scheduler = spy(new Scheduler(configuration, mockServerLogger, true));
         when(mockHttpStateHandler.getScheduler()).thenReturn(scheduler);
         when(mockHttpStateHandler.getUniqueLoopPreventionHeaderValue()).thenReturn("MockServer_" + UUIDService.getUUID());
         when(mockHttpStateHandler.getCrudDispatcher()).thenReturn(new CrudDispatcher());
