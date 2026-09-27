@@ -839,6 +839,8 @@ the codebase. The hazard-class table and full evidence standard are in
 [docs/code/optimisation-safety.md](optimisation-safety.md) — including how reference-counting changes
 must be evidenced, which is the hazard class the ByteBuf leak detection above exists to serve.
 
+> **`@Sharable` on `HttpClientInitializer` and `HttpClientHandler` is misleading.** Both classes are annotated `@Sharable` but hold per-connection state. The annotation is harmless only because `NettyHttpClient.connectFresh` news a **fresh initializer instance per `connect` call** — there is never actually a shared instance. Any refactoring that tries to "fix" this by reusing a single `HttpClientInitializer` instance across connections will silently corrupt per-connection state.
+
 ## WebSocket Proxy Passthrough
 
 MockServer can **proxy** a WebSocket connection through to a real upstream server, in addition to **mocking** one

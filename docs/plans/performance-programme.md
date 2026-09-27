@@ -36,10 +36,7 @@ after the next release.
 
 Considered and not pursued, by decision: splitting the netty integration tests across parallel JVMs (fixed ports and shared static config make it high-risk), and reusing `:maven: build` output for the deploy (steps do not share a filesystem).
 
-**Cross-reference:** the separate `memory-optimisation-programme.md` supersedes this plan for
-allocation and occupancy work, and now also owns the GC-default decision, the published figures,
-and the rig's measurement gates. Items 1 and 2 here are the two latency questions that programme
-has not answered.
+**Cross-reference:** the allocation and occupancy work that superseded this plan is complete. The GC-default decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`, `-aot` kept on G1) is documented in [docs/infrastructure/docker.md](../infrastructure/docker.md) and [docs/code/startup-performance.md](../code/startup-performance.md). Published figures and rig measurement gates are in [docs/code/performance-measurement.md](../code/performance-measurement.md). Items 1 and 2 here are the two latency questions that programme did not answer.
 
 ### 1. The unattributed latency tail — OPEN (held until after the next release)
 
@@ -219,7 +216,7 @@ was always the true server peak; it was this gate that was capping at ~24,000.
 
 **k6's cpuset was 12 of 48 vCPUs.** Widened to `11-23` (thirteen physical cores) — since superseded
 by `7-23` (seventeen), because thirteen proved too few and the ten-vCPU arm the reservation protected
-cannot run on this box at all; see docs/plans/memory-optimisation-programme.md. The reasoning at the
+cannot run on this box at all (see [docs/code/performance-measurement.md](../code/performance-measurement.md)). The reasoning at the
 time, now superseded, was: it starts at 11, not 7, so a planned second arm with the server on ten
 vCPUs (0-9) plus upstream (10) needs no k6 move — one k6 cpuset shares no physical core with the server or upstream in either the six- or the
 ten-vCPU arm. The sibling pairing is NOT assumed: `lib/perf-cpu-topology.sh` resolves it from sysfs

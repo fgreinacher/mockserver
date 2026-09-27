@@ -557,6 +557,9 @@ Each `Expectation` binds a request matcher to exactly one action. There are 19 a
 | `GRPC_BIDI_RESPONSE` | `GrpcBidiRouterHandler` / `GrpcBidiStreamHandler` | Bidirectional gRPC streaming via the multiplex pipeline (requires `grpcBidiStreamingEnabled=true`; returns 501 otherwise or in WAR) |
 | `BINARY_RESPONSE` | (inline in `BinaryRequestProxyingHandler`) | Returns raw binary bytes when a `BinaryRequestDefinition` matches |
 | `DNS_RESPONSE` | (inline in `DnsRequestHandler`) | Returns DNS response records when a `DnsRequestDefinition` matches a UDP DNS query |
+
+> **Concurrent writes to a shared `HttpResponse` are not safe** — writing from multiple threads simultaneously tears `KeysToMultiValues` header arrays (NPE / AIOOBE). In practice this is not reachable: the mock path clones the stored response per request before writing (`ResponseWriter.addConnectionHeader`), control-plane responses are built per request, and the dashboard communicates via WebSocket frames rather than shared response objects. `ResponseWriterConcurrencySafetyTest` guards the per-request-clone invariant on the mock path.
+
 ### Forward Actions
 
 | Type | Handler | Description |
@@ -786,6 +789,8 @@ Streaming responses can render each pushed payload from a response template inst
 - **gRPC server-stream** — `GrpcStreamResponseActionHandler` renders the message `json` against the request before protobuf encoding when the message carries a `templateType`.
 
 Text-based engines (Velocity/Mustache) render the payload directly via `renderTemplate(...)`. JavaScript uses `TemplateEngine.renderTemplateText(...)` (new): the JS engine executes the template's `handle(request)` function and coerces the return value to text (a returned string is used verbatim, any other value is `JSON.stringify`'d) — this is what makes JS usable for a text fragment, since the response-object `renderTemplate` path is unsupported for JS. When `templateType` is absent every payload is emitted byte-for-byte unchanged (opt-in, non-breaking). If a `JAVASCRIPT` template is requested without GraalJS on the classpath, rendering fails loudly with the same clear `RuntimeException` as the response-template path rather than degrading silently. (Reactive WebSocket responses — matcher-triggered `matchers` responses and GraphQL-subscription `next` payloads — are not yet templated; only the eager `messages` list is.)
+
+> **GraalJS per-request isolation is a hard invariant.** A fresh GraalJS `Context` is created per render (try-with-resources, closed on every path). An earlier attempt to cache the `Context` on a per-thread basis hung the core Surefire fork at its 1800 s timeout deterministically for several builds; the root cause was a concurrency stall on a shape that reused a per-thread `Context`. The current shape does not reuse `Context`s, which is why a shared process-wide `Engine` could be introduced safely. Any change that shares or reuses a `Context` between requests re-enters that failure mode and also breaks realm isolation (cross-request data leakage). Additionally, the GraalVM class filter is per-`Context`, not per-`Engine`; moving filtering onto the shared `Engine` would break a per-server security boundary tied to a published security advisory. A Velocity `ToolContext` is also created fresh per render because `$json`/`$xml` hold per-request parse state; sharing it is a data-leak defect, not an optimisation.
 
 ### Generating a response body from an inline JSON Schema
 

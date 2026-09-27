@@ -1097,3 +1097,19 @@ Convenience builders are provided for common patterns:
 - **Firing**: protocol handlers call `fire(trigger, identifier)` on successful events
 - **Reset**: `HttpState.reset()` calls `CrossProtocolEventBus.getInstance().reset()` to clear all listeners
 - **Pattern matching**: if `matchPattern` is set, the event identifier must contain the pattern; if unset, all events of that trigger type match
+
+## Known API Inconsistencies and Open Questions
+
+### `KeysToMultiValues.withEntry(NottableString, List)` — missing empty-list guard
+
+`KeysToMultiValues.withEntry(NottableString name, List<NottableString> values)` (`KeysToMultiValues.java:256-261`) calls `appendAll(name, values)` whenever `values != null`, with no check for an empty list. `appendAll` stores one key/value pair per value, so `withEntry(name, emptyList())` stores nothing: the name is silently dropped (while still marking the collection modified). Two other call sites were changed to store `string("")` for an empty value list so the name survives; this overload was not, so the behaviour differs by entry point.
+
+The varargs overload `withEntry(NottableString name, NottableString... values)` (`KeysToMultiValues.java:264-267`) guards with `ArrayUtils.isNotEmpty(values)` before delegating to the List overload, so `withEntry(name)` (zero varargs) is a safe no-op. The inconsistency only surfaces through the List overload directly.
+
+### `Body.getRawBytes()` on matcher-side body types
+
+`Body.getRawBytes()` (`Body.java:38-40`) returns `toString().getBytes(UTF_8)`, which produces the Jackson JSON serialisation of the object. Neither `MultipartBody` nor `LogEntryBody` overrides this method.
+
+`BodyDecoderEncoder.bodyToBytes()` (`BodyDecoderEncoder.java:88`) calls `body.getRawBytes()` as its fallback for any body whose `getValue()` is not a `String`. `MultipartBody.getValue()` returns `Parameters` (not a String), so a `MultipartBody` on the response encode path would reach this branch and emit its JSON serialisation bytes. `LogEntryBody.getValue()` returns `Object`; same result unless the value happens to be a `String`.
+
+Both `MultipartBody` and `LogEntryBody` are matcher-side types and do not appear as response bodies in normal production use, so this fallback is not exercised on a live path. It is reachable via the API (a client can set any `Body` subtype as a response body), but the output in that case — JSON bytes — is incidental, not a design intent.

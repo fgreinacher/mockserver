@@ -243,6 +243,19 @@ secrets-redaction gap that had shipped because the redaction tests asserted on t
 field and never on the two neighbouring fields that carried the same data unredacted. When a
 defect is found, add the assertion whose absence let it through — not only the fix.
 
+### Declined optimisations — do not re-propose
+
+The following units were investigated and declined with documented reasons. Re-opening them
+without new evidence wastes a review cycle.
+
+| Unit | What it would change | Why declined |
+|------|----------------------|--------------|
+| 16 — drop the `readTree` in INFO log serialisation | Stop re-parsing the body when a served request is logged | Not redundant: `new LogEntryBody(OBJECT_MAPPER.readTree(...))` produces the pretty-printed JSON the log line renders, and the two parses feed two different log lines. Removing it turns `LogEntryDeferredArgumentConversionTest` red |
+| 16b — deduplicate the four body parses per `LogEntrySerializer.serialize` | Parse the body once per serialise | Each parse feeds a different occurrence in the emitted JSON (`httpRequest` redacted, `arguments[i]` unredacted, `expectation.httpRequest`, the escaped copy in `message`); repeated parses are repeated output. Only hoisting one shared `getArguments()` is safe |
+| 14a — remove the per-PUT `CompletableFuture` in `HttpState` | Save one allocation per control-plane PUT | Data-plane PUTs already return before it (`isControlPlanePathCandidate` gate), and the future is load-bearing for `handleContractTest`, `handleTrafficValidate` and `handleReplay`, which block on the outbound client sharing the worker group and self-deadlock if run inline |
+| 22B — cache class/object callback instances | Avoid per-request class resolution and construction | Off the measured workload. Caching the instance would share mutable user state across requests (callbacks rely on it not surviving the request); caching the `Class` needs `(classLoader, className)` weak keys to avoid a classloader leak, for a small saving |
+| 18 as originally scoped — optimise `BodyDecoderEncoder.bodyToBytes` and the response header walk | Cut response-write allocation | Both were already optimal: the outbound body is zero-copy via the `rawBytes` fast path, and `ReadOnlyInsertionOrderedMultimap` reads the flat header arrays directly. Re-scoped as 18a (`ResponseWriter`) |
+
 ## Where This Plugs Into the Gate Chain
 
 | Evidence | Where | Why there |

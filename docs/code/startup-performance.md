@@ -175,7 +175,7 @@ Measured gain: −37% (−42% with `proxySetupLogging=false`) versus the standar
 
 ### ZGC as the default collector — startup impact (unit 17)
 
-The images run ZGC by default for its far lower request-path tail latency (see [memory-optimisation-programme.md](../plans/memory-optimisation-programme.md) unit 17), delivered as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` rather than a hard-coded ENTRYPOINT flag — a hard-coded `-XX:+UseZGC` clashes fatally with any GC flag a user prepends via `JAVA_TOOL_OPTIONS` ("multiple GCs selected"), whereas an ENV default is replaced wholesale by a user override (see [docker.md](../infrastructure/docker.md)). ZGC costs a little at *startup* — it starts more GC threads and reserves a larger address space than G1 — so the collector choice interacts with this document's work. Measured launch → first `PUT /mockserver/status` (medians of 5, arm64, container, `docker run` to first 200):
+The images run ZGC by default for its far lower request-path tail latency (see [docker.md](../infrastructure/docker.md#main-dockerfile-build-process)), delivered as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` rather than a hard-coded ENTRYPOINT flag — a hard-coded `-XX:+UseZGC` clashes fatally with any GC flag a user prepends via `JAVA_TOOL_OPTIONS` ("multiple GCs selected"), whereas an ENV default is replaced wholesale by a user override (see [docker.md](../infrastructure/docker.md)). ZGC costs a little at *startup* — it starts more GC threads and reserves a larger address space than G1 — so the collector choice interacts with this document's work. Measured launch → first `PUT /mockserver/status` (medians of 5, arm64, container, `docker run` to first 200):
 
 | Image | G1 | ZGC | Δ | Decision |
 |---|---:|---:|---:|---|

@@ -368,3 +368,23 @@ To publish a run's figures:
    reconcile the hand-authored numbers it does **not** touch in `mock_server/performance.html`:
    the front-matter `description`, the JSON-LD `schema_faq` answers, and matcher-scaling figures
    (a separate JMH source, expected to differ).
+
+## Heap Profiling Pitfalls
+
+Four non-obvious constraints apply when analysing MockServer's heap and saturation history.
+
+### JFR cannot attribute retained heap under ZGC
+
+`jdk.ObjectCount` (`object-statistics`) and `jdk.OldObjectSample` (`memory-leaks-by-class`) emit nothing under ZGC and populate normally under G1 — verified on JDK 25 with the same program. Use `jcmd GC.class_histogram` instead; it works under both collectors.
+
+### `jcmd` attach needs an exact uid match
+
+`jcmd` inside a container requires an exact uid match with the target process. Running as root fails with `Unable to open socket file /tmp/.java_pid1`. Read the uid from the target's own `/proc/1/status` in the shared PID namespace before attaching.
+
+### Saturation-series comparability break
+
+Widening k6's cpuset (from cores 7–10 to 7–23, to give the client enough headroom at the server's default 6-core config) changed the rig. The hardware-mismatch guard keys on `instance_type`, which did not change, so nothing in the tooling flags it. Stored `saturation_rps` and sweep latencies from before this change are not comparable with those after it. Similarly, adding rungs to the default ladder introduces ladder-position history that has no prior comparable points. When reviewing a stored run's `saturation_rps` against an older run, confirm both used the same k6 cpuset and the same ladder rungs.
+
+### Measurement condition is load-bearing for heap histograms
+
+The histogram sampler runs across all phases, but the phase that fills the event log drives only `GET /simple` mocked responses over plain HTTP/1.1. Under exactly those conditions the HTTP/2 stream id, the forwarded-response status code, `Timing` fields, injected delays, and streaming chunk timestamps are all inert and `socketAddress` is null. Any allocation or retention finding attributed to a histogram must state which phase produced it — a finding valid on the mocked-HTTP/1.1 phase may not exist on the forward phase, and vice versa.
