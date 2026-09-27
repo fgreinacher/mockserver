@@ -94,7 +94,7 @@ P1-P4 all landed (`ef283860e`, `b516cfe89`); confirm the wall-clock savings on t
 |---|---|
 | `ResponseWriter`-level allocation benchmark (for 18a) | in progress with 18a |
 | Template allocation benchmark (for 22A) | **added** — `TemplateRenderAllocationBenchmark`, not yet gated (adding budgets is control-class) |
-| Rig proxy/callback workload (to measure 21 end to end) | the rig **already has** forward and proxy arms (`forward.js`, `proxy.js`); checking whether they reach the paths unit 21 changed, and drafting only what is missing (callbacks, or more concurrency). Control-class |
+| Rig proxy workload reaches the unit-21 path (measure 21 end to end) | the rig **already has** forward and proxy arms (`forward.js`, `proxy.js`), but neither reaches unit 21: `forward.js` drives the *matched*, already-async path, and `proxy.js`'s unmatched-proxy arm hits a *fast* upstream (in-flight ~0.04, far below the ~poolSize cap). **Drafted, awaiting approval:** opt-in `PERF_WORKLOAD=forward` + `PERF_UPSTREAM_DELAY_MS` slows the upstream and re-drives the *unmatched*-proxy arm at high concurrency so the cap binds; fail-closed. Control-class. (A callback workload was considered and dropped — 22B is not a perf unit.) See `docs/code/performance-measurement.md` → "Opt-in workload" |
 | Heap dump for unit 15 | **not needed** — the rig uploads no `.hprof`; the live histogram + JFR were enough (see unit 15) |
 
 ### Declined, with reasons recorded — do not re-propose

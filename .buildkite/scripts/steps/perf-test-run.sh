@@ -61,6 +61,48 @@ MOCKSERVER_IMAGE="${MOCKSERVER_IMAGE:-mockserver/mockserver:mockserver-snapshot-
 # carries GraalJS). item 15d — server-side path of the file-backed response body.
 PERF_JS_TEMPLATE="${PERF_JS_TEMPLATE:-true}"
 FILE_BODY_CONTAINER_PATH="/perf-files/large-file-body.json"
+
+# --- OPT-IN workload extension (memory-optimisation programme unit 21) ----------
+# The default run measures the mock/forward/template paths and is UNCHANGED by this
+# block: PERF_WORKLOAD is empty by default, so every branch guarded on it is skipped
+# and the published curve + rolling baseline are byte-for-byte comparable.
+#
+# When set to "forward" it runs ONE extra, non-baseline pass AFTER the normal
+# measurement: it makes the run's upstream SLOW (PERF_UPSTREAM_DELAY_MS) and
+# re-drives proxy.js's UNMATCHED-proxy arm (absolute-URI, which is
+# handleUnmatchedProxyForward — the path unit 21 changed; the MATCHED /forward arm
+# is already async and shows nothing) at elevated concurrency, so
+# offered_rate x upstream_latency exceeds the blocking action-handler pool and the
+# ~poolSize in-flight cap becomes visible as a delivery_ratio drop / p99 blow-up.
+# (The default fast upstream keeps in-flight ~0.04, far below the cap, which is why
+# the standard proxy arm cannot show it.) It flips config_profile off "default"
+# below, so the run is recorded but NEVER persisted to the default-configuration
+# baseline (same lever as a tuned run).
+PERF_WORKLOAD="${PERF_WORKLOAD:-}"
+# Server-side delay (ms) seeded onto the upstream /simple for PERF_WORKLOAD=forward,
+# so the unmatched-proxy in-flight cap binds. 0 (fast upstream) cannot reveal it.
+PERF_UPSTREAM_DELAY_MS="${PERF_UPSTREAM_DELAY_MS:-0}"
+case "$PERF_WORKLOAD" in
+  ""|forward) : ;;
+  *) echo "ERROR: PERF_WORKLOAD='$PERF_WORKLOAD' is not one of: forward (empty = default run, no extra workload)" >&2; exit 1 ;;
+esac
+if ! printf '%s' "$PERF_UPSTREAM_DELAY_MS" | grep -Eq '^[0-9]+$'; then
+  echo "ERROR: PERF_UPSTREAM_DELAY_MS='$PERF_UPSTREAM_DELAY_MS' is not a non-negative integer (milliseconds)" >&2; exit 1
+fi
+if [ "$PERF_WORKLOAD" = "forward" ] && [ "$PERF_UPSTREAM_DELAY_MS" -eq 0 ]; then
+  echo "ERROR: PERF_WORKLOAD=forward needs PERF_UPSTREAM_DELAY_MS > 0 — with a fast upstream the unmatched-proxy concurrency cap (unit 21) stays far below the offered rate and the run would measure nothing new. Set e.g. PERF_UPSTREAM_DELAY_MS=50." >&2
+  exit 1
+fi
+# These feed the result JSON via jq --argjson, so validate as positive integers here
+# (a malformed value would otherwise abort result assembly, losing the whole run).
+if [ "$PERF_WORKLOAD" = "forward" ]; then
+  for _wl_var in PERF_WORKLOAD_FORWARD_RATE PERF_WORKLOAD_FORWARD_VUS; do
+    _wl_val="$(eval "printf '%s' \"\${${_wl_var}:-}\"")"
+    if [ -n "$_wl_val" ] && ! printf '%s' "$_wl_val" | grep -Eq '^[1-9][0-9]*$'; then
+      echo "ERROR: ${_wl_var}='${_wl_val}' is not a positive integer" >&2; exit 1
+    fi
+  done
+fi
 RUN_ID="${BUILDKITE_BUILD_ID:-local}-$$"
 NETWORK="mockserver-perf-${RUN_ID}"
 SERVER="mockserver-perf-${RUN_ID}"
@@ -931,6 +973,14 @@ if [ -n "${PERF_SO_BACKLOG:-}" ] \
    || [ -n "${PERF_MAX_EVENT_LOG_BYTES_SET:-}" ] \
    || [ "$PERF_LARGE_HEAP_PROFILE" = "true" ]; then
   CONFIG_PROFILE="tuned"
+fi
+# An opt-in workload measures a DIFFERENT path (slow-upstream proxy concurrency)
+# than the default curve, so it must never be persisted to the default-configuration
+# baseline. Label it distinctly (not just "tuned") so a reader can see WHICH workload
+# the result describes; config_profile != default flips baseline_eligible below
+# exactly as a tuned run does.
+if [ -n "$PERF_WORKLOAD" ]; then
+  CONFIG_PROFILE="workload-${PERF_WORKLOAD}"
 fi
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
@@ -2147,6 +2197,100 @@ if [ "${PERF_PROXY_PROFILE:-true}" = "true" ]; then
 fi
 
 abort_if_sut_died
+# --- OPT-IN workload: unmatched-proxy concurrency (unit 21) ---------------------
+# Skipped entirely unless PERF_WORKLOAD=forward, so the default run is unchanged.
+# Runs AFTER the normal measurement and is never baseline-eligible (the
+# config_profile flip above already excludes it). Re-uses the run's existing
+# upstream; no new long-lived container.
+#
+# Unit 21 — make the UNMATCHED-proxy in-flight cap visible. The default proxy arm
+# hits a fast upstream (in-flight ~0.04, far below the ~poolSize cap), so it cannot
+# show it. Re-seed the upstream /simple with a server-side delay so
+# offered_rate x latency exceeds the blocking action-handler pool, then re-drive
+# proxy.js's absolute-URI arm (= handleUnmatchedProxyForward, the path unit 21
+# changed) at elevated concurrency. delivery_ratio < 1 / p99 blow-up on the
+# forward_absolute arm is the cap; a pre-21 vs post-21 image A/B reads it.
+#
+# FAIL-CLOSED: adds a validity check asserting the server actually served via the
+# FORWARDED path and reached the SLOW upstream — proven by the forward_absolute p50
+# meeting a floor of PERF_UPSTREAM_DELAY_MS x 0.8 (a /simple mock on the SUT or a
+# fast/shadowed upstream answers in ~0 ms and cannot clear it). A run that silently
+# fell back reds the build (add_check ok=false -> validity.valid=false).
+WORKLOAD_JSON='{}'
+if [ "$PERF_WORKLOAD" = "forward" ]; then
+  echo "+++ opt-in workload: PERF_WORKLOAD=forward (config_profile=$CONFIG_PROFILE, baseline_eligible=$BASELINE_ELIGIBLE)"
+  WL_FWD_RATE="${PERF_WORKLOAD_FORWARD_RATE:-500}"
+  WL_FWD_VUS="${PERF_WORKLOAD_FORWARD_VUS:-256}"
+  WL_FWD_DURATION="${PERF_WORKLOAD_FORWARD_DURATION:-1m}"
+  # CRITICAL — reset the SUT first. A prior phase (the item-14 handshake block)
+  # seeds a persistent /simple MOCK on the SUT; without this reset the proxied
+  # absolute-URI GET /simple MATCHES that mock (HttpActionHandler) and is served
+  # locally, so handleUnmatchedProxyForward (unit 21's path) is never reached and
+  # the run measures the mock. Resetting clears it so /simple is UNMATCHED and
+  # therefore forwarded. Safe for later phases: each (streaming, clustered,
+  # per-core sweep) seeds its own SUT in setup(); none rely on this SUT's state.
+  # Codes are checked (curl without -f treats 4xx/5xx as success) so a failed reset
+  # reds the run rather than leaving the old fast /simple shadowing the slow one.
+  echo "--- resetting SUT + re-seeding upstream /simple with ${PERF_UPSTREAM_DELAY_MS}ms delay (unit-21 slow upstream)"
+  SUT_RESET_CODE="$(docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT "http://${SERVER_ALIAS}:1080/mockserver/reset")"
+  UP_RESET_CODE="$(docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT "http://${UPSTREAM}:1080/mockserver/reset")"
+  UP_SEED_CODE="$(docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT \
+    "http://${UPSTREAM}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
+    -d "[{\"httpRequest\":{\"path\":\"/simple\"},\"httpResponse\":{\"statusCode\":200,\"body\":\"upstream\",\"delay\":{\"timeUnit\":\"MILLISECONDS\",\"value\":${PERF_UPSTREAM_DELAY_MS}}},\"times\":{\"unlimited\":true}}]")"
+  echo "--- SUT reset=${SUT_RESET_CODE} upstream reset=${UP_RESET_CODE} upstream slow-seed=${UP_SEED_CODE}"
+  WL_SETUP_OK=true
+  [ "$SUT_RESET_CODE" = "200" ] || WL_SETUP_OK=false
+  [ "$UP_RESET_CODE" = "200" ]  || WL_SETUP_OK=false
+  [ "$UP_SEED_CODE" = "201" ]   || WL_SETUP_OK=false
+  WL_FWD_EXIT=0
+  if [ "$WL_SETUP_OK" = "true" ]; then
+    echo "--- workload proxy.js forward mode (rate=${WL_FWD_RATE}/arm, vus=${WL_FWD_VUS}, upstream_delay=${PERF_UPSTREAM_DELAY_MS}ms)"
+    # shellcheck disable=SC2046
+    docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+      -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+      -v "$OUT_DIR:/out" \
+      -e "K6_PROXY_MODE=forward" \
+      -e "HTTP_PROXY=http://${SERVER_ALIAS}:1080" -e "HTTPS_PROXY=http://${SERVER_ALIAS}:1080" \
+      -e "http_proxy=http://${SERVER_ALIAS}:1080" -e "https_proxy=http://${SERVER_ALIAS}:1080" \
+      -e "NO_PROXY=" -e "no_proxy=" \
+      -e "FORWARD_UPSTREAM_HOST=mockserver-upstream:1080" \
+      -e "K6_PROXY_RATE=$WL_FWD_RATE" \
+      -e "K6_PROXY_PRE_VUS=$WL_FWD_VUS" -e "K6_PROXY_MAX_VUS=$WL_FWD_VUS" \
+      -e "K6_PROXY_DURATION=$WL_FWD_DURATION" \
+      -e "K6_PROXY_RESULT_PATH=/out/workload-forward.json" \
+      "$K6_IMAGE" run /k6/proxy.js || WL_FWD_EXIT=$?
+  else
+    echo "WARNING: workload setup failed (SUT reset ${SUT_RESET_CODE}, upstream reset ${UP_RESET_CODE}, upstream seed ${UP_SEED_CODE}) — NOT running proxy.js; the workload check will red" >&2
+    WL_FWD_EXIT=-1
+  fi
+  WL_FWD_RESULT="$(cat "$OUT_DIR/workload-forward.json" 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$WL_FWD_RESULT" || WL_FWD_RESULT='{}'
+  # served = the forward_absolute (unmatched-proxy) arm's relayed responses; p50 is
+  # the RELAY latency, which must clear the slow-upstream floor to prove it forwarded.
+  WL_FWD_SAMPLES="$(jq -r '(.behaviours.forward_absolute_proxy.sample_count // 0)' <<<"$WL_FWD_RESULT" 2>/dev/null || echo 0)"
+  WL_FWD_DELIVERY="$(jq -r '(.behaviours.forward_absolute_proxy.delivery_ratio // null)' <<<"$WL_FWD_RESULT" 2>/dev/null || echo null)"
+  WL_FWD_P50="$(jq -r '(.behaviours.forward_absolute_proxy.p50_ms // "null")' <<<"$WL_FWD_RESULT" 2>/dev/null || echo null)"
+  WL_MIN_P50="$(awk -v d="$PERF_UPSTREAM_DELAY_MS" 'BEGIN{printf "%.3f", d*0.8}')"
+  WORKLOAD_JSON="$(jq -nc \
+    --arg target forward --argjson delay_ms "$PERF_UPSTREAM_DELAY_MS" \
+    --argjson rate "$WL_FWD_RATE" --argjson vus "$WL_FWD_VUS" \
+    --argjson k6_exit "$WL_FWD_EXIT" --arg p50_floor_ms "$WL_MIN_P50" \
+    --arg sut_reset_code "$SUT_RESET_CODE" --arg upstream_reset_code "$UP_RESET_CODE" --arg upstream_seed_code "$UP_SEED_CODE" \
+    --argjson result "$WL_FWD_RESULT" \
+    '{target:$target, upstream_delay_ms:$delay_ms, offered_rate_per_arm:$rate, vus:$vus, k6_exit:$k6_exit,
+      p50_floor_ms:($p50_floor_ms|tonumber),
+      setup:{sut_reset_code:$sut_reset_code, upstream_reset_code:$upstream_reset_code, upstream_seed_code:$upstream_seed_code},
+      forward:$result}')"
+  if [ "$WL_SETUP_OK" = "true" ] && [ "$WL_FWD_EXIT" -eq 0 ] \
+     && awk -v n="$WL_FWD_SAMPLES" 'BEGIN{exit !(n+0>0)}' \
+     && awk -v p="$WL_FWD_P50" -v f="$WL_MIN_P50" 'BEGIN{ if(p=="null"||p=="") exit 1; exit !(p+0>=f+0) }'; then
+    add_check "workload_forward_served_via_upstream" true "unmatched-proxy (forward_absolute) served ${WL_FWD_SAMPLES} responses; p50=${WL_FWD_P50}ms >= floor ${WL_MIN_P50}ms (= ${PERF_UPSTREAM_DELAY_MS}ms x0.8) proves the relay reached the SLOW upstream (handleUnmatchedProxyForward), not a local /simple mock; delivery_ratio=${WL_FWD_DELIVERY} (below 1.0 => the unit-21 in-flight cap bound)"
+  else
+    add_check "workload_forward_served_via_upstream" false "PERF_WORKLOAD=forward did not measure the forwarded path: setup_ok=${WL_SETUP_OK} (SUT reset ${SUT_RESET_CODE}, upstream reset ${UP_RESET_CODE}, upstream seed ${UP_SEED_CODE}), k6_exit=${WL_FWD_EXIT}, forward_absolute served=${WL_FWD_SAMPLES}, p50=${WL_FWD_P50}ms vs floor ${WL_MIN_P50}ms. A p50 below the floor means the SUT answered a /simple mock or a fast/shadowed upstream (~0 ms) instead of forwarding to the slow upstream, so unit-21's path was NOT exercised; refusing to record it as healthy"
+  fi
+fi
+abort_if_sut_died
+
 # --- item 8: laptop startup + footprint profile (notify-only) -----------------
 # Runs LAST, after every k6 phase, so the box is quiet: the docker sub-items (8a
 # ready-median-of-9, idle RSS + threads at --memory 256m/512m/1g, 8d compressed
@@ -3262,6 +3406,7 @@ jq -n \
   --argjson forward "$FORWARD_JSON" \
   --arg forward_exit "$FORWARD_EXIT" \
   --argjson proxyfwd "$PROXY_FWD_JSON" \
+  --argjson workload "$WORKLOAD_JSON" \
   --argjson handshake "$HANDSHAKE_JSON" \
   --argjson streaming "$STREAMING_JSON" \
   --argjson clustered_state "$CLUSTERED_JSON" \
@@ -3394,6 +3539,11 @@ jq -n \
         if ($forward_exit|tonumber) == 0 then "passed"
         elif ($forward.forward_guard.error_rate) == null then "infra_error"
         else "breached" end) }),
+    # OPT-IN workload result (PERF_WORKLOAD=forward): the unit-21 slow-upstream
+    # proxy concurrency pass. {} on a default run. Its own fail-closed
+    # served-via-upstream check rides .validity (added above), so this block is
+    # head-driven data for the reader, not a second gate.
+    workload: $workload,
     validity: $validity,
     # Part C — baseline eligibility. false ONLY for an instrumented (PERF_JVM_DIAGNOSTICS
     # =deep) run: perf-test-compare.sh records it but refuses to persist/compare it (and

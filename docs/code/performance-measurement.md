@@ -14,6 +14,7 @@ regressions hide and stale claims get published.
 | `sweep.js` | Throughput-vs-latency knee curve | Daily (perf queue) | No — notify-only |
 | `forward.js` | Forward connection-pool regression guard | Daily (perf queue) | `forward.error_rate` only |
 | `proxy.js` | Proxy and TLS handshake latency | Daily (perf queue) | No — notify-only |
+| `proxy.js` forward + slow upstream | Unmatched-proxy in-flight concurrency cap (unit 21) | **Opt-in** (`PERF_WORKLOAD=forward`) | `workload_forward_served_via_upstream` validity check |
 | `streaming.js` | LLM/SSE streaming concurrency vs match latency | Daily (perf queue) | No — notify-only |
 | `clustered_crossing.js` | Cross-node request latency in a cluster | Daily (perf queue) | **Notify-only.** `perf-test-compare.sh` reads `clustered_state.*` as notify-only metrics. This measured NOTHING until the clustered image was published to the perf queue: the run gates the A/B on `docker image inspect`, nothing pulled or built that image, so every run took the absent-image skip and emitted no `clustered_state` block to read. The snapshot push now builds `mockserver-snapshot-clustered` in the same job, from the same jar and commit as the SUT image, and the run refuses to measure if the two image revisions disagree (`clustered_skip_reason=revision_mismatch`) — a ratio computed across two commits would be arithmetically fine and describe code the measured binary never contained |
 | `MatchingBenchmark` JMH | Matcher hot-path time/op and allocation/op | Daily (perf queue) | Yes — `time_per_op` + `alloc_bytes_per_op` |
@@ -125,6 +126,47 @@ Guards `mockserver.forwardConnectionPoolEnabled`. The guard runs against a dedic
 MockServer instance, not a loopback. With pooling enabled the `forward.error_rate` stays near
 zero at 1,500 rps. With pooling off, ephemeral port exhaustion produces `BindException`s and the
 rate spikes. This is the one k6 script whose error-rate threshold actually gates the daily build.
+
+### Opt-in workload — unmatched-proxy concurrency (unit 21)
+
+**Status: drafted, awaiting approval — not yet enabled on any scheduled run.** Gated on
+`PERF_WORKLOAD`, which is empty by default, so the standard daily/regression run is byte-for-byte
+unchanged and stays baseline-comparable. Setting `PERF_WORKLOAD=forward` labels the result
+`config_profile=workload-forward`, which flips `baseline_eligible=false` (same lever as a tuned run),
+so the run is recorded but never persisted to the default-configuration baseline.
+
+Why it exists: the default `forward.js` arm drives a **matched** `/forward` expectation, which uses
+the already-async forward path unit 21 did not change; and `proxy.js`'s unmatched-proxy arm hits a
+**fast** upstream at ~200 rps, so in-flight concurrency (~0.04) stays far below the old ~poolSize cap.
+Neither can show unit 21.
+
+**`PERF_WORKLOAD=forward`** (needs `PERF_UPSTREAM_DELAY_MS>0`, e.g. `50`): **resets the SUT** (a prior
+handshake phase seeds a persistent `/simple` mock on it, which would otherwise match the proxied
+request and defeat the whole point), re-seeds the run's upstream `/simple` with a server-side delay,
+then re-drives `proxy.js` forward mode (absolute-URI = `handleUnmatchedProxyForward`, the path unit 21
+changed) at elevated concurrency (`PERF_WORKLOAD_FORWARD_RATE`, `PERF_WORKLOAD_FORWARD_VUS`). With
+`offered_rate × upstream_latency` above the blocking action-handler pool, the cap binds and shows as
+`forward_absolute_proxy` `delivery_ratio < 1` and a p99 blow-up. Read the effect by A/B-ing a
+**pre-21** vs **post-21** image (`MOCKSERVER_IMAGE`) at the same delay/rate: post-21 sustains far more
+in-flight before the delivery ratio drops. Result (with the setup HTTP codes and the p50 floor) lands
+under `.workload.forward`.
+
+**Fail-closed (design goal 4).** The validity check `workload_forward_served_via_upstream` reds the
+build unless the SUT actually **forwarded** to the slow upstream, proven by three things together:
+(1) the SUT reset, upstream reset and upstream seed all returned their expected HTTP codes
+(200/200/201 — checked explicitly, since `curl` without `-f` treats 4xx/5xx as success); (2) the
+`forward_absolute` arm relayed responses (`sample_count>0`; `proxy.js` `setup()` also aborts if the
+relay does not work); and (3) its **p50 ≥ `PERF_UPSTREAM_DELAY_MS × 0.8`** — a `/simple` mock on the
+SUT or a fast/shadowed upstream answers in ~0 ms and cannot clear this floor, so it goes red. Any
+failure → the check is false → `validity.valid=false`.
+
+Trigger a run (perf queue, one at a time):
+
+```bash
+# unit 21 — proxy concurrency with a 50 ms upstream
+bk build create -p mockserver-performance-test -b master -m "[perf-run] unit21 proxy concurrency" \
+  -e PERF_WORKLOAD=forward -e PERF_UPSTREAM_DELAY_MS=50
+```
 
 ### `load.js` — absolute p95/p99 gate
 
