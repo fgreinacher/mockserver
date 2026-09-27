@@ -79,23 +79,28 @@ public abstract class ResponseWriter {
         // response header always wins. Default is empty, so behaviour is unchanged unless
         // defaultResponseHeaders is configured.
         defaultResponseHeaders.addDefaultResponseHeaders(response);
-        String contentLengthHeader = response.getFirstHeader(CONTENT_LENGTH.toString());
-        if (isNotBlank(contentLengthHeader)) {
-            try {
-                int contentLength = Integer.parseInt(contentLengthHeader);
-                if (response.getBodyAsRawBytes().length > contentLength && mockServerLogger.isEnabledForInstance(Level.INFO)) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setType(INFO)
-                            .setLogLevel(Level.INFO)
-                            .setCorrelationId(request.getLogCorrelationId())
-                            .setHttpRequest(request)
-                            .setHttpResponse(response)
-                            .setMessageFormat("returning response with content-length header " + contentLength + " which is smaller then response body length " + response.getBodyAsRawBytes().length + ", body will likely be truncated by client receiving request")
-                    );
+        // The whole block only emits an INFO diagnostic, so gate the header scan and body
+        // materialisation on the log level first: at WARN and above none of this work runs.
+        if (mockServerLogger.isEnabledForInstance(Level.INFO)) {
+            String contentLengthHeader = response.getFirstHeader(CONTENT_LENGTH.toString());
+            if (isNotBlank(contentLengthHeader)) {
+                try {
+                    int contentLength = Integer.parseInt(contentLengthHeader);
+                    int bodyLength = response.getBodyAsRawBytes().length;
+                    if (bodyLength > contentLength) {
+                        mockServerLogger.logEvent(
+                            new LogEntry()
+                                .setType(INFO)
+                                .setLogLevel(Level.INFO)
+                                .setCorrelationId(request.getLogCorrelationId())
+                                .setHttpRequest(request)
+                                .setHttpResponse(response)
+                                .setMessageFormat("returning response with content-length header " + contentLength + " which is smaller then response body length " + bodyLength + ", body will likely be truncated by client receiving request")
+                        );
+                    }
+                } catch (NumberFormatException ignore) {
+                    // ignore exception while parsing invalid content-length header
                 }
-            } catch (NumberFormatException ignore) {
-                // ignore exception while parsing invalid content-length header
             }
         }
         if (apiResponse) {

@@ -36,14 +36,17 @@ public class MockServerHttpResponseToFullHttpResponse {
     public List<DefaultHttpObject> mapMockServerResponseToNettyResponse(HttpResponse httpResponse) {
         try {
             ConnectionOptions connectionOptions = httpResponse.getConnectionOptions();
+            // Resolve the Content-Type header once and reuse it for both body charset resolution
+            // (getBody) and the emitted header (setHeaders), instead of scanning the headers twice.
+            String contentTypeHeader = httpResponse.getFirstHeader(CONTENT_TYPE.toString());
             boolean hasTrailers = httpResponse.getTrailerMultimap() != null && !httpResponse.getTrailerMultimap().isEmpty();
             boolean chunkedBySize = connectionOptions != null && connectionOptions.getChunkSize() != null && connectionOptions.getChunkSize() > 0;
             if (hasTrailers && !chunkedBySize) {
-                return mapResponseWithTrailers(httpResponse, connectionOptions);
+                return mapResponseWithTrailers(httpResponse, connectionOptions, contentTypeHeader);
             }
             if (chunkedBySize) {
                 List<DefaultHttpObject> httpMessages = new ArrayList<>();
-                ByteBuf body = getBody(httpResponse);
+                ByteBuf body = getBody(httpResponse, contentTypeHeader);
                 DefaultHttpResponse defaultHttpResponse = new DefaultHttpResponse(
                     HttpVersion.HTTP_1_1,
                     getStatus(httpResponse)
@@ -51,7 +54,7 @@ public class MockServerHttpResponseToFullHttpResponse {
                 // body is only read for its length here; release it even if setHeaders throws
                 // so the ByteBuf cannot leak on the exception path (refcount stays at one).
                 try {
-                    setHeaders(httpResponse, defaultHttpResponse, body);
+                    setHeaders(httpResponse, defaultHttpResponse, body, contentTypeHeader);
                 } finally {
                     body.release();
                 }
@@ -62,7 +65,7 @@ public class MockServerHttpResponseToFullHttpResponse {
                 setCookies(httpResponse, defaultHttpResponse);
                 httpMessages.add(defaultHttpResponse);
 
-                ByteBuf[] chunks = bodyDecoderEncoder.bodyToByteBuf(httpResponse.getBody(), httpResponse.getFirstHeader(CONTENT_TYPE.toString()), connectionOptions.getChunkSize());
+                ByteBuf[] chunks = bodyDecoderEncoder.bodyToByteBuf(httpResponse.getBody(), contentTypeHeader, connectionOptions.getChunkSize());
                 for (int i = 0; i < chunks.length - 1; i++) {
                     DefaultHttpContent defaultHttpContent = new DefaultHttpContent(chunks[i]);
                     httpMessages.add(defaultHttpContent);
@@ -74,7 +77,7 @@ public class MockServerHttpResponseToFullHttpResponse {
                 httpMessages.add(lastContent);
                 return httpMessages;
             } else {
-                ByteBuf body = getBody(httpResponse);
+                ByteBuf body = getBody(httpResponse, contentTypeHeader);
                 DefaultFullHttpResponse defaultFullHttpResponse = new DefaultFullHttpResponse(
                     HttpVersion.HTTP_1_1,
                     getStatus(httpResponse),
@@ -83,7 +86,7 @@ public class MockServerHttpResponseToFullHttpResponse {
                 // the FullHttpResponse now owns body; release it (via the message) if a
                 // subsequent step throws so the ByteBuf cannot leak on the exception path.
                 try {
-                    setHeaders(httpResponse, defaultFullHttpResponse, body);
+                    setHeaders(httpResponse, defaultFullHttpResponse, body, contentTypeHeader);
                     setCookies(httpResponse, defaultFullHttpResponse);
                 } catch (Throwable throwable) {
                     defaultFullHttpResponse.release();
@@ -144,16 +147,16 @@ public class MockServerHttpResponseToFullHttpResponse {
      * that HTTP/2 and HTTP/3 -- which can legitimately carry trailers on a body-less response via
      * a trailing HEADERS frame -- still deliver them.
      */
-    private List<DefaultHttpObject> mapResponseWithTrailers(HttpResponse httpResponse, ConnectionOptions connectionOptions) {
+    private List<DefaultHttpObject> mapResponseWithTrailers(HttpResponse httpResponse, ConnectionOptions connectionOptions, String contentTypeHeader) {
         List<DefaultHttpObject> httpMessages = new ArrayList<>();
-        ByteBuf body = getBody(httpResponse);
+        ByteBuf body = getBody(httpResponse, contentTypeHeader);
         boolean bodyTransferred = false;
         try {
             DefaultHttpResponse defaultHttpResponse = new DefaultHttpResponse(
                 HttpVersion.HTTP_1_1,
                 getStatus(httpResponse)
             );
-            setHeaders(httpResponse, defaultHttpResponse, body);
+            setHeaders(httpResponse, defaultHttpResponse, body, contentTypeHeader);
             // Trailers REQUIRE chunked transfer-encoding on HTTP/1.1 (RFC 7230 section 3.3.1 --
             // Content-Length and chunked are mutually exclusive, and Netty's HttpObjectEncoder
             // only writes the trailing-header block while in its chunked state). We therefore
@@ -266,17 +269,17 @@ public class MockServerHttpResponseToFullHttpResponse {
         }
     }
 
-    private ByteBuf getBody(HttpResponse httpResponse) {
+    private ByteBuf getBody(HttpResponse httpResponse, String contentTypeHeader) {
         // Return the response body bytes verbatim. Unlike the request/forward path (which must
         // re-compress because the inbound HttpContentDecompressor decompressed a forwarded request
         // body while PreserveHeadersNettyRemoves kept its Content-Encoding header), a mock response
         // body must be written to the wire exactly as supplied to withBody(...). The Content-Encoding
         // header is still emitted literally by setHeaders, so users have byte-level control over the
         // wire body and an already-compressed body is never double-compressed (issue #2375).
-        return bodyDecoderEncoder.bodyToByteBuf(httpResponse.getBody(), httpResponse.getFirstHeader(CONTENT_TYPE.toString()));
+        return bodyDecoderEncoder.bodyToByteBuf(httpResponse.getBody(), contentTypeHeader);
     }
 
-    private void setHeaders(HttpResponse httpResponse, DefaultHttpResponse response, ByteBuf body) {
+    private void setHeaders(HttpResponse httpResponse, DefaultHttpResponse response, ByteBuf body, String contentTypeHeader) {
         if (httpResponse.getHeaderMultimap() != null) {
             httpResponse
                 .getHeaderMultimap()
@@ -295,7 +298,7 @@ public class MockServerHttpResponseToFullHttpResponse {
         }
 
         // Content-Type
-        if (isBlank(httpResponse.getFirstHeader(CONTENT_TYPE.toString()))) {
+        if (isBlank(contentTypeHeader)) {
             if (httpResponse.getBody() != null
                 && httpResponse.getBody().getContentType() != null) {
                 response.headers().set(CONTENT_TYPE, sanitizeHeaderValue(httpResponse.getBody().getContentType()));
