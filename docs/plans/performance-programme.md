@@ -1,7 +1,8 @@
 # Performance Programme
 
-**The central question is settled.** The healthy serving ceiling is **41,000 rps** at 0.196 ms
-median; peak **43,671** (build 420, 2026-09-24, committed `3dbed98ae`). Per repo convention, when
+**The central question is settled.** The healthy serving ceiling is **60,000 rps offered (57,149
+served)** at 0.179 ms median; peak **59,905** (build 464, 2026-09-27, commit `efdc5227b`, shipped ZGC
+default; build 420's 41,000 / 43,671 was the starting point). Per repo convention, when
 the remaining items below are closed this file is deleted in the same commit — it is not an
 archive. The parts that deserve to outlive it have been moved to permanent documentation: see
 [What was moved](#what-was-moved).
@@ -13,26 +14,25 @@ table that used to list them has been removed rather than maintained in two plac
 
 ## What remains
 
-Three items are open, and **none of them is blocked on code** — every one is waiting on a run, an
-observed event, a build, or a product decision. That is why this plan has not moved: it cannot be
-worked down at a keyboard.
+One item is open, and it is **not blocked on code** — it is waiting on a run that is held until
+after the next release.
 
 | # | Item | Blocked on |
 |---|---|---|
 | 1 | The unattributed latency tail | a run, held until after the next release |
 | 2 | Low-rate handler latency spike | **closed — measurement artefact** (see §2) |
-| 4 | `jvm_memory_allocated_bytes` missing from Docker images | fixed (`ff84bb395`); confirm on the first snapshot image built from it |
-| 5 | Large-heap event-log profile | first run (456) measured; corrected run 458 queued, then the cap decision |
+| 4 | `jvm_memory_allocated_bytes` missing from Docker images | **resolved** — confirmed by the snapshot-image smoke check (java build 2584 onward) |
+| 5 | Large-heap event-log profile | **done** — run 458; default cap raised to 250,000 (`15825ae55`) |
 
 ### Pipeline wall-clock
 
 | Change | State |
 |---|---|
-| Snapshot deploy and artifact-only steps pass `-DskipITs` (deploy re-ran 2,278 netty ITs, ~23 min) | landed `ef283860e`; confirm the deploy time on build 2556 |
-| Container integration tests fed by a test-free jar step, alongside the build | landed `ef283860e`; build 2556 ran them from minute 5 to 20, inside the build window |
+| Snapshot deploy and artifact-only steps pass `-DskipITs` (deploy re-ran 2,278 netty ITs, ~23 min) | landed `ef283860e`; confirmed — java build 2587's deploy took 10 min |
+| Container integration tests fed by a test-free jar step, alongside the build | landed `ef283860e`; confirmed — build 2587 ran them inside the build window (build 26 min, container tests 13 min alongside) |
 | `docker-build-verify.sh` artifact install passes `-DskipITs` | landed `b516cfe89`; the step is not in any pipeline today |
-| Allocation gate moved into the build's parallel group (~3 min off the java critical path) | landed `b516cfe89`; confirm on the next java build |
-| UI build + Playwright e2e alongside lint/unit tests (~5 min off the UI pipeline; e2e no longer skipped on red unit tests) | landed `b516cfe89`; confirm on the next UI build |
+| Allocation gate moved into the build's parallel group (~3 min off the java critical path) | landed `b516cfe89`; confirmed — build 2587 ran it alongside the build (2 min) |
+| UI build + Playwright e2e alongside lint/unit tests (~5 min off the UI pipeline; e2e no longer skipped on red unit tests) | landed `b516cfe89`; confirmed — UI builds 1320–1323 ran the e2e job alongside lint/unit tests |
 
 Considered and not pursued, by decision: splitting the netty integration tests across parallel JVMs (fixed ports and shared static config make it high-risk), and reusing `:maven: build` output for the deploy (steps do not share a filesystem).
 
@@ -79,7 +79,7 @@ Dropped rather than left open: it could only be settled by a child build that is
 live CI builds on shared pipelines. The Dependabot trigger-refusal case (a child never created) was fixed
 in `ea2336131`. Re-open only if a real canceled child is seen.
 
-### 4. Shading defect: `jvm_memory_allocated_bytes` — RESOLVED (pending the first snapshot image from this commit)
+### 4. Shading defect: `jvm_memory_allocated_bytes` — RESOLVED (confirmed on the snapshot image)
 
 **Real root cause: the Docker images' jlink runtime lacked `jdk.management`.** The shade fix was
 necessary but not sufficient. `JvmMetricsCollector.totalAllocatedBytes()` needs
@@ -100,8 +100,8 @@ Two independent causes had to be fixed:
   the build if `jvm_memory_allocated_bytes` is missing from the scrape.
 
 Verified locally: a `docker/Dockerfile` image built from this commit emits the metric; removing
-`jdk.management` from the module list makes both the metric and the new guard go red. Marked resolved
-pending the first snapshot image built from this commit through the pipeline.
+`jdk.management` from the module list makes both the metric and the new guard go red. Confirmed through the
+pipeline: the snapshot-image smoke check (java build 2584 onward) asserts the metric is present.
 
 ### 5. Large-heap event-log profile — DONE (cap raised to 250,000)
 

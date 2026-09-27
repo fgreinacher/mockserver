@@ -6,14 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release delivers a sustained performance and memory programme alongside data-integrity fixes under load. The headline numbers, from the published benchmark on the same six-core rig: the healthy ceiling rises from 39,033 to 53,402 req/s and the peak from 43,671 to 59,146 req/s, with p95 at 32,000 req/s falling from 56.6 ms to 4.7 ms; the Docker images now default to ZGC, which cuts tail latency further; event-log retained heap at 20,000 entries falls from 429 MB to 61 MB; Docker image download shrinks ~23%; and instance shutdown drops from ~107 ms to near zero. One BREAKING change affects HTTP/3 users only — see the first entry in *Changed*.
+This release delivers a sustained performance and memory programme alongside data-integrity fixes under load. The headline numbers, from the published benchmark on the same six-core rig: the healthy ceiling rises from 39,033 to 57,149 req/s and the peak from 43,671 to 59,905 req/s, with p95 at 32,000 req/s falling from 56.6 ms to 0.44 ms on the new ZGC default in the Docker images; event-log retained heap at 20,000 entries falls from 429 MB to 61 MB; Docker image download shrinks ~23%; and instance shutdown drops from ~107 ms to near zero. One BREAKING change affects HTTP/3 users only — see the first entry in *Changed*.
 
 **BREAKING** — if you set `http3Port`, HTTP/3 native libraries now ship in a separate artifact and a server configured for HTTP/3 without them refuses to start with a clear message. Docker containers that set `http3Port` will also fail until the extra jar is mounted. If you do not use HTTP/3 — the default — nothing changes except a smaller download.
 
 | Metric | Before | After |
 |--------|--------|-------|
-| Throughput, healthy ceiling / peak (req/s, 6 cores) | 39,033 / 43,671 | 53,402 / 59,146 |
-| p95 latency at 32,000 / 48,000 req/s offered | 56.6 ms / 82.4 ms | 4.7 ms / 23.3 ms (10.5 ms on the new ZGC default) |
+| Throughput, healthy ceiling / peak (req/s, 6 cores) | 39,033 / 43,671 | 57,149 / 59,905 |
+| p95 latency at 32,000 / 48,000 req/s offered | 56.6 ms / 82.4 ms | 0.44 ms / 12.0 ms |
 | Event-log heap (20,000 entries) | 429 MB | 61 MB |
 | Docker image download (linux/arm64) | ~163 MB | ~125 MB |
 | Instance shutdown time | ~107 ms | ~0 ms |

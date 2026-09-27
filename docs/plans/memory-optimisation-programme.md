@@ -32,8 +32,8 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **As of 2026-09-27 (evening): the only open item is
-the final publishable ladder on the ZGC default (queued after the snapshot image carrying `786667a9b`).**
+Everything not listed here has landed or been closed. **As of 2026-09-27 (evening): nothing is open.** The
+ZGC-default ladder (build 464) is published; F3 is recorded as not reachable in production.
 
 ### Open
 
@@ -41,7 +41,7 @@ the final publishable ladder on the ZGC default (queued after the snapshot image
 |---|---|---|
 | **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
 | **Unit 17** | Ship ZGC as the Docker default | **landed.** Decision figures (453 G1 vs 454 ZGC, 6 cores, default heap, same ladder; binaries differ only off the plain-GET path `7261e4ab3` vs `589a65db1`): ZGC clean to 60,000 offered vs G1 52,000; p95 at 48,000 10.5 vs 23.2 ms; p99 30.7 vs 49.1 ms; p99 at 16,000 0.28 vs 20.6 ms; peak 59,706 vs 58,913; zero errors both. ZGC is supplied as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` (clustered: `+ -XX:+ZGenerational`, JDK 21), **not** a hard-coded ENTRYPOINT flag — review-final caught that a hard-coded `-XX:+UseZGC` clashes fatally with a user-prepended `JAVA_TOOL_OPTIONS` GC flag ("multiple GCs selected"); an ENV default is instead replaced wholesale by an override, so the collector stays overridable on the shell-less distroless images. On the standard, `local`, `snapshot`, `root`, `root-snapshot`, `graaljs` and `clustered` images. **`-aot` kept on G1** — local build measured ZGC regressing its cold start ~42% (380→540 ms), defeating its purpose; the AppCDS archive is retrained under ZGC and verified to map under the ENV-supplied ZGC (`-Xshare:on` with the entrypoint `-cp`, exit 0). Standard/local startup within ~7% of G1 (~426–495 ms vs 463 ms), no OOM at `--memory 512m`/`1g`. Verified live: default→ZGC; `-e JAVA_TOOL_OPTIONS=-XX:+UseG1GC`→G1 (starts; archive not used under G1); `-e JAVA_TOOL_OPTIONS=-Xmx512m`→not ZGC (documented footgun); `helm template` default has no `JAVA_TOOL_OPTIONS` (image ENV ZGC stands) and `app.jvmOptions=-XX:+UseG1GC` sets it. Live-smoke ZGC assertion (`jvm_runtime_info` gc label) added to `java-docker-push-snapshot.sh` (control-class, pending approval). |
-| **Ladder** | New figures on current master | **455 (publishable: default config, no cpuset overrides, baseline-eligible, valid): rig-valid peak 59,146 req/s at 64,000 offered; clean to 56,000 offered (53,402 achieved); p95 4.7 ms at 32,000 and 23.3 ms at 48,000; zero errors** — on G1 (image built before the ZGC default). Reproduces 453 (58,912; 453 was ineligible only because cpusets were passed explicitly). 454 (ZGC, same ladder) peaked at 59,706 and was clean to 60,000. Next: apply 455's website patch **Still to run: the ZGC-default ladder** — build 459 aborted before measuring (upstream seed failed) and exposed that default runs had measured G1; re-run after `2dff6e59c` on the image carrying `786667a9b`. |
+| **Ladder** | New figures on current master | **done — build 464** (publishable: default config on the shipped ZGC default, rig guard confirmed ZGC, baseline-eligible, valid; commit `efdc5227b`): rig-valid peak 59,905 req/s at 64,000 offered; clean to 60,000 offered (57,149 achieved), zero errors at every rung; p95 0.44 ms at 32,000 and 12.0 ms at 48,000. Published to the site with the changelog summary. Previous G1 figures (455): peak 59,146, clean to 56,000, p95 4.7 / 23.3 ms |
 
 ### Landed (2026-09-26/27)
 
