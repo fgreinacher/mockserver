@@ -33,7 +33,7 @@ flowchart TD
 ## What is left
 
 Everything not listed here has landed or been closed. **As of 2026-09-27 (late morning): open items
-are 18a (held on a suspected regression), the inbound TLS handshake timeout (in progress), CONNECT
+are the inbound TLS handshake timeout (in progress), CONNECT
 relay capacity C1 (settling run queued), one approval (h2 multiplex UI skip), and the new perf
 ladder (builds 453 and 454 running), after which unit 17 is decided.**
 
@@ -41,7 +41,7 @@ ladder (builds 453 and 454 running), after which unit 17 is decided.**
 
 | # | What | State |
 |---|---|---|
-| **18a** | Three `ResponseWriter` items + `ResponseWriterAllocBenchmark` (−9.5% bytes/op on 1 KB responses) | review-final PASS, **held**: on current master `MainCliTest` failed 2 of 4 runs with `InvalidLineSeparatorException` (bare LF in a response head) in the failing run's log; master passed 4 of 4 with no such error. Being root-caused before landing |
+| **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
 | **TLS-in** | Inbound TLS handshakes (`SniHandler`, `RelayConnectHandler` server side) use Netty's fixed 10 s default | in progress — companion to F1's outbound fix |
 | **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant |
 | **h2 UI skip** | `perf-test-h2multiplex.sh` builds the UI bundle it never uses (~2 min per run) | `e766d7dfc`, review-final PASS, **awaiting user approval** (control-class) |
@@ -52,6 +52,7 @@ ladder (builds 453 and 454 running), after which unit 17 is decided.**
 | Unit | Commit |
 |---|---|
 | 21 three blocking proxy paths — **confirmed end to end by build 452**: 500 req/s through a 50 ms upstream on the unmatched-proxy path, 0.03% errors (pre-21 cap ~120 req/s) | `11b525bb4` |
+| 18a `ResponseWriter`: shared Connection header constants, content-type resolved once, headers-only copy in `addConnectionHeader` (−9.5% bytes/op on 1 KB responses) + `ResponseWriterAllocBenchmark` + concurrency guard test. The suspected bare-LF regression was not 18a: under equal load `MainCliTest` flaked once in six runs on both master and 18a, with no bare-LF on either | `017212ddd` `63a1599ba` `2a8eab964` `361618fa1` |
 | 21b `maxFutureTimeout` bounds every async forward | `89d8a61c9` |
 | 13c / 14b / 14c / 15-I1 inbound-path allocations | `d8543c948` / `1548a391d` / `1559082dd` / `d194a8f3d` |
 | 15-L1 `Timing` fields as primitive `long` + sentinel; 15-C `readLongProperty` returns `long` | `f1d1ece60`, `f5fe4e8b5` |
