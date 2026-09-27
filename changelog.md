@@ -45,7 +45,8 @@ A sustained performance programme. The key numbers: throughput **26,020, then 23
 **Performance**
 - **Shutdown is now effectively instant** (~107 ms → ~0 ms per instance). Shutdown previously asked Netty for a "quiet period" before closing event loops — a fixed ~100 ms wait regardless of whether anything remained. It was redundant: shutdown already waits for in-flight requests separately, and now waits for their bytes to flush instead. Most visible in suites that create a MockServer per test method — a 32-instance suite spent roughly three quarters of its time in shutdown.
 - **Three forwarding and proxy-pass paths no longer hold a pool thread while waiting for the upstream reply.** Previously these paths blocked on `get()` for the whole upstream round trip, capping proxy concurrency at the thread-pool size. Each path now uses a non-blocking continuation, matching the matched-forward path. Measured at unit level: with a pool fixed at 4 threads, 24 concurrent 500 ms forwards went from a peak of 4 in-flight and ~3,110 ms wall to 24 in-flight and ~505 ms.
-- **Inbound headers are read in a single pass instead of two**, removing one full header-set walk and roughly 900 bytes of allocation per request with a body (inbound decode path: 6,584 → 5,680 bytes per request).
+- **About 960 bytes less allocated per request with a body.** Every such request re-parsed its `Content-Type` header from scratch, allocating about 960 bytes to reproduce one of a handful of values: substrings, a parameter map and its backing `TreeMap`. Parsed types are now held in a bounded cache (1,024 entries, keyed on the verbatim header string). Taking the whole inbound decode path from **6,584 to 5,680 bytes per request**, where the −904 cross-checks against the isolated figure. A caller sending unbounded distinct `Content-Type` values gets no cache benefit beyond the 1,024th entry; the bound prevents the cache itself from being a memory sink.
+- **Inbound headers are read in a single pass instead of two.** Header ingest previously called `names()` — which builds a `LinkedHashSet` over the full entry list — then `getAll(name)` per distinct name, re-hashing and re-walking on each call. It is now a single `iteratorCharSequence()` pass with no per-entry allocation, and the flat store is pre-sized from the O(1) header count instead of growing through intermediate arrays.
 - **The first request on every connection no longer scans the whole expectation store.** The check for `respondBeforeBody` expectations walked every registered expectation on every new connection. It is now skipped outright unless such an expectation actually exists: **73.5 microseconds → under 0.01 microseconds** at 15,000 expectations, allocating nothing. If you use `respondBeforeBody`, the check runs exactly as before.
 - **Clearing an expectation by path no longer scans the whole store.** Clears naming a path (with or without a method) are now served from an index: **1,585 microseconds → under 1 microsecond** at 15,000 expectations, flat across store size. Before indexing, a measured per-test cycle grew about **6.8×** between an empty store and 15,000 expectations, and `clear` was **59%** of that growth. Clears that cannot be narrowed safely (regex path, path with parameters, or `matchExactCase` enabled) fall back to the full scan; behaviour is identical in every case.
 - **~38% less allocation** when a JSON body does not match at the default log level — the non-match is now proven before a full diff is built. Per-match diff cost: **~3.5 KB → under 100 bytes** (diffs are built lazily, only if something actually reads them).
@@ -80,48 +81,6 @@ A sustained performance programme. The key numbers: throughput **26,020, then 23
 - **The "AsyncAPI module is not available" error now tells you how to enable it.** The message now names `org.mock-server:mockserver-async`, says the BOM manages its version, and notes that the standalone jar and Docker images already bundle it. The same text appears in `501 Not Implemented` responses from all four `/mockserver/asyncapi` routes, the Java API, and the dashboard.
 
 ### Fixed
-- **A forwarded or proxied request can no longer hang forever when `maxSocketTimeout` is `0`.** The
-  performance programme made the forward and reverse-proxy paths consume the upstream response without
-  blocking a worker thread, but that left the response wait bounded only by the upstream socket read
-  timeout. Setting `maxSocketTimeout` to `0` disables that read timeout, so an upstream that accepted the
-  connection but never replied left the client request hanging with no response at all. The wait is now
-  also bounded by `maxFutureTimeout` (default 90 seconds): a stalled forward completes with a `502 Bad
-  Gateway` once that limit is reached, exactly as it did before the change. This affects only the forward
-  and proxy paths; a normal upstream response is unaffected, and a streaming (Server-Sent Events) response
-  is not cut off because its wait ends when the response head arrives, not when the stream finishes.
-- **`redactSecretsInLog` now also redacts the `message` and `arguments` fields, not just
-  `httpRequest` and `httpResponse`.** With redaction enabled a JSON log entry had its
-  `httpRequest` masked while the `message` and `arguments` fields on the **same entry** still
-  carried the `Authorization`, `Cookie` and any other configured secret in full, so enabling the
-  setting did not actually stop secrets reaching the log. The rendered message shown in the
-  dashboard had the same gap. Both are now redacted, using the effective configuration where the
-  caller supplies one and the configured value otherwise. If you enabled `redactSecretsInLog` and
-  relied on it, treat logs captured before this release as still containing those values.
-- **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded
-  literally.** A previous release fixed this for incoming *requests* but missed the response side, so the
-  proxy leg still built response header, trailer and `Set-Cookie` names and values through the
-  marker-parsing `NottableString.string(name)` used for matcher input. An upstream response header named
-  `!foo` was therefore recorded as a **negation** of `foo` rather than as the literal name it actually
-  had — the recorded expectation said "name is not `foo`", and the `!` was lost. **Both** response paths
-  are fixed: the aggregated mapper (headers, folded-in trailers, and cookies decoded from `Set-Cookie`)
-  and the streaming relay used when a proxied response is streamed rather than buffered. A leading `?`,
-  the optional-matcher marker, was stripped from values the same way and is also now preserved. This
-  only affects the rare response whose actual header, trailer or cookie name or value starts with `!` or
-  `?`; everything else is unchanged.
-- **Adding a header or query parameter with no value no longer throws when you later read it back.**
-  Adding an entry with an empty or null value list stored an internal `null`, so reading that entry's
-  values with `getValues(name)` threw a `NullPointerException`. The entry is now stored with an empty
-  string value, matching the varargs form, so the header or parameter is still present and can be read
-  back safely.
-- **Changing a header or parameter's key-match style now takes effect immediately.** `withKeyMatchStyle`
-  did not clear the memoized matcher, so a collection that had already been matched once could keep
-  using the previous match style and return a stale result. The cached matcher is now invalidated on
-  this change, like every other mutation.
-- **A failed startup now ends with the error, not a page of command-line help.** When MockServer
-  could not start, it printed the exception and then a forty-line usage banner, pushing the actual
-  cause off the end of any truncated log view — which is exactly where you look first in a container
-  or CI job. The banner still appears for genuine usage mistakes such as an invalid port or log
-  level; it no longer appears when the server failed to start for some other reason.
 
 **Data integrity and log correctness**
 - **Retrieving or verifying requests under load could silently discard entries from the request log**, so a later `verify` could fail to find a request that had genuinely arrived — with only a single warning in the log. Queries ran on the same internal thread that records incoming requests, stalling recording until the buffer overflowed. Queries now run off that thread: a scan can no longer stall recording. A paced writer that lost tens of thousands of entries while a query ran now loses none.
@@ -148,6 +107,7 @@ A sustained performance programme. The key numbers: throughput **26,020, then 23
 - **IDE tool-window names are readable again.** They were single run-together words (`MockServerDashboard`, `MockServerDebugger`, `MockServerLlm`), cut off mid-word in the sidebar. They now read `MockServer Dashboard`, `MockServer Debugger` and `MockServer LLM`.
 
 **Correctness**
+- **A forwarded or proxied request can no longer hang forever when `maxSocketTimeout` is `0`.** The performance programme replaced the blocking forward wait with an async continuation, but that left the wait bounded only by the upstream socket read timeout. Setting `maxSocketTimeout` to `0` disables that read timeout, so an upstream that accepted the connection but never replied left the request hanging with no response. The wait is now also bounded by `maxFutureTimeout` (default 90 seconds): a stalled forward completes with a `502 Bad Gateway` once that limit is reached. A streaming (Server-Sent Events) response is not cut off — its wait ends when the response head arrives, not when the stream finishes.
 - **`maxLogEntries` and `maxExpectations` defaults are now computed from the JVM heap ceiling (`-Xmx`)**, not from the momentary free heap. The free-heap value was read once and cached with no reset path: holding ~645 MB before the first read at `-Xmx1g` dropped the frozen `maxLogEntries` from 100,000 to ~45,957; a later allocation could not raise it. The default is now deterministic and identical for every instance in the JVM. Enabling dev mode programmatically also now takes effect on these defaults even if they have already been read. On JVMs that do not report a usable heap maximum (e.g. GraalVM native images) the dev-mode floor of 1,000 still applies.
 - **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded literally.** A previous release fixed this for incoming requests but missed the response side — a header named `!foo` was recorded as a negation of `foo`, with the `!` lost. Both response paths are fixed: the aggregated mapper and the streaming relay. A leading `?` (optional-matcher marker) was stripped from values the same way and is also now preserved.
 - **A valid custom key and certificate no longer fails to start the server when the certificate was issued by a CA using a different key algorithm.** The startup check chose its algorithm from the certificate's *signature* (the CA's key type) rather than the subject's. An RSA certificate signed by an EC CA was tested with EC against an RSA key and threw `InvalidKeyException`, with the message falsely advising you to regenerate the key pair. The check now derives its algorithm from the private key. Reported in #2728 against 7.5.0.
