@@ -54,6 +54,13 @@ public class TemplateRenderAllocationBenchmark {
     @Param({"MUSTACHE", "VELOCITY", "JAVASCRIPT"})
     private String engine;
 
+    // SMALL is a typical short template; LARGE is a ~2 KB body so a size-proportional per-render cost
+    // (e.g. Velocity forming its resource-cache key from the whole template body) is quantified.
+    @Param({"SMALL", "LARGE"})
+    private String templateSize;
+
+    private static final int LARGE_TEMPLATE_MIN_BYTES = 2048;
+
     private static final String MUSTACHE_TEMPLATE =
         "{\"path\":\"{{request.path}}\",\"method\":\"{{request.method}}\",\"id\":\"{{uuid}}\",\"n\":\"{{rand_int_100}}\"}";
 
@@ -67,10 +74,19 @@ public class TemplateRenderAllocationBenchmark {
     private String template;
     private HttpRequest renderContext;
 
+    private static String repeatUntil(String prefix, String unit, String suffix) {
+        StringBuilder builder = new StringBuilder(prefix);
+        while (builder.length() < LARGE_TEMPLATE_MIN_BYTES) {
+            builder.append(unit);
+        }
+        return builder.append(suffix).toString();
+    }
+
     @Setup
     public void setup() {
         Configuration configuration = Configuration.configuration();
         MockServerLogger logger = new MockServerLogger();
+        boolean large = "LARGE".equals(templateSize);
         renderContext = request()
             .withMethod("POST")
             .withPath("/api/orders")
@@ -80,15 +96,15 @@ public class TemplateRenderAllocationBenchmark {
         switch (engine) {
             case "MUSTACHE":
                 templateEngine = new MustacheTemplateEngine(logger, configuration);
-                template = MUSTACHE_TEMPLATE;
+                template = large ? repeatUntil("", "[{{request.method}} {{request.path}}]", "") : MUSTACHE_TEMPLATE;
                 break;
             case "VELOCITY":
                 templateEngine = new VelocityTemplateEngine(logger, configuration);
-                template = VELOCITY_TEMPLATE;
+                template = large ? repeatUntil("", "[$request.method $request.path]", "") : VELOCITY_TEMPLATE;
                 break;
             case "JAVASCRIPT":
                 templateEngine = new JavaScriptTemplateEngine(logger, configuration);
-                template = JAVASCRIPT_TEMPLATE;
+                template = large ? repeatUntil("var s='';", "s+=request.path;", "return s;") : JAVASCRIPT_TEMPLATE;
                 break;
             default:
                 throw new IllegalArgumentException("unknown engine: " + engine);
