@@ -6,418 +6,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release is the result of a sustained performance programme. Every figure below is measured, and
-the entries further down say what changed and why. Throughput is the headline, but the changes most
-likely to affect a test suite are the **silent failures under load** listed last — cases where
-MockServer could lose data and report nothing.
+A sustained performance programme. The key numbers: **<!-- PERF_FIGURE -->19,517 → 25,488 req/s** served at 64,000 offered (the server now scales to higher load rather than degrading); event-log heap **429 MB → 61 MB** across 20,000 entries; Docker download **~163 MB → ~125 MB**; shutdown **~107 ms → ~0 ms** per instance.
 
-**One change can stop a server that used to start.** If you set `http3Port`, read the `BREAKING`
-entry under *Changed* before upgrading: HTTP/3's native libraries now ship in a separate artifact,
-so a server configured for HTTP/3 without them refuses to start and tells you which artifact to
-use. This affects Docker images too, which previously served HTTP/3 out of the box: a container
-that sets `http3Port` will refuse to start until the extra artifact is mounted, and the `BREAKING`
-entry says exactly what to mount and where. If you do not use HTTP/3 — the default — nothing
-changes except smaller downloads.
+**BREAKING — one change can stop a server that used to start.** If you set `http3Port`, read the `BREAKING` entry in *Changed* before upgrading: HTTP/3 native libraries now ship in a separate artifact. A server configured for HTTP/3 without them refuses to start and tells you exactly which artifact to add. Docker users: a container that sets `http3Port` will also fail until the extra jar is mounted. If you do not use HTTP/3 — the default — nothing changes except smaller downloads.
 
-**Throughput and latency**
+**Two behaviour changes in test suites:**
+- **JUnit rule and extension now default to dev mode** (`maxLogEntries=1000`, `maxExpectations=1000`). A suite that records more than 1,000 entries against one MockServer instance will silently evict the oldest — see *Changed* for how to opt out.
+- **`NottableString.withStyle(...)`, `withSchemaType(...)` and `Parameter.withStyle(...)`** now return a new instance; assign the result.
 
-- **19,517 → 25,488 requests/sec** actually served when clients offer 64,000/sec. Past its limit the
-  server used to serve *less* as load rose — 26,020, then 23,463, then 19,517 at 32,000, 48,000 and
-  64,000 offered. It now climbs to 28,533 and still holds 25,488 at the top of the ladder.
-- **~114x faster** generation of internal ids at 32 threads. The shared secure PRNG behind every
-  event-log, correlation, stream and trace id was the only material lock contention on the request
-  path, serialising all worker event loops as request rate peaked.
-- **about 900 fewer bytes allocated per request with a body.** Every such request re-parsed its `Content-Type`
-  header from scratch, allocating about 960 bytes to reproduce one of a handful of values. Parsed
-  types are now reused, taking the whole inbound decode path from 6,584 to 5,680 bytes per request.
-- **about 38% less allocation** when a JSON body does not match, at the default log level — a non-match is
-  now proven before a full diff is built.
-- **about 3.5 KB → under 100 bytes per comparison** when recording why a match failed; diffs are built only if
-  something actually reads them.
-- One internal thread hand-off removed per regular-expression match, for any pattern provably free
-  of catastrophic backtracking.
-- **Upgrading the Docker image downloads far less.** The image shipped MockServer and all its
-  dependencies as a single ~57 MB layer, so every new version re-pulled all of it — even though the
-  dependencies had barely changed. They now sit on their own layer, which Docker reuses: a patch
-  upgrade pulls about **21 MB instead of 66 MB**. The image total is unchanged, and on a first pull
-  the layers now fetch in parallel rather than one after another.
-- **An open dashboard no longer reads your whole request log every second.** To fill three panels of
-  100 entries each, MockServer walked every entry it held — running a full request match and building
-  a display object for all of them — and simply stopped adding once the panels were full. It now stops
-  walking once they are full: on a 4,200-entry log that is **201 entries examined instead of 4,200**,
-  and the gap widens the more traffic you have captured. The dashboard shows exactly the same thing.
-- **Having the dashboard open costs the server far less.** Every second, for each connected
-  dashboard, MockServer rebuilt the JSON for up to 100 expectations — even though expectations rarely
-  change. That JSON is now reused until the expectation actually changes: over an identical run, the
-  work dropped from **60,700 rebuilds to 267**. This matters most when you are watching the dashboard
-  *because* the server is busy, which is exactly when you can least afford the overhead.
-- **The request list stays fast however much traffic you capture.** The Inspect view rendered every
-  request it held — up to 200 rows — so the page got heavier as traffic accumulated. It now renders
-  only the rows near the viewport: **around 2,200 DOM elements became about 150**, and that figure no longer grows
-  with the number of requests. Selecting, comparing and filtering still work across the whole list,
-  not just what is on screen. Rows scrolled out of view are no longer in the page, so your browser's
-  own find-in-page only searches visible rows.
-- **The dashboard does less work on every update.** All four panels re-rendered whenever recorded or
-  proxied requests moved — including the Expectations panel, whose data had not changed. Each panel
-  now re-renders only when its own data changes, cutting the work per update by about **20%**.
-  Nothing displayed changes.
-- **The first request on every connection no longer scans your whole expectation store.** MockServer
-  checks each new connection for an expectation configured with `respondBeforeBody`, and that check
-  walked every registered expectation — even though almost nobody uses the feature, so the walk
-  found nothing. It is now skipped outright unless such an expectation actually exists: **73.5 microseconds → under 0.01 microseconds**
-  at 15,000 expectations, and it stops allocating entirely. If you do use
-  `respondBeforeBody`, nothing changes — the same check runs exactly as before.
-- **Clearing an expectation no longer scans every expectation you have registered.** Teardown between
-  tests used to compare the clear against the whole store, so a suite sharing one long-lived server
-  got slower at cleaning up as its expectations accumulated. A measured per-test cycle grew about
-  6.8x between an empty store and 15,000 expectations, and `clear` was **59%** of that growth. Clears
-  that name a path (with or without a method) are now served from an index: **1,585 microseconds → under 1 microsecond**
-  at 15,000 expectations, and flat across store size rather than linear. Clears that cannot be
-  narrowed safely — a regex path, a path with parameters, or a store running with `matchExactCase`
-  enabled — fall back to the old full scan, so behaviour is identical in every case.
-
-**Memory**
-
-- **429 MB → 61 MB** retained by the event log across 20,000 entries. It no longer keeps a parsed
-  copy of each body — an eager JSON tree roughly five times the size of the raw bytes, held for the
-  life of the entry.
-- **Headers and query parameters use about half the memory.** The collection behind them held one
-  general-purpose multimap per message - a structure built for large collections, holding four
-  headers. It is now a flat insertion-ordered store: about 560 bytes less per request or response,
-  with the container itself down by roughly four fifths. Header order on the wire, duplicate headers
-  and matching behaviour are unchanged.
-- **Header and parameter names cost less to hold.** The wrapper around every header and parameter
-  name and value shrank by about a third, and well-known header names now share one instance instead
-  of allocating a fresh wrapper per request. An unrecognised header name still allocates as before,
-  so a client sending many distinct names cannot make the server hold more.
-- **Two per-request boxed numbers are now primitives.** Each served request held its receive timestamp
-  as a boxed `Long` — a heap histogram at peak load showed roughly 169,000 of them retained — and every
-  header and parameter collection cached its hash as a boxed `Integer`; both are now primitive fields.
-  Nothing observable changes: JSON, equality, hashing and header order are identical, only the
-  per-request allocation and retained heap are smaller.
-- A served request no longer leaves behind a synthetic expectation object. Every request built one
-  from the request and response the log entry already held, and kept it for the entry's lifetime,
-  even though it is only read when log entries are serialised. It is now derived on demand, so a
-  server under load no longer carries one per logged request. Serialised output is unchanged.
-- A retained log entry no longer holds each text body **twice**. Every JSON, string and XML body
-  kept both the decoded `String` and the raw bytes; the raw bytes are now canonical and the string
-  is re-derived only when something reads it back. Requests in flight are unaffected — they keep the
-  decoded form while being matched — so `maxEventLogSizeInBytes` now reflects real heap without
-  retaining fewer entries. A recorded body whose exact wire bytes cannot be reproduced from its
-  decoded form keeps both, so re-imported recordings are byte-identical as before.
-- A long-lived keep-alive connection no longer leaks a tracking object **on every request it
-  carries**. A connection-pooling client, load balancer or browser made the heap grow in proportion
-  to the number of requests on that connection, ending in an `OutOfMemoryError`.
-- The event log now bounds itself honestly in bytes at both sites where it holds memory, and its
-  weigher counts what an entry actually holds — per-entry and per-message structure, header bytes, and
-  any retained closest-match expectation, not raw body bytes alone. The overheads were re-derived from
-  a live heap histogram once the header store became a flat array (above), so the estimate now tracks
-  real retained heap closely: typically within about **10–15%** at `WARN`, and slightly high for traffic
-  using well-known header names; traffic with many custom header names or long distinct paths can push it
-  lower. The default budget is sized from that measurement rather than guessed.
-- Container heap default corrected from **75% to 60%** of the container memory limit. A committed
-  heap needs roughly 1.5x that in real memory, so the old default did not fit — producing OOM-kills
-  with no `OutOfMemoryError` in the logs.
-- **117 MB → 52 MB** across 32 JUnit-managed instances, now that the JUnit rule and extension
-  default to dev-mode sizing. This one is a behaviour change — see the entry below before upgrading.
-
-**Startup, size and deployment**
-
-- Stopping a MockServer is **~107 ms → ~0 ms** each time. It is paid per instance, so a suite
-  creating one per test method spent roughly three quarters of its time here.
-- Docker image download **~163 MB → ~125 MB (−23%)** — the dominant cost of a first deploy onto a
-  Kubernetes node that has not cached the image. Two separately measured reductions compose here:
-  trimming Netty's native libraries and storing the jar uncompressed (163.25 → 135.47 MiB), then
-  trimming four more libraries that ship per-platform binaries the same way (a further 10.4 MiB).
-  Dropping the QUIC native from the image takes a little more off again, not counted above.
-- The standalone JAR everyone downloads is **104 MB → 93 MB**, because HTTP/3's native libraries
-  now ship as a separate artifact. This one changes behaviour if you use HTTP/3 — see the BREAKING
-  entry below.
-- Optional Linux-only builds of the standalone JAR, **~13 MB smaller** than the default, for CI
-  agents that start with an empty disk. The default artifact is unchanged.
-- Kubernetes pod marked ready **~4 s → ~2.8 s** — the readiness probe's cadence, not the server,
-  was the delay.
-
-**Silent failures under load — nothing was reported when these happened**
-
-- Retrieving or verifying requests while under load could **discard entries from the request log**,
-  so a later `verify` failed to find a request that had genuinely been received. A paced writer that
-  lost tens of thousands of entries while a query ran now loses none.
-- Expectations added, removed or evicted during churn could be **silently dropped from, or left
-  stale in, the internal matching index** — so a request that should have matched returned no match,
-  or one that should no longer match still did.
-- A response still being sent when the server was stopped could **arrive truncated, or not at all**.
-- In a cluster, an expectation with a bounded `Times` could **stop matching well before its count
-  was used up**. Spurious refusals under concurrent load are cut roughly tenfold.
+**Four silent failures under load are fixed** — nothing was reported when these happened: log entries discarded during retrieve/verify; expectations silently dropped from the matching index; responses arriving truncated on shutdown; clustered `Times` counts exhausted prematurely.
 
 ### Added
 
-- **An optional memory budget for stored expectations** (`mockserver.maxExpectationsSizeInBytes`,
-  default **0 = off**). The expectation store is normally bounded only by a count (`maxExpectations`),
-  which is blind to how large each expectation is: a JSON request matcher, for example, is parsed into a
-  node tree many times the size of the raw JSON, so a few thousand large expectations can retain far more
-  heap than the count suggests. Turn this on to add a hard ceiling on the memory expectations may hold —
-  when it is reached the oldest, lowest-priority expectations are evicted (the same way `maxExpectations`
-  already evicts on count) and the eviction is announced once in the log. It is **off by default and
-  opt-in**: expectations are state you configured, not observational data, so MockServer will not evict
-  your mocks unless you ask it to. A reasonable starting point, if you register many large expectations,
-  is about an eighth of the JVM heap. When set, whichever of `maxExpectations` or this is reached first
-  evicts; set it back to 0 to disable.
-- **The TCP accept queue is now configurable** (`mockserver.soBacklog`, default **1024** —
-  unchanged, but previously hard-coded so no property could reach it). This is the queue
-  the kernel parks completed handshakes in while MockServer accepts them, and it only matters when
-  many clients connect at once - a load test ramping up, a pool refilling, a fleet of containers
-  starting together. Steady traffic over existing keep-alive connections never touches it.
-  A full queue is worth recognising because it does not look like a limit: the kernel silently
-  drops the handshake rather than refusing it, the client retransmits after about a second, and the
-  symptom is a **median latency near one second with no errors at all**. The effective depth is
-  still capped by `net.core.somaxconn` (Linux) or `kern.ipc.somaxconn` (macOS), and a Docker
-  container has its own value - so raise the OS limit alongside it. See
-  [Performance](/mock_server/performance.html) for the three connection limits together.
-  Raise it deliberately rather than routinely: a deeper queue admits connections the server may
-  then be unable to serve, so the default acts as backpressure and the failure mode changes from
-  slow to dead.
-- **The dashboard can now ask for more request history per update.** Connect the dashboard
-  WebSocket with `?logLimit=N` — for example `/_mockserver_ui_websocket?logLimit=250` — and the
-  server sends up to `N` log rows, recorded requests and proxied requests per update instead of the
-  fixed 100. The server enforces a hard maximum of 500, and anything missing, out of range or
-  malformed falls back to the default 100, so a dashboard that asks for nothing costs exactly what
-  it did before. The number of expectations sent is unchanged and cannot be raised this way.
-- **Slimmer, optional builds of the standalone JAR for Linux CI and containers.** Alongside the
-  usual `mockserver-netty-<version>-jar-with-dependencies.jar`, two new variants are published:
-  `-jar-with-dependencies-linux-x86_64.jar` and `-jar-with-dependencies-linux-aarch_64.jar`. Each is
-  about 13 MB smaller because it carries only the native libraries its own architecture can load,
-  instead of the macOS, Windows and other-architecture binaries the default must include. Useful on
-  build agents that start with an empty disk or pull through a remote cache. **The default artifact
-  is unchanged** -- if your team shares one Maven or Gradle configuration across macOS laptops and
-  Linux CI, keep using it and nothing changes.
+**Observability**
+- **Eight new event-log gauges** on `/mockserver/metrics` covering both memory sites. Four for the in-flight ring: `mock_server_event_log_ring_occupancy`, `_ring_capacity`, `_in_flight_bytes`, `_max_in_flight_bytes`. Four for the retained deque: `mock_server_event_log_retained_entries`, `_retained_bytes`, `_max_retained_entries`, `_max_retained_bytes`. Together with `mock_server_dropped_log_events`, the ring gauges let you watch a log backlog building rather than inferring it from damage afterwards. All charted in the dashboard Metrics view against their budget (budget of `0` shown as no limit, not a full bar).
+- **Expectation-store and accept-queue metrics** on `/mockserver/metrics` and the dashboard Metrics view. `mock_server_expectations_bytes` reports live memory held by the store; `mock_server_max_expectations_bytes` the byte budget in force (`0` when `maxExpectationsSizeInBytes` is off); `mock_server_expectations_byte_evicted_total` counts byte-driven evictions. `mock_server_accept_queue_backlog_configured` reports the configured accept-queue depth; on Linux, `mock_server_accept_queue_backlog_effective` reports the kernel-capped value (deliberately omitted where unreadable rather than shown as the configured value).
+- **Two new JVM-level Prometheus metrics.** `jvm_runtime_info` (gauge, always 1) reports the running JVM and GC in labels (`gc`, `java_version`, `java_runtime_version`, `java_vendor`, `vm_name`). `jvm_memory_allocated_bytes` is a monotonic gauge of cumulative bytes allocated across all threads; the delta between two scrapes gives the exact allocation churn over that window. Absent on JVMs without HotSpot allocation accounting — the series does not appear rather than being reported as zero.
 
-- The default byte budget above errs deliberately on the small side: under-budgeting evicts early and
-  says so, while over-budgeting ends in the `OutOfMemoryError` the bound exists to prevent. If you
-  want the log to keep more history and have the heap headroom, set `maxEventLogSizeInBytes`
-  explicitly.
-- Eight new event-log gauges on the Prometheus endpoint (`/mockserver/metrics`) covering both sites
-  where the event log holds memory. Four cover the in-flight ring:
-  `mock_server_event_log_ring_occupancy`, `_ring_capacity`, `_in_flight_bytes`, and
-  `_max_in_flight_bytes`. Four cover the retained deque: `mock_server_event_log_retained_entries`,
-  `_retained_bytes`, `_max_retained_entries`, and `_max_retained_bytes`. Together with the existing
-  `mock_server_dropped_log_events` counter, the ring gauges let you watch a log backlog building
-  rather than inferring it from damage afterwards; the retained gauges answer which part of the event
-  log is filling the heap, which a single-site scrape could not distinguish. Both sets are read at
-  scrape time from live state, so the request path is unaffected. The dashboard Metrics view now
-  charts all four sites, each value drawn against its budget (a budget of `0` is shown as no limit
-  set, not a full bar).
-- New expectation-store and accept-queue metrics on the Prometheus endpoint (`/mockserver/metrics`)
-  and in the dashboard Metrics view, answering "is the server running out of room?" for the two sites
-  a growth run could not previously see. `mock_server_expectations_bytes` reports the memory the
-  stored expectations hold and `mock_server_max_expectations_bytes` the byte budget in force
-  (`0` when `maxExpectationsSizeInBytes` is off, the default) — the used figure is live whether or not
-  the budget is set, with `mock_server_expectations_byte_evicted_total` counting byte-driven
-  evictions. `mock_server_accept_queue_backlog_configured` reports the configured accept-queue depth
-  (`soBacklog`); on Linux `mock_server_accept_queue_backlog_effective` reports the smaller of that and
-  the kernel ceiling (`/proc/sys/net/core/somaxconn`), and is deliberately **omitted** where that
-  ceiling cannot be read (macOS, restricted containers) rather than reporting the configured value
-  under an "effective" name. All are read at scrape time from live state, so the request path is
-  unaffected.
-- The in-memory event log is now bounded by **size** as well as by entry count, and that size bound
-  now covers both the retained entries and the entries still waiting in the in-flight queue.
-  `maxEventLogSizeInBytes` was previously off by default; it now defaults to a share of the heap-ceiling
-  budget, sized so REAL retained heap is about a quarter of the ceiling at either log level. That takes
-  a different counted share at each, because a decoded JSON/XML/text body is retained twice (the decoded
-  string and the raw bytes) but counted once, and a rendering level memoises a log message embedding it
-  a third time: measured on live heaps, real retention is **2x** the counted figure at `WARN` and **3x**
-  at `INFO`. So the counted budget is an **eighth** of the ceiling budget at `WARN` and below and a
-  **twelfth** at `INFO` and above — a 1.5x asymmetry, not the 2x a first pass assumed. Workloads with bodies under roughly two kilobytes still reach the count bound
-  first and are unaffected. Set `maxEventLogSizeInBytes=0` to restore count-only bounding. When either
-  bound is hit, MockServer discards the newest entries rather than failing, logs a single warning naming
-  which bound was hit and its current value with remedies ordered cheapest-first, and counts discards
-  in `mock_server_dropped_log_events`. Any `verify` with an upper bound (`never`, `atMost`, `exactly`,
-  `once`, `between`) now **fails** rather than passing on incomplete evidence — this guard also covers
-  the pre-existing case where the in-flight queue was simply full, which could previously let such a
-  `verify` pass silently. Reducing the log level to `WARN` or below widens the counted byte budget by half again (a twelfth to an eighth) and lets
-  the log keep pace with incoming traffic without affecting whether a `verify` sees a given request.
-- Two new JVM-level Prometheus metrics on the endpoint (`/mockserver/metrics`). `jvm_runtime_info` is
-  an info-style gauge (value always `1`) whose labels report the running JVM and garbage collector:
-  `gc`, `java_version`, `java_runtime_version`, `java_vendor`, and `vm_name` — so a scrape records
-  which JVM and GC produced a given set of measurements. `jvm_memory_allocated_bytes` is a monotonic
-  gauge reporting cumulative bytes allocated across all threads since JVM start; the difference between
-  two scrapes gives the exact allocation churn over that window. This metric is absent on JVMs that do
-  not implement HotSpot allocation accounting — the series will not appear rather than being reported
-  as zero.
+**Memory and capacity controls**
+- **Optional byte budget for stored expectations** (`mockserver.maxExpectationsSizeInBytes`, default **0 = off**). A count limit (`maxExpectations`) is blind to how large each expectation is: a JSON request matcher is parsed into a node tree many times the size of the raw JSON, so a few thousand large expectations can retain far more heap than the count suggests. When this budget is reached, the oldest, lowest-priority expectations are evicted (same as `maxExpectations`) and the eviction is logged once. Off by default — MockServer will not evict your mocks unless you ask it to. A reasonable starting point: one eighth of the JVM heap. Whichever of `maxExpectations` or this is reached first evicts; set back to `0` to disable.
+- **Event log now bounded by size as well as entry count.** `maxEventLogSizeInBytes` previously existed but was off by default; it now defaults to a share of the JVM heap ceiling so real retained heap stays around a quarter of the ceiling at either log level. The budget accounts for the asymmetry between log levels: at `WARN` and below, a decoded body is retained twice (raw bytes + decoded string), counted once — real retention is **2×** the counted figure; at `INFO` and above, a rendered log message adds a third copy — real retention is **3×**. The counted budget is therefore an **eighth** of the ceiling at `WARN` and below and a **twelfth** at `INFO` and above. Workloads with bodies under ~2 KB still hit the count bound first and are unaffected. Set `maxEventLogSizeInBytes=0` to restore count-only bounding. Any `verify` with an upper bound (`never`, `atMost`, `exactly`, `once`, `between`) now **fails** rather than passing on incomplete evidence when the log has been truncated (this guard also covers the pre-existing case where the in-flight queue was full). The default byte budget errs on the small side: under-budgeting evicts early and says so, while over-budgeting can cause `OutOfMemoryError`. Set `maxEventLogSizeInBytes` explicitly if you need more history and have the heap headroom.
+
+**Operations**
+- **TCP accept queue depth is now configurable** (`mockserver.soBacklog`, default **1024** — unchanged, but previously hard-coded). A full queue silently drops completed handshakes; the client-visible symptom is a **median latency near one second with no errors**. The effective depth is still capped by `net.core.somaxconn` (Linux) or `kern.ipc.somaxconn` (macOS). Raise deliberately — a deeper queue admits connections the server may not be able to serve in time, changing the failure mode from slow to dead. See [Performance](/mock_server/performance.html) for the three connection limits together.
+- **Dashboard can request more log history per update.** Connect the dashboard WebSocket with `?logLimit=N` (e.g. `/_mockserver_ui_websocket?logLimit=250`) to receive up to `N` log rows, recorded requests and proxied requests per update instead of the fixed 100. Hard maximum of 500; invalid or missing values fall back to 100. Expectations are unaffected.
+- **Slimmer Linux-only standalone JARs.** Two new variants alongside the standard artifact: `-jar-with-dependencies-linux-x86_64.jar` and `-jar-with-dependencies-linux-aarch_64.jar`, each about **13 MB smaller** because they carry only native libraries for their own architecture. Useful on build agents or CI containers with limited disk. **The default artifact is unchanged.**
 
 ### Changed
 
-- `NottableString.withStyle(...)`, `NottableString.withSchemaType(...)` and `Parameter.withStyle(...)`
-  now return a **new instance** instead of modifying the one they were called on. Code that called
-  them for their side effect and ignored the result will no longer see the style or schema type
-  applied — assign the returned value. These objects are shared between requests, so modifying one
-  in place could alter a header that another request had already recorded.
-- **BREAKING (experimental feature): HTTP/3's native libraries now ship separately, making the
-  standalone jar ~11 MB smaller.** The QUIC native binaries were the single largest item in the
-  standalone jar — about 11 MB across five platforms — for a feature that is experimental, off by
-  default, and does nothing unless `http3Port` is set. They now ship in a new
-  `jar-with-dependencies-http3` classifier, and the default jar is **104 MB → 93 MB**. The QUIC
-  *classes* are still bundled, so nothing fails to load: if you set `http3Port` without the native
-  present, MockServer refuses to start and tells you exactly how to get it, rather than quietly
-  ignoring the port you asked it to listen on. **If you use HTTP/3**, switch to the
-  `jar-with-dependencies-http3` jar, or add `io.netty:netty-codec-native-quic` (with your platform's
-  classifier) to your build, or mount the native jar into `/libs` in a container. **Docker users
-  should read this twice**: the images previously carried the QUIC native for their architecture and
-  served HTTP/3 out of the box, so a container that sets `http3Port` will now fail to start until
-  `netty-codec-native-quic-<version>-linux-<arch>.jar` (~3 MB) is mounted into `/libs`, which is
-  already on the classpath in every image variant. **If you do not use HTTP/3 — which is the default
-  — nothing changes except a smaller download.**
-- **The Docker image is about 17% smaller to download** (~163 MB to ~135 MB, measured on
-  linux/arm64; linux/amd64 is trimmed the same way). This matters most on a Kubernetes node that
-  does not already have the image cached, where pulling it is the overwhelming majority of the time
-  before MockServer is serving. Two changes: the bundled Netty native libraries are trimmed to the
-  architecture the container actually runs on, and the JAR is stored uncompressed inside the image
-  so the image layer can compress it properly. Nothing is lost -- the removed files are macOS and
-  Windows binaries that a Linux container could never load. Native TLS (BoringSSL), HTTP/2, the
-  native epoll transport and the AppCDS startup archive were all verified unchanged.
-- **The Docker image is smaller again — another ~10 MB off the download, on top of the reduction
-  above.** The image already trimmed Netty's native libraries to the architecture the container actually runs on. Four more
-  libraries ship native binaries the same way and were not covered: zstd-jni, snappy, JNA and
-  lz4-java. Between them they carried binaries for AIX, FreeBSD, Solaris, macOS, Windows and a
-  dozen Linux architectures, none of which a Linux container can load — zstd-jni alone ships 18
-  platform builds where exactly one is usable. All four are now trimmed to the running
-  architecture alongside Netty's, measured at **10.4 MB (15%) off the compressed image layer**.
-  Nothing is lost: the removed files are for operating systems and processor architectures the
-  container cannot execute, and the build now fails if the correct binary for any of the five
-  libraries is missing after the trim.
-- **The distroless Docker images now bundle a newer Java runtime instead of Java 17.** Five published
-  variants (root, root-snapshot, snapshot, GraalJS and webhook) move from
-  `gcr.io/distroless/java17` to `gcr.io/distroless/java25` (Temurin 25 LTS). The `-clustered` image
-  moves to `gcr.io/distroless/java21` instead: Infinispan 14 calls an API that Java 24 removed, so
-  clustering does not start on Java 25 and 21 is the newest runtime it supports. The standard and local
-  images already ran JDK 26, and the experimental AOT image JDK 25, so neither changes here. This
-  brings every image onto a modern JVM — later garbage-collector and JIT work — with nothing for you
-  to change. The embedded MockServer library is still compiled to the **Java 17** bytecode floor, so
-  running the JAR on your own Java 17+ JVM is unaffected; only the bundled JVM inside the images
-  changed. On Java 25 the JVM prints one benign startup warning that Netty's native-library load is
-  a "restricted method"; it does not affect operation.
-- **The "AsyncAPI module is not available" error now tells you how to enable it.** Asking for
-  message-broker mocking (Kafka, RabbitMQ/AMQP, MQTT) on a server without the optional
-  `mockserver-async` module previously returned only the fact that it was missing, leaving you to
-  find the artifact, work out which version to use, and guess how to add it in a container. The
-  message now names `org.mock-server:mockserver-async`, says the `mockserver-bom` manages its
-  version, and notes that the standalone jar and the Docker images already bundle it (mounting the
-  jar into `/libs` covers a build that does not). The same text is used by the `501 Not Implemented`
-  responses from all four `/mockserver/asyncapi` routes, by the equivalent Java API, and by the
-  dashboard, which now shows the server's message instead of a shorter one of its own.
+- **BREAKING (experimental feature): HTTP/3 native libraries now ship in a separate artifact, making the standalone jar ~11 MB smaller.** The QUIC native binaries (~11 MB across five platforms) are now in a `jar-with-dependencies-http3` classifier; the default jar is **104 MB → 93 MB**. The QUIC *classes* are still bundled, so if you set `http3Port` without the native present, MockServer refuses to start with a clear message rather than silently ignoring the port. **If you use HTTP/3**: switch to `jar-with-dependencies-http3`, or add `io.netty:netty-codec-native-quic` (with your platform's classifier) to your build, or mount the native jar into `/libs` in a container. **Docker users**: the images previously carried the QUIC native and served HTTP/3 out of the box; a container that sets `http3Port` will now fail to start until `netty-codec-native-quic-<version>-linux-<arch>.jar` (~3 MB) is mounted into `/libs` (already on the classpath in every image variant). **If you do not use HTTP/3 — the default — nothing changes except a smaller download.**
 
+**Deployment**
+- **Docker image download reduced ~23%** (<!-- DOCKER_DL_FIGURE -->~163 MB → ~125 MB, measured on linux/arm64; linux/amd64 trimmed identically). Two reductions compose: Netty native libraries trimmed to the architecture the container actually runs on and the JAR stored uncompressed so the image layer compresses it properly (~28 MB); then four more libraries (zstd-jni, snappy, JNA, lz4-java) trimmed the same way — **a further ~10.4 MB** (zstd-jni alone ships 18 platform builds where exactly one is usable). Nothing is lost; the build now fails if the correct binary for any library is missing. As a result, **patch upgrades pull ~21 MB instead of ~66 MB** — dependencies now sit on their own layer which Docker reuses; on a first pull the layers fetch in parallel.
+- **Distroless Docker images now bundle a newer Java runtime.** Five variants (root, root-snapshot, snapshot, GraalJS, webhook) move from `gcr.io/distroless/java17` to `gcr.io/distroless/java25` (Temurin 25 LTS). The `-clustered` image moves to `gcr.io/distroless/java21` — Infinispan 14 calls an API removed in Java 24. The standard and local images already ran JDK 26; the experimental AOT image already ran JDK 25; neither changes. The embedded library is still compiled to the **Java 17** bytecode floor; running the JAR on your own Java 17+ JVM is unaffected. Java 25 prints one benign startup warning about Netty's native-library load.
+- **Docker images now cap the JVM heap at 60% of the container memory limit, down from 75%** (`-XX:MaxRAMPercentage=60.0`). Under load a committed heap needs roughly 1.5× in real memory (Netty off-heap buffers, metaspace, thread stacks, GC bookkeeping). At 75% of a 2 GiB limit, that footprint exceeds the limit and the kernel OOM-kills the container (exit 137, `OOMKilled: true`, no `OutOfMemoryError` in logs). Practical rule: **budget a container at ~1.5× the heap you want**. `maxLogEntries` (100,000) and `maxExpectations` (15,000) are unaffected; `maxEventLogSizeInBytes` (heap-derived) drops about 20%. **To keep the previous heap**: set `-Xmx` explicitly or raise the container `--memory` limit.
+- **Helm: pods become ready ~2 s sooner, and graceful shutdown is now configurable.** Readiness probe now checks immediately and every second (was: 2 s initial delay, 2 s interval; measured: `kubectl apply` to Ready from ~4 s to ~2.8 s). New Helm values: `app.terminationGracePeriodSeconds` (default 45) and `app.preStopSleepSeconds` (default 0) — the latter pauses before shutdown begins so Kubernetes can finish draining traffic from the pod (needs Kubernetes 1.30+; image has no shell, so uses native `preStop.sleep`).
 
-- **Stopping a MockServer is now effectively instant** (about 107ms faster each time). Shutdown
-  asked Netty for a "quiet period" before closing its event loops, and any non-zero quiet period
-  costs a fixed ~100ms wait regardless of whether there is anything left to do. It was redundant:
-  shutdown already waits for in-flight requests separately, and now waits for their bytes to flush.
-  This is most visible when a suite creates a MockServer per test method or per test class, where
-  that cost was paid on every single one -- a 32-instance suite spent roughly three quarters of its
-  time in shutdown.
+**Performance**
+- **Shutdown is now effectively instant** (~107 ms → ~0 ms per instance). Shutdown previously asked Netty for a "quiet period" before closing event loops — a fixed ~100 ms wait regardless of whether anything remained. It was redundant: shutdown already waits for in-flight requests separately, and now waits for their bytes to flush instead. Most visible in suites that create a MockServer per test method — a 32-instance suite spent roughly three quarters of its time in shutdown.
+- **Three forwarding and proxy-pass paths no longer hold a pool thread while waiting for the upstream reply.** Previously these paths blocked on `get()` for the whole upstream round trip, capping proxy concurrency at the thread-pool size. Each path now uses a non-blocking continuation, matching the matched-forward path. Measured at unit level: with a pool fixed at 4 threads, 24 concurrent 500 ms forwards went from a peak of 4 in-flight and ~3,110 ms wall to 24 in-flight and ~505 ms.
+- **Inbound headers are read in a single pass instead of two**, removing one full header-set walk and roughly 900 bytes of allocation per request with a body (inbound decode path: 6,584 → 5,680 bytes per request).
+- **The first request on every connection no longer scans the whole expectation store.** The check for `respondBeforeBody` expectations walked every registered expectation on every new connection. It is now skipped outright unless such an expectation actually exists: **73.5 microseconds → under 0.01 microseconds** at 15,000 expectations, allocating nothing. If you use `respondBeforeBody`, the check runs exactly as before.
+- **Clearing an expectation by path no longer scans the whole store.** Clears naming a path (with or without a method) are now served from an index: **1,585 microseconds → under 1 microsecond** at 15,000 expectations, flat across store size. Clears that cannot be narrowed safely (regex path, path with parameters, or `matchExactCase` enabled) fall back to the full scan; behaviour is identical in every case.
+- **~38% less allocation** when a JSON body does not match at the default log level — the non-match is now proven before a full diff is built. Per-match diff cost: **~3.5 KB → under 100 bytes** (diffs are built lazily, only if something actually reads them).
+- Regular-expression matching is faster for the common case. A regex provably free of catastrophic backtracking is now evaluated directly, removing one thread hand-off per match. Patterns that cannot be proven safe keep full timeout protection; which requests match is unchanged.
 
-- **Helm: pods become ready about two seconds sooner, and graceful shutdown is now configurable.**
-  The readiness probe waited two seconds before its first check and then polled every two seconds,
-  so a server that is actually serving ~0.4s after start was not marked ready for 2-4s; it now
-  checks immediately and every second (measured: `kubectl apply` to Ready fell from ~4s to ~2.8s).
-  Two new values are available for graceful shutdown: `app.terminationGracePeriodSeconds` (default
-  45, which must stay comfortably above `mockserver.stopDrainMillis`) and `app.preStopSleepSeconds`
-  (default 0, off). Enabling the latter pauses before shutdown begins so Kubernetes has time to stop
-  routing traffic to the pod first -- MockServer's own drain waits for requests already in flight,
-  not for ones still arriving because endpoint removal has not yet propagated. It needs Kubernetes
-  1.30+ and the image has no shell, so it uses the native `preStop.sleep` action.
+**Security IDs**
+- **Internal identifiers that need only to be unique (not unguessable) are now generated from a fast, contention-free random source.** The cryptographic PRNG was the only material lock contention on the request path at peak load, serialising all worker event loops. Three phases: event-log and correlation ids; W3C trace/span ids (generated on every request when `otelGenerateTraceId` is enabled), further stream ids, and mocked LLM content ids; then `Math.random()` in rerank scoring and embedding fallback. Security-sensitive ids (session ids, breakpoint correlation ids, TLS keystore names, certificate serials, OIDC tokens, QUIC source-address token secret) are **unchanged** and still use the cryptographic generator. All ids remain standard version-4 UUIDs; trace ids remain 32/16-char lowercase hex as the W3C `traceparent` contract requires. **One user-visible semantic change**: the CRUD data-plane resource id is now unique-but-guessable rather than unguessable — a deliberate trade-off for a test fixture.
 
-- Regular-expression matching is faster for the common case. A regex that can be proven incapable of
-  catastrophic backtracking is now evaluated directly instead of being handed to the internal timeout
-  thread pool, removing a thread hand-off from every such match. Patterns that cannot be proven safe
-  -- and all `find()`-style matching -- keep the timeout protection exactly as before, so a pathological
-  expression still cannot hang the server. This changes performance only: which requests match, and
-  what a mismatch reports, are unchanged.
+**Memory**
+- **Headers and query parameters use about half the memory.** The backing collection was a general-purpose multimap (built for large collections, holding four headers); it is now a flat insertion-ordered store — about 560 bytes less per request or response, with the container itself down by roughly four fifths. Header order on the wire, duplicate headers, and matching behaviour are unchanged.
+- **Header and parameter names cost less to hold.** The wrapper around each name and value shrank by about a third; well-known header names now share one instance instead of allocating a fresh wrapper per request. An unrecognised header name still allocates as before.
+- **Two per-request boxed numbers are now primitives.** Each served request held its receive timestamp as a boxed `Long` (~169,000 retained at peak load) and each header/parameter collection cached its hash as a boxed `Integer`; both are now primitive fields. JSON, equality, hashing and header order are identical.
+- **A served request no longer leaves behind a synthetic expectation object.** Every request built one from the request and response the log entry already held and kept it for the entry's lifetime — now derived on demand. Serialised output is unchanged.
+- **A retained log entry no longer holds each text body twice.** Every JSON, string and XML body kept both the decoded `String` and the raw bytes; the raw bytes are now canonical and the string is re-derived only when read back. A recorded body whose exact wire bytes cannot be reproduced from its decoded form keeps both, so re-imported recordings are byte-identical.
+- **Event-log writer CPU cost reduced at high request rates.** The writer thread no longer re-resolves `logLevelOverrides` on every log entry (measured at over 20% of the writer thread's time past the saturation knee); the resolved overrides are now cached and re-resolved only when configuration changes. The byte weigher that enforces `maxEventLogSizeInBytes` now counts what a retained entry really holds — header bytes, per-entry/per-message structural overhead, and any retained closest-match expectation — rather than raw body bytes alone; the estimate now tracks real retained heap typically within about **10–15%** at `WARN`. **Behaviour change affecting users who have already set `maxEventLogSizeInBytes` explicitly**: the same explicit value now retains fewer entries because structure and headers are counted; raise the value if you relied on the previous retention volume. The count bound (`maxLogEntries`) and entries with no body are unaffected.
 
-- **The Docker images now cap the JVM heap at 60% of the container memory limit, down from 75%**
-  (`-XX:MaxRAMPercentage=60.0` in every `docker/**/Dockerfile` ENTRYPOINT). In a memory-limited
-  container with no explicit heap set, the default heap is now smaller — for a 2 GiB container it
-  drops from ~1536 MiB to ~1229 MiB. The reason is that the heap is not the whole footprint: under
-  sustained load a committed 1,536 MiB heap was measured occupying ~2,271 MiB of real memory (~1.5×),
-  the extra being Netty's off-heap network buffers, metaspace, thread stacks and GC bookkeeping — none
-  counted by `-Xmx`. At 75% of a 2 GiB limit that footprint exceeds the limit and the kernel OOM-kills
-  the container (exit 137, `OOMKilled: true`, with no `OutOfMemoryError` in the logs); 60% leaves real
-  headroom. Practical rule: budget a container of roughly **1.5× the heap you want**. This changes only
-  the heap-derived defaults that are not already saturated at their caps: `maxLogEntries` (100,000) and
-  `maxExpectations` (15,000) are unaffected, while `maxEventLogSizeInBytes` (which sizes off available
-  heap with no cap) drops about 20%. **To keep the previous heap**, set it explicitly — e.g.
-  `JAVA_TOOL_OPTIONS=-Xmx1536m` for a 2 GiB container, or raise the container `--memory` limit — noting
-  that an explicit `-Xmx` disables `MaxRAMPercentage` entirely.
-- Upgraded the dashboard's diagram dependency `mermaid` from 11 to 12 (`mockserver-ui`). The diagram output
-  the dashboard renders (agent call graphs and scenario state diagrams) is unchanged. An npm `overrides` entry
-  pins `lodash-es` to `4.18.1` — the release that fixes the `_.template`, `_.unset` and `_.omit` advisories —
-  which keeps the production dependency audit (`npm audit --omit=dev`) clean; the affected lodash functions are
-  not used by mermaid's transitive `chevrotain` dependency and are tree-shaken out of the built dashboard.
-- **Having the dashboard open costs the server, and the browser, far less.** Three separate costs
-  were paid on every one-second update. The server re-read the whole event log to fill three panels,
-  examining about 4,200 entries where 201 would do. The browser rebuilt every panel whenever any
-  data changed, about 60,700 component rebuilds over a minute of watching where 267 were needed. And
-  the Inspect list rendered a DOM node per captured request, so it grew without bound — around 2,200
-  elements in a busy list, now about 150 and flat however much traffic accumulates. Panels now
-  request only what they show, re-render only when their own data moves, and render only the rows
-  near the viewport. This matters most when you watch the dashboard *because* the server is busy,
-  which is exactly when the overhead is least affordable.
-- Internal identifiers that need only to be **unique** are now generated from a fast, contention-free
-  random source, completing a three-phase programme. The first phase covered event-log entry ids,
-  per-request log-correlation ids, and internal gRPC/HTTP-3 stream ids — all minted 2–3 times per
-  request through the cryptographically-secure PRNG, whose single process-wide lock had become the
-  only material lock contention on the server under sustained load, serialising all worker event loops
-  as request rate peaked. The second phase extended this to W3C trace and span ids (generated on every
-  request when `otelGenerateTraceId` is enabled — the hottest site of the set), further internal stream
-  ids (WebSocket, gRPC, HTTP/3 response streams), and the content ids inside mocked LLM responses
-  (`chatcmpl-…`, `resp_…`, `item_…`, `event_…` ids). The third phase reached `Math.random()` in rerank
-  response scoring and unseeded `new Random()` in the random embedding-vector fallback, and moved the
-  content ids in mocked SAML IdP and OIDC provider responses. Throughout, ids whose unguessability is
-  a **security** property — session ids, callback and breakpoint correlation ids, TLS keystore file
-  names, certificate serials, the QUIC source-address token secret, OIDC signing-key ids, device-flow
-  user-codes, and the OIDC `access_token` / `refresh_token` / authorization code / `device_code` — are
-  unchanged and still use the secure generator. All ids remain standard
-  version-4 UUIDs; trace ids remain 32- and 16-character lowercase hex as the W3C `traceparent`
-  contract requires — format and uniqueness are unchanged. **One user-visible semantic change:** the
-  CRUD data-plane resource id (minted on a `POST` to a CRUD-backed data collection) is now
-  unique-but-guessable rather than unguessable — a deliberate trade-off for a test fixture.
-- Two event-log writer improvements that reduce CPU cost at high request rates. The writer thread no
-  longer re-resolves `logLevelOverrides` on every log entry — past the saturation knee this was
-  measured taking over 20% of the writer thread's time; the resolved overrides are now cached and
-  re-resolved only when the configuration actually changes, so a runtime change still takes effect from
-  the next entry. Separately, the byte weigher that enforces `maxEventLogSizeInBytes` now counts what a
-  retained entry really holds — the header name/value bytes and value-side wrapper, a re-derived
-  per-entry and per-request/response structural overhead of a few hundred bytes each, and any retained
-  closest-match expectation — rather than raw body bytes alone. The overheads were re-derived from a
-  live heap histogram once the header store became a flat array (above); the earlier overheads had been
-  calibrated against the old multimap and badly over-stated a lean entry's cost, so the same explicit
-  budget was retaining roughly half the history it should. With the corrected accounting the estimate
-  tracks real retained heap typically within about **10–15%** at `WARN` — slightly high for traffic using
-  well-known header names, and lower for traffic with many custom header names or long distinct paths. The rendered
-  message string is deliberately still not counted, so at `INFO`/`DEBUG`/`TRACE` the estimate runs under
-  real by the size of that message — unchanged, and covered by the log-level-aware default divisor.
-  **This is a behaviour change, and it applies only if you SET `maxEventLogSizeInBytes` explicitly** —
-  the property existed before but was off by default, so this affects the value you chose, not the new
-  heap-derived default described above. Against the last release's body-only accounting the same value
-  now retains fewer entries, because structure and headers are now counted; the effect grows as bodies
-  shrink (for large bodies the raw body bytes still dominate the charge). Raise the value if you relied
-  on the previous retention volume. The count bound (`maxLogEntries`) and entries with no
-  request/response body are unaffected.
-- **The JUnit integrations now enable "dev mode" by default** (`mockserver-junit-jupiter`
-  `MockServerExtension` and `mockserver-junit-rule` `MockServerRule`). Dev mode fixes the two
-  in-memory store sizes at `maxLogEntries=1000` and `maxExpectations=1000` instead of deriving them
-  from the JVM heap ceiling (up to 100,000 and 15,000). For a test suite that starts many short-lived
-  MockServer instances in one JVM this cuts memory sharply — a measured ~117 MB down to ~52 MB across
-  32 in-JVM instances (~2 MB each) — and makes per-instance capacity deterministic. **This is a
-  behaviour change:** a suite that records more than 1000 log entries against a single MockServer
-  instance will now silently evict the oldest, so a `verify` that reaches back past the most recent
-  1000 entries can stop matching. When dev mode is in effect MockServer logs a one-time `INFO` line
-  naming the effective sizes and how to change them. **To keep the previous behaviour**, either raise
-  the caps explicitly (`-Dmockserver.maxLogEntries=…` / `-Dmockserver.maxExpectations=…`, which win
-  over the dev-mode default) or turn dev mode off entirely with `-Dmockserver.devMode=false` (or
-  `MOCKSERVER_DEV_MODE=false`); an explicit setting always beats the new default. Only the JUnit 4
-  rule and JUnit 5 extension enable it — the Spring test integration and a directly-constructed
-  `ClientAndServer` do not. (Dev mode is JVM-global, so a `ClientAndServer` constructed directly
-  after a JUnit rule/extension has run in the same test fork does inherit the dev-mode sizes.)
+**JUnit**
+- **JUnit rule and extension now default to dev mode** (`mockserver-junit-jupiter` `MockServerExtension` and `mockserver-junit-rule` `MockServerRule`). Dev mode fixes `maxLogEntries=1000` and `maxExpectations=1000` instead of deriving them from the JVM heap, cutting measured memory from **~117 MB → ~52 MB** across 32 in-JVM instances (~2 MB each). **Behaviour change**: a suite that records more than 1,000 entries against one MockServer instance will silently evict the oldest; a `verify` reaching back past the most recent 1,000 entries can stop matching. MockServer logs a one-time `INFO` line naming the effective sizes. **To keep the previous behaviour**: raise the caps explicitly (`-Dmockserver.maxLogEntries=…` / `-Dmockserver.maxExpectations=…`) or disable dev mode (`-Dmockserver.devMode=false` / `MOCKSERVER_DEV_MODE=false`). Only the JUnit 4 rule and JUnit 5 extension are affected; the Spring integration and a directly-constructed `ClientAndServer` are not.
+- **`NottableString.withStyle(...)`, `NottableString.withSchemaType(...)` and `Parameter.withStyle(...)`** now return a **new instance** instead of modifying the one they were called on. Code that relied on the side effect (called without assigning the result) will no longer see the change. These objects are shared between requests; mutating in place could silently alter a header another request had already recorded.
+
+**Dependencies and error messages**
+- Dashboard dependency `mermaid` upgraded from 11 to 12. Diagram output (agent call graphs, scenario state diagrams) is unchanged. An npm `overrides` entry pins `lodash-es` to `4.18.1` (fixes `_.template`, `_.unset` and `_.omit` advisories); the affected functions are tree-shaken out of the built dashboard.
+- **The "AsyncAPI module is not available" error now tells you how to enable it.** The message now names `org.mock-server:mockserver-async`, says the BOM manages its version, and notes that the standalone jar and Docker images already bundle it. The same text appears in `501 Not Implemented` responses from all four `/mockserver/asyncapi` routes, the Java API, and the dashboard.
 
 ### Fixed
 - **A forwarded or proxied request can no longer hang forever when `maxSocketTimeout` is `0`.** The
@@ -463,224 +114,42 @@ changes except smaller downloads.
   or CI job. The banner still appears for genuine usage mistakes such as an invalid port or log
   level; it no longer appears when the server failed to start for some other reason.
 
-- **A valid custom key and certificate could stop the server from starting when the certificate was
-  issued by a CA using a different key algorithm — and the error told you to throw the good key
-  away.** When you configure `privateKeyPath` and `x509CertificatePath`, MockServer checks the key
-  matches the certificate at startup. That check chose its algorithm from the certificate's own
-  signature — which reflects the *issuing CA's* key type, not the certificate subject's — so an RSA
-  certificate signed by an EC certificate authority (a normal, standards-compliant setup) was tested
-  with an EC algorithm against an RSA key and threw `InvalidKeyException`, refusing to start. Worse,
-  the resulting message read *"The private key does not match the certificate ... Regenerate the key
-  pair"*, a false diagnosis: the key and certificate matched perfectly. The check now derives its
-  algorithm from the private key itself, so RSA, EC, DSA and Ed25519/Ed448 keys are all validated
-  correctly regardless of which algorithm the CA used to sign the certificate. The error messages are
-  also now distinct: a genuine key/certificate mismatch still says "does not match / regenerate", an
-  algorithm the JVM cannot apply says so without telling you to regenerate anything, and an
-  unsupported key type is named. Reported in #2728 against 7.5.0.
-- **`jvm_memory_allocated_bytes` was missing from `/mockserver/metrics` on the Docker images and
-  standalone jar — it now appears.** To avoid classpath clashes, the shaded distribution repackages
-  the third-party libraries it bundles under a private prefix. That repackaging also rewrote
-  MockServer's own reference to the JDK's HotSpot allocation counter, so the runtime check that reads
-  cumulative bytes-allocated could never match and the metric was silently dropped. This affected the
-  artifacts most people run — **every Docker image** (which ships the shaded jar), the standalone
-  binary, and the `mockserver-netty-no-dependencies` jar — so external Prometheus scrapers of a
-  shipped MockServer have never seen this metric. It is now emitted with a changing, non-zero value.
-  The same repackaging silently broke two other JDK integrations in that jar (the check that
-  classifies an SCTP connection close as benign, and an internal HTTP test server); both are fixed by
-  the same change, and a build guard now fails the build if any JDK `com.sun.*` reference is
-  repackaged again.
-- **MockServer no longer allocates a full MCP tool registry per connection.** With MCP enabled (the
-  default), every incoming connection used to build its own copy of the Model Context Protocol tool
-  registry — dozens of tools each carrying a JSON schema — and hold it for the life of the
-  connection. Under heavy concurrent load this added up to hundreds of megabytes of avoidable memory
-  and could exhaust the heap. MockServer now reuses one MCP handler across all connections instead of
-  building one per connection, so memory no longer grows with the number of open connections.
-- **The dashboard's live panels are readable on a busy server.** Log Messages, Received Requests,
-  Proxied Requests, Active Expectations and the Traffic inspector were effectively unusable under
-  load: opening an entry or scrolling was undone the moment anything new arrived. Three things caused
-  it, and all three are fixed. The lists now run in **console order** — oldest first, newest appended
-  at the **bottom**, the way a build log reads — so an arriving entry lands below what you are reading
-  instead of pushing it down the page. Following the newest entry is now an explicit **Follow**
-  toggle rather than something inferred from your scroll position, so a panel you are reading does
-  not scroll at all; scrolling away from the newest entry turns Follow off, and returning to it turns
-  Follow back on. And because the panels show a live window of the most recent 100 entries with the
-  server dropping the oldest as new ones arrive — measured at roughly ten requests a second, that
-  whole window turns over in about ten seconds — the entries you are reading are **kept** even once
-  the server has stopped sending them, so the list cannot collapse out from under you. Resume
-  following and the panel returns to the plain live window, so an idle dashboard is no heavier than
-  before. Opening an entry also stops that panel following, so the entry you are reading can neither
-  be scrolled away nor dropped from the feed while you read it. Log Messages, Received Requests,
-  Proxied Requests and the Traffic inspector get all of this. Active Expectations and the Trace
-  session view are not streams you follow, so they keep their own order and gain only the part that
-  matters there: what you are reading is no longer dropped from under you.
-- **The Follow control on a dashboard panel now actually follows.** It pinned to the newest entry
-  and then switched itself off about a second later, so in practice the panels could not be made to
-  track live output at all. The panels are virtualised, so rows are measured after they are drawn
-  and the content keeps changing height for a moment; each of those changes looks exactly like a
-  scroll, and a scroll was being read as "you have scrolled away". Following now changes only when
-  you act -- scrolling up stops it and it stays stopped, and Follow resumes it -- and it holds the
-  newest entry however much the content moves underneath. This also covers the Traffic inspector.
-- **The MockServer tool-window names in the IDE sidebar are readable again.** They were single
-  run-together words -- `MockServerDashboard`, `MockServerDebugger`, `MockServerLlm` -- and the
-  sidebar is too narrow for those, so they were cut off mid-word with no way to tell which was
-  which. They now read `MockServer Dashboard`, `MockServer Debugger` and `MockServer LLM`, which
-  wrap onto two lines the way every other tool window does. Your existing window positions are
-  unaffected.
-- **The MockServer Dashboard tool window works again in recent IntelliJ IDEA versions.** On IDEA
-  2026.2 it failed with `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp` and the tool window
-  did not appear at all. The embedded browser it needs moved out of the IDE core into a separate
-  component, which the plugin now asks for, so the dashboard renders in the IDE again rather than
-  only offering your external browser. The plugin asks whether the embedded browser is available before using it,
-  but on that platform the class behind the question is no longer reachable from the plugin, so
-  asking it was itself what failed. The check now survives the class being absent and falls back to
-  offering the dashboard in your normal browser, which is what it was always meant to do when the
-  embedded browser cannot be used. The LLM tool window's diagram view had the same fault and is
-  fixed with it.
-- **The dashboard's LLM Provider filter now appears on a busy server.** It was offered only if an LLM
-  expectation happened to be inside the at-most-100 expectations the server sends per update, so a
-  server holding more than that many other expectations ahead of its LLM ones never offered the
-  filter at all. The server now says explicitly whether any LLM expectation is present, so the
-  control no longer depends on which expectations fitted in the update. Against an older server that
-  does not send it, the previous behaviour is unchanged.
-- **The dashboard no longer shows counts that were really the size of its update window.** The
-  Received Requests and Log Messages panels, the Traffic inspector's host list and unmatched badge,
-  and the Composer's existing-mocks list each displayed a total derived from the at-most-100 entries
-  the server sends per update. Those numbers pinned at 100 and stopped moving, describing the
-  transport window rather than the server. They have been removed. **Active Expectations now shows
-  the true number held by the server**, which is sent explicitly instead of being counted from the
-  window. Received Requests rows are also keyed by timestamp now rather than by a position in that
-  window, which renumbered itself as entries arrived.
-- **A dashboard filtering rapidly no longer makes the server re-scan the event log for every
-  keystroke.** Each filter the dashboard sent triggered its own full scan, so a client could drive
-  an unbounded rate of them. Bursts are now collapsed: the first filter after a pause is served
-  immediately as before, and a rapid burst costs one further scan at the end, always reflecting the
-  most recent filter. Filtering feels the same; the server does a bounded amount of work.
-- **Watching the initialization file no longer churns memory while the server is idle.** With
-  `watchInitializationJson=true`, MockServer re-read the *entire* initialization file every poll (5
-  seconds by default) to fingerprint it -- whether or not the file had changed -- allocating a byte
-  array the size of the file each time. For a 10 MB file that is roughly 360 MB of garbage every
-  three minutes on a server serving no traffic at all, and each of those arrays is large enough that
-  the JVM handles it as a "humongous" allocation. Measured on an idle server with a 256 MB heap,
-  watching turned zero garbage collections into a heap repeatedly filling to ~230 MB. The file is now
-  fingerprinted by streaming it through a small fixed buffer, so an unchanged file costs a read and
-  nothing else; the same idle server now performs no collections. Change detection is unchanged. This
-  affected only deployments with watching enabled -- typically a central or Kubernetes deployment
-  whose initialization file comes from a mounted volume or ConfigMap -- and the effect grew with file
-  size, with the number of files matched when the path is a glob, and with shorter poll periods.
-- A response still being sent when the server was stopped could arrive truncated, or not at all.
-  Shutdown waited for responses to be *handed off* for writing rather than for their bytes to reach
-  the network, so a large or delayed response could still be queued when the server tore down its
-  connections -- the client then saw a partial body or a closed connection. Shutdown now waits for
-  the final write of each response to actually flush. This mattered most where a response is large
-  or deliberately delayed and the server is stopped underneath it, such as a rolling deployment.
-- Retrieving or verifying requests while the server was under load could silently discard entries
-  from the request log, so a later `verify` could fail to find a request that had genuinely been
-  received -- with no error reported, only a single warning in the log. Queries ran on the same
-  internal thread that records incoming requests, so a long query stalled recording until the
-  buffer overflowed. Queries now run off that thread: a scan can no longer stall recording. A paced
-  writer that lost tens of thousands of entries while a query ran now loses none. What a query
-  returns is unchanged.
-- In a cluster, an expectation with a bounded `Times` could stop matching well before its count was
-  used up. Under concurrent requests for the same expectation, the nodes competed to claim each
-  remaining use and retried immediately on losing, so they kept colliding; after a bounded number of
-  attempts a request was refused even though uses remained. Requests now wait a brief random moment
-  before retrying, which cuts those spurious refusals roughly tenfold -- from about 32% of requests to
-  low single digits -- and does so at about a third of the coordination work per match, because
-  avoiding a collision saves a whole replicated round-trip rather than trading latency for
-  correctness. A `Times` count is still never exceeded across the cluster. Only clustered deployments
-  with `clusterSharedTimesEnabled` (the default) were affected.
-- Expectations added, removed or evicted while the server was under load could be silently dropped
-  from (or left stale in) the internal matching index, so a request that should have matched returned
-  no match -- or one that should no longer match still did. This only affected servers holding enough
-  expectations to engage the index, and only around concurrent changes to the expectation set. The
-  index is now rebuilt under the same lock that guards those changes, so a change landing during a
-  rebuild can no longer be lost.
-- A long-lived keep-alive connection no longer leaks a small amount of memory on every request it
-  carries. Each request left behind an internal graceful-shutdown tracking object that was only
-  released when the **connection** closed, not when the request finished -- so a client that reuses one
-  connection for many requests (a connection-pooling HTTP client, a load balancer, a browser) made
-  MockServer's heap grow steadily in proportion to the number of requests on that connection, ending in
-  an `OutOfMemoryError` on a busy, long-running server. The tracking object is now released as soon as
-  each request completes. If you have seen MockServer's memory climb without bound under sustained load
-  over reused connections, this was the cause. HTTP/2 was not affected, and graceful shutdown still
-  waits correctly for genuinely in-flight requests to drain.
-- A request with a JSON body logged at the default `INFO` level no longer keeps a parsed copy of that
-  body in memory for as long as the log entry lives. The body was retained twice: once as the raw
-  bytes, and again as a parsed JSON tree roughly five times larger, built eagerly when the entry was
-  created. Only the raw copy counted towards `maxEventLogSizeInBytes`, so a server configured with a
-  256 MB event-log budget could hold well over a gigabyte and run out of heap while the budget
-  believed it had room. The parsed form is now produced on demand when an entry is rendered,
-  retrieved or shown in the dashboard, and discarded afterwards -- output is unchanged. In a
-  reproduction holding 20,000 logged entries, retained heap fell from 429 MB to 61 MB, with the raw
-  bodies and the entries themselves untouched. The effect scales with JSON body size and
-  `maxLogEntries`, so the larger your bodies the more this returns.
-- Consuming a bounded `Times` (`Times.exactly(n)`, `once()`, `atMost(n)`) in a **cluster** no longer
-  replicates the whole expectation on every match. The remaining count lived on the same replicated
-  value as the expectation definition, and that value serialises the entire expectation to JSON on
-  every write -- so subtracting one from a counter re-marshalled the request matcher, the response
-  body and every other field, and shipped them across the network. The count now lives in a small
-  dedicated replicated counter, so a match sends the counter rather than the expectation. The
-  fleet-wide exactly-n guarantee is unchanged, including under node failure; unlimited `Times` and
-  single-node deployments are unaffected. If memory pressure discards a counter, the expectation
-  stops matching rather than resuming its original count -- it under-serves rather than over-serves,
-  and says so in a warning naming `maxExpectations`.
-- Three classes of unnecessary allocation on the request and response hot paths are fixed. A response
-  body whose bytes were already materialised in the charset it is served in is no longer encoded a
-  second time on the way to the wire — around half the allocation and half the latency of writing a
-  256 KB explicit-charset JSON response; as a consequence, a recorded body whose `Content-Type`
-  declared a charset but whose bytes are malformed for it is now replayed verbatim (previously decoded
-  with replacement characters and re-encoded). HTTP/3 requests with a text body no longer allocate the
-  body twice on the way in — the QUIC bridge now decodes straight from the accumulated buffer rather
-  than into an intermediate `byte[]` before reading it into a `String`. Forward-proxy authentication
-  no longer allocates a per-request Netty buffer for the `Proxy-Authorization` value and leaves it for
-  the garbage collector; the value is now computed with the JDK Base64 encoder and is byte-for-byte
-  identical to the previous encoding.
-- `maxLogEntries` and `maxExpectations` defaults are now computed correctly. They are derived from the
-  JVM heap **ceiling** (`-Xmx`) — a value fixed for the JVM's lifetime — rather than the momentary
-  free heap, which was read once and cached JVM-wide with no reset path: at `-Xmx1g`, holding ~645 MB
-  before the first read dropped the frozen `maxLogEntries` from 100,000 to ~45,957, and a later
-  allocation could not raise it. The default is now deterministic and identical for every instance in
-  the JVM, independent of allocation history. Separately, enabling dev mode programmatically now takes
-  effect on `maxLogEntries` and `maxExpectations` even if something has already read them — the cache
-  that stored the computed default under the property's own key never invalidated it, so a later
-  `devMode(true)` call could not dislodge the frozen value. On JVMs that do not report a usable heap
-  maximum (e.g. GraalVM native images) the dev-mode floor of 1,000 still applies. Explicitly
-  configured values are unaffected.
-- JavaScript response and forward templates are now substantially faster and no longer degrade
-  unrelated workloads. Templates previously constructed a throw-away GraalVM engine and re-parsed the
-  script on every request; under concurrent load this monopolised the shared action-dispatch thread
-  pool. The engine is now shared process-wide and the parsed script is cached, cutting single-render
-  latency roughly 4–5× (p50 ~0.9 ms → ~0.16 ms) and raising render throughput ~2.7×. Template
-  rendering (Velocity, Mustache, and JavaScript) also now runs on a dedicated bounded thread pool
-  instead of the shared action-dispatch resource, so when renders saturate it they queue only among
-  themselves and the event loop stays free to serve plain matches, forwarding, and other traffic — in
-  a local harness the time an unrelated request waited behind in-flight template renders fell from ~1 s
-  to effectively zero. Each request still evaluates in its own fresh JavaScript realm, so per-request
-  isolation is unchanged. JavaScript templates remain interpreter-only on a stock JVM. Configured
-  response delays are still honoured exactly; WAR/servlet deployments still render inline.
-- Unusual request header values (a leading space, an embedded DEL `0x7F`, other control characters) are still
-  accepted, matched and recorded byte-for-byte on the HTTP/2 multiplex server path. MockServer deliberately
-  records malformed traffic so users can test how their own clients behave. The multiplex frame decoder
-  previously validated only header *names*, so such values passed; a newer Netty (`netty-codec-http2` 4.2.18)
-  tightened that decoder to validate header *values* too, so the request was rejected with
-  `RST_STREAM(PROTOCOL_ERROR)` at frame-decode time — before it could be matched or logged. Inbound validation
-  is now disabled on the multiplex frame codec, which restores that value leniency. Netty folds header-name and
-  header-value validation under a single frame-codec flag with no names-only control, so this **also** disables
-  inbound header-*name* validation on the multiplex path: malformed header names (control characters, spaces)
-  that the frame decoder rejected on both 4.2.17 and 4.2.18 are now accepted and recorded as well. This makes
-  the multiplex path more lenient for names than the relay/echo paths, which disable validation only on the
-  HTTP/2→HTTP/1 conversion and keep their frame reader strict. Outbound response and trailer header names remain
-  validated, and HTTP/2-forbidden connection-specific header names (for example `Connection`,
-  `Transfer-Encoding`) are still rejected by the framing layer regardless.
-- HTTP/2 cleartext (h2c) with prior knowledge now works through the HTTP `CONNECT` forward proxy. A client
-  that establishes a `CONNECT` tunnel and then speaks cleartext HTTP/2 (sending the `PRI * HTTP/2.0` connection
-  preface, with no TLS and no HTTP/1.1 Upgrade) was previously downgraded to HTTP/1.1 and received no response,
-  because the proxy assumed every `CONNECT` tunnel was TLS and installed a TLS terminator before the client had
-  sent a byte. The `CONNECT` path now defers the protocol decision and classifies the first tunnelled bytes —
-  the same byte-driven detection the SOCKS proxy already used — so TLS tunnels (with ALPN-negotiated `h2` or
-  HTTP/1.1), cleartext h2c prior-knowledge tunnels, and plaintext HTTP/1.1 tunnels are each handled from what
-  the client actually sends. This also fixes plaintext HTTP/1.1 through `CONNECT`, which the assume-TLS path
-  had broken as well (#2683).
+**Data integrity and log correctness**
+- **Retrieving or verifying requests under load could silently discard entries from the request log**, so a later `verify` could fail to find a request that had genuinely arrived — with only a single warning in the log. Queries ran on the same internal thread that records incoming requests, stalling recording until the buffer overflowed. Queries now run off that thread: a scan can no longer stall recording. A paced writer that lost tens of thousands of entries while a query ran now loses none.
+- **Expectations could be silently dropped from (or left stale in) the internal matching index** around concurrent changes to the expectation set, causing a request that should match to return no match — or one that should not still matching. The index is now rebuilt under the same lock that guards those changes.
+- **A response still being sent when the server is stopped no longer arrives truncated.** Shutdown previously waited for responses to be *handed off* for writing, not for their bytes to reach the network. Shutdown now waits for the final write of each response to flush. Matters most where a response is large or deliberately delayed and the server is stopped underneath it, such as a rolling deployment.
+- **In a cluster, an expectation with a bounded `Times` could stop matching well before its count was used up.** Nodes competed to claim each remaining use and kept colliding; requests were refused even though uses remained. Requests now wait a brief random moment before retrying, cutting spurious refusals roughly tenfold — from about 32% of requests to low single digits — at about a third of the coordination work. A `Times` count is never exceeded across the cluster. Only clustered deployments with `clusterSharedTimesEnabled` (the default) were affected.
+- **In a cluster, consuming a bounded `Times` no longer replicates the whole expectation on every match.** The remaining count now lives in a small dedicated replicated counter rather than on the same value as the expectation definition, which previously re-marshalled the full matcher, response body and all fields on every decrement. The fleet-wide guarantee is unchanged; single-node deployments and unlimited `Times` are unaffected.
+- **`redactSecretsInLog` now also redacts the `message` and `arguments` fields**, not just `httpRequest` and `httpResponse`. With redaction enabled, a log entry had its `httpRequest` masked while `message` and `arguments` on the same entry still carried `Authorization`, `Cookie` and other configured secrets in full. The dashboard rendered message had the same gap. **If you enabled `redactSecretsInLog` and relied on it, treat logs captured before this release as still containing those values.**
+
+**Memory leaks**
+- **A keep-alive connection no longer leaks a tracking object on every request it carries.** Each request left behind a shutdown-tracking object released only when the *connection* closed, not when the request finished — a connection-pooling client, load balancer or browser made the heap grow in proportion to requests on that connection, ending in `OutOfMemoryError`. The tracking object is now released as soon as each request completes. HTTP/2 was not affected; graceful shutdown still waits correctly for in-flight requests.
+- **A JSON body logged at `INFO` level no longer keeps a parsed copy in memory for the log entry's lifetime.** The body was retained twice: raw bytes plus an eager JSON tree ~5× larger. Only the raw bytes counted towards `maxEventLogSizeInBytes`, so a 256 MB budget could hold well over a gigabyte. The parsed form is now produced on demand and discarded. In a reproduction of 20,000 entries, retained heap fell from **429 MB to 61 MB**.
+- **MockServer no longer allocates a full MCP tool registry per connection.** With MCP enabled (the default), every incoming connection built its own copy of the tool registry — dozens of tools each with a JSON schema — and held it for the connection's lifetime. Under heavy concurrent load this added up to hundreds of megabytes. A single shared handler is now reused across all connections.
+- **Watching the initialization file no longer churns memory while the server is idle.** With `watchInitializationJson=true`, MockServer re-read the entire initialization file every poll to fingerprint it, allocating a byte array the size of the file each time. A 10 MB file on a 5 s poll produces ~360 MB of garbage every 3 minutes; those arrays are large enough to trigger humongous-allocation GC cycles. Measured on an idle server with a 256 MB heap: watching turned zero GC collections into the heap repeatedly filling to ~230 MB. The file is now fingerprinted by streaming it through a small fixed buffer; an unchanged file costs only a read.
+
+**Dashboard and IDE**
+- **Dashboard live panels are readable on a busy server.** Log Messages, Received Requests, Proxied Requests, Active Expectations and the Traffic inspector were effectively unusable under load — opening an entry or scrolling was undone the moment anything arrived. Three causes, all fixed: panels now run in **console order** (oldest first, newest at the bottom); following is an explicit **Follow** toggle (a panel you are reading does not scroll at all; scrolling away turns Follow off automatically); and entries you are reading are **kept** even after the server has stopped sending them, so the list cannot collapse under you. Opening an entry also stops that panel following. Active Expectations and the Trace session view gain only the last part — what you are reading is no longer dropped. The dashboard now examines **201 entries instead of 4,200** to fill three panels of 100 on a 4,200-entry log, cutting server-side overhead proportionally. The Inspect list renders only the rows near the viewport: **~2,200 DOM elements → ~150**, flat however much traffic accumulates. Expectations JSON is reused until an expectation actually changes: **60,700 rebuilds → 267** over a typical watching minute. Each panel re-renders only when its own data changes, cutting browser work per update by about **20%**.
+- **The Follow toggle now actually follows.** It pinned to the newest entry and then switched itself off about a second later (virtualised rows change height after rendering; each height change was misread as a scroll). Following now changes only when you act: scrolling up stops it and it stays stopped; pressing Follow resumes it and holds the newest entry regardless of content movement underneath.
+- **Dashboard counts removed; Active Expectations now shows the true server count.** Received Requests, Log Messages, the Traffic inspector's host list and unmatched badge, and the Composer's existing-mocks list each showed a count derived from the at-most-100 entries the server sends per update — these numbers pinned at 100 and described the transport window. Active Expectations now reports the true count sent explicitly by the server.
+- **Dashboard filtering no longer drives the server to re-scan for every keystroke.** Each filter triggered its own full log scan; bursts are now collapsed — the first filter after a pause is served immediately, a rapid burst costs one further scan at the end.
+- **The LLM Provider filter now appears on a busy server.** It was offered only if an LLM expectation happened to be among the at-most-100 expectations in the update window. The server now says explicitly whether any LLM expectation is present.
+- **Dashboard WebSocket upgrade handler no longer accumulates timers on repeated or failed upgrade attempts.** The write-throttle task was scheduled outside the idempotence guard, so each upgrade attempt — including failed-handshake attempts on unauthenticated connections — added one perpetual timer, with nothing bounding the count; accumulated tasks removed the one-per-second write throttle they existed to enforce.
+- **MockServer Dashboard and LLM tool windows work again in IntelliJ IDEA 2026.2.** Both failed with `NoClassDefFoundError: com/intellij/ui/jcef/JBCefApp` because the embedded browser moved out of the IDE core into a separate component. The availability check now survives the class being absent and falls back to offering the dashboard in your normal browser.
+- **IDE tool-window names are readable again.** They were single run-together words (`MockServerDashboard`, `MockServerDebugger`, `MockServerLlm`), cut off mid-word in the sidebar. They now read `MockServer Dashboard`, `MockServer Debugger` and `MockServer LLM`.
+
+**Correctness**
+- **`maxLogEntries` and `maxExpectations` defaults are now computed from the JVM heap ceiling (`-Xmx`)**, not from the momentary free heap. The free-heap value was read once and cached with no reset path: holding ~645 MB before the first read at `-Xmx1g` dropped the frozen `maxLogEntries` from 100,000 to ~45,957; a later allocation could not raise it. The default is now deterministic and identical for every instance in the JVM. Enabling dev mode programmatically also now takes effect on these defaults even if they have already been read.
+- **JavaScript templates are substantially faster and no longer degrade unrelated workloads.** Templates previously constructed a throw-away GraalVM engine and re-parsed the script on every request; under concurrent load this monopolised the shared action-dispatch thread pool. The engine is now shared process-wide with the parsed script cached, cutting p50 render latency **~0.9 ms → ~0.16 ms** and raising render throughput ~2.7×. Template rendering (Velocity, Mustache, JavaScript) now runs on a dedicated bounded thread pool — a saturation of renders queues only among themselves and the event loop stays free; time an unrelated request waited behind in-flight template renders fell from ~1 s to effectively zero. Per-request isolation is unchanged.
+- **Three unnecessary allocations on the request/response hot paths are fixed.** A response body whose bytes were already materialised in the correct charset is no longer encoded a second time on the way to the wire — ~half the allocation and ~half the latency of writing a 256 KB explicit-charset JSON response (a recorded body whose `Content-Type` declared a charset but whose bytes are malformed for it is now replayed verbatim). HTTP/3 requests with a text body no longer allocate the body twice on the way in — the QUIC bridge now decodes straight from the accumulated buffer. Forward-proxy authentication no longer allocates a per-request Netty buffer for the `Proxy-Authorization` value; computed with the JDK Base64 encoder and byte-for-byte identical.
+- **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded literally.** A previous release fixed this for incoming requests but missed the response side — a header named `!foo` was recorded as a negation of `foo`, with the `!` lost. Both response paths are fixed: the aggregated mapper and the streaming relay. A leading `?` (optional-matcher marker) was stripped from values the same way and is also now preserved.
+- **A valid custom key and certificate no longer fails to start the server when the certificate was issued by a CA using a different key algorithm.** The startup check chose its algorithm from the certificate's *signature* (the CA's key type) rather than the subject's. An RSA certificate signed by an EC CA was tested with EC against an RSA key and threw `InvalidKeyException`, with the message falsely advising you to regenerate the key pair. The check now derives its algorithm from the private key. Reported in #2728 against 7.5.0.
+- **Adding a header or query parameter with no value no longer throws `NullPointerException` when read back.** An empty or null value list stored an internal `null`; `getValues(name)` threw. The entry is now stored with an empty string value.
+- **`withKeyMatchStyle` changes now take effect immediately.** The call did not clear the memoized matcher; a collection matched once could keep using the previous match style. The cached matcher is now invalidated on this call.
+- **A failed startup now ends with the error, not forty lines of command-line help.** The usage banner still appears for genuine usage mistakes (invalid port, unknown log level); it no longer appears for other startup failures that pushed the actual cause off the visible log.
+- **`jvm_memory_allocated_bytes` now appears on Docker images and the standalone jar.** The shaded distribution repackaged third-party libraries under a private prefix, which also rewrote MockServer's own reference to the HotSpot allocation counter — the runtime check never matched and the metric was silently dropped from every Docker image and the standalone binary. The same repackaging silently broke two other JDK integrations; a build guard now fails the build if any `com.sun.*` reference is repackaged.
+- **Unusual HTTP/2 request header values (leading space, embedded DEL `0x7F`, other control characters) are accepted, matched and recorded byte-for-byte on the multiplex path.** A newer Netty (`netty-codec-http2` 4.2.18) tightened the frame decoder to validate header values as well as names, rejecting such requests before they could be matched or logged. Inbound frame validation is now disabled on the multiplex codec, restoring this leniency. This also disables inbound header-*name* validation on that path (Netty folds both under one flag); outbound names and HTTP/2-forbidden connection-specific headers (`Connection`, `Transfer-Encoding`) remain validated.
+- **HTTP/2 cleartext (h2c) with prior knowledge now works through the HTTP `CONNECT` forward proxy.** A client that established a `CONNECT` tunnel and then sent the `PRI * HTTP/2.0` preface was previously downgraded to HTTP/1.1 because the proxy assumed every `CONNECT` tunnel was TLS. The `CONNECT` path now defers protocol detection and classifies the first tunnelled bytes — the same byte-driven detection the SOCKS proxy already used. This also fixes plaintext HTTP/1.1 through `CONNECT` (#2683).
 
 ## [8.0.0] - 2026-09-15
 
