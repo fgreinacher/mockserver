@@ -13,7 +13,7 @@ table that used to list them has been removed rather than maintained in two plac
 
 ## What remains
 
-Four items are open, and **none of them is blocked on code** — every one is waiting on a run, an
+Three items are open, and **none of them is blocked on code** — every one is waiting on a run, an
 observed event, a build, or a product decision. That is why this plan has not moved: it cannot be
 worked down at a keyboard.
 
@@ -21,7 +21,6 @@ worked down at a keyboard.
 |---|---|---|
 | 1 | The unattributed latency tail | a run, held until after the next release |
 | 2 | Low-rate handler latency spike | **closed — measurement artefact** (see §2) |
-| 3 | Canceled-child reporting | an observed event |
 | 4 | `jvm_memory_allocated_bytes` missing from Docker images | fixed (`ff84bb395`); confirm on the first snapshot image built from it |
 | 5 | Large-heap event-log profile | a run **plus** a cap decision |
 
@@ -73,13 +72,12 @@ direct-serving ones; the `behaviours.forward_*` percentiles already do. Adjacent
 regression arms' large-body and template behaviours fill the >5 ms bucket much more on the JDK 25
 builds (300–785 per interval vs 20–100 on 420).
 
-### 3. Canceled-child reporting — OPEN (needs an observed event)
+### 3. Canceled-child reporting — REMOVED (decision 2026-09-27)
 
-How a child build reaches `canceled` or `not_run` independently of its parent has never been
-observed. The Dependabot-bot trigger-refusal case (a child that is never created, `triggered_build:
-null`) was fixed in `ea2336131`. The original question — a child that IS created but reaches one of
-those states — cannot be answered by editing the repo; it requires a build that actually reaches
-that state.
+Dropped rather than left open: it could only be settled by a child build that is created and then reaches
+`canceled` or `not_run`, which has never been observed, and provoking it on purpose would mean cancelling
+live CI builds on shared pipelines. The Dependabot trigger-refusal case (a child never created) was fixed
+in `ea2336131`. Re-open only if a real canceled child is seen.
 
 ### 4. Shading defect: `jvm_memory_allocated_bytes` — RESOLVED (pending the first snapshot image from this commit)
 
