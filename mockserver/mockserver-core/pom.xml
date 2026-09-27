@@ -742,6 +742,9 @@
                         <exclude>**/RateLimitRegistryTest.java</exclude>
                         <exclude>**/HttpActionHandlerForwardChaosTest.java</exclude>
                         <exclude>**/HttpActionHandlerRecoverAfterTest.java</exclude>
+                        <!-- Sets the static contextClassLoaderOverride (via CallbackClassLoaderResolver) that
+                             both class-callback handlers share, so it must never race other classes. -->
+                        <exclude>**/HttpForwardClassCallbackActionHandlerTest.java</exclude>
                         <exclude>**/RecoveryAttemptRegistryTest.java</exclude>
                         <exclude>**/ServiceChaosRegistryTest.java</exclude>
                         <exclude>**/TcpChaosRegistryTest.java</exclude>
@@ -984,6 +987,7 @@
                                 <include>**/RateLimitRegistryTest.java</include>
                                 <include>**/HttpActionHandlerForwardChaosTest.java</include>
                                 <include>**/HttpActionHandlerRecoverAfterTest.java</include>
+                                <include>**/HttpForwardClassCallbackActionHandlerTest.java</include>
                                 <include>**/RecoveryAttemptRegistryTest.java</include>
                                 <include>**/ServiceChaosRegistryTest.java</include>
                                 <include>**/TcpChaosRegistryTest.java</include>

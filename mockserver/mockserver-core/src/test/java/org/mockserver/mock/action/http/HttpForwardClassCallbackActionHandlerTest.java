@@ -74,11 +74,60 @@ public class HttpForwardClassCallbackActionHandlerTest {
         verify(mockHttpClient).sendRequest(request("some_path"), null);
     }
 
+    @Test
+    public void shouldHonourContextClassLoaderOverrideWhenThreadContextClassLoaderCannotLoadCallback() throws Exception {
+        // given
+        CompletableFuture<HttpResponse> httpResponse = new CompletableFuture<>();
+        httpResponse.complete(response("some_response_body"));
+        when(mockHttpClient.sendRequest(any(HttpRequest.class), isNull())).thenReturn(httpResponse);
+
+        String callbackClassName = TestCallback.class.getName();
+        ClassLoader originalThreadContextClassLoader = Thread.currentThread().getContextClassLoader();
+        try {
+            // the thread-context classloader can NOT load the callback class
+            Thread.currentThread().setContextClassLoader(new BlockingClassLoader(callbackClassName, ClassLoader.getSystemClassLoader()));
+            // but the explicit override CAN (mirrors the Maven plugin / Spring Boot setup)
+            CallbackClassLoaderResolver.setContextClassLoader(getClass().getClassLoader());
+
+            HttpClassCallback httpClassCallback = callback(callbackClassName);
+
+            // when
+            CompletableFuture<HttpResponse> actualHttpResponse = httpForwardClassCallbackActionHandler
+                .handle(httpClassCallback, request().withBody("some_body"))
+                .getHttpResponse();
+
+            // then - the callback was loaded via the override and ran, so the forwarded request is the transformed one
+            assertThat(actualHttpResponse.get(), is(httpResponse.get()));
+            verify(mockHttpClient).sendRequest(request("some_path"), null);
+        } finally {
+            Thread.currentThread().setContextClassLoader(originalThreadContextClassLoader);
+            CallbackClassLoaderResolver.setContextClassLoader(null);
+        }
+    }
+
     public static class TestCallback implements ExpectationForwardCallback {
 
         @Override
         public HttpRequest handle(HttpRequest httpRequest) {
             return request("some_path");
+        }
+    }
+
+    private static class BlockingClassLoader extends ClassLoader {
+
+        private final String blockedClassName;
+
+        BlockingClassLoader(String blockedClassName, ClassLoader parent) {
+            super(parent);
+            this.blockedClassName = blockedClassName;
+        }
+
+        @Override
+        public Class<?> loadClass(String name) throws ClassNotFoundException {
+            if (blockedClassName.equals(name)) {
+                throw new ClassNotFoundException("blocked for test: " + name);
+            }
+            return super.loadClass(name);
         }
     }
 }

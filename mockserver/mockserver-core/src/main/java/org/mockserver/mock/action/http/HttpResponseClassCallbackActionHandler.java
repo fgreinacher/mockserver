@@ -18,18 +18,8 @@ import static org.mockserver.model.HttpResponse.notFoundResponse;
  */
 public class HttpResponseClassCallbackActionHandler {
 
-    private static volatile ClassLoader contextClassLoaderOverride;
-
     public static void setContextClassLoader(ClassLoader contextClassLoader) {
-        HttpResponseClassCallbackActionHandler.contextClassLoaderOverride = contextClassLoader;
-    }
-
-    private static ClassLoader resolveClassLoader() {
-        if (contextClassLoaderOverride != null) {
-            return contextClassLoaderOverride;
-        }
-        ClassLoader tcl = Thread.currentThread().getContextClassLoader();
-        return tcl != null ? tcl : ClassLoader.getSystemClassLoader();
+        CallbackClassLoaderResolver.setContextClassLoader(contextClassLoader);
     }
 
     private final MockServerLogger mockServerLogger;
@@ -45,7 +35,7 @@ public class HttpResponseClassCallbackActionHandler {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private ExpectationResponseCallback instantiateCallback(HttpClassCallback httpClassCallback) {
         try {
-            Class expectationResponseCallbackClass = resolveClassLoader().loadClass(httpClassCallback.getCallbackClass());
+            Class expectationResponseCallbackClass = CallbackClassLoaderResolver.resolveClassLoader().loadClass(httpClassCallback.getCallbackClass());
             if (ExpectationResponseCallback.class.isAssignableFrom(expectationResponseCallbackClass)) {
                 Constructor<? extends ExpectationResponseCallback> constructor = expectationResponseCallbackClass.getConstructor();
                 return constructor.newInstance();

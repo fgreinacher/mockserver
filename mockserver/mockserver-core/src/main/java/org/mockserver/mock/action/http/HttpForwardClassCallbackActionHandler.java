@@ -30,10 +30,7 @@ public class HttpForwardClassCallbackActionHandler extends HttpForwardAction {
     @SuppressWarnings({"unchecked", "rawtypes"})
     private <T extends ExpectationCallback> T instantiateCallback(HttpClassCallback httpClassCallback, Class<T> callbackClass) {
         try {
-            ClassLoader classLoader = Thread.currentThread().getContextClassLoader() != null
-                ? Thread.currentThread().getContextClassLoader()
-                : ClassLoader.getSystemClassLoader();
-            Class expectationCallbackClass = classLoader.loadClass(httpClassCallback.getCallbackClass());
+            Class expectationCallbackClass = CallbackClassLoaderResolver.resolveClassLoader().loadClass(httpClassCallback.getCallbackClass());
             if (callbackClass.isAssignableFrom(expectationCallbackClass)) {
                 Constructor<? extends T> constructor = expectationCallbackClass.getConstructor();
                 return constructor.newInstance();
