@@ -937,6 +937,8 @@
                         <exclude>**/MockServerLoggerTest.java</exclude>
                         <!-- Mutates the static KeyAndCertificateFactoryFactory.customKeyAndCertificateFactorySupplier -->
                         <exclude>**/CustomKeyAndCertificateFactorySupplierTest.java</exclude>
+                        <!-- Asserts exact deltas on the process-wide TemplateFileContentCache disk-read counter -->
+                        <exclude>**/TemplateFileContentCacheTest.java</exclude>
                     </excludes>
                 </configuration>
                 <executions>
@@ -1110,6 +1112,7 @@
                                 <include>**/MockServerLoggerTest.java</include>
                                 <!-- Mutates the static KeyAndCertificateFactoryFactory.customKeyAndCertificateFactorySupplier -->
                                 <include>**/CustomKeyAndCertificateFactorySupplierTest.java</include>
+                                <include>**/TemplateFileContentCacheTest.java</include>
                             </includes>
                         </configuration>
                     </execution>

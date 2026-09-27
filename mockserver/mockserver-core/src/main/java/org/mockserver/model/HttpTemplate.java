@@ -1,7 +1,7 @@
 package org.mockserver.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
-import org.mockserver.file.FileReader;
+import org.mockserver.file.TemplateFileContentCache;
 
 import java.util.Objects;
 
@@ -72,6 +72,8 @@ public class HttpTemplate extends Action<HttpTemplate> {
     /**
      * Resolves the template content used by the template engines: the inline template when set,
      * otherwise the contents of {@link #getTemplateFile()} read from the classpath or filesystem.
+     * The file content is cached per canonical path and revalidated by a cheap metadata check, so an
+     * edited template file still takes effect on the next request without re-reading it every time.
      */
     @JsonIgnore
     public String getTemplateContent() {
@@ -79,7 +81,7 @@ public class HttpTemplate extends Action<HttpTemplate> {
             return template;
         }
         if (isNotBlank(templateFile)) {
-            return FileReader.readFileFromClassPathOrPath(templateFile);
+            return TemplateFileContentCache.readFileFromClassPathOrPath(templateFile);
         }
         return template;
     }
