@@ -88,39 +88,6 @@ A sustained performance programme. The key numbers: throughput **26,020, then 23
 - **The "AsyncAPI module is not available" error now tells you how to enable it.** The message now names `org.mock-server:mockserver-async`, says the BOM manages its version, and notes that the standalone jar and Docker images already bundle it. The same text appears in `501 Not Implemented` responses from all four `/mockserver/asyncapi` routes, the Java API, and the dashboard.
 
 ### Fixed
-- **`redactSecretsInLog` now also redacts the `message` and `arguments` fields, not just
-  `httpRequest` and `httpResponse`.** With redaction enabled a JSON log entry had its
-  `httpRequest` masked while the `message` and `arguments` fields on the **same entry** still
-  carried the `Authorization`, `Cookie` and any other configured secret in full, so enabling the
-  setting did not actually stop secrets reaching the log. The rendered message shown in the
-  dashboard had the same gap. Both are now redacted, using the effective configuration where the
-  caller supplies one and the configured value otherwise. If you enabled `redactSecretsInLog` and
-  relied on it, treat logs captured before this release as still containing those values.
-- **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded
-  literally.** A previous release fixed this for incoming *requests* but missed the response side, so the
-  proxy leg still built response header, trailer and `Set-Cookie` names and values through the
-  marker-parsing `NottableString.string(name)` used for matcher input. An upstream response header named
-  `!foo` was therefore recorded as a **negation** of `foo` rather than as the literal name it actually
-  had — the recorded expectation said "name is not `foo`", and the `!` was lost. **Both** response paths
-  are fixed: the aggregated mapper (headers, folded-in trailers, and cookies decoded from `Set-Cookie`)
-  and the streaming relay used when a proxied response is streamed rather than buffered. A leading `?`,
-  the optional-matcher marker, was stripped from values the same way and is also now preserved. This
-  only affects the rare response whose actual header, trailer or cookie name or value starts with `!` or
-  `?`; everything else is unchanged.
-- **Adding a header or query parameter with no value no longer throws when you later read it back.**
-  Adding an entry with an empty or null value list stored an internal `null`, so reading that entry's
-  values with `getValues(name)` threw a `NullPointerException`. The entry is now stored with an empty
-  string value, matching the varargs form, so the header or parameter is still present and can be read
-  back safely.
-- **Changing a header or parameter's key-match style now takes effect immediately.** `withKeyMatchStyle`
-  did not clear the memoized matcher, so a collection that had already been matched once could keep
-  using the previous match style and return a stale result. The cached matcher is now invalidated on
-  this change, like every other mutation.
-- **A failed startup now ends with the error, not a page of command-line help.** When MockServer
-  could not start, it printed the exception and then a forty-line usage banner, pushing the actual
-  cause off the end of any truncated log view — which is exactly where you look first in a container
-  or CI job. The banner still appears for genuine usage mistakes such as an invalid port or log
-  level; it no longer appears when the server failed to start for some other reason.
 
 **Data integrity and log correctness**
 - **Retrieving or verifying requests under load could silently discard entries from the request log**, so a later `verify` could fail to find a request that had genuinely arrived — with only a single warning in the log. Queries ran on the same internal thread that records incoming requests, stalling recording until the buffer overflowed. Queries now run off that thread: a scan can no longer stall recording. A paced writer that lost tens of thousands of entries while a query ran now loses none.
