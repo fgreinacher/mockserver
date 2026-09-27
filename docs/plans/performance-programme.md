@@ -20,9 +20,9 @@ worked down at a keyboard.
 | # | Item | Blocked on |
 |---|---|---|
 | 1 | The unattributed latency tail | a run, held until after the next release |
-| 2 | Low-rate handler latency spike | unexplained — needs a targeted run |
+| 2 | Low-rate handler latency spike | being investigated from stored run artifacts (420, 445, 446) |
 | 3 | Canceled-child reporting | an observed event |
-| 4 | `jvm_memory_allocated_bytes` shading defect | a build to confirm the landed fix |
+| 4 | `jvm_memory_allocated_bytes` missing from Docker images | real cause found (jlink runtime lacked `jdk.management`); fix passed review, awaiting user approval to push |
 | 5 | Large-heap event-log profile | a run **plus** a cap decision |
 
 ### Pipeline wall-clock
@@ -31,9 +31,9 @@ worked down at a keyboard.
 |---|---|
 | Snapshot deploy and artifact-only steps pass `-DskipITs` (deploy re-ran 2,278 netty ITs, ~23 min) | landed `ef283860e`; confirm the deploy time on build 2556 |
 | Container integration tests fed by a test-free jar step, alongside the build | landed `ef283860e`; build 2556 ran them from minute 5 to 20, inside the build window |
-| `docker-build-verify.sh` artifact install passes `-DskipITs` | landed with the next commit; the step is not in any pipeline today |
-| Allocation gate moved into the build's parallel group (~3 min off the java critical path) | landed with the next commit; confirm on the first build after it |
-| UI build + Playwright e2e alongside lint/unit tests (~5 min off the UI pipeline; e2e no longer skipped on red unit tests) | landed with the next commit; confirm on the first UI build after it |
+| `docker-build-verify.sh` artifact install passes `-DskipITs` | landed `b516cfe89`; the step is not in any pipeline today |
+| Allocation gate moved into the build's parallel group (~3 min off the java critical path) | landed `b516cfe89`; confirm on the next java build |
+| UI build + Playwright e2e alongside lint/unit tests (~5 min off the UI pipeline; e2e no longer skipped on red unit tests) | landed `b516cfe89`; confirm on the next UI build |
 
 Considered and not pursued, by decision: splitting the netty integration tests across parallel JVMs (fixed ports and shared static config make it high-risk), and reusing `:maven: build` output for the deploy (steps do not share a filesystem).
 

@@ -32,65 +32,70 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **23 units landed, 5 declined with reasons,
-3 items of work remain, 2 open defects, 1 pre-existing flake, 4 missing instruments, and 3 pipeline/tooling items.** Every remaining item has been
-audited, so each row names a concrete change rather than a question.
+Everything not listed here has landed or been closed. **As of 2026-09-27: 31 units and 3 defect
+fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C (in progress), F1
+(being root-caused), one product decision (22A A1), one approval (Docker metric), and the new
+perf ladder.**
 
-### Code work remaining
+### Code work — status
 
-| # | What | Lever | Ready? | Note |
-|---|---|---|---|---|
-| **19a-19e** | Dashboard: 2 request-path allocations, 2 wasted walks, 1 retention | occupancy + churn | yes | 19e is the biggest — rendering memoises a clone + Jackson tree **onto the retained entry** with no release path, partly undoing unit 1, and the byte budget excludes it on a false premise. 19b has a trap: capacity 1 ships, capacity 10 is what the tests exercise |
-| **22A** | A4, then A2+A3 | churn | yes | A4 (Mustache copies ~26 bindings per render) is smallest and output-identical. A1 needs a **product decision** — whether an edited `templateFile` should still take effect per request |
-| **18a** | Three small `ResponseWriter` items | churn | **blocked** | extend the benchmark first (see instruments) |
-| **15-L1** | Retained `Long` = `Timing`'s three epoch-millis fields per forwarded response | occupancy | **in progress** | located from build 446's live histogram + JFR: `Long` = 3.0 × `Timing` in every snapshot, absent when no forwards run; ~2.4 MB in the forward phase, zero while serving mocks. Store `Timing` fields as primitive `long` + sentinel (the `RequestDefinition.receivedTimestamp` pattern) |
-| **15-C** | `maxFutureTimeout()` / `maxSocketTimeout()` / `socketConnectionTimeout()` re-box a `Long` per request | churn | **in progress** | JFR: 70 + 38 + 6 samples via `ConfigurationProperties.readLongProperty`; must keep runtime changes effective |
+| # | What | State |
+|---|---|---|
+| **19a-19e + D2** | Dashboard WebSocket: upgrade-path match without a decoder (19a), lazy scheduler at the shipped capacity (19b), throttle before the walk (19c), no whole-log copy (19d), no retained render memo (19e), teardown in `handlerRemoved` (D2) | **review-final PASS, landing.** 19e deviates from the plan: the memo is removed rather than bounded, so the display copy is rebuilt per render (off the request path) and `maxEventLogSizeInBytes` now counts entries correctly. Side effect: toggling `redactSecretsInLog` now also changes entries a dashboard already showed |
+| **22A** | A4 Mustache: ~26 bindings built once per engine, per-render overlay | **review-final PASS, landing.** −22.8% bytes/op (5,688 → 4,392) on the new `TemplateRenderAllocationBenchmark` |
+| **22A A2+A3** | Velocity per-render resource registration | **declined** — measured −48 B/op (−0.8%); correct, but more complex than the code it replaces |
+| **22A A1** | Template file re-read per request | **needs a product decision**: should an edited `templateFile` still take effect on the next request? |
+| **18a** | Three small `ResponseWriter` items, plus a benchmark that enters through `ResponseWriter` | **in progress** |
+| **15-L1** | Retained `Long` = `Timing`'s three epoch-millis fields per forwarded response | **in progress** — located from build 446's live histogram + JFR (`Long` = 3.0 × `Timing` in every snapshot, absent when no forwards run; ~2.4 MB in the forward phase, zero while serving mocks). Fix: primitive `long` + sentinel |
+| **15-C** | `maxFutureTimeout()` / `maxSocketTimeout()` / `socketConnectionTimeout()` re-box a `Long` per request | **in progress** — must keep runtime changes effective |
 
-### Defects — fix ahead of the churn work
+### Landed
+
+| Unit | Commit |
+|---|---|
+| 21 three blocking proxy paths (4 → 24 in flight, ~3,110 → ~505 ms) | `11b525bb4` |
+| 21b `maxFutureTimeout` bounds every async forward (`maxSocketTimeout=0` can no longer hang) | `89d8a61c9` |
+| 15-I1 port `Integer` passed through without re-boxing | `d194a8f3d` |
+| 13c three inbound allocations | `d8543c948` |
+| 14b query/form parameters without the intermediate map | `1548a391d` |
+| 14c address strings memoised per connection (keep-alive HTTP/1.1 only) | `1559082dd` |
+| D1 dashboard throttle-timer accumulation | `c03805f24` |
+| D3 `redactSecretsInLog` covers `message` and `arguments` | `cc7d7d185` |
+| D4 forward class callbacks honour `contextClassLoaderOverride` | `d5fe0bea2` |
+
+### Awaiting approval
 
 | | What | State |
 |---|---|---|
-| **D1** | Unbounded 1/sec task accumulation on an unauthenticated endpoint, which also removed the throttle it enforces | **landed** `c03805f24` — test + negative control |
-| **D3** | `redactSecretsInLog` leaves secrets in `message` and `arguments` | **landed** `cc7d7d185` — 3 tests |
-| **D2** | Split WebSocket handler teardown | latent — unreachable today, consolidate into `handlerRemoved` |
-| **D4** | Forward class-callback ignored `contextClassLoaderOverride` | **landed** `d5fe0bea2` — verified real (Maven-plugin embedding), shared resolver, test + negative control |
+| **Docker metric** | `jvm_memory_allocated_bytes` never reported by the images (jlink runtime lacked `jdk.management`) | **review-final PASS (iteration 2), awaiting user approval** — control-class: adds a check to the live snapshot smoke test. Commits `85af6841c`, `474c830e0`. Tracked as performance-programme item 4 |
+| **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | uncommitted; needs the eval fixtures re-run on the new models and re-recorded (gated-approval) |
 
-### Pipeline and tooling
+### Pipeline
 
-| | What | State |
+P1-P4 all landed (`ef283860e`, `b516cfe89`); confirm the wall-clock savings on the next java and UI builds. Tracking is in `performance-programme.md` → Pipeline wall-clock.
+
+### Pre-existing flake
+
+| | Flake | State |
 |---|---|---|
-| **P1** | Snapshot deploy re-ran all integration tests (`-DskipTests` does not silence failsafe) | **landed** `ef283860e` — `-DskipITs` on deploy and three artifact-prep steps; est. java pipeline 57 → ~42 min. Confirm on the first master build after it |
-| **P2** | Container integration tests waited for `:maven: build` | **landed** `ef283860e` — fed by a test-free `container-test-jars` step in the build group; now also gate the deploy (they did not before) |
-| **P3** | Allocation gate sits after the build barrier but uses none of its output | **approved**, landing — moved into the build group; ~3 min off the java critical path, deploy gating unchanged |
-| **P4** | UI e2e (24 min) waited behind lint/jest | **approved**, landing — runs alongside them; ~5 min saved, e2e no longer skipped when unit tests are red |
-| **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | **uncommitted** in the perf worktree. review-final BLOCKed pending an agent-in-the-loop re-run of the eval fixtures on the new models and re-recorded `.result` files (gated-approval). Do after the agent restart |
+| **F1** | `ForwardWithCustomClientCertificateByHostIntegrationTest` intermittent 502 after a ~10 s stall; invoker `shouldForwardRequestInHTTP` intermittent 999 | **being root-caused** — suspects: per-host client-cert keyed on `remoteAddress.getHostName()` (`HttpClientInitializer.java:96`), and pooled-connection reuse (999 is `HttpClientHandler`'s unparseable-response sentinel). A fix lands only with a deterministic reproduction |
 
-`docker-build-verify.sh:165` (dormant, artifact-only install) now passes `-DskipITs` too. Tracking for all pipeline items is in `performance-programme.md` → Pipeline wall-clock.
+### Instruments
 
-**Also landed:** 15-I1 `d194a8f3d`, 13c `d8543c948`, 14b `1548a391d`, 14c `1559082dd` (keep-alive HTTP/1.1 only), 21b `89d8a61c9` (maxFutureTimeout now bounds every async forward, so `maxSocketTimeout=0` can no longer hang a client).
-
-**Unit 21 landed** as `11b525bb4`: 24 concurrent forwards went 4 → 24 in flight, wall ~3,110 ms → ~505 ms.
-Its integrated netty verify showed intermittent failures in two **matched**-forward tests it does not touch; interleaved runs (core reinstalled each time) passed 6/6 on both master and unit 21, and all three unit 21 failures fell in an earlier back-to-back set. Treated as a pre-existing flake — see F1 below.
-
-| | Pre-existing flake | Suspected cause |
-|---|---|---|
-| **F1** | `ForwardWithCustomClientCertificateByHostIntegrationTest` intermittent 502 after a ~10 s stall (once a `NotSslRecordException` at the upstream); invoker `shouldForwardRequestInHTTP` intermittent 999 | per-host client-cert selection keys on `remoteAddress.getHostName()` (`HttpClientInitializer.java:96`), which can flip between `localhost` and `127.0.0.1`; 999 is the forward client's unparseable-response sentinel (`HttpClientHandler.java:112`), pointing at pooled-connection reuse. Unconfirmed — reproduce deterministically before fixing |
-
-### Missing instruments — these gate the work above
-
-| Gap | Blocks | Why it matters |
-|---|---|---|
-| `ResponseWriteBenchmark` enters at the encoder, never calls `ResponseWriter` | **18a** | 18a would land and the ratchet would report no change |
-| No template allocation benchmark exists | **22A** | no figure can honestly be claimed for A2/A3/A4 |
-| Rig exercises no proxy and no callback workload | 21, 22B | 21's win is measured at unit level only; 22B's would be pure inference |
+| Gap | State |
+|---|---|
+| `ResponseWriter`-level allocation benchmark (for 18a) | in progress with 18a |
+| Template allocation benchmark (for 22A) | **added** — `TemplateRenderAllocationBenchmark`, not yet gated (adding budgets is control-class) |
+| Rig proxy/callback workload (to measure 21 end to end) | **being drafted** as an opt-in, default-off rig mode; control-class, will need approval |
+| Heap dump for unit 15 | **not needed** — the rig uploads no `.hprof`; the live histogram + JFR were enough (see unit 15) |
 
 ### Declined, with reasons recorded — do not re-propose
 
 **16** (the `readTree` produces the rendered output; in tension with unit 1), **16b** (four parses
 feeding four distinct output fields, and the two levers point in opposite directions), **14a**
 (unit 12's gate made it stale, and the future is load-bearing for three async routes that
-self-deadlock inline), **22B** (off the measured workload entirely), and **18 as originally
-scoped** (its named files were already optimal).
+self-deadlock inline), **22B** (off the measured workload entirely), **22A A2+A3** (−0.8% for added
+cache complexity), and **18 as originally scoped** (its named files were already optimal).
 
 ### Then, and only then: new figures
 
