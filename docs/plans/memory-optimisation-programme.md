@@ -40,7 +40,7 @@ fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C
 
 | # | What | State |
 |---|---|---|
-| **19a-19e + D2** | Dashboard WebSocket: upgrade-path match without a decoder (19a), lazy scheduler at the shipped capacity (19b), throttle before the walk (19c), no whole-log copy (19d), no retained render memo (19e), teardown in `handlerRemoved` (D2) | **review-final PASS, landing.** 19e deviates from the plan: the memo is removed rather than bounded, so the display copy is rebuilt per render (off the request path) and `maxEventLogSizeInBytes` now counts entries correctly. Side effect: toggling `redactSecretsInLog` now also changes entries a dashboard already showed |
+| **19a-19e + D2** | Dashboard WebSocket: upgrade-path match without a decoder (19a), lazy scheduler at the shipped capacity (19b), throttle before the walk (19c), no whole-log copy (19d), no retained render memo (19e), teardown in `handlerRemoved` (D2) | **review-final PASS, landing.** 19e deviates from the plan: the memo is removed rather than bounded, so the display copy is rebuilt per render (off the request path) and `maxEventLogSizeInBytes` now counts entries correctly. Side effect: toggling `redactSecretsInLog` now also changes entries a dashboard already showed. **Deviation and side effect accepted by the user (2026-09-27)** |
 | **22A** | A4 Mustache: ~26 bindings built once per engine, per-render overlay | **review-final PASS, landing.** −22.8% bytes/op (5,688 → 4,392) on the new `TemplateRenderAllocationBenchmark` |
 | **22A A2+A3** | Velocity per-render resource registration | **reconsidered at the user's request** — measured −48 B/op (−0.8%) on a short template, grows with template size; ~28 changed lines replacing a marker set with a body→name map, counter and eviction-by-value. Review found it correct; being hardened with eviction, concurrency and rebuild tests plus a long-template measurement before landing |
 | **22A A1** | Template file re-read per request | **decided: keep the contract** (an edited `templateFile` takes effect on the next request) and make the change check cheap — cache content keyed by path, validated by a metadata check. In progress |
@@ -68,6 +68,15 @@ fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C
 |---|---|---|
 | **Docker metric** | `jvm_memory_allocated_bytes` never reported by the images (jlink runtime lacked `jdk.management`) | **landed** `ff84bb395`, `1fd5bcfbc` with user approval; confirm on the first snapshot image built from it |
 | **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | uncommitted; needs the eval fixtures re-run on the new models and re-recorded (gated-approval) |
+
+### Decisions recorded (2026-09-27)
+
+- **Docker `jdk.management`**: add the module (landed).
+- **22A A1**: keep the contract that an edited `templateFile` takes effect on the next request; make the change check cheap.
+- **19e**: removing the memo rather than bounding it, and the redaction-liveness side effect, accepted.
+- **22A A2+A3**: not declined on size alone; land if eviction/concurrency/rebuild tests make it demonstrably correct.
+- **Changelog**: keep the house layout (Security / Added / Changed / Removed / Fixed, combining related items into single bullets) with a short summary and a simple summary table at the top.
+- **Pipeline**: split netty ITs across JVMs and reuse the build's output for the deploy were both not pursued.
 
 ### Pipeline
 
