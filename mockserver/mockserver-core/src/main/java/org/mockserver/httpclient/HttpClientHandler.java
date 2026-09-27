@@ -5,6 +5,7 @@ import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.DecoderException;
+import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.ssl.NotSslRecordException;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.mockserver.log.model.LogEntry;
@@ -19,6 +20,7 @@ import java.util.List;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.httpclient.NettyHttpClient.CONNECTION_POOL;
+import static org.mockserver.httpclient.NettyHttpClient.POOL_KEEP_PARENT;
 import static org.mockserver.httpclient.NettyHttpClient.POOL_KEY;
 import static org.mockserver.httpclient.NettyHttpClient.RESPONSE_FUTURE;
 
@@ -51,11 +53,56 @@ public class HttpClientHandler extends SimpleChannelInboundHandler<Message> {
         // available for the next request to the same upstream. When the channel is not poolable
         // this is byte-identical to the historical "complete then close" behaviour.
         boolean returnedToPool = tryReturnToPool(channel, response);
+        if (!returnedToPool) {
+            // Release an HTTP/2 forward's PARENT connection to the pool BEFORE the caller is unblocked
+            // (same ordering as tryReturnToPool), so the next request deterministically reuses it.
+            tryReleaseHttp2ParentToPool(channel, response);
+        }
         if (responseFuture != null) {
             responseFuture.complete(response);
         }
         if (!returnedToPool) {
             ctx.close();
+        }
+    }
+
+    /**
+     * Release the PARENT of an HTTP/2 forward stream back to the pool (a fresh stream serves the next
+     * request), marking the stream {@link NettyHttpClient#POOL_KEEP_PARENT} so its close listener leaves
+     * the pooled parent open. The one-shot stream is still closed by the caller. No-op unless this is an
+     * HTTP/2 stream whose parent is poolable and the response is cleanly reusable. See
+     * docs/code/request-processing.md ("HTTP/2 upstream forwarding") for the design.
+     */
+    private void tryReleaseHttp2ParentToPool(Channel channel, Message response) {
+        if (!(channel instanceof Http2StreamChannel)) {
+            return;
+        }
+        // Only pool when the upstream answered on our own client-initiated (odd) request stream — plain
+        // HTTP/2. Some servers (e.g. MockServer's legacy connection-adapter h2 server) answer on a
+        // server-initiated (even) stream; that request/response correlation only holds for a fresh
+        // connection per request, so reusing such a parent desynchronises streams. Leave it unpooled.
+        io.netty.handler.codec.http2.Http2FrameStream stream = ((Http2StreamChannel) channel).stream();
+        if (stream == null || stream.id() <= 0 || (stream.id() & 1) == 0) {
+            return;
+        }
+        Channel parent = channel.parent();
+        if (parent == null) {
+            return;
+        }
+        HttpForwardConnectionPool pool = parent.attr(CONNECTION_POOL).get();
+        String key = parent.attr(POOL_KEY).get();
+        if (pool == null || key == null || !parent.isActive() || !(response instanceof HttpResponse)) {
+            return;
+        }
+        HttpResponse httpResponse = (HttpResponse) response;
+        if (!isCleanlyFramedHttpResponse(httpResponse) || !permitsKeepAlive(httpResponse)) {
+            return;
+        }
+        // The response completed on this child stream, so the parent's stale per-request future must be
+        // detached before it goes idle in the pool (mirrors the HTTP/1.1 return path).
+        parent.attr(RESPONSE_FUTURE).set(null);
+        if (pool.release(key, parent)) {
+            channel.attr(POOL_KEEP_PARENT).set(Boolean.TRUE);
         }
     }
 

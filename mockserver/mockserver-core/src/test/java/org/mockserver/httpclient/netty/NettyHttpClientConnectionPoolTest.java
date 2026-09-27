@@ -19,6 +19,22 @@ import io.netty.handler.codec.http.HttpHeaderValues;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http2.DefaultHttp2DataFrame;
+import io.netty.handler.codec.http2.DefaultHttp2Headers;
+import io.netty.handler.codec.http2.DefaultHttp2HeadersFrame;
+import io.netty.handler.codec.http2.Http2DataFrame;
+import io.netty.handler.codec.http2.Http2Frame;
+import io.netty.handler.codec.http2.Http2FrameCodecBuilder;
+import io.netty.handler.codec.http2.Http2Headers;
+import io.netty.handler.codec.http2.Http2HeadersFrame;
+import io.netty.handler.codec.http2.Http2MultiplexHandler;
+import io.netty.handler.ssl.ApplicationProtocolConfig;
+import io.netty.handler.ssl.ApplicationProtocolNames;
+import io.netty.handler.ssl.ApplicationProtocolNegotiationHandler;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
+import io.netty.util.CharsetUtil;
 import org.junit.After;
 import org.junit.AfterClass;
 import org.junit.Before;
@@ -29,7 +45,9 @@ import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.httpclient.SocketConnectionException;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpResponse;
+import org.mockserver.model.Protocol;
 import org.mockserver.scheduler.Scheduler;
+import org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -109,6 +127,18 @@ public class NettyHttpClientConnectionPoolTest {
             .forwardConnectionPoolKeepAlive(true)
             .forwardConnectionPoolMaxTotalPerKey(64);
         return new NettyHttpClient(configuration, mockServerLogger, clientEventLoopGroup, null, false);
+    }
+
+    /**
+     * A pooled forward-proxy client that trusts any upstream certificate (ANY), so the secure (HTTPS)
+     * pooling tests can point it at a self-signed TLS / HTTP-2 upstream.
+     */
+    private NettyHttpClient securePooledClient() {
+        Configuration configuration = configuration()
+            .forwardConnectionPoolEnabled(true)
+            .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.ANY)
+            .forwardProxyTLSHostnameVerificationEnabled(false);
+        return new NettyHttpClient(configuration, mockServerLogger, clientEventLoopGroup, null, true);
     }
 
     @Test
@@ -982,6 +1012,189 @@ public class NettyHttpClientConnectionPoolTest {
 
         void closeAfterResponding() {
             this.closeNextAfterResponding.set(true);
+        }
+
+        void stop() {
+            serverChannel.close().syncUninterruptibly();
+            bossGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * Secure (HTTPS) pooling: a sequential burst of TLS forwards to the same upstream reuses a single
+     * keep-alive connection, exactly as the plain-HTTP path does. Locks the secure side of the pool key
+     * (host, port, secure=true, protocol) that the churn defect fix keeps distinct from plain HTTP.
+     */
+    @Test
+    public void shouldReuseSingleConnectionForSecureSequentialBurst() throws Exception {
+        TlsCountingUpstream tlsUpstream = new TlsCountingUpstream();
+        try {
+            NettyHttpClient client = securePooledClient();
+
+            for (int i = 0; i < 5; i++) {
+                HttpResponse response = client.sendRequest(
+                    request().withSecure(true).withHeader("Host", "127.0.0.1:" + tlsUpstream.port())
+                ).get(10, TimeUnit.SECONDS);
+                assertThat(response.getStatusCode(), is(200));
+            }
+
+            assertThat(tlsUpstream.acceptedConnections(), is(1));
+        } finally {
+            tlsUpstream.stop();
+        }
+    }
+
+    /**
+     * Regression for the HTTPS forward-proxy (CONNECT + MITM) connection-churn defect: an HTTP/2 forward
+     * must REUSE its parent connection across a sequential burst (a fresh stream per request) rather than
+     * opening — and closing — a fresh upstream TCP/TLS connection per request. Before the fix the HTTP/2
+     * forward path closed the parent after every single stream, so a client that negotiated HTTP/2 in a
+     * CONNECT tunnel (e.g. Go/k6) exhausted ephemeral ports under load. With the fix a burst of eight
+     * sequential HTTP/2 forwards reuses one connection; on the unfixed code this asserts eight.
+     */
+    @Test
+    public void shouldReuseParentConnectionForHttp2SequentialBurst() throws Exception {
+        Http2CountingUpstream http2Upstream = new Http2CountingUpstream();
+        try {
+            NettyHttpClient client = securePooledClient();
+
+            int requests = 8;
+            for (int i = 0; i < requests; i++) {
+                HttpResponse response = client.sendRequest(
+                    request().withSecure(true).withProtocol(Protocol.HTTP_2).withHeader("Host", "127.0.0.1:" + http2Upstream.port())
+                ).get(10, TimeUnit.SECONDS);
+                assertThat(response.getStatusCode(), is(200));
+            }
+
+            assertThat("HTTP/2 forwards reuse the parent connection (one stream per request)",
+                http2Upstream.acceptedConnections(), is(1));
+        } finally {
+            http2Upstream.stop();
+        }
+    }
+
+    /**
+     * A minimal TLS HTTP/1.1 upstream (self-signed, no ALPN) that counts accepted TCP connections and
+     * replies with a keep-alive {@code 200 OK}. Used by the secure pooling test.
+     */
+    private static final class TlsCountingUpstream {
+
+        private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        private final EventLoopGroup workerGroup = new NioEventLoopGroup(2);
+        private final AtomicInteger accepted = new AtomicInteger();
+        private final Channel serverChannel;
+
+        TlsCountingUpstream() throws Exception {
+            SelfSignedCertificate ssc = new SelfSignedCertificate();
+            final SslContext sslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey()).build();
+            ServerBootstrap bootstrap = new ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        accepted.incrementAndGet();
+                        ch.pipeline().addLast(sslContext.newHandler(ch.alloc()));
+                        ch.pipeline().addLast(new HttpServerCodec());
+                        ch.pipeline().addLast(new HttpObjectAggregator(64 * 1024));
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<FullHttpRequest>() {
+                            @Override
+                            protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest msg) {
+                                byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
+                                FullHttpResponse response = new DefaultFullHttpResponse(
+                                    HttpVersion.HTTP_1_1,
+                                    io.netty.handler.codec.http.HttpResponseStatus.OK,
+                                    ctx.alloc().buffer().writeBytes(body));
+                                response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+                                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                                ctx.writeAndFlush(response);
+                            }
+                        });
+                    }
+                });
+            serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
+        }
+
+        int port() {
+            return ((InetSocketAddress) serverChannel.localAddress()).getPort();
+        }
+
+        int acceptedConnections() {
+            return accepted.get();
+        }
+
+        void stop() {
+            serverChannel.close().syncUninterruptibly();
+            bossGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * A minimal TLS HTTP/2 upstream (self-signed, ALPN h2) that counts accepted TCP connections and
+     * answers each request stream with a {@code 200} response. Used by the HTTP/2 pooling regression
+     * test to assert that many request streams are multiplexed onto a reused parent connection.
+     */
+    private static final class Http2CountingUpstream {
+
+        private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        private final EventLoopGroup workerGroup = new NioEventLoopGroup(2);
+        private final AtomicInteger accepted = new AtomicInteger();
+        private final Channel serverChannel;
+
+        Http2CountingUpstream() throws Exception {
+            SelfSignedCertificate ssc = new SelfSignedCertificate();
+            final SslContext sslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+                .applicationProtocolConfig(new ApplicationProtocolConfig(
+                    ApplicationProtocolConfig.Protocol.ALPN,
+                    ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                    ApplicationProtocolConfig.SelectedListenerFailureBehavior.ACCEPT,
+                    ApplicationProtocolNames.HTTP_2, ApplicationProtocolNames.HTTP_1_1))
+                .build();
+            ServerBootstrap bootstrap = new ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        accepted.incrementAndGet();
+                        ch.pipeline().addLast(sslContext.newHandler(ch.alloc()));
+                        ch.pipeline().addLast(new ApplicationProtocolNegotiationHandler(ApplicationProtocolNames.HTTP_1_1) {
+                            @Override
+                            protected void configurePipeline(ChannelHandlerContext ctx, String protocol) {
+                                ctx.pipeline().addLast(Http2FrameCodecBuilder.forServer().build());
+                                ctx.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Channel>() {
+                                    @Override
+                                    protected void initChannel(Channel streamCh) {
+                                        streamCh.pipeline().addLast(new SimpleChannelInboundHandler<Http2Frame>() {
+                                            @Override
+                                            protected void channelRead0(ChannelHandlerContext streamCtx, Http2Frame frame) {
+                                                boolean endStream = (frame instanceof Http2HeadersFrame && ((Http2HeadersFrame) frame).isEndStream())
+                                                    || (frame instanceof Http2DataFrame && ((Http2DataFrame) frame).isEndStream());
+                                                if (endStream) {
+                                                    Http2Headers responseHeaders = new DefaultHttp2Headers().status("200");
+                                                    streamCtx.write(new DefaultHttp2HeadersFrame(responseHeaders, false));
+                                                    streamCtx.writeAndFlush(new DefaultHttp2DataFrame(
+                                                        Unpooled.copiedBuffer("OK", CharsetUtil.UTF_8), true));
+                                                }
+                                            }
+                                        });
+                                    }
+                                }));
+                            }
+                        });
+                    }
+                });
+            serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
+        }
+
+        int port() {
+            return ((InetSocketAddress) serverChannel.localAddress()).getPort();
+        }
+
+        int acceptedConnections() {
+            return accepted.get();
         }
 
         void stop() {

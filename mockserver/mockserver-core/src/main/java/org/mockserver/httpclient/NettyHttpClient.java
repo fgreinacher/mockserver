@@ -64,6 +64,13 @@ public class NettyHttpClient {
     static final AttributeKey<HttpForwardConnectionPool> CONNECTION_POOL = AttributeKey.valueOf("CONNECTION_POOL");
     static final AttributeKey<String> POOL_KEY = AttributeKey.valueOf("POOL_KEY");
     static final AttributeKey<io.netty.util.concurrent.ScheduledFuture<?>> POOL_IDLE_EVICTION = AttributeKey.valueOf("POOL_IDLE_EVICTION");
+    /**
+     * Set on an HTTP/2 forward STREAM (child) channel when its response has released the PARENT
+     * connection back to the pool for reuse. The child's close listener
+     * ({@link Http2ForwardStreamChildInitializer}) reads it and, when set, leaves the parent open (the
+     * pool owns its lifecycle); when unset it keeps the historical "close the parent after one stream".
+     */
+    static final AttributeKey<Boolean> POOL_KEEP_PARENT = AttributeKey.valueOf("POOL_KEEP_PARENT");
     private static final HopByHopHeaderFilter hopByHopHeaderFilter = new HopByHopHeaderFilter();
     private final Configuration configuration;
     private final MockServerLogger mockServerLogger;
@@ -208,14 +215,15 @@ public class NettyHttpClient {
             // backend) is not buffered to completion before its headers reach the client.
             final boolean expectStreaming = !disableStreaming && requestExpectsStreamingResponse(httpRequest);
             final InetSocketAddress effectiveRemoteAddress = remoteAddress;
-            // Only plain HTTP/1.1 keep-alive connections are pooled. HTTP/2, HTTP/3 (multiplexed
-            // differently), binary forwarding, and any proxy-tunnelled connection bypass the pool
-            // and use a fresh connection. Streaming responses are excluded automatically because the
-            // streaming relay handler removes HttpClientHandler before any pooling return path runs.
+            // HTTP/1.1 keep-alive connections and HTTP/2 parent connections are pooled and reused
+            // (a new stream per request for HTTP/2), keyed by host/port/secure/protocol so the two
+            // never mix. HTTP/3, binary forwarding and any proxy-tunnelled connection bypass the pool.
+            // Streaming responses are excluded automatically because the streaming relay handler removes
+            // HttpClientHandler before any pooling return path runs.
             final boolean poolable = connectionPool != null
-                && Protocol.HTTP_1_1.equals(httpProtocol)
+                && (Protocol.HTTP_1_1.equals(httpProtocol) || Protocol.HTTP_2.equals(httpProtocol))
                 && (proxyConfigurations == null || proxyConfigurations.isEmpty());
-            final String poolKey = poolable ? HttpForwardConnectionPool.keyFor(effectiveRemoteAddress, secure) : null;
+            final String poolKey = poolable ? HttpForwardConnectionPool.keyFor(effectiveRemoteAddress, secure, httpProtocol) : null;
 
             Channel pooledChannel = poolKey != null ? connectionPool.acquire(poolKey) : null;
             if (pooledChannel != null) {
@@ -380,6 +388,12 @@ public class NettyHttpClient {
      */
     private void armPooledInFlightReadTimeout(Channel channel) {
         if (configuration == null || channel.attr(CONNECTION_POOL).get() == null) {
+            return;
+        }
+        // An HTTP/2 parent connection carries its read timeout per stream (child pipeline), never on
+        // the parent — a parent-level read timeout would fire during legitimate idle keep-alive between
+        // streams and during a long streaming response. Skip it here for a pooled HTTP/2 parent.
+        if (channel.pipeline().get(io.netty.handler.codec.http2.Http2FrameCodec.class) != null) {
             return;
         }
         Long readTimeoutMillis = configuration.maxSocketTimeoutInMillis();

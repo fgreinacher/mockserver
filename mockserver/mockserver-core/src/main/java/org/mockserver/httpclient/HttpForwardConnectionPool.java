@@ -3,6 +3,7 @@ package org.mockserver.httpclient;
 import io.netty.channel.Channel;
 import io.netty.util.AttributeKey;
 import io.netty.util.concurrent.ScheduledFuture;
+import org.mockserver.model.Protocol;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
@@ -12,16 +13,16 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 /**
- * A small keyed pool of idle, reusable upstream HTTP/1.1 keep-alive connections used by
+ * A small keyed pool of idle, reusable upstream keep-alive connections used by
  * {@link NettyHttpClient} when {@code forwardConnectionPoolEnabled} is set.
  * <p>
- * Connections are keyed by {@code host:port:secure} so that a checked-out idle channel is only
- * ever reused for an identical upstream (same host, same port, same TLS setting). The pool is
+ * Connections are keyed by {@code host:port:secure:protocol} so that a checked-out idle channel is
+ * only ever reused for an identical upstream (same host, port, TLS setting and protocol). The pool is
  * deliberately conservative:
  * <ul>
- *     <li>Only plain HTTP/1.1 keep-alive channels are ever offered to the pool — HTTP/2, HTTP/3,
- *     binary, streaming and proxy-tunnelled channels are never pooled (the caller never releases
- *     them here).</li>
+ *     <li>Only HTTP/1.1 keep-alive channels and HTTP/2 parent connections (one stream per request)
+ *     are offered to the pool — HTTP/3, binary, streaming and proxy-tunnelled channels are never
+ *     pooled (the caller never releases them here).</li>
  *     <li>{@link #acquire(String)} only ever returns a channel that is still {@code isActive()};
  *     stale (server-closed) channels are discarded.</li>
  *     <li>On saturation (per-key idle limit reached) {@link #release(String, Channel)} returns
@@ -104,14 +105,16 @@ class HttpForwardConnectionPool {
 
     /**
      * Builds the pool key for an upstream. {@code null} is returned only for a null address, in
-     * which case the caller must not attempt to pool.
+     * which case the caller must not attempt to pool. The negotiated {@code protocol} is part of the
+     * key so an HTTP/1.1 channel is never reused for an HTTP/2 request (or vice versa) — the two use
+     * incompatible pipelines — even to the same host, port and TLS setting.
      */
-    static String keyFor(InetSocketAddress remoteAddress, boolean secure) {
+    static String keyFor(InetSocketAddress remoteAddress, boolean secure, Protocol protocol) {
         if (remoteAddress == null) {
             return null;
         }
         String host = remoteAddress.getHostString();
-        return host + ":" + remoteAddress.getPort() + ":" + secure;
+        return host + ":" + remoteAddress.getPort() + ":" + secure + ":" + protocol;
     }
 
     /**

@@ -70,6 +70,13 @@ This release delivers a sustained performance and memory programme alongside dat
 
 ### Fixed
 
+- **HTTPS forward proxying over HTTP/2 no longer runs out of local ports under sustained load.**
+  When a client negotiated HTTP/2 inside a `CONNECT` tunnel (k6, Go clients and browsers do by
+  default), MockServer opened and closed a new upstream connection for every request, because only
+  HTTP/1.1 upstream connections were pooled. At a few hundred requests per second this used up the
+  local ephemeral ports within a minute, and clients then saw `502`s (`Cannot assign requested
+  address`). HTTP/2 upstream connections are now pooled and reused like HTTP/1.1 ones; set
+  `forwardConnectionPoolEnabled=false` to restore a fresh connection per request.
 - **Forwarding to a TLS upstream now honours the configured connection timeout for the handshake
   instead of a fixed 10 seconds.** When MockServer forwards or proxies a request over HTTPS, the TLS
   handshake with the upstream was always bounded by Netty's built-in 10-second default, ignoring

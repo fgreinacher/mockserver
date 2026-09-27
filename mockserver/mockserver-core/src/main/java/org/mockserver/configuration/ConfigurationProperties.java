@@ -2632,10 +2632,11 @@ public class ConfigurationProperties {
      * action (HttpError), which writes raw non-HTTP bytes and/or drops the connection, is therefore
      * never pooled.
      * <p>
-     * Only plain HTTP/1.1 keep-alive connections are pooled. HTTP/2 and HTTP/3 (which multiplex
-     * differently), binary forwarding, streaming responses, proxy-tunnelled connections, any
-     * connection the upstream closed or that returned "Connection: close", and any reply that did not
-     * parse as a valid HTTP response are never pooled and fall back to a fresh connection.
+     * HTTP/1.1 keep-alive connections and HTTP/2 connections are pooled (an HTTP/2 connection is reused
+     * with a fresh stream per request), keyed by host, port, scheme and protocol so the two never mix.
+     * HTTP/3, binary forwarding, streaming responses, proxy-tunnelled connections, any connection the
+     * upstream closed or that returned "Connection: close", and any reply that did not parse as a valid
+     * HTTP response are never pooled and fall back to a fresh connection.
      *
      * @param enable enable pooling and reuse of idle keep-alive upstream HTTP/1.1 connections
      */

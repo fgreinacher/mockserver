@@ -5,6 +5,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.util.concurrent.ScheduledFuture;
 import org.junit.After;
 import org.junit.Test;
+import org.mockserver.model.Protocol;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
@@ -60,25 +61,27 @@ public class HttpForwardConnectionPoolTest {
     // ---- key derivation ------------------------------------------------------------------------
 
     @Test
-    public void shouldBuildKeyFromHostPortAndSecureFlag() {
+    public void shouldBuildKeyFromHostPortSecureFlagAndProtocol() {
         InetSocketAddress address = InetSocketAddress.createUnresolved("example.com", 8443);
 
-        assertThat(HttpForwardConnectionPool.keyFor(address, true), is("example.com:8443:true"));
-        assertThat(HttpForwardConnectionPool.keyFor(address, false), is("example.com:8443:false"));
+        assertThat(HttpForwardConnectionPool.keyFor(address, true, Protocol.HTTP_1_1), is("example.com:8443:true:HTTP_1_1"));
+        assertThat(HttpForwardConnectionPool.keyFor(address, false, Protocol.HTTP_1_1), is("example.com:8443:false:HTTP_1_1"));
+        assertThat(HttpForwardConnectionPool.keyFor(address, true, Protocol.HTTP_2), is("example.com:8443:true:HTTP_2"));
     }
 
     @Test
     public void shouldReturnNullKeyForNullAddress() {
-        assertThat(HttpForwardConnectionPool.keyFor(null, true), is(nullValue()));
+        assertThat(HttpForwardConnectionPool.keyFor(null, true, Protocol.HTTP_1_1), is(nullValue()));
     }
 
     @Test
-    public void shouldDistinguishKeysByPortAndSecureFlag() {
+    public void shouldDistinguishKeysByPortSecureFlagAndProtocol() {
         InetSocketAddress portA = InetSocketAddress.createUnresolved("host", 1);
         InetSocketAddress portB = InetSocketAddress.createUnresolved("host", 2);
 
-        assertThat(HttpForwardConnectionPool.keyFor(portA, false), not(equalTo(HttpForwardConnectionPool.keyFor(portB, false))));
-        assertThat(HttpForwardConnectionPool.keyFor(portA, true), not(equalTo(HttpForwardConnectionPool.keyFor(portA, false))));
+        assertThat(HttpForwardConnectionPool.keyFor(portA, false, Protocol.HTTP_1_1), not(equalTo(HttpForwardConnectionPool.keyFor(portB, false, Protocol.HTTP_1_1))));
+        assertThat(HttpForwardConnectionPool.keyFor(portA, true, Protocol.HTTP_1_1), not(equalTo(HttpForwardConnectionPool.keyFor(portA, false, Protocol.HTTP_1_1))));
+        assertThat(HttpForwardConnectionPool.keyFor(portA, true, Protocol.HTTP_2), not(equalTo(HttpForwardConnectionPool.keyFor(portA, true, Protocol.HTTP_1_1))));
     }
 
     // ---- reuse ---------------------------------------------------------------------------------

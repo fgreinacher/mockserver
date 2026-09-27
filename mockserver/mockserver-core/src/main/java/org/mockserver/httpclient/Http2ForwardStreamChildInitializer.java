@@ -108,10 +108,12 @@ public class Http2ForwardStreamChildInitializer extends ChannelInitializer<Http2
         pipeline.addLast(new MockServerHttpClientCodec(mockServerLogger, proxyConfigurations));
         pipeline.addLast(httpClientHandler);
 
-        // HTTP/2 forwards are not pooled — close the parent connection when this single stream ends so
-        // the "close after one response" lifecycle of a non-pooled forward is preserved.
+        // A POOLED HTTP/2 forward releases its parent back to the pool when the stream completes (see
+        // HttpClientHandler#tryReleaseHttp2ParentToPool), which marks the stream with POOL_KEEP_PARENT;
+        // the pool then owns the parent's lifecycle, so it must NOT be closed here. A NON-pooled HTTP/2
+        // forward keeps the historical "close the parent after its single stream" lifecycle.
         ch.closeFuture().addListener(future -> {
-            if (parent.isActive()) {
+            if (!Boolean.TRUE.equals(ch.attr(NettyHttpClient.POOL_KEEP_PARENT).get()) && parent.isActive()) {
                 parent.close();
             }
         });
