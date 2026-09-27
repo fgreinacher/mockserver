@@ -76,6 +76,15 @@ This release delivers a sustained performance and memory programme alongside dat
   the whole connect-and-handshake window. The default is more lenient than before (20 seconds rather
   than 10), so nothing fails sooner unless you lower the setting yourself.
 
+- **Inbound TLS handshakes are now bounded by `socketConnectionTimeout` instead of a fixed 10 second
+  limit.** When a client connected over HTTPS (or through a `CONNECT` tunnel) MockServer terminated the
+  TLS handshake with Netty's built-in 10,000ms handshake timeout, which could not be changed. A slow or
+  malicious client could therefore hold a handshake open for the full 10 seconds on an unauthenticated
+  port regardless of configuration. The inbound handshake is now bounded by `socketConnectionTimeout`
+  (default 20,000ms) — the same setting that already bounds the TCP connection and outbound TLS
+  handshakes — so operators can shorten it. The default is more lenient than before, so nothing times
+  out sooner unless you lower the setting.
+
 - **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded
   literally.** A previous release fixed this for incoming *requests* but missed the response side, so the
   proxy leg still built response header, trailer and `Set-Cookie` names and values through the

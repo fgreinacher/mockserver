@@ -217,6 +217,15 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
                                                  ChannelHandlerContext mockServerCtx, ChannelHandlerContext proxyClientCtx) {
         removeHandler(pipelineToProxyClient, PortUnificationHandler.class);
         SslHandler sslHandler = nettySslContextFactory(proxyClientCtx.channel()).createServerSslContext().newHandler(proxyClientCtx.alloc());
+        // Bound the CONNECT MITM (proxy-client-facing) TLS handshake by the configured connection timeout
+        // instead of Netty's fixed 10,000ms default, so a slow or malicious tunnelled client cannot hold an
+        // unauthenticated handshake open for the full 10s. A non-positive value keeps Netty's default.
+        if (configuration != null) {
+            Long handshakeTimeoutMillis = configuration.socketConnectionTimeoutInMillis();
+            if (handshakeTimeoutMillis != null && handshakeTimeoutMillis > 0) {
+                sslHandler.setHandshakeTimeoutMillis(handshakeTimeoutMillis);
+            }
+        }
         pipelineToProxyClient.addLast(sslHandler);
 
         sslHandler.handshakeFuture().addListener(handshakeFuture -> {

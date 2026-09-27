@@ -132,6 +132,17 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
         SslHandler sslHandler = null;
         try {
             sslHandler = sslContext.getNow().newHandler(ctx.alloc());
+            // Bound the inbound TLS handshake by the configured connection timeout instead of Netty's
+            // fixed 10,000ms default: the handshake is part of establishing the connection, so
+            // socketConnectionTimeout covers the whole accept-plus-handshake window and lets an operator
+            // shorten how long a slow or malicious client can hold an unauthenticated handshake open. A
+            // null configuration or a non-positive value keeps Netty's default (never stricter by default).
+            if (configuration != null) {
+                Long handshakeTimeoutMillis = configuration.socketConnectionTimeoutInMillis();
+                if (handshakeTimeoutMillis != null && handshakeTimeoutMillis > 0) {
+                    sslHandler.setHandshakeTimeoutMillis(handshakeTimeoutMillis);
+                }
+            }
             ctx.channel().attr(UPSTREAM_SSL_ENGINE).set(sslHandler.engine());
             ctx.channel().attr(UPSTREAM_SSL_HANDLER).set(sslHandler);
             ctx.pipeline().replace(this, "SslHandler#0", sslHandler);
