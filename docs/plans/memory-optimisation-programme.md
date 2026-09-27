@@ -43,6 +43,8 @@ audited, so each row names a concrete change rather than a question.
 | **19a-19e** | Dashboard: 2 request-path allocations, 2 wasted walks, 1 retention | occupancy + churn | yes | 19e is the biggest — rendering memoises a clone + Jackson tree **onto the retained entry** with no release path, partly undoing unit 1, and the byte budget excludes it on a false premise. 19b has a trap: capacity 1 ships, capacity 10 is what the tests exercise |
 | **22A** | A4, then A2+A3 | churn | yes | A4 (Mustache copies ~26 bindings per render) is smallest and output-identical. A1 needs a **product decision** — whether an edited `templateFile` should still take effect per request |
 | **18a** | Three small `ResponseWriter` items | churn | **blocked** | extend the benchmark first (see instruments) |
+| **15-L1** | Retained `Long` = `Timing`'s three epoch-millis fields per forwarded response | occupancy | **in progress** | located from build 446's live histogram + JFR: `Long` = 3.0 × `Timing` in every snapshot, absent when no forwards run; ~2.4 MB in the forward phase, zero while serving mocks. Store `Timing` fields as primitive `long` + sentinel (the `RequestDefinition.receivedTimestamp` pattern) |
+| **15-C** | `maxFutureTimeout()` / `maxSocketTimeout()` / `socketConnectionTimeout()` re-box a `Long` per request | churn | **in progress** | JFR: 70 + 38 + 6 samples via `ConfigurationProperties.readLongProperty`; must keep runtime changes effective |
 
 ### Defects — fix ahead of the churn work
 
@@ -51,7 +53,7 @@ audited, so each row names a concrete change rather than a question.
 | **D1** | Unbounded 1/sec task accumulation on an unauthenticated endpoint, which also removed the throttle it enforces | **landed** `c03805f24` — test + negative control |
 | **D3** | `redactSecretsInLog` leaves secrets in `message` and `arguments` | **landed** `cc7d7d185` — 3 tests |
 | **D2** | Split WebSocket handler teardown | latent — unreachable today, consolidate into `handlerRemoved` |
-| **D4** | Forward class-callback ignores `contextClassLoaderOverride` | not independently verified |
+| **D4** | Forward class-callback ignored `contextClassLoaderOverride` | **landed** `d5fe0bea2` — verified real (Maven-plugin embedding), shared resolver, test + negative control |
 
 ### Pipeline and tooling
 
@@ -81,7 +83,6 @@ Its integrated netty verify showed intermittent failures in two **matched**-forw
 | `ResponseWriteBenchmark` enters at the encoder, never calls `ResponseWriter` | **18a** | 18a would land and the ratchet would report no change |
 | No template allocation benchmark exists | **22A** | no figure can honestly be claimed for A2/A3/A4 |
 | Rig exercises no proxy and no callback workload | 21, 22B | 21's win is measured at unit level only; 22B's would be pure inference |
-| Heap dump analysis not yet run | **15** | the dump **already exists** on the /diag volume with a parser — no new run needed. Check the validity control first: `Long` and `Object[2]` proportional to `NottableString` means no full collection preceded it and every retention conclusion is unsafe |
 
 ### Declined, with reasons recorded — do not re-propose
 
@@ -486,7 +487,11 @@ set anywhere in the rig, so the cache is the default −128..127.
 - **`Timing` on the default mock path** (early-returns without injection), the derived synthetic
   `Expectation` (no boxes at all), and all event-log/deque bookkeeping (primitive or atomic).
 
-#### The dump already exists — no new run needed
+#### Resolved 2026-09-27 — and the dump did not exist
+
+No `.hprof` is uploaded by the rig (it keeps one only on OOM); the analysis used build 446's `live-heap-histogram.txt` (20 `-histo:live` snapshots, so post-full-GC by construction) and its JFR allocation samples. **I1 confirmed** (Integer/LogEntry 0.45-0.50 in the mocked phase; fixed in `d194a8f3d`). **The `Long` is `Timing`** (L1): Long/Timing = 3.0 in every snapshot, absent when Timing is. The 441→442 contradiction dissolves: both figures are end-of-run forward-phase snapshots, so the **1.5/1.0-per-request framing is retracted**. Validity control passed (Long absent in the 350k-NottableString mocked phase); the Boolean control cannot be proven from a truncated histogram but JFR shows zero Boolean allocations. A proven retainer chain would need `jcmd GC.heap_dump` or JFR OldObjectSample with path-to-gc-roots.
+
+##### (superseded) The dump already exists — no new run needed
 
 The rig keeps the raw `.hprof` on the /diag volume and uploads it gzipped, and
 `.buildkite/scripts/lib/HprofHisto.java` already parses it. Confirmations:
