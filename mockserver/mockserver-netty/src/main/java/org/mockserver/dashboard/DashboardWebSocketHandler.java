@@ -360,28 +360,6 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
-    @Override
-    public void handlerAdded(ChannelHandlerContext ctx) {
-        try {
-            scheduler = new ThreadPoolExecutor(
-                1,
-                1,
-                0L,
-                SECONDS,
-                new LinkedBlockingQueue<>(1),
-                Executors.defaultThreadFactory(),
-                new ThreadPoolExecutor.DiscardOldestPolicy()
-            );
-        } catch (Throwable throwable) {
-            mockServerLogger.logEvent(
-                new LogEntry()
-                    .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception creating scheduler " + throwable.getMessage())
-                    .setThrowable(throwable)
-            );
-        }
-    }
-
     // The SINGLE teardown point. handlerRemoved fires when the channel closes AND when this handler is
     // removed from the pipeline BEFORE the channel goes inactive (CallbackWebSocketServerHandler and
     // WebSocketProxyRelayHandler both remove it) - and a handler removed that way never sees
@@ -762,12 +740,20 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
             }, 0, 1, SECONDS);
         }
         if (scheduler == null) {
+            // The ONE construction site for the send scheduler, with the SHIPPED discard-queue capacity of
+            // 1. It used to be built in handlerAdded (capacity 1 - what production ships, since
+            // handlerAdded fires when the handler joins the pipeline) AND here (capacity 10, reached only
+            // by tests, which never add the handler to a pipeline) - so tests silently exercised a discard
+            // queue ten times deeper than production. Constructing it lazily here, on a successful dashboard
+            // upgrade, also means a non-dashboard channel - every HTTP/1.1 connection and every HTTP/2
+            // stream that never upgrades - no longer allocates this executor (thread factory, queue, policy)
+            // at all.
             scheduler = new ThreadPoolExecutor(
                 1,
                 1,
                 0L,
                 SECONDS,
-                new LinkedBlockingQueue<>(10),
+                new LinkedBlockingQueue<>(1),
                 Executors.defaultThreadFactory(),
                 new ThreadPoolExecutor.DiscardOldestPolicy()
             );

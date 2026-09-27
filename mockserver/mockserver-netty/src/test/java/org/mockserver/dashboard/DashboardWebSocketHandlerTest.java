@@ -2193,12 +2193,23 @@ public class DashboardWebSocketHandlerTest {
         MockChannelHandlerContext mockChannelHandlerContext = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(mockChannelHandlerContext, request());
 
-        // when
-        handler.sendUpdate(mockChannelHandlerContext, requestFilter);
-        SECONDS.sleep(1);
+        // when - retry until a frame is produced. The send throttle is ~1/sec, and at the shipped
+        // discard-queue capacity of 1 a single send competes with the initial post-upgrade update, so one
+        // call may not land a frame; the dashboard is a live stream, so retrying until one arrives is what
+        // a client does.
+        TextWebSocketFrame textWebSocketFrame = null;
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline) {
+            handler.sendUpdate(mockChannelHandlerContext, requestFilter);
+            SECONDS.sleep(1);
+            textWebSocketFrame = mockChannelHandlerContext.textWebSocketFrame;
+            if (textWebSocketFrame != null) {
+                break;
+            }
+        }
+        assertThat("a dashboard frame was produced", textWebSocketFrame, is(notNullValue()));
 
         // then
-        TextWebSocketFrame textWebSocketFrame = mockChannelHandlerContext.textWebSocketFrame;
         for (String renderListSection : renderListSections) {
             assertThat(textWebSocketFrame.text(), contains ? containsString(renderListSection) : is(renderListSection));
         }
@@ -2512,6 +2523,29 @@ public class DashboardWebSocketHandlerTest {
         throttleField.setAccessible(true);
         java.util.concurrent.ExecutorService throttle = (java.util.concurrent.ExecutorService) throttleField.get(handler);
         assertThat("handlerRemoved shut the throttle executor down", throttle != null && throttle.isShutdown(), is(true));
+    }
+
+    @Test
+    public void schedulerIsBuiltOnceWithTheShippedDiscardQueueCapacity() throws Exception {
+        // 19b: the send scheduler is constructed in ONE place (registerListeners) with the capacity
+        // production ships (1). Previously handlerAdded built it with capacity 1 while registerListeners --
+        // the path these tests use, since they never add the handler to a pipeline -- built it with capacity
+        // 10, so the suite silently exercised a discard queue ten times deeper than production.
+        MockServerLogger mockServerLogger = new MockServerLogger(DashboardWebSocketHandlerTest.class);
+        Scheduler scheduler = track(new Scheduler(configuration(), mockServerLogger, true));
+        HttpState httpState = track(new HttpState(configuration(), mockServerLogger, scheduler));
+        DashboardWebSocketHandler handler = track(new DashboardWebSocketHandler(httpState, false, true));
+
+        handler.registerListeners();
+
+        java.lang.reflect.Field field = DashboardWebSocketHandler.class.getDeclaredField("scheduler");
+        field.setAccessible(true);
+        java.util.concurrent.ThreadPoolExecutor sched = (java.util.concurrent.ThreadPoolExecutor) field.get(handler);
+        // An empty LinkedBlockingQueue(capacity) reports remainingCapacity()==capacity. The one task
+        // registerListeners submits runs on the core worker thread (execute() runs the first task in a new
+        // core worker rather than enqueuing it), so the queue is empty and remainingCapacity is the capacity.
+        assertThat("send scheduler discard-queue capacity is the shipped 1, not 10",
+            sched.getQueue().remainingCapacity(), is(1));
     }
 
     @Test
