@@ -141,7 +141,7 @@ CLU_B_ALIAS="clu-b"
 CLU_IMAGE="${PERF_CLUSTERED_IMAGE:-mockserver/mockserver:mockserver-snapshot-clustered}"
 SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # Hard memory bound for the SUT (item: measure growth against a realistic heap).
-# Unbounded on a 32 GB box, MaxRAMPercentage=75 yields a ~24 GB heap that barely
+# Unbounded on a 32 GB box, MaxRAMPercentage=60 yields a ~19 GB heap that barely
 # GCs, so a slow leak is invisible and the "live set" is unobservable. A bounded
 # heap that actually cycles is what the documented central-deployment guidance
 # runs, and is what makes the saw-tooth floor (see the live-set ratio below) mean
@@ -151,18 +151,18 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # --- event-log body-byte budget: the OOM guard that keeps the run alive ---------
 # WHY THIS EXISTS (build #249 died here). MockServer records every request AND its
 # response in a COUNT-bounded event-log ring of maxLogEntries entries, holding the
-# FULL body of each. On the 2 GB SUT the heap is MaxRAMPercentage=75% ~= 1.5 GB, so
-# maxLogEntries = min(heapKB/8, 100000) = 100000. An entry lives for the ring's
+# FULL body of each. On the 2 GB SUT the heap is MaxRAMPercentage=60% ~= 1.2 GB, so
+# maxLogEntries = min(heapKB/8, 250000) ~= 155,000. An entry lives for the ring's
 # residence = maxLogEntries / total_ACHIEVED_insertion_rps, and — this is the trap —
 # residence LENGTHENS without bound as achieved throughput FALLS. The MB-scale
 # regression arms (large_1mb/large_10mb/large_file, k6 item 15d) then retain, per arm,
 # roughly rate x residence x body:
-#     arm          rate     body     @ residence 111 s (total ~901 rps, healthy)
-#     large_10mb   0.1/s    10 MB    -> 0.1 x 111 x 10 MB  ~= 111 MB
-#     large_1mb    0.5/s     1 MB    -> 0.5 x 111 x  1 MB  ~=  55 MB
-#     large_file   0.5/s    ~1 MB    -> 0.5 x 111 x  1 MB  ~=  55 MB   (its ~1 MB RESPONSE)
-#     large(4KB)   200/s     4 KB    -> 200 x 111 x  4 KB  ~=  89 MB
-# ~310 MB of large bodies looks safe under 1.5 GB — but ONLY at residence 111 s. When
+#     arm          rate     body     @ residence 172 s (total ~901 rps, healthy)
+#     large_10mb   0.1/s    10 MB    -> 0.1 x 172 x 10 MB  ~= 172 MB
+#     large_1mb    0.5/s     1 MB    -> 0.5 x 172 x  1 MB  ~=  86 MB
+#     large_file   0.5/s    ~1 MB    -> 0.5 x 172 x  1 MB  ~=  86 MB   (its ~1 MB RESPONSE)
+#     large(4KB)   200/s     4 KB    -> 200 x 172 x  4 KB  ~= 137 MB
+# ~480 MB of large bodies looks safe under 1.2 GB — but ONLY at residence 172 s. When
 # the SUT contends (the pre-fix JavaScript contagion, or the EXTRA body throughput the
 # 2026-09-17 dispatch-pool fixes eec183f7e/7fbae1350 now ADMIT), total achieved rps
 # collapses, residence 2x/4x/10x, and every figure above scales with it — there is no
@@ -176,16 +176,16 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # addition to the count bound. Retention is then capped at the budget REGARDLESS of
 # residence, so no rate x residence product can run away however far throughput falls.
 # 256 MiB is the documented starting point for a 2 GB heap; actual live heap is a small
-# multiple (headers/metadata) ~= 0.5-1 GB, comfortably under 1.5 GB.
+# multiple (headers/metadata) ~= 0.5-1 GB, under the 1.2 GB heap.
 # WHY NOT SHRINK maxLogEntries INSTEAD: growth.js runs on THIS SAME SUT and must fill
-# the DEFAULT 100k ring to reproduce the issue #2329 O(n)-eviction slope; a smaller
+# the DEFAULT ~155k ring to reproduce the issue #2329 O(n)-eviction slope; a smaller
 # ring would never fill and would hide the bug. The byte budget does NOT corrupt growth
 # because growth loads only the tiny /simple body (~hundreds of bytes) — its total
-# retained bytes across 100k entries stay in the tens of MB, far below 256 MiB, so the
+# retained bytes across ~155k entries stay in the tens of MB, far below 256 MiB, so the
 # byte budget never fires for growth and its count-bounded fill is untouched. Applied to
 # EVERY SUT that runs regression.js with the MB arms: the main SUT here and the clustered
 # A/B nodes (start_clu) — the clustered image runs the same large_1mb/large_10mb arms on
-# a 1.5 GB heap and was at the identical risk.
+# a 1.2 GB heap and was at the identical risk.
 # Set-ness must be captured BEFORE the default below overwrites it: the CONFIG_PROFILE
 # trigger needs to know whether the caller set it, not what it resolved to.
 PERF_MAX_EVENT_LOG_BYTES_SET="${PERF_MAX_EVENT_LOG_BYTES+set}"
@@ -258,7 +258,7 @@ SAMPLE_LOG="$OUT_DIR/samples.csv"
 #                                   views are empty under ZGC (see live_heap_histo_sampler below).
 PERF_JVM_DIAGNOSTICS="${PERF_JVM_DIAGNOSTICS:-standard}"   # standard = tier 1 only; deep = tier 1 + tier 2
 PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to see the cliff APPROACH, not just its aftermath
-# Heap dumps are large (a 1.5 GiB heap dumps > 1 GiB); upload only when gzipped size is within this
+# Heap dumps are large (a 1.2 GiB heap dumps ~1 GiB); upload only when gzipped size is within this
 # cap so a diagnostics run never tries to push a multi-GB artifact. The raw dump always stays on the
 # volume/artifact-of-last-resort logic below decides upload.
 PERF_HEAPDUMP_MAX_UPLOAD_MB="${PERF_HEAPDUMP_MAX_UPLOAD_MB:-512}"
@@ -364,7 +364,7 @@ PERF_INFO_ARM="${PERF_INFO_ARM:-true}"
 # Upload the surviving JVM-internals diagnostics as Buildkite artifacts. Small evidence (GC log,
 # the dense resource-trajectory CSV, the followed server logs, docker-inspect .State, any tier-2 NMT
 # print + JFR chunks) always goes up as one tarball. Heap dumps are handled separately and SIZE-CAPPED
-# (a 1.5 GiB heap dumps > 1 GiB): each is gzipped and uploaded only if within PERF_HEAPDUMP_MAX_UPLOAD_MB,
+# (a 1.2 GiB heap dumps ~1 GiB): each is gzipped and uploaded only if within PERF_HEAPDUMP_MAX_UPLOAD_MB,
 # otherwise it is left named in the log with its size rather than pushing a multi-GB artifact. Safe to
 # call more than once (guarded by a marker file). No-op when buildkite-agent is absent (local runs keep
 # the evidence in $DIAG_DIR on disk).
@@ -2614,10 +2614,10 @@ abort_if_sut_died
 # residence = maxLogEntries / total_ACHIEVED_rps (LONGER, without bound, as achieved
 # throughput falls). k6 drives ONLY the entry node (control, or cluster node A), so
 # ONLY that node's ring fills with request bodies — exactly like the main SUT, and it
-# gets the SAME PERF_CLUSTERED_MEMORY (2 GB default -> ~1.5 GB heap,
-# maxLogEntries=100000). The per-arm rate x residence x body figures the config.js
-# arithmetic derives (large_10mb@0.1rps -> ~111 MB, large_1mb@0.5rps -> ~55 MB,
-# large-4KB@200rps -> ~89 MB) hold ONLY at residence 111 s; they run away as this node
+# gets the SAME PERF_CLUSTERED_MEMORY (2 GB default -> ~1.2 GB heap,
+# maxLogEntries ~= 155,000). The per-arm rate x residence x body figures
+# (large_10mb@0.1rps -> ~172 MB, large_1mb@0.5rps -> ~86 MB,
+# large-4KB@200rps -> ~137 MB) hold ONLY at residence ~172 s; they run away as this node
 # contends. So the clustered nodes get the SAME maxEventLogSizeInBytes body-byte OOM
 # guard (start_clu, above) as the main SUT, which caps total retained body bytes
 # regardless of residence — and applies identically on control and cluster, so it does
@@ -2747,7 +2747,7 @@ JGROUPS_XML
     # (match/forward/template/template_mustache/large/large_1mb/large_10mb) run
     # UNCHANGED — only env differs, the sanctioned parameterisation. start_clu also
     # carries the maxEventLogSizeInBytes body-byte OOM guard (below), for the same
-    # reason the main SUT does: these MB arms run here too, on a 1.5 GB clustered
+    # reason the main SUT does: these MB arms run here too, on a 1.2 GB clustered
     # heap. The budget is identical on control and cluster, so it evicts symmetrically
     # and cannot bias the within-run clustered/control ratio item 13 measures.
     # The JGroups discovery string, and the guard that validates WHAT ACTUALLY GOES TO DNS.
@@ -3059,10 +3059,10 @@ HEAP_RATIO="$(ratio "$HEAP_MIN_LAST" "$HEAP_MIN_FIRST")"
 
 # --- event-log scaling: resolved bounds vs observed peak, and which bound bound ------------------
 # Both event-log bounds derive from the heap ceiling but scale DIFFERENTLY: maxLogEntries is
-# min(heapKB/8, 100000) and CAPS at 100000 (reached by ~0.76 GiB of heap), while maxEventLogSizeInBytes
+# min(heapKB/8, 250000) and CAPS at 250000 (reached by ~1.9 GiB of heap), while maxEventLogSizeInBytes
 # is (heapKB/divisor)*1024 (divisor 8 at WARN/ERROR/OFF, 12 at INFO/DEBUG/TRACE) and scales with the
-# heap without limit. For the perf workload's small bodies the COUNT cap binds, so a bigger heap buys
-# no extra retention — this block MEASURES that rather than assuming it. Resolved values come from the
+# heap without limit. For the perf workload's small bodies the COUNT cap binds above ~1.9 GiB, so a
+# bigger heap buys no extra retention there — this block MEASURES that rather than assuming it. Resolved values come from the
 # server's own gauges (max_retained_entries / max_retained_bytes in diag-samples.csv), the EFFECTIVE
 # figures the JVM applied, not the requested ones. On an older SUT image without those gauges the
 # columns are blank and samples_with_log_data is 0. Reads are safe here: the load phases (regression /

@@ -64,11 +64,13 @@ public class HeapAvailableSizingTest {
         assertThat(budgetAfterHeavyFixture, is(budgetAtCleanStart));
         assertThat(budgetAtCleanStart, is((ceiling / 1024L) - BASE_KB));
 
-        // and the maxLogEntries default it feeds is pinned at the cap for a 1 GB heap regardless of history
-        int cleanDefault = ConfigurationProperties.heapBasedDefaultOrFloor(budgetAtCleanStart, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
-        int fixtureDefault = ConfigurationProperties.heapBasedDefaultOrFloor(budgetAfterHeavyFixture, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+        // and the maxLogEntries default it feeds is identical regardless of history. At a 1 GB heap the
+        // heap-derived value (budget / 8) sits below the 250,000 cap, so the default is heapKB / 8, and
+        // the point of the test is that it does not vary with prior allocation.
+        int cleanDefault = ConfigurationProperties.heapBasedDefaultOrFloor(budgetAtCleanStart, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+        int fixtureDefault = ConfigurationProperties.heapBasedDefaultOrFloor(budgetAfterHeavyFixture, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
         assertThat(fixtureDefault, is(cleanDefault));
-        assertThat(cleanDefault, is(100000));
+        assertThat(cleanDefault, is((int) (budgetAtCleanStart / 8)));
     }
 
     @Test
@@ -143,7 +145,7 @@ public class HeapAvailableSizingTest {
 
     @Test
     public void shouldFloorMaxLogEntriesAtDevDefaultWhenHeapAvailableIsZero() {
-        int value = ConfigurationProperties.heapBasedDefaultOrFloor(0L, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+        int value = ConfigurationProperties.heapBasedDefaultOrFloor(0L, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
 
         assertThat(value, is(ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES));
         assertThat(value, is(greaterThan(0)));
@@ -167,10 +169,21 @@ public class HeapAvailableSizingTest {
 
     @Test
     public void shouldCapHeapBasedLogEntriesDefault() {
-        // huge heap -> capped at 100,000
-        int value = ConfigurationProperties.heapBasedDefaultOrFloor(100_000_000L, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+        // huge heap -> capped at 250,000
+        int value = ConfigurationProperties.heapBasedDefaultOrFloor(100_000_000L, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
 
-        assertThat(value, is(100000));
+        assertThat(value, is(250000));
+    }
+
+    @Test
+    public void shouldCrossOverToTheLogEntriesCapJustAboveTwoMillionKb() {
+        // The 250,000 cap is reached where heapKB / 8 = 250,000, i.e. a 2,000,000 KB budget. Just below the
+        // crossover the default is the heap-derived value; just above it is pinned at the cap.
+        int justBelow = ConfigurationProperties.heapBasedDefaultOrFloor(1_999_992L, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+        int justAbove = ConfigurationProperties.heapBasedDefaultOrFloor(2_000_008L, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+
+        assertThat(justBelow, is(249999));
+        assertThat(justAbove, is(250000));
     }
 
     // ----- defaultMaxEventLogSizeInBytes: byte budget is a log-level-aware fraction of the ceiling -----

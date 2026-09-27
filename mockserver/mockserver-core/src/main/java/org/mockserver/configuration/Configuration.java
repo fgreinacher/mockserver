@@ -1753,7 +1753,7 @@ public class Configuration {
      * Maximum number of log entries stored in memory.  Log entries are stored in a circular queue so once this limit is reach the oldest log entries are overwritten
      * </p>
      * <p>
-     * The default maximum depends on the available memory in the JVM with an upper limit of 100000
+     * The default maximum depends on the available memory in the JVM with an upper limit of 250000
      * </p>
      *
      * @param maxLogEntries maximum number of expectations to store

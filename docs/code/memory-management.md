@@ -46,7 +46,7 @@ Both `maxLogEntries` and `maxExpectations` are computed from the JVM heap **ceil
 ```
 heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling, -Xmx)
 
-maxLogEntries          = min(heapAvailableInKB / 8, 100000)          (entry-count bound)
+maxLogEntries          = min(heapAvailableInKB / 8, 250000)          (entry-count bound)
 maxExpectations        = min(heapAvailableInKB / 10, 15000)
 maxEventLogSizeInBytes = (heapAvailableInKB / 12) * 1024 at INFO/DEBUG/TRACE   (event-log byte bound; 0 when heap ceiling undefined)
                        = (heapAvailableInKB / 8)  * 1024 at WARN/ERROR/OFF
@@ -59,7 +59,7 @@ maxEventLogSizeInBytes = (heapAvailableInKB / 12) * 1024 at INFO/DEBUG/TRACE   (
 | Base memory reservation | 20 MB (20,480 KB) | Reserved for JVM internals, Netty buffers, thread stacks |
 | Per-log-entry estimate | 8 KB | Estimated heap cost per stored log entry (see [analysis below](#per-log-entry-type-estimates)) |
 | Per-expectation estimate | 10 KB | Estimated heap cost per stored expectation including matcher (see [analysis below](#expectation-memory-analysis)) |
-| Log entry hard cap | 100,000 | Upper bound regardless of heap |
+| Log entry hard cap | 250,000 | Upper bound regardless of heap |
 | Expectation hard cap | 15,000 | Upper bound regardless of heap |
 
 ### Source Code
@@ -87,9 +87,9 @@ The table below shows the computed defaults for different JVM heap configuration
 | 128 MB | 110,592 | 13,824 | 11,059 |
 | 256 MB | 241,664 | 30,208 | 15,000 (capped) |
 | 512 MB | 503,808 | 62,976 | 15,000 (capped) |
-| 1 GB | 1,028,096 | 100,000 (capped) | 15,000 (capped) |
-| 2 GB | 2,076,672 | 100,000 (capped) | 15,000 (capped) |
-| 4 GB | 4,173,824 | 100,000 (capped) | 15,000 (capped) |
+| 1 GB | 1,028,096 | 128,512 | 15,000 (capped) |
+| 2 GB | 2,076,672 | 250,000 (capped) | 15,000 (capped) |
+| 4 GB | 4,173,824 | 250,000 (capped) | 15,000 (capped) |
 
 With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **30,000 log entries**.
 
@@ -131,7 +131,7 @@ On small heaps (< 256 MB), if you have both a large number of expectations AND h
 
 `heapAvailableInKB()` derives its budget from the heap **ceiling** (`-Xmx`), which is fixed for the JVM's lifetime, so the computed default does **not** depend on when the property is first read or on allocation history.
 
-This was previously a real defect. The budget used to be `(maxHeap − usedHeap)`, i.e. the *momentary free heap* at first read. Because the resolved default is cached JVM-wide with no reset path, whatever the free heap looked like at that first read froze the capacity for **every** store in the JVM. A test suite whose first MockServer start happened after a heavy fixture silently got a small store for every instance — for example, at `-Xmx1g` holding ~645 MB before the first read drove the frozen `maxLogEntries` down from 100,000 to ~45,957, and a later allocation could not raise it. Under-sizing the log is not merely a memory concern: the ring overwrites silently, so a later `verify` can stop finding what it should. Sizing off the ceiling removes this dependence on allocation ordering entirely.
+This was previously a real defect. The budget used to be `(maxHeap − usedHeap)`, i.e. the *momentary free heap* at first read. Because the resolved default is cached JVM-wide with no reset path, whatever the free heap looked like at that first read froze the capacity for **every** store in the JVM. A test suite whose first MockServer start happened after a heavy fixture silently got a small store for every instance — for example, at `-Xmx1g` holding ~645 MB before the first read drove the frozen `maxLogEntries` down from 100,000 (the cap at the time) to ~45,957, and a later allocation could not raise it. Under-sizing the log is not merely a memory concern: the ring overwrites silently, so a later `verify` can stop finding what it should. Sizing off the ceiling removes this dependence on allocation ordering entirely.
 
 Note the change moves the basis from "size to currently-free heap" to "size to the heap the JVM is allowed" — the default now over-provisions slightly relative to free memory on a heavily-used small heap, deterministically. Deployments that need a smaller store set `mockserver.maxLogEntries` / `mockserver.maxExpectations` explicitly (which is unaffected by this change and always wins).
 
@@ -462,7 +462,7 @@ For workloads with very large request/response bodies (>10 KB), the automatic de
 
 | Property | System Property | Environment Variable | Default |
 |----------|----------------|---------------------|---------|
-| Max log entries | `mockserver.maxLogEntries` | `MOCKSERVER_MAX_LOG_ENTRIES` | `min(heapAvailableKB / 8, 100000)` |
+| Max log entries | `mockserver.maxLogEntries` | `MOCKSERVER_MAX_LOG_ENTRIES` | `min(heapAvailableKB / 8, 250000)` |
 | Max event log size (bytes) | `mockserver.maxEventLogSizeInBytes` | `MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES` | `(heapAvailableKB / 12) * 1024` at `INFO`/`DEBUG`/`TRACE`; `(heapAvailableKB / 8) * 1024` at `WARN`/`ERROR`/`OFF` (see formula above; `0` only when heap ceiling is undefined) |
 | Max logged body bytes | `mockserver.maxLoggedBodyBytes` | `MOCKSERVER_MAX_LOGGED_BODY_BYTES` | `0` (unlimited) |
 | Ring buffer size | `mockserver.ringBufferSize` | `MOCKSERVER_RING_BUFFER_SIZE` | `min(maxLogEntries, 16384)` (rounded up to a power of two) |
@@ -556,11 +556,11 @@ to `min(maxLogEntries, 16384)`:
 | 1,000 | 1,000 | 1,024 | ~115 KB |
 | 5,000 | 5,000 | 8,192 | ~920 KB |
 | 10,000 | 10,000 | 16,384 | ~1.8 MB |
-| 50,000 | 16,384 (capped) | 32,768 | ~3.7 MB |
-| 100,000 | 16,384 (capped) | 32,768 | ~3.7 MB |
+| 50,000 | 16,384 (capped) | 16,384 | ~1.8 MB |
+| 250,000 | 16,384 (capped) | 16,384 | ~1.8 MB |
 
-Before this decoupling, `maxLogEntries=100000` forced a 131,072-slot ring (~14.7 MB of empty `LogEntry`
-shells) purely as a side effect of retention sizing; the default 16,384 ceiling caps that at ~3.7 MB
+Before this decoupling, `maxLogEntries=250000` forced a 262,144-slot ring (~29 MB of empty `LogEntry`
+shells) purely as a side effect of retention sizing; the default 16,384 ceiling caps that at ~1.8 MB
 while leaving small deployments (maxLogEntries ≤ 16,384) unchanged.
 
 The ring buffer pre-allocates `LogEntry` objects (just the shells, ~112 bytes each). These are reused via

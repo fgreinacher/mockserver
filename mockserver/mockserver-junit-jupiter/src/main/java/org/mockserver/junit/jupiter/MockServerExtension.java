@@ -116,7 +116,7 @@ public class MockServerExtension implements ParameterResolver, BeforeAllCallback
     /**
      * Apply the JUnit integration's dev-mode policy at server start. Dev mode fixes
      * the in-memory store sizes at {@code maxLogEntries} / {@code maxExpectations} =
-     * 1000 instead of the heap-ceiling-derived defaults (up to 100000 / 15000),
+     * 1000 instead of the heap-ceiling-derived defaults (up to 250000 / 15000),
      * which lets a suite that starts many short-lived servers in one JVM trim its
      * memory footprint (a measured ~117&nbsp;MB &rarr; ~52&nbsp;MB across 32 in-JVM
      * instances).

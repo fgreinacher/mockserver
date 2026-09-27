@@ -640,7 +640,7 @@ public class ConfigurationTest {
 
             long heapAvailableInKB = ConfigurationProperties.heapAvailableInKB();
             int heapBasedLogEntries = ConfigurationProperties.heapBasedDefaultOrFloor(
-                heapAvailableInKB, 8, 100000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
+                heapAvailableInKB, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES);
             int heapBasedExpectations = ConfigurationProperties.heapBasedDefaultOrFloor(
                 heapAvailableInKB, 10, 15000, ConfigurationProperties.DEV_MODE_MAX_EXPECTATIONS);
 

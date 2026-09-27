@@ -43,7 +43,7 @@ import static org.slf4j.event.Level.INFO;
  * writes published via {@code tryPublishEvent} overflow the ring and are dropped).
  *
  * <p><b>What this benchmark measures.</b> {@code AverageTime} per query at occupancies spanning the
- * default {@code maxLogEntries} ceiling (100_000) and above. The latency at occupancy {@code n} is
+ * default {@code maxLogEntries} ceiling (250_000) and above. The latency at occupancy {@code n} is
  * the window for which the consumer is frozen; dividing the ring size (16_384) by it gives the
  * sustained serving-path write rate above which a single concurrent query drops evidence.
  *

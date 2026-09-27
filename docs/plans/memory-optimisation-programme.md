@@ -448,7 +448,7 @@ Between builds 441 and 442 the **absolute** `Long` count *fell* 168,982 → 150,
 live requests *rose* 19% (84,223 → 100,005). **A population that is genuinely ~1.5 per retained
 request cannot fall while requests rise.** So either the normalisation denominator is wrong, or
 the population tracks something pinned near a constant — the obvious candidate being the entry
-count, which `maxLogEntries` pins at 100,000. **Resolve this before attributing the `Long` to
+count, which `maxLogEntries` pinned at 100,000 at the time (the default cap is now 250,000). **Resolve this before attributing the `Long` to
 anything.** Best remaining candidate is `NettyHttpClient.java:260-266` → `Timing` (≥3 epoch-milli
 boxes per *forwarded* response), which is inert on the workload that fills the log.
 

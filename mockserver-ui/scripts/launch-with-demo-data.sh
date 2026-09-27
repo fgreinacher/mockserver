@@ -160,8 +160,8 @@ MOCKSERVER_LOG="$UI_DIR/mockserver-demo.log"
 # (e.g. DEMO_MAX_HEAP=2g npm run demo) for heavier scenarios.
 DEMO_MAX_HEAP="${DEMO_MAX_HEAP:-1g}"
 # Cap the in-memory request event-log ring buffer. Its default size scales with heap up to
-# 100,000 entries (min(heapAvailableInKB()/8, 100000)) — even at -Xmx1g that resolves to the
-# full 100,000 ceiling, a buffer budgeted to consume essentially the whole heap when it fills.
+# 250,000 entries (min(heapAvailableInKB()/8, 250000)) — at -Xmx1g that resolves to ~128,512
+# entries (heapKB/8, below the ceiling), a buffer budgeted to consume much of the heap when it fills.
 # The demo load self-targets THIS server, and the load-generated event-log suppression is
 # driver-side only (the marker is transient and does not survive the socket hop), so the server
 # logs all of its own load traffic. Left unbounded that fills the buffer in ~15-30 min and pushes

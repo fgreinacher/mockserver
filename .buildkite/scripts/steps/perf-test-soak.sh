@@ -66,8 +66,8 @@ SOAK_RATE="${K6_SOAK_RATE:-200}"
 #
 # k6/lib/config.js LIMITS is documented as "standard thresholds shared by the load/stress/soak
 # scenarios": p95 25 ms, p99 100 ms. Those were calibrated for a SHORT load test against a nearly
-# empty event log. This soak runs for two hours against a log that fills its 100k ring in the first
-# ~265 s and stays pinned there, so it measures a different subject and the inherited numbers do not
+# empty event log. This soak runs for two hours against a log that fills its ~155k ring in the first
+# ~410 s and stays pinned there, so it measures a different subject and the inherited numbers do not
 # describe it. Build #340 - the first VALID soak, on the fixed harness - measured the match arm at
 # p95 62.644 ms and p99 96.051 ms. The p95 gate therefore reds this build every week on a number
 # that was never about this scenario, while p99 "passes" with 4% headroom, which is not a pass so
@@ -88,8 +88,8 @@ SOAK_P99_MS="${K6_P99_MS:-200}"
 SOAK_VERIFY_RATE="${K6_SOAK_VERIFY_RATE:-1}"
 SOAK_RETRIEVE_RATE="${K6_SOAK_RETRIEVE_RATE:-1}"
 # PRESENCE-ASSERTION floor: the SUT must have received at least this many requests
-# for the 10b measurement to be "against a full log". The default ring holds ~100k
-# entries (~40k requests); a 2h soak at 200 rps sends ~1.4M, so 100000 is a wide
+# for the 10b measurement to be "against a full log". The default ring on this 2 GB SUT
+# holds ~155k entries (~80k requests); a 2h soak at 200 rps sends ~1.4M, so 100000 is a wide
 # safety floor that only trips when traffic never really flowed. Override LOW for a
 # short local run.
 SOAK_MIN_RECEIVED="${SOAK_MIN_RECEIVED:-100000}"
@@ -192,7 +192,7 @@ sampler & SAMPLER_PID=$!
 
 # OPEN QUESTION for the first weekly run (not settled): local validation used a
 # small (~2000-entry) ring, where a `type=REQUESTS` full scan is cheap. At the
-# production default (~100k entries) that scan is roughly 50x heavier per call, so
+# production default (~155k entries on this 2 GB SUT) that scan is roughly 75x heavier per call, so
 # its effect on the GATED match p99 and on drift_ratio is UNVERIFIED. Gate headroom
 # is large (local match p99 ~2.3 ms against the 100 ms limit), so a false red is
 # unlikely — but the FIRST weekly run should be read as validating that assumption,

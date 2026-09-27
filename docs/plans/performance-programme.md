@@ -103,9 +103,11 @@ Verified locally: a `docker/Dockerfile` image built from this commit emits the m
 `jdk.management` from the module list makes both the metric and the new guard go red. Marked resolved
 pending the first snapshot image built from this commit through the pipeline.
 
-### 5. Large-heap event-log profile — INSTRUMENT LANDED (needs a run + a cap decision)
+### 5. Large-heap event-log profile — DONE (cap raised to 250,000)
 
-**First run, build 456 (2026-09-27), 8 GiB heap:** invalid by its own gate — the rig always passes a fixed 256 MiB `maxEventLogSizeInBytes` unless `PERF_MAX_EVENT_LOG_BYTES` is set, so the byte budget did not scale with the heap (the check `event_log_byte_budget_scaled_with_heap` failed, correctly). It still shows the key fact: 100,000 entries retained at a mean of 2,684 bytes = ~268 MB, so the **count cap binds** (100,000 is reached at 0.76 GiB of heap and never grows); with a heap-scaled 1 GiB budget only ~25% of it would be used. Corrected run 458 sets `PERF_MAX_EVENT_LOG_BYTES=1073741824` (heap/8). **Decision to take after 458:** whether `maxLogEntries` should keep its fixed 100,000 ceiling or scale with the heap.
+**First run, build 456 (2026-09-27), 8 GiB heap:** invalid by its own gate — the rig always passes a fixed 256 MiB `maxEventLogSizeInBytes` unless `PERF_MAX_EVENT_LOG_BYTES` is set, so the byte budget did not scale with the heap (the check `event_log_byte_budget_scaled_with_heap` failed, correctly). It still shows the key fact: 100,000 entries retained at a mean of 2,684 bytes = ~268 MB, so the **count cap binds** (100,000 is reached at 0.76 GiB of heap and never grows); with a heap-scaled 1 GiB budget only ~25% of it would be used. Corrected run 458 sets `PERF_MAX_EVENT_LOG_BYTES=1073741824` (heap/8).
+
+**Run 458 (8 GiB heap, 1 GiB byte budget):** the count cap bound first — 100,000 entries at 100% count utilisation, holding ~527 MB (mean 5,268 B/entry), i.e. 49% of the byte budget and ~6% of the heap. **Decision (maintainer, 2026-09-27):** raise the fixed cap from 100,000 to 250,000 and keep `min(heapKB/8, cap)`; the byte budget stays the memory guard. The cap is now reached at ~1.9 GiB of heap, and the 2 GB perf SUT resolves ~155,000 entries instead of 100,000 (the rig's per-core arithmetic now derives this from `PERF_PERCORE_MEMORY`).
 
 The instrument is in `perf-test-run.sh`: a large-heap profile plus a fail-closed proportionality
 assertion. It exists to answer one question — when the heap grows, does the event log actually
@@ -135,24 +137,21 @@ not evidence of proportionality).
 
 | heap | `maxLogEntries` | byte budget @ERROR (`heap/8`) | count cap binds when mean entry < |
 |---|---|---|---|
-| 1.2 GiB | 100,000 (capped) | 154 MiB | 1.6 KiB |
-| 8 GiB | 100,000 (capped) | 1024 MiB | 10.5 KiB |
+| 1.2 GiB | ~155,000 | 154 MiB | 1.0 KiB |
+| 8 GiB | 250,000 (capped) | 1024 MiB | 4.2 KiB |
 
-`maxLogEntries = min(heapKB/8, 100000)` reaches the 100,000 cap at **0.76 GiB** of heap and never
-grows again; `maxEventLogSizeInBytes = (heapKB/divisor)*1024` (divisor 8 at WARN/ERROR/OFF, 12 at
+`maxLogEntries = min(heapKB/8, 250000)` reaches the 250,000 cap at **~1.9 GiB** of heap (the cap was
+100,000, reached at 0.76 GiB, until run 458) and never grows again; `maxEventLogSizeInBytes = (heapKB/divisor)*1024` (divisor 8 at WARN/ERROR/OFF, 12 at
 INFO/DEBUG/TRACE) scales linearly with the heap without limit. So for the perf workload's small
-bodies the COUNT cap binds, and moving 1.2 GiB → 8 GiB yields no additional retention at all: a
-large-heap run tests "same live set, much more headroom", not "bigger log". The assertion makes the
+bodies the COUNT cap binds on large heaps, so beyond ~1.9 GiB a bigger heap yields no additional
+retention: a large-heap run tests "same live set, much more headroom", not "bigger log". The assertion makes the
 harness measure that rather than assume it.
 
-**Recommendation on the 100,000 `maxLogEntries` cap — deferred to the maintainer (a product
-default with user-visible memory consequences).** On a large heap the count cap, not the heap, is
-what limits retention for small-bodied traffic. At 8 GiB the byte budget is ~1 GiB but 100,000
-entries of, say, 2 KiB occupy only ~195 MiB — the log stops growing at ~2.4 % of the heap while
-~800 MiB of budgeted headroom goes unused. Raising or heap-deriving the cap for large heaps (e.g.
-`min(heapKB/8, <higher-or-unbounded>)`) would let a big-heap deployment retain proportionally more
-evidence, at the cost of more heap under sustained load and a larger disruptor ring. This is the
-maintainer's call; the instrument now produces the numbers to make it with.
+**Cap decision — resolved.** Run 458 showed the 100,000 cap leaving ~half the 8 GiB byte budget
+unused, so the maintainer chose a higher fixed cap (250,000) over an unbounded heap-derived one:
+query scans (`retrieve`/`verify`) grow with entry count, not heap, so an unbounded count on a very
+large heap would slow them without limit. The disruptor ring is unaffected (`min(maxLogEntries,
+16384)`).
 
 ## Durable findings
 

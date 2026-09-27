@@ -19,7 +19,7 @@
 //
 // Item 10b — EVENT-LOG VERIFICATION COST AS THE LOG FILLS. `verify` and
 // `retrieveRecordedRequests` are issued at a LOW fixed rate throughout. Both
-// scan the event log, so a query against a FULL 100k ring is where an O(n)
+// scan the event log, so a query against a FULL ring is where an O(n)
 // regression bites hardest — and this is the central-deployment pattern
 // (pipelines assert / retrieve recorded traffic). Their latency is MEASURED, not
 // gated (notify-only until ~8 weekly runs of variance exist), and the soak step

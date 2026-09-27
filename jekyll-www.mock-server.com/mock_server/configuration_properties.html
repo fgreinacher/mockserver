@@ -99,7 +99,7 @@ mockserver.enableCORSForAllResponses=false</code></pre>
         <tr>
             <td><span class="inline_code">maxLogEntries</span></td>
             <td><span class="inline_code">MOCKSERVER_MAX_LOG_ENTRIES</span></td>
-            <td><span class="this_value">heap-based (up to 100,000)</span></td>
+            <td><span class="this_value">heap-based (up to 250,000)</span></td>
             <td>How many log entries are retained in memory before the oldest are overwritten. Lower for high-throughput or large-body workloads; each HTTP request generates 2–3 log entries</td>
         </tr>
         <tr>
@@ -552,7 +552,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
 <div class="panel title">
     <p>When enabled, applies a developer-friendly configuration profile that reduces memory usage for laptop and test-suite workloads. The following defaults are overridden (only for properties the user has not explicitly set via system property, environment variable, or properties file):</p>
     <ul>
-        <li><span class="inline_code">maxLogEntries</span> is set to <span class="this_value">1,000</span> (instead of the heap-based default up to 100,000)</li>
+        <li><span class="inline_code">maxLogEntries</span> is set to <span class="this_value">1,000</span> (instead of the heap-based default up to 250,000)</li>
         <li><span class="inline_code">maxExpectations</span> is set to <span class="this_value">1,000</span> (instead of the heap-based default up to 15,000)</li>
     </ul>
     <p>This is useful when running MockServer locally during development, where retaining tens of thousands of log entries is unnecessary and wastes memory.</p>
@@ -595,7 +595,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
 <button id="button_configuration_request_log_size" class="accordion title"><strong>Maximum Log Entries To Hold In Memory</strong></button>
 <div class="panel title">
     <p>Maximum number of log entries to hold in memory, this includes recorded requests, expectation match failures and other log entries. Log entries are stored in a circular queue so once this limit is reached the oldest entries are overwritten. The lower the log level the more log entries will be captured, particularly at TRACE level logging.</p>
-    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">minimum of (JVM heap size in KB / 8) and 100000</span></p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">minimum of (JVM heap size in KB / 8) and 250000</span></p>
     <p>The default is calculated automatically from the JVM heap size (the <span class="inline_code">-Xmx</span> maximum), so it is the same for every MockServer instance in a JVM and does not depend on how much memory happens to be in use when the first instance starts. Each log entry typically uses 4-10 KB of heap for small request/response bodies, but log entries for large responses are proportionally larger (e.g., a 100 KB response body produces log entries of ~100+ KB each). Each HTTP request generates 2-3 log entries (request recording, expectation match, and response) that are always stored regardless of log level. With a 256 MB heap the default of approximately 30,000 entries covers around 10,000-15,000 HTTP requests before the oldest entries are evicted. For high-throughput use cases or large response bodies, reduce this value to limit memory usage and GC pressure. On JVMs that do not report a usable heap maximum (for example GraalVM native images), the default falls back to a floor of 1,000 — set the property explicitly to override. See <a href="/mock_server/performance.html#troubleshooting_performance">troubleshooting performance</a> for detailed guidance.</p>
     <p><strong>Independent of the ring buffer:</strong> <span class="inline_code">maxLogEntries</span> controls how much history is <em>retained</em>, not the size of the in-flight log event ring buffer. The ring buffer is a separate, smaller buffer sized by <span class="inline_code">ringBufferSize</span> (default <span class="this_value">min(maxLogEntries, 16,384)</span>), so raising <span class="inline_code">maxLogEntries</span> for more retention no longer inflates the ring buffer's fixed memory. You can set <span class="inline_code">maxLogEntries</span> to any value — it does not need to be a power of 2.</p>
     <p>Java Code:</p>
@@ -615,7 +615,7 @@ mockserver.enableCORSForAllResponses=true</code></pre>
     <p>Number of slots in the in-memory log event ring buffer. This buffer holds log events briefly while they are passed from the threads handling requests to the single thread that writes them to the log — it is <strong>not</strong> the retained log history (that is controlled separately by <span class="inline_code">maxLogEntries</span>). The ring buffer only needs to absorb short bursts of log events, so it can be much smaller than the retained history.</p>
     <p>Type: <span class="keyword">int</span> Default: <span class="this_value">minimum of maxLogEntries and 16,384</span> (rounded up to the next power of 2)</p>
     <p>You rarely need to change this. Raise it only if MockServer reports dropped log events (the <span class="inline_code">mock_server_dropped_log_events</span> metric is non-zero and growing) under sustained extreme load. Lower it to save a little memory on a workload that retains a lot of history but receives requests slowly. The value is rounded up to the next power of 2 because the underlying LMAX Disruptor requires it.</p>
-    <p>Previously the ring buffer was sized from <span class="inline_code">maxLogEntries</span>, so a large retention setting (e.g. <span class="inline_code">maxLogEntries=100000</span>) forced a 131,072-slot ring (~14.7&nbsp;MB of pre-allocated, mostly-empty slots). The default 16,384 ceiling caps that overhead while leaving small deployments unchanged.</p>
+    <p>Previously the ring buffer was sized from <span class="inline_code">maxLogEntries</span>, so a large retention setting (e.g. <span class="inline_code">maxLogEntries=250000</span>) forced a 262,144-slot ring (~29&nbsp;MB of pre-allocated, mostly-empty slots). The default 16,384 ceiling caps that overhead while leaving small deployments unchanged.</p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.ringBufferSize(int size)</code></pre>
     <p>System Property:</p>

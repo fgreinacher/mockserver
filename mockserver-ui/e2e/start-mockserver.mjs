@@ -83,7 +83,7 @@ if (!jar) {
 console.error(`[e2e] Booting MockServer on port ${PORT} from ${jar}`);
 
 // Modest heap + capped log ring buffer: the suite fires only a handful of
-// requests, so it never needs the heap-scaled default (up to 100,000 entries).
+// requests, so it never needs the heap-scaled default (up to 250,000 entries).
 const child = spawn(
   'java',
   [

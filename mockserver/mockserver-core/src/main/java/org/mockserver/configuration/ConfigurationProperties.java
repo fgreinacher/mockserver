@@ -112,8 +112,8 @@ public class ConfigurationProperties {
     // and the single consumer thread — it is NOT the retained history (that is the separate
     // CircularConcurrentLinkedDeque sized at maxLogEntries). 16384 slots (rounded up to the next
     // power of two by Configuration.ringBufferSize) comfortably absorbs realistic bursts while
-    // capping the fixed pre-allocated-shell overhead. Without this cap, maxLogEntries=100000 forced a
-    // 131072-slot ring (~14.7MB of empty LogEntry shells) purely as a side effect of retention sizing.
+    // capping the fixed pre-allocated-shell overhead. Without this cap, maxLogEntries=250000 forced a
+    // 262144-slot ring (~29MB of empty LogEntry shells) purely as a side effect of retention sizing.
     static final int DEFAULT_MAX_RING_BUFFER_SIZE = 16384;
     private static final String MOCKSERVER_MAX_WEB_SOCKET_EXPECTATIONS = "mockserver.maxWebSocketExpectations";
     private static final String MOCKSERVER_WEB_SOCKET_PROXY_MAX_RECORDED_FRAMES = "mockserver.webSocketProxyMaxRecordedFrames";
@@ -1837,7 +1837,7 @@ public class ConfigurationProperties {
      * (only for properties the user has not explicitly set via system property,
      * environment variable, or properties file):</p>
      * <ul>
-     *     <li>{@code maxLogEntries} &rarr; 1,000 (instead of the heap-based default up to 100,000)</li>
+     *     <li>{@code maxLogEntries} &rarr; 1,000 (instead of the heap-based default up to 250,000)</li>
      *     <li>{@code maxExpectations} &rarr; 1,000 (instead of the heap-based default up to 15,000)</li>
      * </ul>
      * <p>Default: {@code false}. Enable via {@code --dev} CLI flag, {@code -Dmockserver.devMode=true},
@@ -2098,7 +2098,7 @@ public class ConfigurationProperties {
             return explicit;
         }
         return devModeDefaultOrHeapBased(DEV_MODE_MAX_LOG_ENTRIES,
-            heapBasedDefaultOrFloor(heapAvailableInKB(), 8, 100000, DEV_MODE_MAX_LOG_ENTRIES));
+            heapBasedDefaultOrFloor(heapAvailableInKB(), 8, 250000, DEV_MODE_MAX_LOG_ENTRIES));
     }
 
     /**
@@ -2106,7 +2106,7 @@ public class ConfigurationProperties {
      * Maximum number of log entries stored in memory.  Log entries are stored in a circular queue so once this limit is reach the oldest log entries are overwritten.
      * </p>
      * <p>
-     * The default maximum depends on the available memory in the JVM with an upper limit of 100000, but can be overridden using defaultMaxLogEntries
+     * The default maximum depends on the available memory in the JVM with an upper limit of 250000, but can be overridden using defaultMaxLogEntries
      * </p>
      *
      * @param count maximum number of expectations to store
@@ -2270,8 +2270,8 @@ public class ConfigurationProperties {
      * {@code maxLogEntriesForDefault} so an instance {@link Configuration} can base the default on its
      * OWN maxLogEntries rather than the global/static value. Decoupled from maxLogEntries retention:
      * the in-flight disruptor ring only needs to absorb event bursts, not hold the full retained
-     * history, so large-retention deployments (e.g. maxLogEntries=100000) no longer pre-allocate a
-     * 131072-slot ring. {@link Configuration#ringBufferSize()} rounds the result up to the next power
+     * history, so large-retention deployments (e.g. maxLogEntries=250000) no longer pre-allocate a
+     * 262144-slot ring. {@link Configuration#ringBufferSize()} rounds the result up to the next power
      * of two as the disruptor requires.
      */
     public static int resolveRingBufferSize(int maxLogEntriesForDefault) {

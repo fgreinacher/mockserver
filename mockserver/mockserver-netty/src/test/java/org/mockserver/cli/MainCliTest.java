@@ -916,9 +916,9 @@ public class MainCliTest {
         // maxLogEntries: the shared surefire fork sets mockserver.maxLogEntries=1000 (see the mockserver
         // root pom) to keep each MockServerEventLog's disruptor ring buffer tiny — every server started
         // after this test reads that value. The previous finally recomputed a heap-based maxLogEntries
-        // (min(heap/8, 100000)) and wrote it back instead of restoring the captured 1000, leaking a value
-        // up to 100000 into the shared static config; later servers then pre-allocated a
-        // nextPowerOfTwo(100000)=131072-entry ring buffer each, and the resulting GC pressure
+        // (min(heap/8, 250000)) and wrote it back instead of restoring the captured 1000, leaking a value
+        // up to 250000 into the shared static config; later servers then pre-allocated a
+        // nextPowerOfTwo(250000)=262144-entry ring buffer each, and the resulting GC pressure
         // intermittently timed out or emptied responses in whichever CLI tests ran afterwards.
         String origMaxLogEntriesProp = System.getProperty("mockserver.maxLogEntries");
         String origMaxLogEntriesCache = cache.get("mockserver.maxLogEntries");

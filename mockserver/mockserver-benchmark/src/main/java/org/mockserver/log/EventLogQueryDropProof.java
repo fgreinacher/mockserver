@@ -218,7 +218,7 @@ public final class EventLogQueryDropProof {
      * Diagnostic (item 2 / boundary): scan wall-clock grows ~linearly with occupancy. The derived
      * "fill rate" column is RING / scan = the sustained serving-path write rate (entries/s) that
      * would exactly fill the ring during one scan — above it, a single concurrent query drops. Note
-     * the default maxLogEntries ceiling is 100_000; higher occupancies model raised-limit deployments.
+     * the default maxLogEntries ceiling is 250_000; higher occupancies model raised-limit deployments.
      */
     private static void scanLatencyVsOccupancy() {
         int[] occupancies = {10_000, 50_000, 100_000, 250_000, 500_000};

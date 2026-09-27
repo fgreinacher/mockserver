@@ -127,8 +127,21 @@ WARMUP_RATE="${PERF_PERCORE_WARMUP_RATE:-500}"
 WARMUP_DURATION="${PERF_PERCORE_WARMUP_DURATION:-8s}"
 
 SERVER_MEMORY="${PERF_PERCORE_MEMORY:-1g}"
-# Event-log retention parameters for the per-rung residence arithmetic.
-ASSUMED_MAX_LOG_ENTRIES="${PERF_PERCORE_MAX_LOG_ENTRIES:-100000}"
+# Event-log retention parameters for the per-rung residence arithmetic. The default mirrors
+# the product's min(heapKB/8, 250000) on the images' 60% heap of SERVER_MEMORY.
+percore_default_max_log_entries() {
+  local mem="$1" bytes
+  case "$mem" in
+    *[gG]) bytes=$(( ${mem%[gG]} * 1024 * 1024 * 1024 )) ;;
+    *[mM]) bytes=$(( ${mem%[mM]} * 1024 * 1024 )) ;;
+    *) echo 250000; return ;;
+  esac
+  local entries=$(( (bytes * 60 / 100 / 1024 - 20480) / 8 ))
+  [ "$entries" -gt 250000 ] && entries=250000
+  [ "$entries" -lt 1000 ] && entries=1000
+  echo "$entries"
+}
+ASSUMED_MAX_LOG_ENTRIES="${PERF_PERCORE_MAX_LOG_ENTRIES:-$(percore_default_max_log_entries "$SERVER_MEMORY")}"
 
 SWEEP_SETTLE_S="${PERF_PERCORE_SETTLE_S:-3}"
 SWEEP_ERR_EPS="${PERF_PERCORE_ERROR_EPS:-0.01}"
