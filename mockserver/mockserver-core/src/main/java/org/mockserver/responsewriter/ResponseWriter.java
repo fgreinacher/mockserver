@@ -125,7 +125,10 @@ public abstract class ResponseWriter {
     protected HttpResponse addConnectionHeader(final HttpRequest request, final HttpResponse response) {
         ConnectionOptions connectionOptions = response.getConnectionOptions();
 
-        HttpResponse responseWithConnectionHeader = response.clone();
+        // Copy only the headers: replaceHeader below mutates the Connection header, and this copy
+        // exists so that mutation cannot leak into a caller that passed a shared response. Every
+        // other field is shared by reference, since nothing here mutates them.
+        HttpResponse responseWithConnectionHeader = response.cloneWithHeaders();
 
         if (connectionOptions != null && (connectionOptions.getSuppressConnectionHeader() != null || connectionOptions.getKeepAliveOverride() != null)) {
             if (!Boolean.TRUE.equals(connectionOptions.getSuppressConnectionHeader())) {

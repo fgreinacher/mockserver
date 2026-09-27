@@ -828,6 +828,30 @@ public class HttpResponse extends Action<HttpResponse> implements HttpMessage<Ht
             .withStreamingBody(streamingBody);
     }
 
+    /**
+     * A copy that deep-copies only the headers, sharing every other field (body, trailers, cookies,
+     * connection options, ...) by reference. For a caller that mutates only the headers of the copy
+     * and then reads the rest, this is equal on the wire to {@link #clone()} without paying for the
+     * trailer and cookie deep copies.
+     */
+    public HttpResponse cloneWithHeaders() {
+        return response()
+            .withStatusCode(statusCode)
+            .withStatusCodeRange(statusCodeRange)
+            .withReasonPhrase(reasonPhrase)
+            .withBody(body)
+            .withGenerateFromSchema(generateFromSchema)
+            .withHeaders(headers != null ? headers.clone() : null)
+            .withTrailers(trailers)
+            .withCookies(cookies)
+            .withDelay(getDelay())
+            .withConnectionOptions(connectionOptions)
+            .withRecoverAfter(recoverAfter)
+            .withStreamId(streamId)
+            .withTiming(timing)
+            .withStreamingBody(streamingBody);
+    }
+
     public HttpResponse update(HttpResponse responseOverride, HttpResponseModifier responseModifier) {
         return update(responseOverride, responseModifier, null);
     }
