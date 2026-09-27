@@ -6418,7 +6418,7 @@ public class ConfigurationProperties {
         }
     }
 
-    private static Long readLongProperty(String key, String environmentVariableKey, long defaultValue) {
+    private static long readLongProperty(String key, String environmentVariableKey, long defaultValue) {
         try {
             return Long.parseLong(readPropertyHierarchically(PROPERTIES, key, environmentVariableKey, "" + defaultValue));
         } catch (NumberFormatException nfe) {
@@ -6446,7 +6446,7 @@ public class ConfigurationProperties {
      * If both names are set at launch to different values (a contradictory configuration that cannot be
      * ordered), the primary key wins.
      */
-    private static Long readLongPropertyWithMillisAlias(String key, String environmentVariableKey, String aliasKey, String aliasEnvironmentVariableKey, long defaultValue) {
+    private static long readLongPropertyWithMillisAlias(String key, String environmentVariableKey, String aliasKey, String aliasEnvironmentVariableKey, long defaultValue) {
         long primary = readLongProperty(key, environmentVariableKey, defaultValue);
         if (primary != defaultValue) {
             return primary;
