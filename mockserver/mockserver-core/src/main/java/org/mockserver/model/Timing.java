@@ -6,73 +6,77 @@ import java.util.Objects;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class Timing {
-    private Long requestStartedMillis;
-    private Long connectionEstablishedMillis;
-    private Long responseReceivedMillis;
-    private Long connectionTimeInMillis;
-    private Long timeToFirstByteInMillis;
-    private Long totalTimeInMillis;
-    // Injected-vs-real latency waterfall (additive): the portion of totalTimeInMillis that MockServer
-    // deliberately injected, split by source, versus real connect/processing/upstream time. All optional.
-    private Long injectedChaosLatencyMillis;
-    private Long injectedDelayMillis;
-    private Long breakpointHeldMillis;
+    // epoch-millis / duration fields stored as primitive long to avoid a retained boxed Long per field
+    // on every forwarded response (each Timing is held for the log entry's lifetime). UNSET is the "not
+    // set" sentinel; the public getters/setters keep their Long signatures and null semantics, so JSON,
+    // equals/hashCode and every consumer see identical output. Long.MIN_VALUE cannot collide with a real
+    // epoch time or duration. Mirrors the pattern in RequestDefinition.receivedTimestamp.
+    private static final long UNSET = Long.MIN_VALUE;
+    private long requestStartedMillis = UNSET;
+    private long connectionEstablishedMillis = UNSET;
+    private long responseReceivedMillis = UNSET;
+    private long connectionTimeInMillis = UNSET;
+    private long timeToFirstByteInMillis = UNSET;
+    private long totalTimeInMillis = UNSET;
+    private long injectedChaosLatencyMillis = UNSET;
+    private long injectedDelayMillis = UNSET;
+    private long breakpointHeldMillis = UNSET;
 
     public static Timing timing() {
         return new Timing();
     }
 
     public Long getRequestStartedMillis() {
-        return requestStartedMillis;
+        return requestStartedMillis == UNSET ? null : requestStartedMillis;
     }
 
     public Timing withRequestStartedMillis(Long requestStartedMillis) {
-        this.requestStartedMillis = requestStartedMillis;
+        this.requestStartedMillis = requestStartedMillis == null ? UNSET : requestStartedMillis;
         return this;
     }
 
     public Long getConnectionEstablishedMillis() {
-        return connectionEstablishedMillis;
+        return connectionEstablishedMillis == UNSET ? null : connectionEstablishedMillis;
     }
 
     public Timing withConnectionEstablishedMillis(Long connectionEstablishedMillis) {
-        this.connectionEstablishedMillis = connectionEstablishedMillis;
+        this.connectionEstablishedMillis = connectionEstablishedMillis == null ? UNSET : connectionEstablishedMillis;
         return this;
     }
 
     public Long getResponseReceivedMillis() {
-        return responseReceivedMillis;
+        return responseReceivedMillis == UNSET ? null : responseReceivedMillis;
     }
 
     public Timing withResponseReceivedMillis(Long responseReceivedMillis) {
-        this.responseReceivedMillis = responseReceivedMillis;
+        this.responseReceivedMillis = responseReceivedMillis == null ? UNSET : responseReceivedMillis;
         return this;
     }
 
     public Long getConnectionTimeInMillis() {
-        return connectionTimeInMillis;
+        return connectionTimeInMillis == UNSET ? null : connectionTimeInMillis;
     }
 
     public Timing withConnectionTimeInMillis(Long connectionTimeInMillis) {
-        this.connectionTimeInMillis = connectionTimeInMillis;
+        this.connectionTimeInMillis = connectionTimeInMillis == null ? UNSET : connectionTimeInMillis;
         return this;
     }
 
     public Long getTimeToFirstByteInMillis() {
-        return timeToFirstByteInMillis;
+        return timeToFirstByteInMillis == UNSET ? null : timeToFirstByteInMillis;
     }
 
     public Timing withTimeToFirstByteInMillis(Long timeToFirstByteInMillis) {
-        this.timeToFirstByteInMillis = timeToFirstByteInMillis;
+        this.timeToFirstByteInMillis = timeToFirstByteInMillis == null ? UNSET : timeToFirstByteInMillis;
         return this;
     }
 
     public Long getTotalTimeInMillis() {
-        return totalTimeInMillis;
+        return totalTimeInMillis == UNSET ? null : totalTimeInMillis;
     }
 
     public Timing withTotalTimeInMillis(Long totalTimeInMillis) {
-        this.totalTimeInMillis = totalTimeInMillis;
+        this.totalTimeInMillis = totalTimeInMillis == null ? UNSET : totalTimeInMillis;
         return this;
     }
 
@@ -81,11 +85,11 @@ public class Timing {
      * {@code null} when no chaos latency was applied to this exchange.
      */
     public Long getInjectedChaosLatencyMillis() {
-        return injectedChaosLatencyMillis;
+        return injectedChaosLatencyMillis == UNSET ? null : injectedChaosLatencyMillis;
     }
 
     public Timing withInjectedChaosLatencyMillis(Long injectedChaosLatencyMillis) {
-        this.injectedChaosLatencyMillis = injectedChaosLatencyMillis;
+        this.injectedChaosLatencyMillis = injectedChaosLatencyMillis == null ? UNSET : injectedChaosLatencyMillis;
         return this;
     }
 
@@ -94,11 +98,11 @@ public class Timing {
      * {@code delay}, or {@code null} when the action had no delay.
      */
     public Long getInjectedDelayMillis() {
-        return injectedDelayMillis;
+        return injectedDelayMillis == UNSET ? null : injectedDelayMillis;
     }
 
     public Timing withInjectedDelayMillis(Long injectedDelayMillis) {
-        this.injectedDelayMillis = injectedDelayMillis;
+        this.injectedDelayMillis = injectedDelayMillis == null ? UNSET : injectedDelayMillis;
         return this;
     }
 
@@ -107,11 +111,11 @@ public class Timing {
      * before it was resumed, or {@code null} when no breakpoint held this exchange.
      */
     public Long getBreakpointHeldMillis() {
-        return breakpointHeldMillis;
+        return breakpointHeldMillis == UNSET ? null : breakpointHeldMillis;
     }
 
     public Timing withBreakpointHeldMillis(Long breakpointHeldMillis) {
-        this.breakpointHeldMillis = breakpointHeldMillis;
+        this.breakpointHeldMillis = breakpointHeldMillis == null ? UNSET : breakpointHeldMillis;
         return this;
     }
 
@@ -124,19 +128,19 @@ public class Timing {
             return false;
         }
         Timing timing = (Timing) o;
-        return Objects.equals(requestStartedMillis, timing.requestStartedMillis) &&
-            Objects.equals(connectionEstablishedMillis, timing.connectionEstablishedMillis) &&
-            Objects.equals(responseReceivedMillis, timing.responseReceivedMillis) &&
-            Objects.equals(connectionTimeInMillis, timing.connectionTimeInMillis) &&
-            Objects.equals(timeToFirstByteInMillis, timing.timeToFirstByteInMillis) &&
-            Objects.equals(totalTimeInMillis, timing.totalTimeInMillis) &&
-            Objects.equals(injectedChaosLatencyMillis, timing.injectedChaosLatencyMillis) &&
-            Objects.equals(injectedDelayMillis, timing.injectedDelayMillis) &&
-            Objects.equals(breakpointHeldMillis, timing.breakpointHeldMillis);
+        return requestStartedMillis == timing.requestStartedMillis &&
+            connectionEstablishedMillis == timing.connectionEstablishedMillis &&
+            responseReceivedMillis == timing.responseReceivedMillis &&
+            connectionTimeInMillis == timing.connectionTimeInMillis &&
+            timeToFirstByteInMillis == timing.timeToFirstByteInMillis &&
+            totalTimeInMillis == timing.totalTimeInMillis &&
+            injectedChaosLatencyMillis == timing.injectedChaosLatencyMillis &&
+            injectedDelayMillis == timing.injectedDelayMillis &&
+            breakpointHeldMillis == timing.breakpointHeldMillis;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(requestStartedMillis, connectionEstablishedMillis, responseReceivedMillis, connectionTimeInMillis, timeToFirstByteInMillis, totalTimeInMillis, injectedChaosLatencyMillis, injectedDelayMillis, breakpointHeldMillis);
+        return Objects.hash(getRequestStartedMillis(), getConnectionEstablishedMillis(), getResponseReceivedMillis(), getConnectionTimeInMillis(), getTimeToFirstByteInMillis(), getTotalTimeInMillis(), getInjectedChaosLatencyMillis(), getInjectedDelayMillis(), getBreakpointHeldMillis());
     }
 }
