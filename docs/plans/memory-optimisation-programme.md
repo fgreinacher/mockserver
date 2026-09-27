@@ -32,23 +32,17 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **17 units landed, 5 declined with reasons,
-9 items of work remain (one blocked), 2 open defects, 4 missing instruments, and 3 pipeline/tooling items.** Every remaining item has been
+Everything not listed here has landed or been closed. **23 units landed, 5 declined with reasons,
+3 items of work remain, 2 open defects, 1 pre-existing flake, 4 missing instruments, and 3 pipeline/tooling items.** Every remaining item has been
 audited, so each row names a concrete change rather than a question.
 
 ### Code work remaining
 
 | # | What | Lever | Ready? | Note |
 |---|---|---|---|---|
-| **21** | Three blocking proxy paths | **throughput** | **BLOCKED — integrated netty IT regression** | the only **measured** win: 24 concurrent forwards went 4 → 24 in-flight, wall ~3,110 ms → ~505 ms; review-final PASS in isolation. Rebased onto `cc7d7d185` (local `a1276ec9c`, not merged). Integrated verify: core green; netty ITs fail intermittently on **matched** forwards — `ForwardWithCustomClientCertificateByHostIntegrationTest` 502 after a ~10 s stall (once with a `NotSslRecordException` at the upstream), and the invoker `shouldForwardRequestInHTTP` 999 in 10 ms. Unit 21 failed 3 of 6 runs; master passed 5 of 5 on the same tests. Mechanism not yet found — the matched path is not one of the three changed paths. Do not merge until the mechanism is found and a deterministic test pins it |
-| **14c** | Per-connection address strings rebuilt per request | churn | yes | 16 allocations/request counted from JDK source, 14 garbage. Memoise on the mapper (per pipeline and per h2 child channel). Keep-alive HTTP/1.1 only, nothing for h2 — say so in the commit. Do **not** reformat from `getHostString()` |
 | **19a-19e** | Dashboard: 2 request-path allocations, 2 wasted walks, 1 retention | occupancy + churn | yes | 19e is the biggest — rendering memoises a clone + Jackson tree **onto the retained entry** with no release path, partly undoing unit 1, and the byte budget excludes it on a false premise. 19b has a trap: capacity 1 ships, capacity 10 is what the tests exercise |
-| **13c** | Three one-line adjacents | churn | yes | `Host` read 3× in one expression; unconditional `ImmutableList.Builder`; `Objects.hash` `Object[2]` |
-| **14b** | Query-map copy | churn | after 13a | a second `HashMap` + `putAll` for nothing; reuses 13a's `reserve` so that class is edited once |
 | **22A** | A4, then A2+A3 | churn | yes | A4 (Mustache copies ~26 bindings per render) is smallest and output-identical. A1 needs a **product decision** — whether an edited `templateFile` should still take effect per request |
 | **18a** | Three small `ResponseWriter` items | churn | **blocked** | extend the benchmark first (see instruments) |
-| **21b** | `maxSocketTimeout=0` removes the forward completion guarantee | correctness | **after 21** | 21 relies on the socket read timeout to complete a stalled forward; at `0` nothing does. Add a non-blocking `orTimeout(maxFutureTimeoutInMillis)` in `Scheduler.submit`'s async branch, map `TimeoutException` to the same 502 the old blocking path gave. Test: socket timeout 0 + an upstream that never answers must still complete (hangs on 21 alone = negative control) |
-| **15-I1** | Port unboxed and re-boxed on every request | churn | yes | located at `HttpRequest.java:397-401` (JLS 15.25 numeric conditional). Independent of the heap-dump work that gates the rest of 15 |
 
 ### Defects — fix ahead of the churn work
 
@@ -70,6 +64,15 @@ audited, so each row names a concrete change rather than a question.
 | **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | **uncommitted** in the perf worktree. review-final BLOCKed pending an agent-in-the-loop re-run of the eval fixtures on the new models and re-recorded `.result` files (gated-approval). Do after the agent restart |
 
 `docker-build-verify.sh:165` (dormant, artifact-only install) now passes `-DskipITs` too. Tracking for all pipeline items is in `performance-programme.md` → Pipeline wall-clock.
+
+**Also landed:** 15-I1 `d194a8f3d`, 13c `d8543c948`, 14b `1548a391d`, 14c `1559082dd` (keep-alive HTTP/1.1 only), 21b `89d8a61c9` (maxFutureTimeout now bounds every async forward, so `maxSocketTimeout=0` can no longer hang a client).
+
+**Unit 21 landed** as `11b525bb4`: 24 concurrent forwards went 4 → 24 in flight, wall ~3,110 ms → ~505 ms.
+Its integrated netty verify showed intermittent failures in two **matched**-forward tests it does not touch; interleaved runs (core reinstalled each time) passed 6/6 on both master and unit 21, and all three unit 21 failures fell in an earlier back-to-back set. Treated as a pre-existing flake — see F1 below.
+
+| | Pre-existing flake | Suspected cause |
+|---|---|---|
+| **F1** | `ForwardWithCustomClientCertificateByHostIntegrationTest` intermittent 502 after a ~10 s stall (once a `NotSslRecordException` at the upstream); invoker `shouldForwardRequestInHTTP` intermittent 999 | per-host client-cert selection keys on `remoteAddress.getHostName()` (`HttpClientInitializer.java:96`), which can flip between `localhost` and `127.0.0.1`; 999 is the forward client's unparseable-response sentinel (`HttpClientHandler.java:112`), pointing at pooled-connection reuse. Unconfirmed — reproduce deterministically before fixing |
 
 ### Missing instruments — these gate the work above
 
