@@ -32,42 +32,40 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **As of 2026-09-27: 31 units and 3 defect
-fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C (in progress), F1
-(being root-caused), 22A A1 and A2+A3, and the new perf ladder.**
+Everything not listed here has landed or been closed. **As of 2026-09-27 (late morning): open items
+are 18a (held on a suspected regression), the inbound TLS handshake timeout (in progress), CONNECT
+relay capacity C1 (settling run queued), one approval (h2 multiplex UI skip), and the new perf
+ladder (builds 453 and 454 running), after which unit 17 is decided.**
 
-### Code work — status
+### Open
 
 | # | What | State |
 |---|---|---|
-| **19a-19e + D2** | Dashboard WebSocket: upgrade-path match without a decoder (19a), lazy scheduler at the shipped capacity (19b), throttle before the walk (19c), no whole-log copy (19d), no retained render memo (19e), teardown in `handlerRemoved` (D2) | **review-final PASS, landing.** 19e deviates from the plan: the memo is removed rather than bounded, so the display copy is rebuilt per render (off the request path) and `maxEventLogSizeInBytes` now counts entries correctly. Side effect: toggling `redactSecretsInLog` now also changes entries a dashboard already showed. **Deviation and side effect accepted by the user (2026-09-27)** |
-| **22A** | A4 Mustache: ~26 bindings built once per engine, per-render overlay | **review-final PASS, landing.** −22.8% bytes/op (5,688 → 4,392) on the new `TemplateRenderAllocationBenchmark` |
-| **22A A2+A3** | Velocity per-render resource registration | **reconsidered at the user's request** — measured −48 B/op (−0.8%) on a short template, grows with template size; ~28 changed lines replacing a marker set with a body→name map, counter and eviction-by-value. Review found it correct; being hardened with eviction, concurrency and rebuild tests plus a long-template measurement before landing |
-| **22A A1** | Template file re-read per request | **decided: keep the contract** (an edited `templateFile` takes effect on the next request) and make the change check cheap — cache content keyed by path, validated by a metadata check. In progress |
-| **18a** | Three small `ResponseWriter` items, plus a benchmark that enters through `ResponseWriter` | **in progress** |
-| **15-L1** | Retained `Long` = `Timing`'s three epoch-millis fields per forwarded response | **in progress** — located from build 446's live histogram + JFR (`Long` = 3.0 × `Timing` in every snapshot, absent when no forwards run; ~2.4 MB in the forward phase, zero while serving mocks). Fix: primitive `long` + sentinel |
-| **15-C** | `maxFutureTimeout()` / `maxSocketTimeout()` / `socketConnectionTimeout()` re-box a `Long` per request | **in progress** — must keep runtime changes effective |
+| **18a** | Three `ResponseWriter` items + `ResponseWriterAllocBenchmark` (−9.5% bytes/op on 1 KB responses) | review-final PASS, **held**: on current master `MainCliTest` failed 2 of 4 runs with `InvalidLineSeparatorException` (bare LF in a response head) in the failing run's log; master passed 4 of 4 with no such error. Being root-caused before landing |
+| **TLS-in** | Inbound TLS handshakes (`SniHandler`, `RelayConnectHandler` server side) use Netty's fixed 10 s default | in progress — companion to F1's outbound fix |
+| **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant |
+| **h2 UI skip** | `perf-test-h2multiplex.sh` builds the UI bundle it never uses (~2 min per run) | `e766d7dfc`, review-final PASS, **awaiting user approval** (control-class) |
+| **Ladder** | New figures on current master | build 453 (default G1, 8k–64k) running; build 454 (ZGC, same commit and ladder) queued — the matched cell unit 17 needs |
 
-### Landed
+### Landed (2026-09-26/27)
 
 | Unit | Commit |
 |---|---|
-| 21 three blocking proxy paths (4 → 24 in flight, ~3,110 → ~505 ms) | `11b525bb4` |
-| 21b `maxFutureTimeout` bounds every async forward (`maxSocketTimeout=0` can no longer hang) | `89d8a61c9` |
-| 15-I1 port `Integer` passed through without re-boxing | `d194a8f3d` |
-| 13c three inbound allocations | `d8543c948` |
-| 14b query/form parameters without the intermediate map | `1548a391d` |
-| 14c address strings memoised per connection (keep-alive HTTP/1.1 only) | `1559082dd` |
-| D1 dashboard throttle-timer accumulation | `c03805f24` |
-| D3 `redactSecretsInLog` covers `message` and `arguments` | `cc7d7d185` |
-| D4 forward class callbacks honour `contextClassLoaderOverride` | `d5fe0bea2` |
-
-### Awaiting approval
-
-| | What | State |
-|---|---|---|
-| **Docker metric** | `jvm_memory_allocated_bytes` never reported by the images (jlink runtime lacked `jdk.management`) | **landed** `ff84bb395`, `1fd5bcfbc` with user approval; confirm on the first snapshot image built from it |
-| **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | uncommitted; needs the eval fixtures re-run on the new models and re-recorded (gated-approval) |
+| 21 three blocking proxy paths — **confirmed end to end by build 452**: 500 req/s through a 50 ms upstream on the unmatched-proxy path, 0.03% errors (pre-21 cap ~120 req/s) | `11b525bb4` |
+| 21b `maxFutureTimeout` bounds every async forward | `89d8a61c9` |
+| 13c / 14b / 14c / 15-I1 inbound-path allocations | `d8543c948` / `1548a391d` / `1559082dd` / `d194a8f3d` |
+| 15-L1 `Timing` fields as primitive `long` + sentinel; 15-C `readLongProperty` returns `long` | `f1d1ece60`, `f5fe4e8b5` |
+| 19a–19e + D2 dashboard WebSocket (19e: memo removed, deviation accepted) | `bf8955af5` … `1c9ffeb80` |
+| 22A A4 Mustache shared bindings (−22.8%) + `TemplateRenderAllocationBenchmark` | `955474668`, `33fc36c38` |
+| 22A A2+A3 Velocity synthetic-name cache (−2,080 B/op on a 2 KB template) + hardening tests + large-template arm | `62875c79a`, `6d7d98cb4`, `2953bdc5a` |
+| 22A A1 template file content cached, revalidated per request by one stat (~1,000× fewer bytes per read of an unchanged file) | `9c1399375` |
+| D1 / D3 / D4 defects | `c03805f24` / `cc7d7d185` / `d5fe0bea2` |
+| F1 forward-client TLS handshake bounded by `socketConnectionTimeout` (was Netty's fixed 10 s — the forward-test flake's root cause) | `4180cbdb4` |
+| F2 `HttpActionHandlerForwardChaosTest` Mockito race (async scheduler vs synchronous dispatch) | `7261e4ab3` |
+| Docker `jvm_memory_allocated_bytes` (jlink `jdk.management`) + live smoke check | `ff84bb395`, `1fd5bcfbc` |
+| Opt-in perf-rig workload `PERF_WORKLOAD=forward` (unit 21 end to end) | `c8699f5f4` |
+| Subagent model re-pin (Opus 5.5 / Sonnet 5), evals 5/5 on the pinned models | `cd78f35b0` |
+| Changelog in the house layout | `4ba0de6fc` |
 
 ### Decisions recorded (2026-09-27)
 
@@ -78,31 +76,18 @@ fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C
 - **Changelog**: keep the house layout (Security / Added / Changed / Removed / Fixed, combining related items into single bullets) with a short summary and a simple summary table at the top.
 - **Pipeline**: split netty ITs across JVMs and reuse the build's output for the deploy were both not pursued.
 
-### Pipeline
-
-P1-P4 all landed (`ef283860e`, `b516cfe89`); confirm the wall-clock savings on the next java and UI builds. Tracking is in `performance-programme.md` → Pipeline wall-clock.
-
-### Pre-existing flake
-
-| | Flake | State |
-|---|---|---|
-| **F1** | `ForwardWithCustomClientCertificateByHostIntegrationTest` intermittent 502 after a ~10 s stall; invoker `shouldForwardRequestInHTTP` intermittent 999 | **being root-caused** — suspects: per-host client-cert keyed on `remoteAddress.getHostName()` (`HttpClientInitializer.java:96`), and pooled-connection reuse (999 is `HttpClientHandler`'s unparseable-response sentinel). A fix lands only with a deterministic reproduction |
-
 ### Instruments
 
-| Gap | State |
-|---|---|
-| `ResponseWriter`-level allocation benchmark (for 18a) | in progress with 18a |
-| Template allocation benchmark (for 22A) | **added** — `TemplateRenderAllocationBenchmark`, not yet gated (adding budgets is control-class) |
-| Rig proxy workload reaches the unit-21 path (measure 21 end to end) | the rig **already has** forward and proxy arms (`forward.js`, `proxy.js`), but neither reaches unit 21: `forward.js` drives the *matched*, already-async path, and `proxy.js`'s unmatched-proxy arm hits a *fast* upstream (in-flight ~0.04, far below the ~poolSize cap). **Drafted, awaiting approval:** opt-in `PERF_WORKLOAD=forward` + `PERF_UPSTREAM_DELAY_MS` slows the upstream and re-drives the *unmatched*-proxy arm at high concurrency so the cap binds; fail-closed. Control-class. (A callback workload was considered and dropped — 22B is not a perf unit.) See `docs/code/performance-measurement.md` → "Opt-in workload" |
-| Heap dump for unit 15 | **not needed** — the rig uploads no `.hprof`; the live histogram + JFR were enough (see unit 15) |
+All added: `ResponseWriterAllocBenchmark` (with 18a), `TemplateRenderAllocationBenchmark` (landed, not yet gated — adding budgets is control-class), and the opt-in unit-21 rig workload (landed). The heap dump for unit 15 was not needed.
+
+Pipeline items P1–P4 landed (`ef283860e`, `b516cfe89`); tracking is in `performance-programme.md` → Pipeline wall-clock.
 
 ### Declined, with reasons recorded — do not re-propose
 
 **16** (the `readTree` produces the rendered output; in tension with unit 1), **16b** (four parses
 feeding four distinct output fields, and the two levers point in opposite directions), **14a**
 (unit 12's gate made it stale, and the future is load-bearing for three async routes that
-self-deadlock inline), **22B** (off the measured workload entirely), and **18 as originally scoped** (its named files were already optimal).
+self-deadlock inline), **22B** (off the measured workload entirely; a callback rig workload was also dropped), and **18 as originally scoped** (its named files were already optimal).
 
 ### Then, and only then: new figures
 
