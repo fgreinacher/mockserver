@@ -7,6 +7,7 @@ import org.mockserver.responseheaders.DefaultResponseHeaders;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.ConnectionOptions;
+import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.version.Version;
@@ -26,6 +27,11 @@ import static org.mockserver.model.HttpResponse.response;
  * @author jamesdbloom
  */
 public abstract class ResponseWriter {
+
+    // Header is immutable and replaceEntry only reads its name and values, so these two
+    // compile-time-constant Connection headers can be shared across every response.
+    private static final Header KEEP_ALIVE_CONNECTION_HEADER = header(CONNECTION.toString(), KEEP_ALIVE.toString());
+    private static final Header CLOSE_CONNECTION_HEADER = header(CONNECTION.toString(), CLOSE.toString());
 
     protected final Configuration configuration;
     protected final MockServerLogger mockServerLogger;
@@ -119,16 +125,16 @@ public abstract class ResponseWriter {
         if (connectionOptions != null && (connectionOptions.getSuppressConnectionHeader() != null || connectionOptions.getKeepAliveOverride() != null)) {
             if (!Boolean.TRUE.equals(connectionOptions.getSuppressConnectionHeader())) {
                 if (Boolean.TRUE.equals(connectionOptions.getKeepAliveOverride())) {
-                    responseWithConnectionHeader.replaceHeader(header(CONNECTION.toString(), KEEP_ALIVE.toString()));
+                    responseWithConnectionHeader.replaceHeader(KEEP_ALIVE_CONNECTION_HEADER);
                 } else {
-                    responseWithConnectionHeader.replaceHeader(header(CONNECTION.toString(), CLOSE.toString()));
+                    responseWithConnectionHeader.replaceHeader(CLOSE_CONNECTION_HEADER);
                 }
             }
         } else {
             if (Boolean.TRUE.equals(request.isKeepAlive())) {
-                responseWithConnectionHeader.replaceHeader(header(CONNECTION.toString(), KEEP_ALIVE.toString()));
+                responseWithConnectionHeader.replaceHeader(KEEP_ALIVE_CONNECTION_HEADER);
             } else {
-                responseWithConnectionHeader.replaceHeader(header(CONNECTION.toString(), CLOSE.toString()));
+                responseWithConnectionHeader.replaceHeader(CLOSE_CONNECTION_HEADER);
             }
         }
 
