@@ -2817,6 +2817,48 @@ public class DashboardWebSocketHandlerTest {
     }
 
     @Test
+    public void sendUpdateDoesNotWalkTheLogWhenNoWritePermitIsAvailable() throws Exception {
+        // 19c: the DTO walk is consulted AFTER the write throttle, not before. With no write permit the
+        // update cannot be written anyway, so sendUpdate must build NOTHING (no walk) and only schedule a
+        // retry - it must not walk-then-discard (and re-walk after a sleep). Seed a non-empty log so a walk
+        // WOULD construct DTOs, then remove the only permit and prove the walk does not run.
+        List<LogEntry> entries = new ArrayList<>();
+        for (int i = 0; i < 20; i++) {
+            entries.add(received("/r-" + i));
+        }
+        DashboardWebSocketHandler handler = newSeededHandler(entries);
+        MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
+        handler.getClientRegistry().put(ctx, request());
+
+        Thread.sleep(1200); // let the initial post-registration update drain
+
+        // Remove the only write permit AND stop the refill so it cannot come back during the assertion.
+        java.lang.reflect.Field semaphoreField = DashboardWebSocketHandler.class.getDeclaredField("semaphore");
+        semaphoreField.setAccessible(true);
+        java.util.concurrent.Semaphore semaphore = (java.util.concurrent.Semaphore) semaphoreField.get(handler);
+        java.lang.reflect.Field throttleField = DashboardWebSocketHandler.class.getDeclaredField("throttleExecutorService");
+        throttleField.setAccessible(true);
+        ((java.util.concurrent.ExecutorService) throttleField.get(handler)).shutdownNow();
+        semaphore.drainPermits();
+
+        handler.resetLogDtoConstructionCountForTesting();
+        handler.sendUpdate(ctx, request());
+        Thread.sleep(1000); // give any wrongly-occurring walk, and the scheduled no-permit retries, time to run
+
+        assertThat("no write permit means no DTO walk", handler.logDtoConstructionCountForTesting(), is(0L));
+
+        // Control: restore a permit and the SAME call now walks, proving the log is non-empty and the walk
+        // is reachable - so the 0 above is a real 'did not walk', not an empty log.
+        semaphore.release(1);
+        handler.sendUpdate(ctx, request());
+        long deadline = System.currentTimeMillis() + 10000;
+        while (System.currentTimeMillis() < deadline && handler.logDtoConstructionCountForTesting() == 0) {
+            Thread.sleep(100);
+        }
+        assertThat("a write permit lets the walk run", handler.logDtoConstructionCountForTesting() > 0L, is(true));
+    }
+
+    @Test
     public void fewerEntriesThanCapAreAllRendered() throws Exception {
         List<LogEntry> entries = new ArrayList<>();
         for (int i = 0; i < 10; i++) {

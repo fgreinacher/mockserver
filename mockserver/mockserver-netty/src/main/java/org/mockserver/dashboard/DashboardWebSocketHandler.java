@@ -806,7 +806,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                 // cannot drive one deep walk per frame on this unauthenticated-by-default endpoint.
                 schedulePullUpdate(ctx, httpRequest);
             } catch (IllegalArgumentException iae) {
-                sendMessage(ctx, null, ImmutableMap.of("error", iae.getMessage()), 2);
+                sendMessage(ctx, ImmutableMap.of("error", iae.getMessage()), 2);
             }
         } else if (frame instanceof PingWebSocketFrame) {
             ctx.write(new PongWebSocketFrame(frame.content().retain()));
@@ -815,36 +815,39 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
-    private void sendMessage(ChannelOutboundInvoker ctx, RequestDefinition httpRequest, ImmutableMap<String, Object> message, int retryCount) {
+    // Serialise and write a frame whose throttle permit the caller ALREADY holds - sendUpdate acquires it
+    // before the DTO walk, sendMessage acquires it just below - so this only serialises and writes, on the
+    // send scheduler.
+    private void writeAcquiredMessage(ChannelOutboundInvoker ctx, ImmutableMap<String, Object> message) {
+        scheduler.submit(() -> {
+            try {
+                String text = objectWriter.writeValueAsString(message);
+                ctx.writeAndFlush(new TextWebSocketFrame(text));
+            } catch (JsonProcessingException jpe) {
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setLogLevel(Level.ERROR)
+                        .setMessageFormat("exception with serialising UI data " + jpe.getMessage())
+                        .setThrowable(jpe)
+                );
+            }
+        });
+    }
+
+    // Throttled write of a PRE-BUILT message (the error frame). Unlike sendUpdate there is no DTO walk to
+    // defer, so acquire-then-write here and, on no permit, retry the SAME message after a short sleep.
+    private void sendMessage(ChannelOutboundInvoker ctx, ImmutableMap<String, Object> message, int retryCount) {
         if (semaphore.tryAcquire()) {
-            scheduler.submit(() -> {
-                try {
-                    String text = objectWriter.writeValueAsString(message);
-                    ctx.writeAndFlush(new TextWebSocketFrame(text));
-                } catch (JsonProcessingException jpe) {
-                    mockServerLogger.logEvent(
-                        new LogEntry()
-                            .setLogLevel(Level.ERROR)
-                            .setMessageFormat("exception with serialising UI data " + jpe.getMessage())
-                            .setThrowable(jpe)
-                    );
-                }
-            });
+            writeAcquiredMessage(ctx, message);
         } else if (retryCount >= 0) {
             scheduler.submit(() -> {
                 try {
                     TimeUnit.MILLISECONDS.sleep(200);
                 } catch (InterruptedException ignore) {
                 }
-                if (httpRequest != null) {
-                    sendUpdate(ctx, httpRequest, retryCount - 1);
-                } else {
-                    sendMessage(ctx, null, message, retryCount - 1);
-                }
+                sendMessage(ctx, message, retryCount - 1);
             });
-
         }
-
     }
 
     @Override
@@ -903,6 +906,25 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     }
 
     private void sendUpdate(ChannelOutboundInvoker ctx, RequestDefinition httpRequest, int retryCount) {
+        // Consult the write throttle BEFORE the DTO walk. The Semaphore(1) is the ~1/second write permit;
+        // with no permit this update cannot be written anyway, so building the whole DTO tree (retrieve +
+        // walk + serialise the sections) only to discard it - then re-walk after a 200ms sleep, up to twice -
+        // was pure waste. Acquire first: on no permit schedule a bare re-attempt (no walk) up to retryCount,
+        // and only once we hold the permit do we walk and write it. The permit is consumed by the write and
+        // refilled ~1/second by the throttle task, so this now bounds the WALK to the write rate too, not
+        // only the write.
+        if (!semaphore.tryAcquire()) {
+            if (retryCount >= 0) {
+                scheduler.submit(() -> {
+                    try {
+                        TimeUnit.MILLISECONDS.sleep(200);
+                    } catch (InterruptedException ignore) {
+                    }
+                    sendUpdate(ctx, httpRequest, retryCount - 1);
+                });
+            }
+            return;
+        }
         // Client-requested log-row limit for THIS connection (DEFAULT when it requested nothing).
         // Expectations are NOT governed by it - they keep the fixed EXPECTATION_UPDATE_ITEM_LIMIT.
         final int logItemLimit = logItemLimitFor(ctx);
@@ -987,14 +1009,16 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         reverseLogEventsStream, true, logItemLimit,
                         logMessages, recordedRequests, proxiedRequests,
                         logMessagesDescriptionProcessor, recordedRequestsDescriptionProcessor, proxiedRequestsDescriptionProcessor);
-                    sendMessage(ctx, httpRequest, ImmutableMap.of(
+                    // The write permit was acquired at the top of sendUpdate, before this walk, so just
+                    // serialise and write - do not re-acquire or re-walk.
+                    writeAcquiredMessage(ctx, ImmutableMap.of(
                         "logMessages", logMessages,
                         "activeExpectations", activeExpectations,
                         "activeExpectationsTotal", activeExpectationsTotal,
                         "activeExpectationsIncludeLlm", activeExpectationsIncludeLlm,
                         "recordedRequests", recordedRequests,
                         "proxiedRequests", proxiedRequests // reverse
-                    ), retryCount);
+                    ));
                 }
             );
     }

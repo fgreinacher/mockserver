@@ -156,8 +156,14 @@ public class DashboardWebSocketFrameContractTest {
         MockChannelHandlerContext mockChannelHandlerContext = new MockChannelHandlerContext();
         handler.getClientRegistry().put(mockChannelHandlerContext, request());
 
-        handler.sendUpdate(mockChannelHandlerContext, request());
-        SECONDS.sleep(1);
+        // Retry until a frame lands. The send throttle is ~1/second and, at the shipped discard-queue
+        // capacity of 1, a single send competes with the initial post-upgrade update, so one call may not
+        // emit a frame; the dashboard is a live stream, so a client keeps driving updates until one arrives.
+        long deadline = System.currentTimeMillis() + 20000;
+        while (System.currentTimeMillis() < deadline && mockChannelHandlerContext.textWebSocketFrame == null) {
+            handler.sendUpdate(mockChannelHandlerContext, request());
+            SECONDS.sleep(1);
+        }
 
         assertThat("handler must have emitted a frame", mockChannelHandlerContext.textWebSocketFrame, is(org.hamcrest.CoreMatchers.notNullValue()));
         return mockChannelHandlerContext.textWebSocketFrame.text();
