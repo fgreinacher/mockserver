@@ -109,12 +109,14 @@ public class VelocityTemplateEngine implements TemplateEngine {
     // user configures, but a misbehaving client (e.g. unique generated templates per request) could
     // otherwise grow both caches without limit. We cap the number of cached templates at
     // PARSED_TEMPLATE_CACHE_MAX so memory stays bounded; 1000 comfortably covers realistic mock
-    // configurations while remaining cheap. The bound is enforced by registeredTemplates (a
+    // configurations while remaining cheap. The bound is enforced by templateNames (a
     // synchronized access-ordered LRU) which, on eviction, removes the body from the string
     // repository so the corresponding entry also ages out of the engine's resource cache (itself
-    // sized to the same bound). The repository key is the template string itself, so distinct
-    // templates can never collide onto the same cached AST. Falls back to the re-parsing evaluate(...)
-    // path if the string loader is unavailable, keeping behaviour identical.
+    // sized to the same bound). Each distinct template body is registered under a short synthetic name
+    // from a per-engine counter (never a hash), so distinct templates can never collide onto one name
+    // or cached AST, and getTemplate(...) no longer copies the whole body per render to key that cache.
+    // Falls back to the re-parsing evaluate(...) path if the string loader is unavailable, keeping
+    // behaviour identical.
     static final int PARSED_TEMPLATE_CACHE_MAX = 1000;
     private static final AtomicLong ENGINE_INSTANCE_COUNTER = new AtomicLong();
 
@@ -127,28 +129,31 @@ public class VelocityTemplateEngine implements TemplateEngine {
      * <p>
      * {@code templateRepositoryName} is unique per built engine because it keys a STATIC repository
      * registry — every rebuild takes a fresh counter value and a name is never reused.
-     * {@code registeredTemplates} is the bounded access-ordered LRU whose eviction hook removes from
-     * THIS holder's own repository, keeping that pairing intact across rebuilds.
+     * {@code templateNames} is the bounded access-ordered LRU whose eviction hook removes from
+     * THIS holder's own repository by synthetic name, keeping that pairing intact across rebuilds.
      */
     private static final class EngineHolder {
         private final VelocityEngine velocityEngine;
         private final ToolManager toolManager;
         private final StringResourceRepository templateRepository;
         private final String templateRepositoryName;
-        // template strings currently registered in the repository; access-ordered LRU bounded at
-        // PARSED_TEMPLATE_CACHE_MAX, wrapped in Collections.synchronizedMap so concurrent renders read
-        // and insert safely. The value is unused (a marker) — the key is the template string.
-        private final Map<String, Boolean> registeredTemplates;
+        // maps each distinct template body to the short synthetic resource name it is registered under;
+        // access-ordered LRU bounded at PARSED_TEMPLATE_CACHE_MAX, wrapped in Collections.synchronizedMap
+        // so concurrent renders read and insert safely.
+        private final Map<String, String> templateNames;
+        // allocates the synthetic names ("t0", "t1", ...); a counter, never a hash, so two distinct
+        // template bodies can never collide onto one name.
+        private final AtomicLong templateNameCounter = new AtomicLong();
         // the velocityDisallowClassLoading value this engine was actually built with, compared against
         // the live configuration on every render to decide whether a rebuild is required
         private final boolean disallowClassLoading;
 
-        private EngineHolder(VelocityEngine velocityEngine, ToolManager toolManager, StringResourceRepository templateRepository, String templateRepositoryName, Map<String, Boolean> registeredTemplates, boolean disallowClassLoading) {
+        private EngineHolder(VelocityEngine velocityEngine, ToolManager toolManager, StringResourceRepository templateRepository, String templateRepositoryName, Map<String, String> templateNames, boolean disallowClassLoading) {
             this.velocityEngine = velocityEngine;
             this.toolManager = toolManager;
             this.templateRepository = templateRepository;
             this.templateRepositoryName = templateRepositoryName;
-            this.registeredTemplates = registeredTemplates;
+            this.templateNames = templateNames;
             this.disallowClassLoading = disallowClassLoading;
         }
     }
@@ -188,23 +193,23 @@ public class VelocityTemplateEngine implements TemplateEngine {
         VelocityEngine newVelocityEngine = buildVelocityEngine(repositoryName, disallowClassLoading);
         ToolManager newToolManager = buildToolManager(newVelocityEngine);
         final StringResourceRepository newTemplateRepository = StringResourceLoader.getRepository(repositoryName);
-        Map<String, Boolean> newRegisteredTemplates = Collections.synchronizedMap(new LinkedHashMap<String, Boolean>(256, 0.75f, true) {
+        Map<String, String> newTemplateNames = Collections.synchronizedMap(new LinkedHashMap<String, String>(256, 0.75f, true) {
             @Override
-            protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+            protected boolean removeEldestEntry(Map.Entry<String, String> eldest) {
                 if (size() > PARSED_TEMPLATE_CACHE_MAX) {
-                    // drop the body from the string repository so the matching parsed Template ages
-                    // out of the engine's resource cache too — keeps both caches bounded together.
-                    // Deliberately bound to THIS holder's own repository, so an evicted entry can
-                    // never remove a body from a different (rebuilt) engine's repository.
+                    // drop the evicted body from the string repository BY ITS SYNTHETIC NAME so the
+                    // matching parsed Template ages out of the engine's resource cache too — keeps both
+                    // caches bounded together. Deliberately bound to THIS holder's own repository, so an
+                    // evicted entry can never remove a body from a different (rebuilt) engine's repository.
                     if (newTemplateRepository != null) {
-                        newTemplateRepository.removeStringResource(eldest.getKey());
+                        newTemplateRepository.removeStringResource(eldest.getValue());
                     }
                     return true;
                 }
                 return false;
             }
         });
-        return new EngineHolder(newVelocityEngine, newToolManager, newTemplateRepository, repositoryName, newRegisteredTemplates, disallowClassLoading);
+        return new EngineHolder(newVelocityEngine, newToolManager, newTemplateRepository, repositoryName, newTemplateNames, disallowClassLoading);
     }
 
     /**
@@ -244,7 +249,7 @@ public class VelocityTemplateEngine implements TemplateEngine {
     /**
      * Return Velocity's own parsed-and-initialised {@link Template} for the given template string,
      * parsing it at most once per distinct string. The first time a string is seen it is stored in the
-     * engine's {@link StringResourceRepository} keyed by the template string itself, and
+     * engine's {@link StringResourceRepository} under a short synthetic name, and
      * {@code getTemplate(...)} builds and caches the AST in the engine's resource cache; subsequent
      * calls return the same cached Template. The returned Template is rendered concurrently by request
      * threads via {@link Template#merge}, exactly as Velocity renders any cached file/classpath
@@ -263,22 +268,23 @@ public class VelocityTemplateEngine implements TemplateEngine {
         if (templateRepository == null) {
             return null;
         }
-        // Ensure the body is in the repository BEFORE getTemplate(...) reads it. Storing is idempotent
-        // (same content) and, because modification_check_interval=0, never invalidates an already-parsed
-        // AST in the resource cache — so re-storing a body re-renders from the cached AST. Storing
-        // unconditionally (rather than only on first registration) avoids a race where one thread marks
-        // the template registered while another stores the body, leaving getTemplate(...) momentarily
-        // unable to find the resource.
-        templateRepository.putStringResource(template, template, StandardCharsets.UTF_8.name());
-        // touch the access-ordered LRU so this template is most-recently-used for bound accounting
-        holder.registeredTemplates.put(template, Boolean.TRUE);
+        // Register each distinct template body once under a short synthetic name and reuse that name on
+        // every later render, so getTemplate(...) keys the resource cache by the short name instead of
+        // copying the whole body per render. computeIfAbsent is atomic under the synchronized map and
+        // stores the body before publishing the name, so a concurrent render either does not see the name
+        // yet (and computes it) or sees a name whose body is already in the repository.
+        String templateName = holder.templateNames.computeIfAbsent(template, body -> {
+            String name = "t" + holder.templateNameCounter.getAndIncrement();
+            templateRepository.putStringResource(name, body, StandardCharsets.UTF_8.name());
+            return name;
+        });
         try {
-            return holder.velocityEngine.getTemplate(template, StandardCharsets.UTF_8.name());
+            return holder.velocityEngine.getTemplate(templateName, StandardCharsets.UTF_8.name());
         } catch (Exception parseOrLoadFailure) {
             // drop the bad entry so it is neither cached nor counted against the bound, then let the
             // caller reproduce the original error message via evaluate(...)
-            holder.registeredTemplates.remove(template);
-            templateRepository.removeStringResource(template);
+            holder.templateNames.remove(template);
+            templateRepository.removeStringResource(templateName);
             return null;
         }
     }
@@ -326,7 +332,7 @@ public class VelocityTemplateEngine implements TemplateEngine {
         velocityProperties.put(RuntimeConstants.RESOURCE_MANAGER_CLASS, org.apache.velocity.runtime.resource.ResourceManagerImpl.class.getName());
         velocityProperties.put(RuntimeConstants.RESOURCE_MANAGER_CACHE_CLASS, org.apache.velocity.runtime.resource.ResourceCacheImpl.class.getName());
         // bound the engine's parsed-Template (AST) cache with a native LRU matching the cache we keep
-        // in registeredTemplates, so a flood of distinct templates cannot grow memory without limit.
+        // in templateNames, so a flood of distinct templates cannot grow memory without limit.
         velocityProperties.put(RuntimeConstants.RESOURCE_MANAGER_DEFAULTCACHE_SIZE, String.valueOf(PARSED_TEMPLATE_CACHE_MAX));
         velocityProperties.put("resource.loader.file.class", org.apache.velocity.runtime.resource.loader.FileResourceLoader.class.getName());
         // Register a string resource loader so each distinct template string is parsed once and the
