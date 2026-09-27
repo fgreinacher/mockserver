@@ -35,7 +35,7 @@ echo "--- :docker: Building local image for smoke test"
 docker build --tag "$SMOKE_TAG" docker/local
 
 echo "--- :test_tube: Running smoke test"
-docker run -d --name "$SMOKE_CONTAINER" -p 0:1080 "$SMOKE_TAG"
+docker run -d --name "$SMOKE_CONTAINER" -p 0:1080 -e MOCKSERVER_METRICS_ENABLED=true "$SMOKE_TAG"
 
 SMOKE_PORT=$(docker port "$SMOKE_CONTAINER" 1080 | head -1 | awk -F: '{print $NF}')
 echo "MockServer container started on port $SMOKE_PORT"
@@ -76,7 +76,14 @@ if [ "$MOCK_RESPONSE" != "200" ]; then
   exit 1
 fi
 
-echo "Smoke test PASSED: MockServer starts, accepts expectations, and serves mock responses"
+# jvm_memory_allocated_bytes needs the jdk.management module; a jlink module list without it
+# drops the metric silently, so assert it on the image that is about to be published.
+if ! curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep -q '^jvm_memory_allocated_bytes '; then
+  echo "Smoke test FAILED: jvm_memory_allocated_bytes missing from /mockserver/metrics (is jdk.management in the jlink --add-modules list?)"
+  exit 1
+fi
+
+echo "Smoke test PASSED: MockServer starts, accepts expectations, serves mock responses and reports JVM allocation metrics"
 
 docker rm -f "$SMOKE_CONTAINER" 2>/dev/null || true
 
