@@ -1338,31 +1338,40 @@ classloader. Correctness item, own unit.
 
 ### Documentation corrections the audits turned up
 
-- `LogEntry.java:187-189` calls the `httpUpdated*` copies "transient (rebuilt at render time,
-  not retained)" while `:448-450` on the same field says the result is memoised on first call.
-  The first is wrong, and it is the premise on which `estimatedHeapSize` excludes them — so
-  `maxEventLogSizeInBytes` under-counts every entry a dashboard or `/retrieve` has rendered.
-- `docs/code/dashboard-ui.md:142` and `DashboardWebSocketHandler.java:130` call the
-  `Semaphore(1)` a "single global permit" when it is one permit **per dashboard**; the same
-  doc line still describes the pull path as unthrottled, which was since fixed.
-- `DashboardWebSocketHandler.java:276-277` claims `activeExpectationJsonCache` is shared
-  across connections; it is an instance field. Fix the comment, not the code.
+**All three resolved.** The first was already fixed when the dashboard render memo was removed
+(`bf8955af5`, unit 19e); the other two in commit A (`3a6cdda06`).
+
+- **Resolved (`bf8955af5`, unit 19e).** `LogEntry.java` no longer contradicts itself: with the
+  render memo removed, both the `estimatedHeapSize` note (`:185-189`) and `getHttpUpdatedRequests`
+  (`:446-450`) now say the `httpUpdated*` display copies are recomputed per render and never
+  retained, so `estimatedHeapSize` excludes them correctly.
+- **Resolved (commit A, `3a6cdda06`).** `docs/code/dashboard-ui.md` and
+  `DashboardWebSocketHandler.java:130` no longer call the `Semaphore(1)` a "single global permit":
+  it is described as a per-connection permit (a fresh handler is `new`ed per HTTP/1.1 channel),
+  and the doc's stale "unthrottled pull path" wording is corrected to the per-connection
+  coalescing (`PULL_COALESCE_WINDOW_MILLIS`) that now bounds it.
+- **Resolved (commit A, `3a6cdda06`).** `DashboardWebSocketHandler.java:276-277` no longer claims
+  `activeExpectationJsonCache` is shared across connections; the comment now states it is a
+  per-connection instance field. Comment only — the code was already correct.
 
 ## Carried over from the earlier performance work
 
-These predate this programme and are **not** addressed by it. Recorded here so
-they survive its completion.
+These predate this programme. Recorded here so they survive its completion; all
+are now closed, documented, or reclassified as a rig limitation.
 
-| Item | Why it still matters |
+| Item | Status |
 |---|---|
-| **Published figures are stale** — the site shows build 420: JDK 17, G1, 1,230 MiB heap, 39,033 req/s at p95 74.4 ms | The product now ships JDK 25 with generational ZGC. Build 441 measured 47,412 req/s at p95 17.8 ms on the same hardware — better on both axes |
-| **The publish step cannot push** | `perf-website-publish.sh` regenerates `perf_figures.json` and the charts, then attaches a `git format-patch` artifact, because the `perf` queue holds no git/gh credentials. Builds have been emitting patches nobody applies. Either grant credentials or make applying the patch an explicit step |
-| **The default ladder cannot resolve the knee** | It jumps 32,000 to 48,000. The last cleanly-served rung is 32,000, so a mechanical publish would headline a figure *worse* than what is already published. A fine ladder is needed before publishing |
-| **Ladder anchor rule** | Always include a rung below the expected knee. A ladder starting above the cleanly-served region reports `saturation_rps=0`, which looks like a defect and is not |
-| **Ten cores is unmeasurable on this rig** | 10 server + 1 upstream + 13 k6 = 24 physical cores, and 13 is demonstrably insufficient for the client. A ten-core headline needs k6 on a separate box |
-| **`perf-test-h2multiplex.sh` UI skip** | Deliberately deferred; review confirmed it would be safe |
-| **Master is red** | `:docker: container integration tests` fails on build 2528. The `-DskipITs` fix (`a1db68d43`) cured the blob-store timeout but unmasked this, which had been `waiting_failed` and never running |
-| **Comment hygiene backlog** | `docs/plans/comment-hygiene-sweep.md` — historical run narrative in comments across CI scripts and k6 config. Not started |
+| **Published figures were stale** (site showed build 420: JDK 17, G1, 39,033 req/s at p95 74.4 ms) | **Resolved.** The site now renders build 445 — `jekyll-www.mock-server.com/_data/perf_figures.json` carries `build_number` 445, JDK 25.0.4.1, G1, 1,230 MiB, published 2026-09-26. Fresh figures reflecting the latest units are pending the next baseline-eligible run |
+| **The publish step cannot push** | **Resolved — documented (commit B, `80c7e1c16`).** `perf-website-publish.sh` still emits a `git format-patch` artifact (the perf queue holds only the S3 grant, no git/gh credentials); the explicit manual apply step — bk download → check build number, `config_profile=default`, `baseline_eligible=true`, the three fail-closed gates → `git am` → PR — is now in `performance-measurement.md` and the `ci-cd.md` perf-steps table |
+| **The default ladder could not resolve the knee** | **Resolved.** `K6_SWEEP_RATES` defaults to 500, 1000, 2000, 4000, 8000, 16000, 24000, 32000, 36000, 40000, 44000, 48000, 64000 — the 36k/40k/44k/48k rungs between 32k and 64k resolve the knee |
+| **Ladder anchor rule** | **Satisfied and documented** in `performance-measurement.md` (commit B, `80c7e1c16`): always include a rung below the expected knee, or `saturation_rps` reads 0 |
+| **`perf-test-h2multiplex.sh` UI skip** | **Commit C (`e766d7dfc`), local — pending maintainer approval.** Adds `-P '!build-ui'` to the netty build, matching `perf-test-microbench.sh` and `perf-alloc-gate.sh`; the h2 benchmarks never serve the dashboard and nothing downstream consumes the UI bundle. Not pushed (control-class). Saves ~2 min per run (node install + `npm ci` ~27 s + `tsc`/`vite` build ~84 s) |
+| **Master was red** | **Resolved.** The `:docker:` container integration tests pass; java builds 2568–2570 are green |
+| **Comment hygiene backlog** | Tracked in its own plan `docs/plans/comment-hygiene-sweep.md` — out of scope for this closure |
+
+**Known rig limitations (not work).** Ten cores is unmeasurable on this rig: 10 server + 1
+upstream + 13 k6 = 24 physical cores, and 13 is demonstrably insufficient for the client, so a
+ten-core headline needs k6 on a separate box. This is a rig constraint, not a task.
 
 Two earlier items are now closed by this programme: the ~2 GB of unattributed
 heap is explained (it is header machinery plus the double-retained bodies, not a
