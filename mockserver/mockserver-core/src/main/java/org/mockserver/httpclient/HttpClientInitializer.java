@@ -10,6 +10,7 @@ import io.netty.handler.codec.http2.*;
 import io.netty.handler.logging.LogLevel;
 import io.netty.handler.proxy.HttpProxyHandler;
 import io.netty.handler.proxy.Socks5ProxyHandler;
+import io.netty.handler.ssl.SslHandler;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import org.mockserver.codec.MockServerBinaryClientCodec;
 import org.mockserver.codec.MockServerHttpClientCodec;
@@ -95,7 +96,19 @@ public class HttpClientInitializer extends ChannelInitializer<SocketChannel> {
 
         if (secure) {
             InetSocketAddress remoteAddress = channel.attr(REMOTE_SOCKET).get();
-            pipeline.addLast(nettySslContextFactory.createClientSslContext(forwardProxyClient, httpProtocol != null && httpProtocol.equals(Protocol.HTTP_2), remoteAddress.getHostName()).newHandler(channel.alloc(), remoteAddress.getHostName(), remoteAddress.getPort()));
+            SslHandler sslHandler = nettySslContextFactory.createClientSslContext(forwardProxyClient, httpProtocol != null && httpProtocol.equals(Protocol.HTTP_2), remoteAddress.getHostName()).newHandler(channel.alloc(), remoteAddress.getHostName(), remoteAddress.getPort());
+            // Bound the TLS handshake by the configured connection timeout instead of Netty's fixed 10s
+            // default: the handshake is part of establishing the connection, so socketConnectionTimeout
+            // (which also drives the TCP CONNECT_TIMEOUT_MILLIS) covers the whole connect-plus-handshake
+            // window. Covers pooled and unpooled channels and the ALPN HTTP/1.1 and HTTP/2 paths, which all
+            // add the handler here. configuration is null only on the binary path, which keeps Netty's default.
+            if (configuration != null) {
+                Long handshakeTimeoutMillis = configuration.socketConnectionTimeoutInMillis();
+                if (handshakeTimeoutMillis != null && handshakeTimeoutMillis > 0) {
+                    sslHandler.setHandshakeTimeoutMillis(handshakeTimeoutMillis);
+                }
+            }
+            pipeline.addLast(sslHandler);
         }
 
         // add logging

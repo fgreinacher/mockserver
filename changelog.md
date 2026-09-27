@@ -66,6 +66,16 @@ This release delivers a sustained performance and memory programme alongside dat
 
 ### Fixed
 
+- **Forwarding to a TLS upstream now honours the configured connection timeout for the handshake
+  instead of a fixed 10 seconds.** When MockServer forwards or proxies a request over HTTPS, the TLS
+  handshake with the upstream was always bounded by Netty's built-in 10-second default, ignoring
+  `socketConnectionTimeout` (default 20 seconds). A slow or unresponsive upstream could hang the
+  handshake for the full 10 seconds regardless of how you had configured the connection timeout, and
+  the timeout could not be shortened for faster failure. The handshake is now bounded by
+  `socketConnectionTimeout` — the same setting that already bounds the TCP connection — so it covers
+  the whole connect-and-handshake window. The default is more lenient than before (20 seconds rather
+  than 10), so nothing fails sooner unless you lower the setting yourself.
+
 - **A proxied response header, trailer or cookie whose name or value begins with `!` is now recorded
   literally.** A previous release fixed this for incoming *requests* but missed the response side, so the
   proxy leg still built response header, trailer and `Set-Cookie` names and values through the
