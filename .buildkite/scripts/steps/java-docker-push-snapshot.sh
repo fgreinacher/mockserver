@@ -83,7 +83,18 @@ if ! curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | g
   exit 1
 fi
 
-echo "Smoke test PASSED: MockServer starts, accepts expectations, serves mock responses and reports JVM allocation metrics"
+# The image ships -XX:+UseZGC as its default collector (ENV JAVA_TOOL_OPTIONS in docker/local/Dockerfile). A
+# refactor that dropped the flag would silently fall back to G1 and regress tail latency with no
+# other symptom, so assert the running JVM actually reports a ZGC collector. jvm_runtime_info carries
+# the joined GarbageCollectorMXBean names in its gc label; generational ZGC's beans all contain "ZGC"
+# (e.g. "ZGC Major Cycles"), whereas G1's contain "G1", so this goes red on a regression to G1.
+if ! curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep '^jvm_runtime_info' | grep -q 'gc="[^"]*ZGC'; then
+  echo "Smoke test FAILED: image is not running ZGC (jvm_runtime_info gc label has no ZGC collector — did the ENV JAVA_TOOL_OPTIONS=-XX:+UseZGC default get dropped?)"
+  curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep '^jvm_runtime_info' || true
+  exit 1
+fi
+
+echo "Smoke test PASSED: MockServer starts, accepts expectations, serves mock responses, reports JVM allocation metrics and runs under ZGC"
 
 docker rm -f "$SMOKE_CONTAINER" 2>/dev/null || true
 
