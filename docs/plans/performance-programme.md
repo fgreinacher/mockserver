@@ -22,7 +22,7 @@ worked down at a keyboard.
 | 1 | The unattributed latency tail | a run, held until after the next release |
 | 2 | Low-rate handler latency spike | **closed — measurement artefact** (see §2) |
 | 4 | `jvm_memory_allocated_bytes` missing from Docker images | fixed (`ff84bb395`); confirm on the first snapshot image built from it |
-| 5 | Large-heap event-log profile | a run **plus** a cap decision |
+| 5 | Large-heap event-log profile | first run (456) measured; corrected run 458 queued, then the cap decision |
 
 ### Pipeline wall-clock
 
@@ -104,6 +104,8 @@ Verified locally: a `docker/Dockerfile` image built from this commit emits the m
 pending the first snapshot image built from this commit through the pipeline.
 
 ### 5. Large-heap event-log profile — INSTRUMENT LANDED (needs a run + a cap decision)
+
+**First run, build 456 (2026-09-27), 8 GiB heap:** invalid by its own gate — the rig always passes a fixed 256 MiB `maxEventLogSizeInBytes` unless `PERF_MAX_EVENT_LOG_BYTES` is set, so the byte budget did not scale with the heap (the check `event_log_byte_budget_scaled_with_heap` failed, correctly). It still shows the key fact: 100,000 entries retained at a mean of 2,684 bytes = ~268 MB, so the **count cap binds** (100,000 is reached at 0.76 GiB of heap and never grows); with a heap-scaled 1 GiB budget only ~25% of it would be used. Corrected run 458 sets `PERF_MAX_EVENT_LOG_BYTES=1073741824` (heap/8). **Decision to take after 458:** whether `maxLogEntries` should keep its fixed 100,000 ceiling or scale with the heap.
 
 The instrument is in `perf-test-run.sh`: a large-heap profile plus a fail-closed proportionality
 assertion. It exists to answer one question — when the heap grows, does the event log actually
