@@ -13,16 +13,16 @@ table that used to list them has been removed rather than maintained in two plac
 
 ## What remains
 
-Five items are open, and **none of them is blocked on code** — every one is waiting on a run, an
+Four items are open, and **none of them is blocked on code** — every one is waiting on a run, an
 observed event, a build, or a product decision. That is why this plan has not moved: it cannot be
 worked down at a keyboard.
 
 | # | Item | Blocked on |
 |---|---|---|
 | 1 | The unattributed latency tail | a run, held until after the next release |
-| 2 | Low-rate handler latency spike | being investigated from stored run artifacts (420, 445, 446) |
+| 2 | Low-rate handler latency spike | **closed — measurement artefact** (see §2) |
 | 3 | Canceled-child reporting | an observed event |
-| 4 | `jvm_memory_allocated_bytes` missing from Docker images | real cause found (jlink runtime lacked `jdk.management`); fix passed review, awaiting user approval to push |
+| 4 | `jvm_memory_allocated_bytes` missing from Docker images | fixed (`ff84bb395`); confirm on the first snapshot image built from it |
 | 5 | Large-heap event-log profile | a run **plus** a cap decision |
 
 ### Pipeline wall-clock
@@ -59,13 +59,19 @@ Two changes in flight to settle it:
 
 The maintainer has asked for this to remain open until after the next release.
 
-### 2. Low-rate handler latency spike — OPEN (unexplained)
+### 2. Low-rate handler latency spike — CLOSED (measurement artefact)
 
-In build 420, the sampler interval covering approximately elapsed **1,720–1,990 seconds**, at
-**300–1,800 rps**, showed the server-side `request_duration_millis > 5 ms` bucket spiking to
-**200–395 counts per interval** — elevated handler latency at low rate. This is the one point in
-the run where the server itself was genuinely slow. It is distinct from item 1 above (which is
-outside the server handler). It has not been examined.
+The 1,720–1,990 s window is the rig's **forward.js** (100 → 1,500 rps, every request forwarded to the
+single-core upstream) and **proxy.js** (absolute-URI and CONNECT arms, ~200 rps) arms, not direct
+serving at low rate. The server-side `request_duration_millis` histogram includes the upstream hop, and
+the forward path legitimately costs ~5 ms (build 420: `forward_http` p95 4.8 ms, `forward_connect_proxy`
+p50 3.7 ms), which fills the >5 ms bucket at 200–395 per interval. Direct serving at a similar low
+rate is clean: growth.js, 280,764 requests at ~820 rps, 13 over 5 ms (0.005%). The pattern reproduces
+in builds 445, 446, 448, 449 and 450 under both G1 and ZGC, `forward_guard` shows zero errors, and GC
+deltas do not track the spikes. When reading the histogram, separate forward-arm intervals from
+direct-serving ones; the `behaviours.forward_*` percentiles already do. Adjacent, not item 2: the
+regression arms' large-body and template behaviours fill the >5 ms bucket much more on the JDK 25
+builds (300–785 per interval vs 20–100 on 420).
 
 ### 3. Canceled-child reporting — OPEN (needs an observed event)
 

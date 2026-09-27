@@ -34,8 +34,7 @@ flowchart TD
 
 Everything not listed here has landed or been closed. **As of 2026-09-27: 31 units and 3 defect
 fixes landed or passed review, 6 declined with reasons; open: 18a and 15-L1/15-C (in progress), F1
-(being root-caused), one product decision (22A A1), one approval (Docker metric), and the new
-perf ladder.**
+(being root-caused), 22A A1 and A2+A3, and the new perf ladder.**
 
 ### Code work — status
 
@@ -43,8 +42,8 @@ perf ladder.**
 |---|---|---|
 | **19a-19e + D2** | Dashboard WebSocket: upgrade-path match without a decoder (19a), lazy scheduler at the shipped capacity (19b), throttle before the walk (19c), no whole-log copy (19d), no retained render memo (19e), teardown in `handlerRemoved` (D2) | **review-final PASS, landing.** 19e deviates from the plan: the memo is removed rather than bounded, so the display copy is rebuilt per render (off the request path) and `maxEventLogSizeInBytes` now counts entries correctly. Side effect: toggling `redactSecretsInLog` now also changes entries a dashboard already showed |
 | **22A** | A4 Mustache: ~26 bindings built once per engine, per-render overlay | **review-final PASS, landing.** −22.8% bytes/op (5,688 → 4,392) on the new `TemplateRenderAllocationBenchmark` |
-| **22A A2+A3** | Velocity per-render resource registration | **declined** — measured −48 B/op (−0.8%); correct, but more complex than the code it replaces |
-| **22A A1** | Template file re-read per request | **needs a product decision**: should an edited `templateFile` still take effect on the next request? |
+| **22A A2+A3** | Velocity per-render resource registration | **reconsidered at the user's request** — measured −48 B/op (−0.8%) on a short template, grows with template size; ~28 changed lines replacing a marker set with a body→name map, counter and eviction-by-value. Review found it correct; being hardened with eviction, concurrency and rebuild tests plus a long-template measurement before landing |
+| **22A A1** | Template file re-read per request | **decided: keep the contract** (an edited `templateFile` takes effect on the next request) and make the change check cheap — cache content keyed by path, validated by a metadata check. In progress |
 | **18a** | Three small `ResponseWriter` items, plus a benchmark that enters through `ResponseWriter` | **in progress** |
 | **15-L1** | Retained `Long` = `Timing`'s three epoch-millis fields per forwarded response | **in progress** — located from build 446's live histogram + JFR (`Long` = 3.0 × `Timing` in every snapshot, absent when no forwards run; ~2.4 MB in the forward phase, zero while serving mocks). Fix: primitive `long` + sentinel |
 | **15-C** | `maxFutureTimeout()` / `maxSocketTimeout()` / `socketConnectionTimeout()` re-box a `Long` per request | **in progress** — must keep runtime changes effective |
@@ -67,7 +66,7 @@ perf ladder.**
 
 | | What | State |
 |---|---|---|
-| **Docker metric** | `jvm_memory_allocated_bytes` never reported by the images (jlink runtime lacked `jdk.management`) | **review-final PASS (iteration 2), awaiting user approval** — control-class: adds a check to the live snapshot smoke test. Commits `85af6841c`, `474c830e0`. Tracked as performance-programme item 4 |
+| **Docker metric** | `jvm_memory_allocated_bytes` never reported by the images (jlink runtime lacked `jdk.management`) | **landed** `ff84bb395`, `1fd5bcfbc` with user approval; confirm on the first snapshot image built from it |
 | **P5** | Subagent model re-pin (Opus 4.8 → 5.5, Sonnet 4.6 → 5) | uncommitted; needs the eval fixtures re-run on the new models and re-recorded (gated-approval) |
 
 ### Pipeline
@@ -86,7 +85,7 @@ P1-P4 all landed (`ef283860e`, `b516cfe89`); confirm the wall-clock savings on t
 |---|---|
 | `ResponseWriter`-level allocation benchmark (for 18a) | in progress with 18a |
 | Template allocation benchmark (for 22A) | **added** — `TemplateRenderAllocationBenchmark`, not yet gated (adding budgets is control-class) |
-| Rig proxy/callback workload (to measure 21 end to end) | **being drafted** as an opt-in, default-off rig mode; control-class, will need approval |
+| Rig proxy/callback workload (to measure 21 end to end) | the rig **already has** forward and proxy arms (`forward.js`, `proxy.js`); checking whether they reach the paths unit 21 changed, and drafting only what is missing (callbacks, or more concurrency). Control-class |
 | Heap dump for unit 15 | **not needed** — the rig uploads no `.hprof`; the live histogram + JFR were enough (see unit 15) |
 
 ### Declined, with reasons recorded — do not re-propose
@@ -94,8 +93,7 @@ P1-P4 all landed (`ef283860e`, `b516cfe89`); confirm the wall-clock savings on t
 **16** (the `readTree` produces the rendered output; in tension with unit 1), **16b** (four parses
 feeding four distinct output fields, and the two levers point in opposite directions), **14a**
 (unit 12's gate made it stale, and the future is load-bearing for three async routes that
-self-deadlock inline), **22B** (off the measured workload entirely), **22A A2+A3** (−0.8% for added
-cache complexity), and **18 as originally scoped** (its named files were already optimal).
+self-deadlock inline), **22B** (off the measured workload entirely), and **18 as originally scoped** (its named files were already optimal).
 
 ### Then, and only then: new figures
 
