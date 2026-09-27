@@ -32,18 +32,16 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **As of 2026-09-27 (afternoon): open items are
-CONNECT relay capacity C1 (re-check build 457 queued), publishing build 455's figures to the site, and
-the large-heap profile (performance-programme item 5, build 456) with its cap decision.**
+Everything not listed here has landed or been closed. **As of 2026-09-27 (evening): the only open item is
+the final publishable ladder on the ZGC default (queued after the snapshot image carrying `786667a9b`).**
 
 ### Open
 
 | # | What | State |
 |---|---|---|
 | **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
-| **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant. **Local repro on current master: does NOT reproduce** — CONNECT alone and CONNECT+absolute at 500–1,500 req/s per arm were clean (0 errors, no listen overflows, connections reused), so it appears only in the rig's loaded context. Re-check build 457 runs the same workload on current master: clean → close as not reproducible; fails → add WARN logging to the workload (control-class) to capture the relay's failure cause |
 | **Unit 17** | Ship ZGC as the Docker default | **landed.** Decision figures (453 G1 vs 454 ZGC, 6 cores, default heap, same ladder; binaries differ only off the plain-GET path `7261e4ab3` vs `589a65db1`): ZGC clean to 60,000 offered vs G1 52,000; p95 at 48,000 10.5 vs 23.2 ms; p99 30.7 vs 49.1 ms; p99 at 16,000 0.28 vs 20.6 ms; peak 59,706 vs 58,913; zero errors both. ZGC is supplied as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` (clustered: `+ -XX:+ZGenerational`, JDK 21), **not** a hard-coded ENTRYPOINT flag — review-final caught that a hard-coded `-XX:+UseZGC` clashes fatally with a user-prepended `JAVA_TOOL_OPTIONS` GC flag ("multiple GCs selected"); an ENV default is instead replaced wholesale by an override, so the collector stays overridable on the shell-less distroless images. On the standard, `local`, `snapshot`, `root`, `root-snapshot`, `graaljs` and `clustered` images. **`-aot` kept on G1** — local build measured ZGC regressing its cold start ~42% (380→540 ms), defeating its purpose; the AppCDS archive is retrained under ZGC and verified to map under the ENV-supplied ZGC (`-Xshare:on` with the entrypoint `-cp`, exit 0). Standard/local startup within ~7% of G1 (~426–495 ms vs 463 ms), no OOM at `--memory 512m`/`1g`. Verified live: default→ZGC; `-e JAVA_TOOL_OPTIONS=-XX:+UseG1GC`→G1 (starts; archive not used under G1); `-e JAVA_TOOL_OPTIONS=-Xmx512m`→not ZGC (documented footgun); `helm template` default has no `JAVA_TOOL_OPTIONS` (image ENV ZGC stands) and `app.jvmOptions=-XX:+UseG1GC` sets it. Live-smoke ZGC assertion (`jvm_runtime_info` gc label) added to `java-docker-push-snapshot.sh` (control-class, pending approval). |
-| **Ladder** | New figures on current master | **455 (publishable: default config, no cpuset overrides, baseline-eligible, valid): rig-valid peak 59,146 req/s at 64,000 offered; clean to 56,000 offered (53,402 achieved); p95 4.7 ms at 32,000 and 23.3 ms at 48,000; zero errors** — on G1 (image built before the ZGC default). Reproduces 453 (58,912; 453 was ineligible only because cpusets were passed explicitly). 454 (ZGC, same ladder) peaked at 59,706 and was clean to 60,000. Next: apply 455's website patch |
+| **Ladder** | New figures on current master | **455 (publishable: default config, no cpuset overrides, baseline-eligible, valid): rig-valid peak 59,146 req/s at 64,000 offered; clean to 56,000 offered (53,402 achieved); p95 4.7 ms at 32,000 and 23.3 ms at 48,000; zero errors** — on G1 (image built before the ZGC default). Reproduces 453 (58,912; 453 was ineligible only because cpusets were passed explicitly). 454 (ZGC, same ladder) peaked at 59,706 and was clean to 60,000. Next: apply 455's website patch **Still to run: the ZGC-default ladder** — build 459 aborted before measuring (upstream seed failed) and exposed that default runs had measured G1; re-run after `2dff6e59c` on the image carrying `786667a9b`. |
 
 ### Landed (2026-09-26/27)
 
@@ -64,6 +62,9 @@ the large-heap profile (performance-programme item 5, build 456) with its cap de
 | F2 `HttpActionHandlerForwardChaosTest` Mockito race (async scheduler vs synchronous dispatch) | `7261e4ab3` |
 | h2 multiplex perf step skips the UI bundle (~2 min per run) | `589a65db1` |
 | Docker `jvm_memory_allocated_bytes` (jlink `jdk.management`) + live smoke check | `ff84bb395`, `1fd5bcfbc` |
+| **C1** CONNECT+HTTP/2 forwarding exhausted ephemeral ports (build 457: CONNECT arm 32% 502s at 500 rps; ~23k TIME_WAIT, `EADDRNOTAVAIL`). Root cause: HTTP/2 upstream connections were never pooled, so every tunnelled h2 request opened and closed its own upstream socket; not the loopback design. Now pooled with sequential reuse | `786667a9b` |
+| Default `maxLogEntries` cap 100,000 → 250,000 (build 458: the count cap bound at 49% of the 8 GiB byte budget) | `15825ae55` |
+| Perf rig keeps the image's default GC on the SUT (default runs had silently measured G1), fails a default run on a GC mismatch, and fails closed with a post-mortem when upstream seeding fails (build 459) | `2dff6e59c` |
 | Opt-in perf-rig workload `PERF_WORKLOAD=forward` (unit 21 end to end) | `c8699f5f4` |
 | Subagent model re-pin (Opus 5.5 / Sonnet 5), evals 5/5 on the pinned models | `cd78f35b0` |
 | Changelog in the house layout | `4ba0de6fc` |
