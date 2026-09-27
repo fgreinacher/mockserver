@@ -320,6 +320,22 @@ diag_jvm_opts() {
   printf '%s' "$opts"
 }
 
+# The shipped image sets its own JAVA_TOOL_OPTIONS (e.g. -XX:+UseZGC); passing -e
+# JAVA_TOOL_OPTIONS REPLACES it, silently dropping the default GC. Read it once per image.
+image_java_tool_options() { # image_ref -> its built-in JAVA_TOOL_OPTIONS default (empty if none)
+  docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null \
+    | awk -F= '$1=="JAVA_TOOL_OPTIONS"{sub("^[^=]*=",""); print; exit}' || true
+}
+# Prepend the image default to a container's own opts. If those opts select a GC, drop the
+# image default's GC selectors first — two -XX:+Use*GC flags abort the JVM ("Multiple GCs").
+compose_java_tool_options() { # image_default  container_opts
+  local base="$1" extra="$2"
+  if printf '%s' "$extra" | grep -Eq -- '-XX:\+Use[A-Za-z0-9]*GC'; then
+    base="$(printf '%s' "$base" | sed -E 's/-XX:\+Use[A-Za-z0-9]*GC//g; s/-XX:\+ZGenerational//g; s/  */ /g; s/^ //; s/ $//')"
+  fi
+  printf '%s' "${base}${base:+${extra:+ }}${extra}"
+}
+
 # item 15d — file-backed response body arm. Generate a ~1 MB JSON file on the host
 # and mount it read-only into the SUT so a FILE-body expectation can serve it (the
 # FileBodyMaterialiser path). World-readable so the container's non-root user can
@@ -690,7 +706,7 @@ echo "--- resolved physical cores: server=$SERVER_PHYS_CORES upstream=$UPSTREAM_
 docker network create "$NETWORK" >/dev/null
 
 start_mockserver() {
-  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}"
+  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}" no_rm="${9:-}"
   # log_level defaults to ERROR — the tracked baseline's level, which every existing
   # caller relies on. The INFO publication arm (plan open question 5) passes INFO
   # explicitly; nothing else does, so the ERROR baseline is unaffected.
@@ -707,7 +723,8 @@ start_mockserver() {
   # (and, when PERF_JVM_DIAGNOSTICS=deep, tier-2) JVM opts to JAVA_TOOL_OPTIONS, and — critically —
   # DROP --rm so the dead container lingers long enough for capture_sut_diagnostics() to read its
   # post-mortem (docker inspect .State / docker logs). cleanup() force-removes it by name, so nothing
-  # leaks. Every OTHER container (upstream, stream/clustered/handshake SUTs) keeps --rm unchanged.
+  # leaks. no_rm drops --rm without diag (the upstream, so a seed failure can inspect its corpse);
+  # every OTHER container (stream/clustered/handshake SUTs) keeps --rm unchanged.
   local rm_flag="--rm" diag_mount_arg=() combined_java_opts="${PERF_SERVER_JAVA_OPTS:-}"
   if [ -n "$diag_subdir" ]; then
     rm_flag=""
@@ -715,8 +732,12 @@ start_mockserver() {
     local diag_opts; diag_opts="$(diag_jvm_opts "$diag_subdir")"
     combined_java_opts="${combined_java_opts:+$combined_java_opts }$diag_opts"
   fi
+  [ -n "$no_rm" ] && rm_flag=""
   local java_opts_arg=()
-  [ -n "$combined_java_opts" ] && java_opts_arg=(-e "JAVA_TOOL_OPTIONS=$combined_java_opts")
+  if [ -n "$combined_java_opts" ]; then
+    combined_java_opts="$(compose_java_tool_options "$SUT_IMAGE_JAVA_TOOL_OPTIONS" "$combined_java_opts")"
+    java_opts_arg=(-e "JAVA_TOOL_OPTIONS=$combined_java_opts")
+  fi
   # shellcheck disable=SC2046
   docker run -d $rm_flag --name "$name" --network "$NETWORK" --network-alias "$alias" \
     $(cpuset_arg "$cpus") \
@@ -807,8 +828,13 @@ if [ "${PERF_CLUSTERED:-true}" = "true" ] && [ "${PERF_PULL_IMAGE:-true}" = "tru
     || echo "WARNING: 'docker pull $CLU_IMAGE' failed — the item-13 clustered A/B will fall back to a cached image if present, else SKIP (notify-only)" >&2
 fi
 
+# Resolve the SUT image's built-in JAVA_TOOL_OPTIONS once — prepended to every container that
+# overrides it (below and the handshake JDK SUT) so the shipped GC survives, and used by the
+# default-profile GC guard near "config resolved".
+SUT_IMAGE_JAVA_TOOL_OPTIONS="$(image_java_tool_options "$MOCKSERVER_IMAGE")"
+
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
-start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream"
+start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream" "" "" "" "ERROR" "" "keep"
 start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "ERROR" "sut"
 # Follow the SUT's stdout/stderr into a host file from the moment it starts. The follow stream ENDS
 # when the container dies, so the file survives the container's reaping and captures the JVM's dying
@@ -1011,6 +1037,27 @@ if [ "${#CONFIG_ERRORS[@]}" -gt 0 ]; then
   printf '  - %s\n' "${CONFIG_ERRORS[@]}" >&2
   echo "(A populated-but-wrong config field survives review; an absent one does not — see the instance_type:\"\" bug.)" >&2
   exit 1
+fi
+
+# Fail closed: a default-profile figure MUST be measured on the image's shipped GC. The SUT's
+# always-on diagnostics opts replace JAVA_TOOL_OPTIONS, so start_mockserver re-prepends the image
+# default's GC selector; verify the running JVM actually reports it. Skipped when the image sets none.
+if [ "$CONFIG_PROFILE" = "default" ]; then
+  _img_gc_flag="$(printf '%s' "$SUT_IMAGE_JAVA_TOOL_OPTIONS" | grep -oiE -- '-XX:\+Use[A-Za-z0-9]+GC' | head -1 || true)"
+  if [ -n "$_img_gc_flag" ]; then
+    case "$_img_gc_flag" in
+      *ZGC) _expected_gc="ZGC" ;;
+      *G1GC) _expected_gc="G1" ;;
+      *ShenandoahGC) _expected_gc="Shenandoah" ;;
+      *ParallelGC) _expected_gc="PS " ;;
+      *SerialGC) _expected_gc="MarkSweepCompact" ;;
+      *) _expected_gc="$(printf '%s' "$_img_gc_flag" | sed -E 's/.*Use([A-Za-z0-9]+)GC/\1/')" ;;
+    esac
+    if ! printf '%s' "$GC_IN_USE" | grep -qi -- "$_expected_gc"; then
+      echo "ERROR: default-profile run measured GC '${GC_IN_USE}' but the image default (${_img_gc_flag}) expects '${_expected_gc}' — a default figure on the wrong collector must not be published" >&2
+      exit 1
+    fi
+  fi
 fi
 
 # --- source-provenance verdict (parts A/B): can this run be attributed, and to
@@ -1301,10 +1348,32 @@ CONFIG_JSON="$(jq -n \
 echo "--- config resolved: ${MS_VERSION} gc='${GC_IN_USE}' heap_max=${HEAP_MAX_BYTES} jdk='${JDK_BUILD}' log_level=${LOG_LEVEL_VAL} maxEventLogSizeInBytes=${MAX_EVENT_LOG_VAL} soBacklog=${SO_BACKLOG_VAL:-<shipped default>} config_profile=${CONFIG_PROFILE} rig_profile=${RIG_PROFILE} provenance_ok=${PROVENANCE_OK} attributed=${ATTRIBUTED_COMMIT:0:10}(${ATTRIBUTED_SRC}) harness=${HARNESS_COMMIT:0:10} image_age_days=${IMAGE_AGE_DAYS} image_stale=${IMAGE_STALE} jvm_diagnostics=${PERF_JVM_DIAGNOSTICS} baseline_eligible=${BASELINE_ELIGIBLE} (schema_version=3)"
 
 echo "--- seeding upstream /simple (forward target)"
-docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -X PUT \
-  "http://${UPSTREAM}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
-  -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"upstream"},"times":{"unlimited":true}}]' \
-  -o /dev/null -w 'upstream seed HTTP %{http_code}\n'
+# Fail closed: the whole run forwards through this expectation, so an unseeded upstream must abort
+# HERE, after printing the upstream's post-mortem (the --rm-dropped container's .State + last logs).
+# curl exit 6 (unresolved host) prints 000; one cheap retry covers a transient.
+seed_upstream() {
+  docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT \
+    "http://${UPSTREAM}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
+    -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"upstream"},"times":{"unlimited":true}}]' 2>/dev/null || true
+}
+UPSTREAM_SEED_CODE="$(seed_upstream)"
+if ! printf '%s' "$UPSTREAM_SEED_CODE" | grep -qE '^2[0-9][0-9]$'; then
+  echo "WARNING: upstream seed HTTP ${UPSTREAM_SEED_CODE:-000} — retrying once after 3s" >&2
+  sleep 3
+  UPSTREAM_SEED_CODE="$(seed_upstream)"
+fi
+echo "upstream seed HTTP ${UPSTREAM_SEED_CODE:-000}"
+if ! printf '%s' "$UPSTREAM_SEED_CODE" | grep -qE '^2[0-9][0-9]$'; then
+  echo "ERROR: upstream seeding failed (HTTP ${UPSTREAM_SEED_CODE:-000}) — capturing upstream post-mortem before aborting" >&2
+  if up_state="$(docker inspect --format '{{json .State}}' "$UPSTREAM" 2>/dev/null)"; then
+    echo "--- $UPSTREAM .State: $(printf '%s' "$up_state" | jq -rc '{OOMKilled,ExitCode,Status,Error,FinishedAt}' 2>/dev/null || printf '%s' "$up_state")" >&2
+    echo "--- $UPSTREAM last 50 log lines:" >&2
+    docker logs --tail 50 "$UPSTREAM" >&2 2>&1 || true
+  else
+    echo "--- upstream container $UPSTREAM no longer exists — cannot inspect" >&2
+  fi
+  exit 1
+fi
 
 run_regression() {
   local proto="$1" base_url="$2" insecure="$3" out="$4"
@@ -2050,7 +2119,7 @@ if [ "${PERF_PROXY_PROFILE:-true}" = "true" ]; then
       docker run -d --rm --name "$JDK_SUT" --network "$NETWORK" --network-alias mockserver-jdk \
         $(cpuset_arg "$UPSTREAM_CPUS") \
         -e MOCKSERVER_LOG_LEVEL=ERROR -e MOCKSERVER_DISABLE_SYSTEM_OUT=true -e MOCKSERVER_METRICS_ENABLED=true \
-        -e JAVA_TOOL_OPTIONS="-Dio.netty.handler.ssl.noOpenSsl=true" \
+        -e JAVA_TOOL_OPTIONS="$(compose_java_tool_options "$SUT_IMAGE_JAVA_TOOL_OPTIONS" '-Dio.netty.handler.ssl.noOpenSsl=true')" \
         "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null 2>&1 || true
       wait_ready "$MTLS" || true
       wait_ready "$JDK_SUT" || true
