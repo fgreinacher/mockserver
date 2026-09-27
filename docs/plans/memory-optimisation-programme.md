@@ -32,19 +32,18 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **As of 2026-09-27 (midday): open items are CONNECT
-relay capacity C1 (settling run to queue), the unit 17 decision (ZGC won 454 vs 453), and the
-perf runs — 453 measured 58,912 req/s (not publishable: cpusets were set explicitly), 455 is the
-publishable repeat and 454 the matched ZGC cell that decides unit 17.**
+Everything not listed here has landed or been closed. **As of 2026-09-27 (afternoon): open items are
+CONNECT relay capacity C1 (re-check build 457 queued), publishing build 455's figures to the site, and
+the large-heap profile (performance-programme item 5, build 456) with its cap decision.**
 
 ### Open
 
 | # | What | State |
 |---|---|---|
 | **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
-| **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant |
+| **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant. **Local repro on current master: does NOT reproduce** — CONNECT alone and CONNECT+absolute at 500–1,500 req/s per arm were clean (0 errors, no listen overflows, connections reused), so it appears only in the rig's loaded context. Re-check build 457 runs the same workload on current master: clean → close as not reproducible; fails → add WARN logging to the workload (control-class) to capture the relay's failure cause |
 | **Unit 17** | Ship ZGC as the Docker default | **landed.** Decision figures (453 G1 vs 454 ZGC, 6 cores, default heap, same ladder; binaries differ only off the plain-GET path `7261e4ab3` vs `589a65db1`): ZGC clean to 60,000 offered vs G1 52,000; p95 at 48,000 10.5 vs 23.2 ms; p99 30.7 vs 49.1 ms; p99 at 16,000 0.28 vs 20.6 ms; peak 59,706 vs 58,913; zero errors both. ZGC is supplied as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` (clustered: `+ -XX:+ZGenerational`, JDK 21), **not** a hard-coded ENTRYPOINT flag — review-final caught that a hard-coded `-XX:+UseZGC` clashes fatally with a user-prepended `JAVA_TOOL_OPTIONS` GC flag ("multiple GCs selected"); an ENV default is instead replaced wholesale by an override, so the collector stays overridable on the shell-less distroless images. On the standard, `local`, `snapshot`, `root`, `root-snapshot`, `graaljs` and `clustered` images. **`-aot` kept on G1** — local build measured ZGC regressing its cold start ~42% (380→540 ms), defeating its purpose; the AppCDS archive is retrained under ZGC and verified to map under the ENV-supplied ZGC (`-Xshare:on` with the entrypoint `-cp`, exit 0). Standard/local startup within ~7% of G1 (~426–495 ms vs 463 ms), no OOM at `--memory 512m`/`1g`. Verified live: default→ZGC; `-e JAVA_TOOL_OPTIONS=-XX:+UseG1GC`→G1 (starts; archive not used under G1); `-e JAVA_TOOL_OPTIONS=-Xmx512m`→not ZGC (documented footgun); `helm template` default has no `JAVA_TOOL_OPTIONS` (image ENV ZGC stands) and `app.jvmOptions=-XX:+UseG1GC` sets it. Live-smoke ZGC assertion (`jvm_runtime_info` gc label) added to `java-docker-push-snapshot.sh` (control-class, pending approval). |
-| **Ladder** | New figures on current master | **453 (default G1, 8k–64k): rig-valid peak 58,912 req/s, clean to 52,000 offered (50,589 achieved), p95 23.2 ms at 48,000, zero errors** — not baseline-eligible because the cpusets were passed explicitly (even at default values, since `eee0e662c`); 455 is the identical publishable repeat; 454 (ZGC, same commit) decides unit 17 |
+| **Ladder** | New figures on current master | **455 (publishable: default config, no cpuset overrides, baseline-eligible, valid): rig-valid peak 59,146 req/s at 64,000 offered; clean to 56,000 offered (53,402 achieved); p95 4.7 ms at 32,000 and 23.3 ms at 48,000; zero errors** — on G1 (image built before the ZGC default). Reproduces 453 (58,912; 453 was ineligible only because cpusets were passed explicitly). 454 (ZGC, same ladder) peaked at 59,706 and was clean to 60,000. Next: apply 455's website patch |
 
 ### Landed (2026-09-26/27)
 
