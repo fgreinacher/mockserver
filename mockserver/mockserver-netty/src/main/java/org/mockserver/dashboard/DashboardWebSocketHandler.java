@@ -127,8 +127,9 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // fixed at EXPECTATION_UPDATE_ITEM_LIMIT and NOT client-tunable - so this knob cannot amplify it.
     //
     // BE PRECISE ABOUT WHICH THROTTLE APPLIES, because this is the note a future reader will trust when
-    // deciding whether to raise the ceiling again. The Semaphore(1) is a SINGLE GLOBAL permit refilled
-    // ~1/second, and it gates only the JSON serialise-and-write in sendMessage. It does NOT gate the
+    // deciding whether to raise the ceiling again. The Semaphore(1) is a per-connection permit (an
+    // instance field on a handler PortUnificationHandler news per HTTP/1.1 channel, see above), NOT a
+    // JVM-global one, refilled ~1/second, and it gates only the JSON serialise-and-write in sendMessage. It does NOT gate the
     // DTO-construction walk below, which has already run by then. That walk executes per registry entry
     // on two paths, and BOTH are now rate-bounded per connection: the push path is coalesced by
     // MockServerEventLogNotifier.COALESCE_WINDOW_MILLIS = 250 (~4/second), and the client-pull path (an
@@ -273,8 +274,9 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // so the dashboard can never show a stale expectation. Bounded like expectationRequestDefinitions
     // (one entry per live expectation); a removed expectation is simply never looked up again and its
     // stale entry ages out of the bounded map. Guarded by its own lock — the heavyweight serialise
-    // runs OUTSIDE the lock, only the get/put touch it. @Sharable: a single instance serves every
-    // dashboard, so the cache is shared across connections and the reuse compounds.
+    // runs OUTSIDE the lock, only the get/put touch it. This is a per-connection instance field, not
+    // shared across connections: PortUnificationHandler news a fresh handler per HTTP/1.1 channel (see
+    // above), so the reuse compounds across one connection's throttled updates, not between dashboards.
     private Map<String, ActiveExpectationJson> activeExpectationJsonCache;
     private final Object activeExpectationJsonCacheLock = new Object();
     // Counts genuine (cache-miss) expectation serialisations, so a test can prove an unchanged set is
