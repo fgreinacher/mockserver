@@ -24,10 +24,12 @@ import org.slf4j.event.Level;
 import java.io.IOException;
 import java.io.StringWriter;
 import java.io.Writer;
+import java.util.AbstractMap;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.formatting.StringFormatter.formatLogMessage;
@@ -59,6 +61,12 @@ public class MustacheTemplateEngine implements TemplateEngine {
     // ScenarioTemplateHelper) so a single immutable instance is shared safely across all render threads.
     private final Map<String, Object> scenarioMustacheHelper;
 
+    // The request-independent bindings (the ~26 built-in functions/helpers, the mustache scenario helper
+    // and any seeded faker) are identical for every render, so they are built once and shared read-only;
+    // each render layers a small per-render overlay over them rather than copying all of them into a
+    // fresh map. Never mutated after construction, so it is safe for concurrent reads.
+    private final Map<String, Object> baseBindings;
+
     // ----- parsed-template cache (compile once, render many) -----
     // Templates are mostly static for the lifetime of a mock — the same template string is rendered on
     // every matching request. The original path re-compiled the template string into a fresh parsed
@@ -76,7 +84,7 @@ public class MustacheTemplateEngine implements TemplateEngine {
     // bounded; 1000 comfortably covers realistic mock configurations while remaining cheap. The bound is
     // enforced by compiledTemplates, an access-ordered LRU wrapped in Collections.synchronizedMap so
     // concurrent renders read and insert safely (the same concurrency approach Velocity uses for its
-    // registeredTemplates LRU).
+    // parsed-template cache).
     static final int PARSED_TEMPLATE_CACHE_MAX = 1000;
     private final Map<String, Template> compiledTemplates = Collections.synchronizedMap(new LinkedHashMap<String, Template>(256, 0.75f, true) {
         @Override
@@ -106,6 +114,14 @@ public class MustacheTemplateEngine implements TemplateEngine {
         this.seededFaker = configuration.templateFakerSeed() != 0L
             ? TemplateFunctions.resolveFaker(configuration.templateFakerSeed())
             : null;
+        Map<String, Object> base = new HashMap<>(TemplateFunctions.BUILT_IN_FUNCTIONS.size() + TemplateFunctions.BUILT_IN_HELPERS.size() + 2);
+        base.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
+        base.putAll(TemplateFunctions.BUILT_IN_HELPERS);
+        if (seededFaker != null) {
+            base.put("faker", seededFaker);
+        }
+        base.put("scenario", scenarioMustacheHelper);
+        this.baseBindings = Collections.unmodifiableMap(base);
     }
 
     /**
@@ -149,19 +165,7 @@ public class MustacheTemplateEngine implements TemplateEngine {
             validateTemplate(template);
             Writer writer = new StringWriter();
             Template compiledTemplate = compiledTemplate(template);
-            Map<String, Object> data = new ConcurrentHashMap<>();
-            data.put("request", new HttpRequestTemplateObject(request));
-            if (iteration != null) {
-                data.put("iteration", iteration);
-            }
-            data.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
-            data.putAll(TemplateFunctions.BUILT_IN_HELPERS);
-            if (seededFaker != null) {
-                data.put("faker", seededFaker);
-            }
-            data.put("scenario", scenarioMustacheHelper);
-            data.put("xPath", (Mustache.Lambda) (frag, out) -> evaluatedXPath(frag.execute(), request, out));
-            data.put("jsonPath", (Mustache.Lambda) (frag, out) -> evaluateJsonPath(data, frag.execute(), request, out));
+            Map<String, Object> data = renderData(request, null, iteration);
             compiledTemplate.execute(data, writer);
             return writer.toString();
         } catch (Exception e) {
@@ -175,19 +179,7 @@ public class MustacheTemplateEngine implements TemplateEngine {
             validateTemplate(template);
             Writer writer = new StringWriter();
             Template compiledTemplate = compiledTemplate(template);
-            Map<String, Object> data = new ConcurrentHashMap<>();
-            data.put("request", new HttpRequestTemplateObject(request));
-            if (response != null) {
-                data.put("response", new HttpResponseTemplateObject(response));
-            }
-            data.putAll(TemplateFunctions.BUILT_IN_FUNCTIONS);
-            data.putAll(TemplateFunctions.BUILT_IN_HELPERS);
-            if (seededFaker != null) {
-                data.put("faker", seededFaker);
-            }
-            data.put("scenario", scenarioMustacheHelper);
-            data.put("xPath", (Mustache.Lambda) (frag, out) -> evaluatedXPath(frag.execute(), request, out));
-            data.put("jsonPath", (Mustache.Lambda) (frag, out) -> evaluateJsonPath(data, frag.execute(), request, out));
+            Map<String, Object> data = renderData(request, response, null);
             compiledTemplate.execute(data, writer);
             JsonNode generatedObject = null;
             try {
@@ -243,5 +235,66 @@ public class MustacheTemplateEngine implements TemplateEngine {
 
     private void evaluatedXPath(String xPath, HttpRequest request, Writer out) throws IOException {
         out.write(new RequestBodyExtractionHelper(request, mockServerLogger).xPath(xPath));
+    }
+
+    private Map<String, Object> renderData(HttpRequest request, HttpResponse response, org.mockserver.load.IterationContext iteration) {
+        Map<String, Object> data = new RenderContextMap(baseBindings);
+        data.put("request", new HttpRequestTemplateObject(request));
+        if (response != null) {
+            data.put("response", new HttpResponseTemplateObject(response));
+        }
+        if (iteration != null) {
+            data.put("iteration", iteration);
+        }
+        data.put("xPath", (Mustache.Lambda) (frag, out) -> evaluatedXPath(frag.execute(), request, out));
+        data.put("jsonPath", (Mustache.Lambda) (frag, out) -> evaluateJsonPath(data, frag.execute(), request, out));
+        return data;
+    }
+
+    // A render's data map is the shared request-independent baseBindings with a small per-render overlay
+    // layered on top: reads prefer the overlay, and every put during a render (including jsonPathResult)
+    // targets only the overlay, so the shared base is never mutated across renders. It must remain a Map
+    // because the mustache collector's fall-through fetcher only fires for a Map context.
+    private static final class RenderContextMap extends AbstractMap<String, Object> {
+        private final Map<String, Object> base;
+        private final Map<String, Object> overlay = new HashMap<>();
+
+        private RenderContextMap(Map<String, Object> base) {
+            this.base = base;
+        }
+
+        @Override
+        public Object get(Object key) {
+            Object value = overlay.get(key);
+            return (value != null || overlay.containsKey(key)) ? value : base.get(key);
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return overlay.containsKey(key) || base.containsKey(key);
+        }
+
+        @Override
+        public Object put(String key, Object value) {
+            return overlay.put(key, value);
+        }
+
+        @Override
+        public int size() {
+            int size = base.size();
+            for (String key : overlay.keySet()) {
+                if (!base.containsKey(key)) {
+                    size++;
+                }
+            }
+            return size;
+        }
+
+        @Override
+        public Set<Entry<String, Object>> entrySet() {
+            Map<String, Object> merged = new LinkedHashMap<>(base);
+            merged.putAll(overlay);
+            return merged.entrySet();
+        }
     }
 }
