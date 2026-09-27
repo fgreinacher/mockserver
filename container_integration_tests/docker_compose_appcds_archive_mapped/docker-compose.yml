@@ -17,7 +17,9 @@ services:
     # the archive-map lines to stderr so the test can additionally confirm the
     # dynamic /mockserver.jsa archive itself mapped, not merely the base archive.
     environment:
-      JAVA_TOOL_OPTIONS: "-Xshare:on -Xlog:cds=info:stderr"
+      # JAVA_TOOL_OPTIONS replaces the image default (-XX:+UseZGC) wholesale, and the archive is
+      # trained under ZGC, so the collector must be restated here or the archive cannot map.
+      JAVA_TOOL_OPTIONS: "-XX:+UseZGC -Xshare:on -Xlog:cds=info:stderr"
   client:
     image: mockserver/mockserver:integration_testing_client_curl
     command:
