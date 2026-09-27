@@ -120,6 +120,12 @@ a small fraction of the pool is a server property being reported as a client lim
 finer rungs at 39,000 and 41,000, the reported healthy ceiling would have been ~36,000 rather than
 41,000. When placing rungs near a suspected knee, use gaps of 1,000 rps or smaller.
 
+**Ladder anchor rule.** Always include at least one rung *below* the expected knee. A ladder that
+starts above the cleanly-served region reports `saturation_rps=0` — every rung is already in
+overload, so none qualifies as the healthy ceiling — which looks like a defect and is not. The
+default ladder (500, 1,000, 2,000, 4,000, 8,000, 16,000, 24,000, 32,000, 36,000, 40,000, 44,000,
+48,000, 64,000 rps) begins well below the knee for exactly this reason.
+
 ### `forward.js` — forward connection-pool guard
 
 Guards `mockserver.forwardConnectionPoolEnabled`. The guard runs against a dedicated upstream
@@ -295,8 +301,12 @@ fire a spurious gating regression against history collected under different sett
 
 ## Published Figures
 
-The `performance.html` page on the docs site is a static snapshot. `perf-test-compare.sh`
-writes results to S3 and stops; no step regenerates the committed chart data.
+The `performance.html` page on the docs site renders from a committed data file
+(`jekyll-www.mock-server.com/_data/perf_figures.json`) plus committed chart data and PNGs.
+`perf-test-compare.sh` writes each run to S3; the daily run's tail step
+`perf-website-publish.sh` regenerates that data file from the latest valid run and, when it
+has drifted, emits the refresh as a build artifact — but nothing applies it automatically (see
+[Publishing a run's figures](#publishing-a-runs-figures-manual-step) below).
 
 Before publishing any figure:
 - State the version, date, core count, heap, GC, and log level. A figure without these is not a figure.
@@ -315,3 +325,46 @@ isolated, G1 with a 1.2 GB heap, JDK 17.0.20.1+1, `MOCKSERVER_LOG_LEVEL=ERROR`, 
 2026-06-24, pre-8.0.0, instance type not recorded): 32,000 healthy ceiling at p50 0.194 ms,
 36,323 peak — both predating the 8.0.0 HTTP/2 multiplex change, and taken before the 2026-09-22
 hardware change, so the load generator was sharing the server's physical cores.
+
+### Publishing a run's figures (manual step)
+
+The daily perf pipeline's tail step `perf-website-publish.sh` (`perf` queue, `soft_fail`,
+non-gating) regenerates `perf_figures.json` and the charts from the newest valid run in S3. The
+perf queue holds **only** the S3 perf-results grant — no git or gh credentials — so it cannot
+push or open a PR. When the committed figures have drifted (older than `PUBLISH_MAX_AGE_DAYS`,
+default 30, or a headline metric moved more than `PUBLISH_MOVE_PCT`, default 10%) it commits the
+refresh to a fresh local branch and attaches that commit as a `git format-patch` artifact
+(`website-figures-<UTC-timestamp>.patch`, applied with `git am`) alongside the regenerated
+`perf_figures.json`, `perf-sweep.json`, `perf-result.json` and chart PNGs. A build with no drift
+emits nothing. **Nothing applies the patch automatically** — publishing a customer-facing figure
+is a deliberate human step.
+
+To publish a run's figures:
+
+1. **Find and download the patch** from the daily `mockserver-performance-test` build with the
+   local `bk` CLI. `list` takes the build number as a positional; `download` takes it as
+   `--build`, and the positional it takes is the artifact ID (list first to get it):
+   ```
+   bk artifacts list <N> -p mockserver-performance-test
+   bk artifacts download <ARTIFACT_ID> --build <N> -p mockserver-performance-test
+   ```
+2. **Check the source run before applying.** The step publishes from the newest run that passes
+   three fail-closed gates: it is self-describing (`schema_version >= 2` with a `config` block),
+   it passed its own validity checks (`validity.valid == true`), and it yields a healthy ceiling
+   from a usable sweep. Confirm the run named in the patch commit message and the build annotation
+   is the one you mean, its `build_number` is expected, and it is a default-configuration baseline
+   — `config_profile` is `default` and `baseline_eligible` is `true`. Only baseline-eligible,
+   default-profile runs are persisted to `s3://<bucket>/runs/<branch>/` at all
+   (`perf-test-compare.sh` refuses to persist a tuned or instrumented run), so this is a
+   confirmation, not a search.
+3. **Apply it and open the PR** (the annotation prints these commands):
+   ```
+   git fetch origin master
+   git checkout -b perf/website-figures-<UTC-timestamp> origin/master
+   git am website-figures-<UTC-timestamp>.patch
+   git push -u origin perf/website-figures-<UTC-timestamp> && gh pr create --fill --base master
+   ```
+   The patch rewrites only `_data/perf_figures.json` and the chart data/PNGs. Before merging,
+   reconcile the hand-authored numbers it does **not** touch in `mock_server/performance.html`:
+   the front-matter `description`, the JSON-LD `schema_faq` answers, and matcher-scaling figures
+   (a separate JMH source, expected to differ).
