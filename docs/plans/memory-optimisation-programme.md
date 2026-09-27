@@ -32,10 +32,10 @@ flowchart TD
 
 ## What is left
 
-Everything not listed here has landed or been closed. **As of 2026-09-27 (late morning): open items
-are the inbound TLS handshake timeout (in progress), CONNECT
-relay capacity C1 (settling run queued), one approval (h2 multiplex UI skip), and the new perf
-ladder (builds 453 and 454 running), after which unit 17 is decided.**
+Everything not listed here has landed or been closed. **As of 2026-09-27 (midday): open items are the
+inbound TLS handshake timeout (in progress), CONNECT relay capacity C1 (settling run to queue), and the
+perf runs — 453 measured 58,912 req/s (not publishable: cpusets were set explicitly), 455 is the
+publishable repeat and 454 the matched ZGC cell that decides unit 17.**
 
 ### Open
 
@@ -44,8 +44,7 @@ ladder (builds 453 and 454 running), after which unit 17 is decided.**
 | **F3** | Writing ONE shared `HttpResponse` from several threads at once tears `KeysToMultiValues` header arrays (NPE / AIOOBE) — on master and 18a alike | recorded, not reachable in production: the mock path clones the response per request, control-plane responses are built per request, the dashboard uses WebSocket frames. Guarded for per-request responses by `ResponseWriterConcurrencySafetyTest` |
 | **TLS-in** | Inbound TLS handshakes (`SniHandler`, `RelayConnectHandler` server side) use Netty's fixed 10 s default | in progress — companion to F1's outbound fix |
 | **C1** | CONNECT-tunnel arm fails ~31% (fast 502s from `RelayConnectHandler.failure`) at ~1,000 req/s combined load (build 452); clean at 200 req/s | capacity limit of the CONNECT loopback design (~3 connections and two TLS terminations per request), not a regression; SUT CPU was ~35%. Settling run queued: CONNECT alone at 500 req/s with WARN logging, then an `soBacklog` 4096 variant |
-| **h2 UI skip** | `perf-test-h2multiplex.sh` builds the UI bundle it never uses (~2 min per run) | `e766d7dfc`, review-final PASS, **awaiting user approval** (control-class) |
-| **Ladder** | New figures on current master | build 453 (default G1, 8k–64k) running; build 454 (ZGC, same commit and ladder) queued — the matched cell unit 17 needs |
+| **Ladder** | New figures on current master | **453 (default G1, 8k–64k): rig-valid peak 58,912 req/s, clean to 52,000 offered (50,589 achieved), p95 23.2 ms at 48,000, zero errors** — not baseline-eligible because the cpusets were passed explicitly (even at default values, since `eee0e662c`); 455 is the identical publishable repeat; 454 (ZGC, same commit) decides unit 17 |
 
 ### Landed (2026-09-26/27)
 
@@ -63,6 +62,7 @@ ladder (builds 453 and 454 running), after which unit 17 is decided.**
 | D1 / D3 / D4 defects | `c03805f24` / `cc7d7d185` / `d5fe0bea2` |
 | F1 forward-client TLS handshake bounded by `socketConnectionTimeout` (was Netty's fixed 10 s — the forward-test flake's root cause) | `4180cbdb4` |
 | F2 `HttpActionHandlerForwardChaosTest` Mockito race (async scheduler vs synchronous dispatch) | `7261e4ab3` |
+| h2 multiplex perf step skips the UI bundle (~2 min per run) | `589a65db1` |
 | Docker `jvm_memory_allocated_bytes` (jlink `jdk.management`) + live smoke check | `ff84bb395`, `1fd5bcfbc` |
 | Opt-in perf-rig workload `PERF_WORKLOAD=forward` (unit 21 end to end) | `c8699f5f4` |
 | Subagent model re-pin (Opus 5.5 / Sonnet 5), evals 5/5 on the pinned models | `cd78f35b0` |
