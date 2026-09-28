@@ -837,20 +837,13 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         // path does no extra work (the counter stays 0 and is never read).
         int namespaceSkipped = 0;
 
-        // Allocation optimisation: with detailedMatchFailures OFF (the default), a
-        // MatchDifference records NOTHING — addDifference(Field,...) is gated entirely
-        // on the flag, so its lazily-allocated differences map is never created and
-        // getAllDifferences() always returns the empty map. The only per-match mutable
-        // state, the currentField marker, is overwritten at the start of every field
-        // match and is never read by this loop, so a SINGLE reusable instance is
-        // behaviourally identical across the whole scan (and never escapes this method).
-        // This removes the per-candidate MatchDifference shell that a large no-match scan
-        // would otherwise allocate (e.g. 1000 throwaway objects for a 1000-expectation
-        // miss). When the flag is ON, each matcher still gets its OWN MatchDifference so
-        // the recorded per-field differences (and the closest-match diagnostic that reads
-        // getAllDifferences().size()) are exactly as before.
-        final boolean detailedMatchFailures = configuration.detailedMatchFailures();
-        final MatchDifference sharedMatchDifference = detailedMatchFailures
+        // Per-candidate detail is read only at INFO or finer (the "because" text, closest-match
+        // selection, TRACE events), so it is recorded only then. Otherwise one non-detailed
+        // MatchDifference serves the whole scan; OpenAPI candidates may still add to its map,
+        // but nothing reads it and it never escapes this method.
+        final boolean recordDetailedDifferences = configuration.detailedMatchFailures()
+            && mockServerLogger.isEnabledForInstance(Level.INFO);
+        final MatchDifference sharedMatchDifference = recordDetailedDifferences
             ? null
             : new MatchDifference(false, requestDefinition);
 
@@ -892,7 +885,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 }
                 continue;
             }
-            MatchDifference matchDifference = detailedMatchFailures
+            MatchDifference matchDifference = recordDetailedDifferences
                 ? new MatchDifference(true, requestDefinition)
                 : sharedMatchDifference;
             if (httpRequestMatcher.matches(matchDifference, requestDefinition)) {
@@ -1035,7 +1028,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         boolean diagnosticsEmittable = mockServerLogger.isEnabledForInstance(Level.INFO)
             || mockServerLogger.isEnabledForInstance(Level.DEBUG);
         if (useCandidateIndex && matchedExpectation == null && diagnosticsEmittable) {
-            ClosestMatchAccumulator accumulator = fullScanClosestMatchAndLazyRemoval(requestDefinition, detailedMatchFailures, sharedMatchDifference);
+            ClosestMatchAccumulator accumulator = fullScanClosestMatchAndLazyRemoval(requestDefinition, recordDetailedDifferences, sharedMatchDifference);
             closestMatchExpectation = accumulator.closestMatchExpectation;
             closestMatchMatcher = accumulator.closestMatchMatcher;
             closestMatchFailures = accumulator.closestMatchFailures;
@@ -1155,7 +1148,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * expectation matched, so there is nothing to commit. Runs only above the threshold and
      * only on a miss (already a cold path).
      */
-    private ClosestMatchAccumulator fullScanClosestMatchAndLazyRemoval(RequestDefinition requestDefinition, boolean detailedMatchFailures, MatchDifference sharedMatchDifference) {
+    private ClosestMatchAccumulator fullScanClosestMatchAndLazyRemoval(RequestDefinition requestDefinition, boolean recordDetailedDifferences, MatchDifference sharedMatchDifference) {
         ClosestMatchAccumulator accumulator = new ClosestMatchAccumulator();
         String requestNamespace = extractRequestNamespace(requestDefinition);
         for (HttpRequestMatcher httpRequestMatcher : httpRequestMatchers.toSortedList()) {
@@ -1165,7 +1158,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 }
                 continue;
             }
-            MatchDifference matchDifference = detailedMatchFailures
+            MatchDifference matchDifference = recordDetailedDifferences
                 ? new MatchDifference(true, requestDefinition)
                 : sharedMatchDifference;
             if (!httpRequestMatcher.matches(matchDifference, requestDefinition)) {
