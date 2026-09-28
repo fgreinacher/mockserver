@@ -273,9 +273,10 @@ SAMPLE_LOG="$OUT_DIR/samples.csv"
 #
 #   TIER 2 — OPT-IN via PERF_JVM_DIAGNOSTICS=deep, for an INVESTIGATION run only. Costs throughput,
 #   so it MUST be off for the run that writes the baseline (the default 'standard' leaves it off).
-#     -Xlog:gc*                    the FINE per-GC-event trajectory to /diag/<sut>/gc.log (see the
+#     -Xlog:gc*                    the FINE per-GC-event trajectory to /diag/<sut>/gc-1.log (see the
 #                                   heap approach the cliff) — moved here from tier 1, see above
-#     JFR profile recording        allocation + CPU-hotspot profiling, chunks written to /diag/jfr-repo
+#     JFR profile recording        allocation + CPU-hotspot profiling, chunks in /diag/<sut>/jfr-repo,
+#                                   dumped over the load window to /diag/<sut>/load.jfr
 #                                   (survive even a hard OOM exit), ~2-8% depending on event settings
 #     -XX:NativeMemoryTracking=summary + -XX:+PrintNMTStatistics  precise native breakdown printed to
 #                                   stdout at JVM exit (captured by the docker-logs follower), ~5-10%
@@ -332,12 +333,16 @@ tier1_jvm_opts() {
 # Tier-2 JVM opts (only when PERF_JVM_DIAGNOSTICS=deep). Adds the throughput-costing diagnostics an
 # INVESTIGATION run wants: the per-GC-event trajectory to a file (the fine-grained approach-to-the-cliff
 # evidence), NMT, and JFR. JFR repository on the mounted volume so the chunk files survive a hard
-# ExitOnOutOfMemoryError exit even if the named .jfr is never finalised.
+# ExitOnOutOfMemoryError exit. No filename/dumponexit: the SUT never exits gracefully (SIGKILL or
+# os::_exit), and the image HEALTHCHECK JVM inherits JAVA_TOOL_OPTIONS, so a named dump file would
+# only ever hold a sub-second health-check recording. dump_load_window_jfr() captures the SUT's.
+# The GC log is per-PID (%p) for the same reason: a shared name lets every health-check JVM rotate
+# the SUT's log away. The SUT is pid 1, so its log is gc-1.log.
 tier2_jvm_opts() {
   local sub="$1"
   # -XX:+UnlockDiagnosticVMOptions MUST precede PrintNMTStatistics (it is a diagnostic flag; the JVM
   # refuses to start otherwise — caught by the local OOM proof).
-  printf -- '-Xlog:gc*,gc+heap=info:file=/diag/%s/gc.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics -XX:StartFlightRecording=name=perfdiag,settings=profile,filename=/diag/%s/recording.jfr,dumponexit=true,maxsize=256m -XX:FlightRecorderOptions=repository=/diag/%s/jfr-repo,stackdepth=128' "$sub" "$sub" "$sub"
+  printf -- '-Xlog:gc*,gc+heap=info:file=/diag/%s/gc-%%p.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics -XX:StartFlightRecording=name=perfdiag,settings=profile,maxsize=256m -XX:FlightRecorderOptions=repository=/diag/%s/jfr-repo,stackdepth=128' "$sub" "$sub"
 }
 # Combined diagnostics JVM opts for a diag SUT ($1 = /diag subdir), honouring the tier flag.
 diag_jvm_opts() {
@@ -437,9 +442,85 @@ extract_heap_histogram() {
   fi
 }
 
+sut_jvm_uid_gid() { # container -> "uid gid" of its pid-1 JVM (empty on failure)
+  docker run --rm --pid="container:$1" --user 0:0 "$PERF_HISTO_JDK_IMAGE" \
+    sh -c 'awk "/^Uid:/{u=\$2} /^Gid:/{g=\$2} END{print u, g}" /proc/1/status' 2>/dev/null || true
+}
+
+# Deep runs only. Dumps the SUT's own JFR recording, from the first load phase to now, to
+# /diag/sut/load.jfr through a jcmd sidecar in its PID namespace (the SUT JVM is pid 1; attach needs
+# its exact uid), and records the window in load-window.json for the allocation-per-request figure.
+dump_load_window_jfr() {
+  [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] && [ -n "${LOAD_WINDOW_START_EPOCH:-}" ] || return 0
+  [ -f "$DIAG_DIR/load-window.json" ] && return 0
+  local uid gid out="$DIAG_DIR/sut/load.jfr" err="" end_epoch jfr_rel=
+  end_epoch="$(date -u +%s)"
+  if [ "$(docker inspect --format '{{.State.Running}}' "$SERVER" 2>/dev/null || echo false)" != "true" ]; then
+    err="SUT not running at dump time"
+  else
+    read -r uid gid <<<"$(sut_jvm_uid_gid "$SERVER")"
+    if ! printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
+      err="could not resolve the SUT JVM uid"
+    else
+      local deadline="${LOAD_JFR_DUMP_DEADLINE_S:-180}" rc=0 jcmd_out
+      jcmd_out="$(timeout "$deadline" docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$PERF_HISTO_JDK_IMAGE" \
+                  jcmd 1 JFR.dump name=perfdiag filename=/diag/sut/load.jfr begin="$LOAD_WINDOW_START_ISO" 2>&1)" || rc=$?
+      if [ "$rc" -eq 124 ]; then
+        err="jcmd JFR.dump timed out after ${deadline}s"
+      elif [ "$rc" -ne 0 ]; then
+        err="jcmd JFR.dump failed (exit $rc): $(printf '%s' "$jcmd_out" | tail -2 | tr '\n' ' ')"
+      elif [ ! -s "$out" ]; then
+        err="jcmd JFR.dump reported success but wrote no file: $(printf '%s' "$jcmd_out" | tail -2 | tr '\n' ' ')"
+      fi
+    fi
+  fi
+  if [ -n "$err" ]; then
+    echo "WARNING: no load-window JFR recording — $err" >&2
+    # A timed-out dump can leave a truncated file; keep it as evidence but never as the recording.
+    [ -e "$out" ] && mv -f "$out" "$DIAG_DIR/sut/load.partial.jfr" 2>/dev/null || true
+  else
+    jfr_rel="sut/load.jfr"
+  fi
+  jq -n --argjson start "$LOAD_WINDOW_START_EPOCH" --argjson end "$end_epoch" --arg start_iso "$LOAD_WINDOW_START_ISO" \
+    --arg jfr "$jfr_rel" --arg error "$err" \
+    '{start_epoch:$start, end_epoch:$end, start_iso:$start_iso, jfr:(if $jfr == "" then null else $jfr end), error:(if $error == "" then null else $error end)}' \
+    > "$DIAG_DIR/load-window.json" 2>/dev/null || true
+  [ -n "$jfr_rel" ] && echo "--- load-window JFR recording: sut/load.jfr ($(( $(wc -c < "$out") / 1048576 )) MiB, from $LOAD_WINDOW_START_ISO)" >&2
+  return 0
+}
+
+# GNU tar exits 1 when a file changed while it was being read — the live SUT's gc.log and JFR chunk,
+# or a health-check JVM's short-lived JFR repository. The archive is still complete, so rc 1 is
+# accepted once the archive verifies; any other failure is reported, never swallowed.
+package_diag_bundle() { # out_path -> 0 when a verified archive was written
+  local out="$1" rc=0 err excludes=(--exclude='*.hprof' --exclude='*.hprof.gz')
+  # A successful load-window dump already holds the repository chunks that matter, and the live
+  # repository is the main source of mid-read changes. Without one the repository is the fallback.
+  [ "$(jq -r '.jfr // empty' "$DIAG_DIR/load-window.json" 2>/dev/null)" = "sut/load.jfr" ] \
+    && excludes+=(--exclude='./sut/jfr-repo')
+  # Per-PID GC logs other than pid 1 (the SUT) belong to health-check JVMs.
+  local f
+  for f in "$DIAG_DIR"/*/gc-*.log*; do
+    [ -e "$f" ] || continue
+    case "$(basename "$f")" in gc-1.log|gc-1.log.*) ;; *) excludes+=(--exclude="./${f#"$DIAG_DIR"/}") ;; esac
+  done
+  err="$(mktemp "${TMPDIR:-/tmp}/perf-diag-tar.XXXXXX")"
+  ( cd "$DIAG_DIR" && tar czf "$out" "${excludes[@]}" . ) 2>"$err" || rc=$?
+  if [ "$rc" -gt 1 ] || ! gzip -t "$out" 2>/dev/null || ! tar tzf "$out" >/dev/null 2>&1; then
+    echo "WARNING: diagnostics bundle packaging FAILED (tar rc=$rc): $(head -3 "$err" | tr '\n' ' ')" >&2
+    rm -f "$err"; return 1
+  fi
+  [ "$rc" -eq 1 ] && echo "--- diagnostics bundle: tar saw files change while archiving (archive verified): $(head -2 "$err" | tr '\n' ' ')" >&2
+  rm -f "$err"; return 0
+}
+
 upload_diag_bundle() {
   [ -f "$DIAG_DIR/.uploaded" ] && return 0
-  command -v buildkite-agent >/dev/null 2>&1 || { echo "--- (local run) JVM diagnostics left in $DIAG_DIR" >&2; return 0; }
+  if ! command -v buildkite-agent >/dev/null 2>&1; then
+    package_diag_bundle "$REPO_ROOT/${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" || true
+    echo "--- (local run) JVM diagnostics left in $DIAG_DIR (bundle: ${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz)" >&2
+    return 0
+  fi
   : > "$DIAG_DIR/.uploaded"
   # For each heap dump: FIRST derive a class histogram from the RAW .hprof (kilobytes, names the
   # retaining class — the point of this whole exercise), THEN size-cap the dump itself. Order matters:
@@ -476,18 +557,31 @@ upload_diag_bundle() {
     gz="$hprof.gz"; gzip -f "$hprof" >/dev/null 2>&1 || continue
     szmb=$(( ( $(wc -c < "$gz" 2>/dev/null || echo 0) + 1048575 ) / 1048576 ))
     if [ "$szmb" -le "$PERF_HEAPDUMP_MAX_UPLOAD_MB" ]; then
-      cp "$gz" "$REPO_ROOT/${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz" 2>/dev/null \
-        && buildkite-agent artifact upload "${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz" 2>/dev/null \
-        && echo "--- uploaded heap dump ($sub, ${szmb} MiB gzipped)" >&2
+      if cp "$gz" "$REPO_ROOT/${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz" \
+         && buildkite-agent artifact upload "${ARTIFACT_PREFIX}${sub}-heapdump.hprof.gz"; then
+        echo "--- uploaded heap dump ($sub, ${szmb} MiB gzipped)" >&2
+      else
+        echo "WARNING: heap dump ($sub, ${szmb} MiB gzipped) was NOT uploaded — see the errors above" >&2
+      fi
     else
       echo "--- heap dump $sub is ${szmb} MiB gzipped (> ${PERF_HEAPDUMP_MAX_UPLOAD_MB} MiB cap) — NOT uploaded; the class histogram (in the bundle) names the retaining class, and the raw dump is on the volume" >&2
     fi
   done
   # Everything else (small) as one tarball. Heap dumps are EXCLUDED — they are uploaded (or not)
   # separately above under the size cap, so they must never bloat this always-uploaded bundle.
-  ( cd "$DIAG_DIR" && tar czf "$REPO_ROOT/${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" --exclude='*.hprof' --exclude='*.hprof.gz' . 2>/dev/null ) \
-    && buildkite-agent artifact upload "${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" 2>/dev/null \
-    && echo "--- uploaded perf-jvm-diagnostics.tgz (resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, JFR, live-heap histogram'))" >&2 || true
+  local tgz="${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz" failure=""
+  if ! package_diag_bundle "$REPO_ROOT/$tgz"; then
+    failure="packaging failed"
+  elif ! buildkite-agent artifact upload "$tgz"; then
+    failure="buildkite-agent artifact upload failed"
+  fi
+  if [ -n "$failure" ]; then
+    echo "WARNING: $tgz was NOT uploaded ($failure) — see the lines above" >&2
+    printf '%s\n' ":warning: **JVM diagnostics bundle \`$tgz\` was not uploaded** ($failure). The measurement is unaffected, but the resource trajectory$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', GC log, NMT and JFR recording') is unavailable for this run; see the step log." \
+      | buildkite-agent annotate --style warning --context "perf-diag-bundle-${PERF_RUN_NAME:-default}" || true
+  else
+    echo "--- uploaded $tgz ($(( $(wc -c < "$REPO_ROOT/$tgz") / 1024 )) KiB: resource trajectory, server logs, docker-inspect state, heap class-histogram if an OOM occurred$([ "$PERF_JVM_DIAGNOSTICS" = deep ] && echo ', gc log, NMT, load-window JFR, live-heap histogram'))" >&2
+  fi
 }
 
 # Capture the SUT (and INFO SUT) post-mortem BEFORE the container is removed — the single piece --rm
@@ -515,6 +609,7 @@ capture_sut_diagnostics() {
       echo "--- $c .State: $(jq -rc '{OOMKilled,ExitCode,Status,Error,FinishedAt}' "$DIAG_DIR/$sub/state.json" 2>/dev/null || cat "$DIAG_DIR/$sub/state.json")" >&2
     fi
   done
+  dump_load_window_jfr
   upload_diag_bundle
 }
 
@@ -546,7 +641,9 @@ cleanup() {
 # EXIT trap would never run, so cleanup()'s docker rm -f would not run and the non-rm SUT would linger.
 # Trap the signals too so the post-mortem capture + removal still happen. (A SIGKILL still bypasses
 # everything — hence the startup sweep below reaps any container a prior killed run left behind.)
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# On cancellation Buildkite SIGKILLs after a grace period, so the post-mortem JFR dump gets a short deadline.
+trap 'LOAD_JFR_DUMP_DEADLINE_S=20 cleanup' INT TERM
 # Reap any leftover perf SUTs from a previously-cancelled/killed run before we start — otherwise a
 # lingering non-rm container from a SIGKILLed run (or a name collision) would wedge this one.
 # shellcheck disable=SC2046  # intentional word-splitting of the id list
@@ -1499,6 +1596,11 @@ run_regression() {
 #                                 _count is the population; the le=5/10/25/50/100ms cumulative counts
 #                                 bracket the tail so a SERVER-side p99 can be reconstructed and set
 #                                 against k6's CLIENT p99 — the test of whether the tail is in-server.
+#   jvm_allocated_bytes           cumulative allocation counter; its delta over req_dur_count's delta is
+#                                 the allocation per request for any window
+#   direct_buffer_used_bytes / _count, netty_direct_used_bytes  OFF-HEAP buffer memory (the NIO "direct"
+#                                 pool, and Netty's own counter where Netty keeps one), so an allocator
+#                                 change can be judged on native memory, not just heap
 # A BLANK JVM-metric column has THREE distinct meanings, all preserved and NOT conflated: (1) the
 # metric is absent on an older image; (2) the scrape TIMED OUT (--max-time 4) because the SUT was
 # thrashing in GC near death — common in the final rows, and itself a death signal; (3) a genuine
@@ -1513,10 +1615,10 @@ to_bytes() { awk -v s="$1" 'BEGIN{
   printf "%d", n*m }'; }
 diag_sampler() {
   local t0; t0="$(date -u +%s)"
-  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries,evicted_log_entries,req_dur_count,req_dur_sum,req_dur_le_5ms,req_dur_le_10ms,req_dur_le_25ms,req_dur_le_50ms,req_dur_le_100ms" > "$DIAG_SAMPLE_LOG"
+  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries,evicted_log_entries,req_dur_count,req_dur_sum,req_dur_le_5ms,req_dur_le_10ms,req_dur_le_25ms,req_dur_le_50ms,req_dur_le_100ms,jvm_allocated_bytes,direct_buffer_used_bytes,direct_buffer_count,netty_direct_used_bytes" > "$DIAG_SAMPLE_LOG"
   while true; do
     local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt retent retbytes maxretbytes maxretent
-    local evicted hist rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100
+    local evicted hist rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 allocd dbuf_used dbuf_count netty_direct
     ts="$(date -u +%s)"
     # Authoritative liveness: docker inspect .State, NOT the metrics scrape (which
     # also fails when the JVM thrashes in GC while alive). Only a readable state with
@@ -1564,6 +1666,10 @@ diag_sampler() {
     maxretbytes="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_bytes/{print $2}')"
     maxretent="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_event_log_max_retained_entries/{print $2}')"
     evicted="$(printf '%s' "$metrics" | awk -F' ' '/^mock_server_evicted_log_entries_total/{print $2}')"
+    allocd="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_allocated_bytes /{print $2}')"
+    dbuf_used="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_buffer_pool_used_bytes\{pool="direct"\}/{print $2}')"
+    dbuf_count="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_buffer_pool_used_buffers\{pool="direct"\}/{print $2}')"
+    netty_direct="$(printf '%s' "$metrics" | awk -F' ' '/^netty_direct_memory_used_bytes /{print $2}')"
     # One awk pass over the already-fetched scrape pulls the whole histogram (no extra HTTP): the
     # population (_count/_sum) plus the cumulative buckets bracketing the tail. le values are matched
     # against the exact strings the classic exposition prints (0.0005 renders as 5.0E-4, hence the
@@ -1578,7 +1684,7 @@ diag_sampler() {
       /^mock_server_request_duration_seconds_bucket\{le="0\.1"\}/{b100=$2}
       END{print c"|"s"|"b5"|"b10"|"b25"|"b50"|"b100}')"
     IFS='|' read -r rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 <<<"$hist"
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$ts" "$((ts - t0))" \
       "$([ -n "$memu" ] && to_bytes "$memu" || echo '')" \
       "$([ -n "$meml" ] && to_bytes "$meml" || echo '')" \
@@ -1586,7 +1692,8 @@ diag_sampler() {
       "${dropped:-}" "${occ:-}" "${cap:-}" "${inflt:-}" "${maxinflt:-}" \
       "${retent:-}" "${retbytes:-}" "${maxretbytes:-}" "${maxretent:-}" \
       "${evicted:-}" "${rq_count:-}" "${rq_sum:-}" \
-      "${rq_le5:-}" "${rq_le10:-}" "${rq_le25:-}" "${rq_le50:-}" "${rq_le100:-}" >> "$DIAG_SAMPLE_LOG"
+      "${rq_le5:-}" "${rq_le10:-}" "${rq_le25:-}" "${rq_le50:-}" "${rq_le100:-}" \
+      "${allocd:-}" "${dbuf_used:-}" "${dbuf_count:-}" "${netty_direct:-}" >> "$DIAG_SAMPLE_LOG"
     sleep "$PERF_DIAG_SAMPLE_INTERVAL"
   done
 }
@@ -1601,10 +1708,8 @@ diag_sampler & DIAG_SAMPLER_PID=$!
 # jcmd, hence a JDK sidecar in its PID namespace; the attach handshake demands an exact uid match
 # (root is rejected), so the uid is read from the target's own /proc entry rather than assumed.
 live_heap_histo_sampler() { # container, diag_subdir
-  local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" ug uid gid t0
-  ug="$(docker run --rm --pid="container:$target" --user 0:0 "$PERF_HISTO_JDK_IMAGE" \
-        sh -c 'awk "/^Uid:/{print \$2} /^Gid:/{print \$2}" /proc/1/status' 2>/dev/null || true)"
-  uid="$(printf '%s\n' "$ug" | sed -n 1p)"; gid="$(printf '%s\n' "$ug" | sed -n 2p)"
+  local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" uid gid t0
+  read -r uid gid <<<"$(sut_jvm_uid_gid "$target")"
   if ! printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
     echo "WARNING: could not resolve the $target JVM uid from its PID namespace — no live-heap histogram" >&2
     return 0
@@ -1635,6 +1740,8 @@ if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ]; then
   live_heap_histo_sampler "$SERVER" "sut" & LIVE_HISTO_PID=$!
 fi
 
+LOAD_WINDOW_START_EPOCH="$(date -u +%s)"
+LOAD_WINDOW_START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 run_regression "http" "$SUT_BASE_HTTP" "false" "regression-http.json"
 run_regression "https_h2" "$SUT_BASE_HTTPS" "true" "regression-https.json"
 abort_if_sut_died
@@ -3869,6 +3976,7 @@ fi
 [ -n "$SUT_LOG_PID" ] && kill "$SUT_LOG_PID" >/dev/null 2>&1 || true; SUT_LOG_PID=""
 [ -n "$INFO_LOG_PID" ] && kill "$INFO_LOG_PID" >/dev/null 2>&1 || true; INFO_LOG_PID=""
 [ -n "$LIVE_HISTO_PID" ] && kill "$LIVE_HISTO_PID" >/dev/null 2>&1 || true; LIVE_HISTO_PID=""
+dump_load_window_jfr
 
 if command -v buildkite-agent >/dev/null 2>&1; then
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
@@ -3889,4 +3997,5 @@ if command -v buildkite-agent >/dev/null 2>&1; then
 else
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
   echo "(local run) result + sweep copied to $REPO_ROOT/perf-result.json, $REPO_ROOT/perf-sweep.json"
+  upload_diag_bundle
 fi

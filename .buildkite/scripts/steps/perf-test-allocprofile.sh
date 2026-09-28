@@ -28,10 +28,11 @@ set -euo pipefail
 # allocation-attribution value on the main serving paths (match / template / large
 # bodies / event-log), which regression.js + growth.js + a 4-rung sweep already cover.
 #
-# After the run it emits a compact annotation of the top allocation sites, read cheaply
-# from the JFR recording inside the uploaded diagnostics bundle (a JDK `jfr view`
-# sidecar), so the value is visible without downloading artifacts. Best-effort: if the
-# recording or a JDK sidecar is unavailable the annotation points at the bundle instead.
+# After the run it emits a compact annotation: allocation per request over the load
+# window, peak direct-buffer memory, the last live-heap histogram, and the top allocation
+# sites/classes from the SUT's load-window JFR dump (sut/load.jfr, a JDK `jfr view`
+# sidecar). A recording below the duration/sample floors is reported INVALID instead of
+# being summarised. Best-effort: it never changes the step's exit code.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -41,6 +42,10 @@ ARTIFACT_PREFIX="${RUN_NAME}-"
 ANNOTATE_CONTEXT="perf-${RUN_NAME}"
 JDK_IMAGE="${PERF_HISTO_JDK_IMAGE:-eclipse-temurin:21-jdk}"
 JFR_VIEW_DEADLINE_S="${PERF_ALLOCPROFILE_JFR_DEADLINE_S:-120}"
+# Sanity floor for the recording the views are read from: a recording shorter than this, or
+# with fewer allocation samples, cannot describe the load and is reported INVALID.
+MIN_JFR_DURATION_S="${PERF_ALLOCPROFILE_MIN_JFR_DURATION_S:-60}"
+MIN_ALLOC_SAMPLES="${PERF_ALLOCPROFILE_MIN_ALLOC_SAMPLES:-1000}"
 
 annotate() { # style, body
   if command -v buildkite-agent >/dev/null 2>&1; then
@@ -49,12 +54,72 @@ annotate() { # style, body
   printf '\n%s\n' "$2"
 }
 
-# Post the top allocation sites (and by-class) from the JFR recording inside the
-# uploaded diagnostics bundle. Entirely best-effort — never fails the step.
+jfr_tool() { # work_dir, jfr args... (paths under /w)
+  local w="$1"; shift
+  timeout "$JFR_VIEW_DEADLINE_S" docker run --rm -v "$w:/w" "$JDK_IMAGE" jfr "$@" 2>/dev/null
+}
+
+# Assemble the readable chunks of a JFR repository into /w/assembled.jfr. The chunk a live (or
+# hard-killed) JVM was still writing is unreadable and would make the whole assembly unreadable.
+assemble_finished_chunks() { # work_dir, repository dir under it
+  local w="$1" rel="${2#"$1"/}"
+  # shellcheck disable=SC2016
+  # As the agent's uid, so the step's own cleanup can remove what the sidecar writes into $w.
+  timeout "$JFR_VIEW_DEADLINE_S" docker run --rm --user "$(id -u):$(id -g)" -v "$w:/w" "$JDK_IMAGE" sh -c '
+    mkdir -p /w/finished-chunks
+    for f in "$1"/*.jfr; do jfr summary "$f" >/dev/null 2>&1 && cp "$f" /w/finished-chunks/; done
+    ls /w/finished-chunks/*.jfr >/dev/null 2>&1 && jfr assemble /w/finished-chunks /w/assembled.jfr' _ "/w/$rel" >/dev/null 2>&1 || true
+}
+
+largest_repo_dir() { # jfr repository root -> the per-JVM subdirectory holding the most chunk data
+  local d best="" best_kb=-1 kb
+  for d in "$1"/*/; do
+    [ -d "$d" ] || continue
+    kb="$(du -sk "$d" | cut -f1)"
+    [ "$kb" -gt "$best_kb" ] && { best="${d%/}"; best_kb="$kb"; }
+  done
+  printf '%s' "$best"
+}
+
+# Allocation per request and peak direct-buffer memory over the recorded load window, from
+# diag-samples.csv (columns located by header name, so older bundles degrade to "unavailable").
+load_window_figures() { # work_dir
+  local w="$1" start end
+  if [ ! -s "$w/load-window.json" ] || [ ! -s "$w/diag-samples.csv" ]; then
+    echo "- allocation per request: unavailable (no recorded load window or resource samples)"
+    return 0
+  fi
+  start="$(jq -r '.start_epoch // empty' "$w/load-window.json" 2>/dev/null || true)"
+  end="$(jq -r '.end_epoch // empty' "$w/load-window.json" 2>/dev/null || true)"
+  awk -F, -v s="${start:-0}" -v e="${end:-0}" '
+    NR==1 { for (i=1;i<=NF;i++) col[$i]=i; next }
+    !("jvm_allocated_bytes" in col) || !("req_dur_count" in col) { next }
+    $1+0 >= s && $1+0 <= e && $col["jvm_allocated_bytes"] != "" && $col["req_dur_count"] != "" {
+      a=$col["jvm_allocated_bytes"]+0; r=$col["req_dur_count"]+0
+      if (!n++) { a0=a; r0=r; t0=$1 } a1=a; r1=r; t1=$1
+    }
+    ("direct_buffer_used_bytes" in col) && $1+0 >= s && $1+0 <= e && $col["direct_buffer_used_bytes"] != "" {
+      d=$col["direct_buffer_used_bytes"]+0; if (d>dmax) dmax=d; dn++
+    }
+    ("netty_direct_used_bytes" in col) && $1+0 >= s && $1+0 <= e && $col["netty_direct_used_bytes"] != "" {
+      d=$col["netty_direct_used_bytes"]+0; if (d>nmax) nmax=d; nn++
+    }
+    END {
+      if (n>1 && r1>r0) printf "- allocation per request: **%.1f KB** (%.2f GB allocated over %d requests, %d s load window; includes JFR and scrape overhead)\n", (a1-a0)/(r1-r0)/1000, (a1-a0)/1e9, r1-r0, t1-t0
+      else print "- allocation per request: unavailable (no allocation/request samples inside the load window)"
+      if (dn>0 || nn>0) {
+        printf "- direct memory peak during the load window: NIO direct pool **%s**, Netty-tracked **%s**\n", \
+          (dn>0 ? sprintf("%.1f MiB", dmax/1048576) : "n/a"), (nn>0 ? sprintf("%.1f MiB", nmax/1048576) : "n/a (Netty not tracking)")
+      } else print "- direct memory: unavailable (the SUT image predates jvm_buffer_pool_used_bytes)"
+    }' "$w/diag-samples.csv"
+}
+
+# Post the load-window figures, the retained-heap histogram, and the top allocation sites/classes
+# from the SUT's load-window JFR dump inside the diagnostics bundle. Never fails the step.
 emit_allocation_annotation() {
   local tgz="$REPO_ROOT/${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz"
   if [ ! -f "$tgz" ]; then
-    annotate "info" ":microscope: **Allocation profile ran (deep JFR), not baselined.** No \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\` was produced this run, so no allocation summary could be extracted. If the run reached load, the JFR recording is normally in that bundle."
+    annotate "warning" ":microscope: **Allocation profile ran (deep JFR), not baselined.** No \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\` was produced this run, so no allocation summary could be extracted (see the step log for the packaging error)."
     return 0
   fi
   local work; work="$(mktemp -d "${TMPDIR:-/tmp}/allocprofile.XXXXXX")" || return 0
@@ -62,59 +127,64 @@ emit_allocation_annotation() {
   trap "rm -rf '$work'" RETURN
   tar xzf "$tgz" -C "$work" 2>/dev/null || true
 
-  # Prefer the finalised recording.jfr; fall back to the largest live repository chunk
-  # (which survives even a hard JVM exit — the reason the harness keeps a jfr-repo).
-  local jfr=""
-  if [ -s "$work/sut/recording.jfr" ]; then
-    jfr="$work/sut/recording.jfr"
-  else
-    jfr="$(ls -S "$work"/sut/jfr-repo/*.jfr 2>/dev/null | head -1 || true)"
-  fi
-  if [ -z "$jfr" ] || [ ! -s "$jfr" ]; then
-    annotate "info" ":microscope: **Allocation profile ran (deep JFR), not baselined.** No JFR recording was found in \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\` (the run may not have reached sustained load). The bundle still carries the GC log and NMT summary."
-    return 0
-  fi
-  if ! command -v docker >/dev/null 2>&1; then
-    annotate "info" ":microscope: **Allocation profile ran (deep JFR), not baselined.** Docker is unavailable on this agent, so \`jfr view\` could not run here. Download \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\` and run \`jfr view allocation-by-site <recording.jfr>\`."
-    return 0
-  fi
-
-  local jdir jfile out; jdir="$(dirname "$jfr")"; jfile="$(basename "$jfr")"; out="$work/alloc.txt"
-  : > "$out"
-  # Retained first — it is the question the allocation views cannot answer. JFR's own retention
-  # views (object-statistics, memory-leaks-by-class) are EMPTY under ZGC, so do not add them here;
-  # the live-set answer comes from the jcmd histogram the harness samples during the run.
-  local histo="$work/sut/live-heap-histogram.txt"
+  local out="$work/alloc.md" style="info" jfr="" source="" verdict="" repo
   {
+    echo "### load window"
+    load_window_figures "$work"
+    echo
     echo "### live heap — last sample (what the heap RETAINS)"
     echo '```'
-    if [ -s "$histo" ]; then
-      awk '/^===== elapsed_s=/{buf=""} {buf = buf $0 "\n"} END{printf "%s", buf}' "$histo"
+    if [ -s "$work/sut/live-heap-histogram.txt" ]; then
+      awk '/^===== elapsed_s=/{buf=""} {buf = buf $0 "\n"} END{printf "%s", buf}' "$work/sut/live-heap-histogram.txt"
     else
       echo "(no live-heap histogram — the jcmd sidecar could not attach; see the step log)"
     fi
     echo '```'
     echo
-  } >> "$out"
-  local view
-  for view in allocation-by-site allocation-by-class; do
-    {
-      echo "### ${view}"
-      echo '```'
-      timeout "$JFR_VIEW_DEADLINE_S" docker run --rm -v "$jdir:/j:ro" "$JDK_IMAGE" \
-        jfr view --width 120 "$view" "/j/$jfile" 2>/dev/null | head -24 || true
-      echo '```'
-      echo
-    } >> "$out"
-  done
+  } > "$out"
 
-  if [ -s "$out" ] && grep -q '[A-Za-z]' "$out"; then
-    annotate "info" ":microscope: **Top allocation sites — deep JFR profile (NOT baselined).** Throughput this run is deliberately depressed by JFR/NMT/GC-logging, so its figures are excluded from the baseline. Full recording: \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\`.
+  # The load-window dump is the only recording that describes the load. Without it (e.g. the SUT
+  # died first) the repository chunks are assembled instead; the floor below judges either.
+  if [ "$(jq -r '.jfr // empty' "$work/load-window.json" 2>/dev/null)" = "sut/load.jfr" ] && [ -s "$work/sut/load.jfr" ]; then
+    jfr="sut/load.jfr"; source="load-window dump"
+  elif command -v docker >/dev/null 2>&1 && repo="$(largest_repo_dir "$work/sut/jfr-repo")" && [ -n "$repo" ]; then
+    assemble_finished_chunks "$work" "$repo"
+    [ -s "$work/assembled.jfr" ] && { jfr="assembled.jfr"; source="finished repository chunks (no load-window dump)"; }
+  fi
+
+  if [ -z "$jfr" ]; then
+    style="warning"
+    verdict="No SUT JFR recording in the bundle$(jq -r '.error // empty | " (" + . + ")"' "$work/load-window.json" 2>/dev/null) — allocation sites unavailable."
+  elif ! command -v docker >/dev/null 2>&1; then
+    verdict="Docker is unavailable on this agent, so \`jfr\` could not run. Run \`jfr view allocation-by-site $jfr\` on the bundle."
+  else
+    local summary duration samples
+    summary="$(jfr_tool "$work" summary "/w/$jfr" || true)"
+    duration="$(printf '%s\n' "$summary" | awk '/^ *Duration:/{print $2; exit}')"
+    samples="$(printf '%s\n' "$summary" | awk '$1=="jdk.ObjectAllocationSample"{print $2; exit}')"
+    case "$duration" in ''|*[!0-9]*) duration=0 ;; esac
+    case "$samples" in ''|*[!0-9]*) samples=0 ;; esac
+    if [ "$duration" -lt "$MIN_JFR_DURATION_S" ] || [ "$samples" -lt "$MIN_ALLOC_SAMPLES" ]; then
+      style="warning"
+      verdict="**Recording INVALID — not summarised.** The ${source} covers ${duration} s with ${samples} allocation samples (floor: ${MIN_JFR_DURATION_S} s and ${MIN_ALLOC_SAMPLES} samples), so allocation-by-site would describe too little of the load to be meaningful."
+    else
+      verdict="Allocation sites from the ${source}: ${duration} s, ${samples} allocation samples."
+      local view
+      for view in allocation-by-site allocation-by-class; do
+        {
+          echo "### ${view}"
+          echo '```'
+          jfr_tool "$work" view --width 120 "$view" "/w/$jfr" | head -24 || true
+          echo '```'
+          echo
+        } >> "$out"
+      done
+    fi
+  fi
+
+  annotate "$style" ":microscope: **Allocation profile — deep JFR run (NOT baselined).** Throughput this run is deliberately depressed by JFR/NMT/GC-logging, so its figures are excluded from the baseline. ${verdict} Bundle: \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\`.
 
 $(cat "$out")"
-  else
-    annotate "info" ":microscope: **Allocation profile ran (deep JFR), not baselined.** \`jfr view\` produced no allocation rows (the \`profile\` settings may not have captured allocation samples on this JDK, or the chunk was empty). Download \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\` for the raw recording."
-  fi
 }
 
 echo "--- :microscope: allocation profile — deep JFR run (PERF_RUN_NAME=${RUN_NAME}); artifacts are prefixed and NOT baselined"

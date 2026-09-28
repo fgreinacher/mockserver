@@ -1,5 +1,6 @@
 package org.mockserver.metrics;
 
+import io.netty.util.internal.PlatformDependent;
 import io.prometheus.metrics.model.registry.MultiCollector;
 import io.prometheus.metrics.model.snapshots.GaugeSnapshot;
 import io.prometheus.metrics.model.snapshots.GaugeSnapshot.GaugeDataPointSnapshot;
@@ -7,6 +8,7 @@ import io.prometheus.metrics.model.snapshots.Labels;
 import io.prometheus.metrics.model.snapshots.MetricSnapshot;
 import io.prometheus.metrics.model.snapshots.MetricSnapshots;
 
+import java.lang.management.BufferPoolMXBean;
 import java.lang.management.GarbageCollectorMXBean;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
@@ -46,6 +48,14 @@ public class JvmMetricsCollector implements MultiCollector {
     // (never a fabricated zero). Exposed as a gauge for parity with the other
     // cumulative jvm_* series here (GC_COUNT / GC_SECONDS are likewise gauges).
     private static final String MEMORY_ALLOCATED = "jvm_memory_allocated_bytes";
+    // The JVM's NIO buffer pools ("direct", "mapped", ...): off-heap memory the heap metrics cannot
+    // see. In the shipped JDK 25 runtime Netty's pooled buffers are NOT counted here but by
+    // netty_direct_memory_used_bytes below. Names follow the Prometheus client_java convention.
+    private static final String BUFFER_POOL_USED = "jvm_buffer_pool_used_bytes";
+    private static final String BUFFER_POOL_BUFFERS = "jvm_buffer_pool_used_buffers";
+    // Netty's own direct-memory counter. Netty maintains it only for some allocation modes and
+    // returns -1 otherwise, in which case the metric is omitted rather than emitted as a fake value.
+    private static final String NETTY_DIRECT_USED = "netty_direct_memory_used_bytes";
     private static final String THREADS_CURRENT = "jvm_threads_current";
     private static final String THREADS_DAEMON = "jvm_threads_daemon";
     private static final String GC_COUNT = "jvm_gc_collection_count";
@@ -79,6 +89,12 @@ public class JvmMetricsCollector implements MultiCollector {
             snapshots.add(simpleGauge(MEMORY_ALLOCATED, "Cumulative bytes allocated across all threads since JVM start (monotonic)", allocated));
         }
 
+        addBufferPoolGauges(snapshots);
+        long nettyDirect = nettyUsedDirectMemory();
+        if (nettyDirect >= 0) {
+            snapshots.add(simpleGauge(NETTY_DIRECT_USED, "Direct memory in use according to Netty's own counter (absent when Netty does not track it)", nettyDirect));
+        }
+
         long gcCount = 0;
         long gcTimeMillis = 0;
         for (GarbageCollectorMXBean gc : ManagementFactory.getGarbageCollectorMXBeans()) {
@@ -97,6 +113,52 @@ public class JvmMetricsCollector implements MultiCollector {
         snapshots.add(runtimeInfoGauge());
 
         return new MetricSnapshots(snapshots);
+    }
+
+    private static void addBufferPoolGauges(List<MetricSnapshot> snapshots) {
+        List<BufferPoolMXBean> pools;
+        try {
+            pools = ManagementFactory.getPlatformMXBeans(BufferPoolMXBean.class);
+        } catch (Throwable ignore) {
+            return;
+        }
+        if (pools.isEmpty()) {
+            return;
+        }
+        GaugeSnapshot.Builder used = GaugeSnapshot.builder().name(BUFFER_POOL_USED)
+            .help("Memory used by the JVM for NIO buffers in this pool (e.g. direct, mapped), in bytes");
+        GaugeSnapshot.Builder buffers = GaugeSnapshot.builder().name(BUFFER_POOL_BUFFERS)
+            .help("Number of NIO buffers currently in this pool (e.g. direct, mapped)");
+        boolean anyUsed = false;
+        boolean anyBuffers = false;
+        for (BufferPoolMXBean pool : pools) {
+            Labels labels = Labels.of("pool", label(pool.getName()));
+            // -1 means the JVM cannot report the value; omit it rather than emit a fake reading
+            long memoryUsed = pool.getMemoryUsed();
+            if (memoryUsed >= 0) {
+                used.dataPoint(GaugeDataPointSnapshot.builder().value(memoryUsed).labels(labels).build());
+                anyUsed = true;
+            }
+            long count = pool.getCount();
+            if (count >= 0) {
+                buffers.dataPoint(GaugeDataPointSnapshot.builder().value(count).labels(labels).build());
+                anyBuffers = true;
+            }
+        }
+        if (anyUsed) {
+            snapshots.add(used.build());
+        }
+        if (anyBuffers) {
+            snapshots.add(buffers.build());
+        }
+    }
+
+    private static long nettyUsedDirectMemory() {
+        try {
+            return PlatformDependent.usedDirectMemory();
+        } catch (Throwable ignore) {
+            return -1;
+        }
     }
 
     private static GaugeSnapshot runtimeInfoGauge() {
@@ -166,6 +228,7 @@ public class JvmMetricsCollector implements MultiCollector {
     public List<String> getPrometheusNames() {
         return Arrays.asList(
             MEMORY_USED, MEMORY_COMMITTED, MEMORY_MAX, MEMORY_ALLOCATED,
+            BUFFER_POOL_USED, BUFFER_POOL_BUFFERS, NETTY_DIRECT_USED,
             THREADS_CURRENT, THREADS_DAEMON,
             GC_COUNT, GC_SECONDS, RUNTIME_INFO
         );

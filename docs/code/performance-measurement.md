@@ -29,6 +29,7 @@ regressions hide and stale claims get published.
 | `soak.js` | Sustained load over hours | Lint only | Never executes in CI |
 | `scripts/perf/bench_startup.py` | Launch-to-ready variant matrix | Never runs in CI | Never |
 | `inject` (`run-inject.sh`) | Load-injection ceiling | Opt-in | Never in daily pipeline |
+| `perf-test-allocprofile.sh` (deep JFR) | Allocation per request, peak direct memory, top allocation sites over the load window, retained-heap histogram | Daily (perf queue), separate step | No — `soft_fail`, never baselined; an under-sized recording is reported INVALID |
 
 ## The Daily Pipeline
 
@@ -38,6 +39,7 @@ flowchart TD
   run["perf-test-run.sh\nregression.js HTTP + HTTPS/H2\nforward.js\nproxy.js forward mode\nproxy.js handshake mode\nsweep.js\nstreaming.js\nclustered_crossing.js\ngrowth.js + resource sampler"]
   micro["perf-test-microbench.sh\nMatchingBenchmark 2 forks\nCandidateIndexBenchmark\n7 promoted dark benchmarks\n2 proxy-path benchmarks (9b/9c)"]
   h2["perf-test-h2multiplex.sh\nHttp2StreamChannelBenchmark\nHttp2ConnectionMemoryBenchmark"]
+  alloc["perf-test-allocprofile.sh\ndeep JFR run, annotation only\nnever compared or baselined"]
   cmp["perf-test-compare.sh\nrolling median + MAD vs last 10 runs\ngating metrics fail the build\nnotify-only metrics annotate only"]
   s3["S3 bucket\nmockserver-ci-perf-results"]
   red["build red = the notification"]
@@ -45,6 +47,7 @@ flowchart TD
   guard --> run
   guard --> micro
   guard --> h2
+  guard --> alloc
   run --> cmp
   micro --> cmp
   h2 --> cmp
@@ -368,6 +371,45 @@ a load-injection tool?" It says nothing about how fast MockServer serves mocked 
 Envoy sink absorbs far more than the injectors can produce by design; the bottleneck is always
 the injector. This step is opt-in and does not run as part of the daily pipeline.
 
+### Allocation profile step
+
+`perf-test-allocprofile.sh` answers *what allocates, and how much per request* on every dispatched
+run. It reruns `perf-test-run.sh` with `PERF_JVM_DIAGNOSTICS=deep` (JFR `settings=profile`, NMT, GC
+file logging, a periodic live-heap histogram) on a short ladder. That instrumentation depresses
+throughput, so the step is `soft_fail`, nothing depends on it, and every artifact carries an
+`allocprofile-` prefix that `perf-test-compare.sh` never downloads.
+
+Its annotation reports, in order:
+
+| Figure | Source | Notes |
+|---|---|---|
+| Allocation per request | Δ`jvm_allocated_bytes` ÷ Δ`req_dur_count` across the `diag-samples.csv` rows inside the load window (`load-window.json`) | A mixed-workload average over regression, sweep and growth, including JFR and scrape overhead. Indicative only; not comparable with JMH `gc.alloc.rate.norm` |
+| Peak direct memory | `direct_buffer_used_bytes` and `netty_direct_used_bytes` columns over the same window | In the shipped runtime Netty's pooled buffers appear in the Netty column, not the NIO `direct` pool; read both |
+| Live heap, last sample | `sut/live-heap-histogram.txt` (`jcmd GC.class_histogram`) | What the heap *retains*; see the ZGC pitfall below |
+| Allocation by site / by class | `jfr view` over `sut/load.jfr` | Only when the recording passes the sanity floor |
+
+**The recording.** At the end of the run (and on the failure path while the SUT is still alive)
+`dump_load_window_jfr` runs `jcmd 1 JFR.dump begin=<load start>` from a sidecar in the SUT's PID
+namespace, writing `sut/load.jfr`. JFR filters by chunk, so the dump can begin somewhat before the
+first load phase. `load-window.json` names the recording only when the dump succeeded; a dump that
+fails or times out leaves any partial file as `load.partial.jfr` and keeps the repository in the
+bundle. If there is no dump (the SUT died first), the step assembles the repository's
+*finished* chunks instead — the chunk a JVM is still writing is unreadable and would make the whole
+assembly unreadable.
+
+**Sanity floor.** A recording shorter than `PERF_ALLOCPROFILE_MIN_JFR_DURATION_S` (default 60) or with
+fewer than `PERF_ALLOCPROFILE_MIN_ALLOC_SAMPLES` (default 1,000) `jdk.ObjectAllocationSample` events is
+reported as **INVALID** in a warning annotation and its sites are not summarised: a near-empty
+recording would otherwise publish a confident-looking ranking of whatever the JVM did in its last
+second.
+
+**The diagnostics bundle.** `perf-jvm-diagnostics.tgz` is packaged while the SUT is still running, so
+GNU `tar` can exit 1 ("file changed as we read it") on the live `gc.log` or JFR repository. That exit
+is accepted once the archive verifies (`gzip -t`, `tar tzf`); on a deep run with a load-window dump
+the live repository is left out altogether, as are the health-check JVMs' GC logs. Any other packaging or upload failure is printed in the
+step log and posted as a `perf-diag-bundle-<run>` warning annotation; it never changes the step's
+exit code.
+
 ### `stress.js` and `soak.js` — linted only, never executed by CI
 
 Both scripts pass `k6 inspect` validation in `perf-test-lint.sh`. Neither is executed by any
@@ -469,11 +511,24 @@ The perf box is a `c5.12xlarge`: 48 logical CPUs, 24 physical cores (hyperthread
 
 ## Heap Profiling Pitfalls
 
-Six non-obvious constraints apply when analysing MockServer's heap and saturation history.
+These non-obvious constraints apply when analysing MockServer's heap and saturation history.
 
 ### JFR cannot attribute retained heap under ZGC
 
 `jdk.ObjectCount` (`object-statistics`) and `jdk.OldObjectSample` (`memory-leaks-by-class`) emit nothing under ZGC and populate normally under G1 — verified on JDK 25 with the same program. Use `jcmd GC.class_histogram` instead; it works under both collectors.
+
+### `JAVA_TOOL_OPTIONS` also reaches the image health check
+
+The images' Docker `HEALTHCHECK` starts `java … org.mockserver.cli.HealthCheck` inside the SUT container
+every 10 seconds with the container's environment, so every diagnostic flag passed through
+`JAVA_TOOL_OPTIONS` applies to those short-lived JVMs too. A JFR `filename=` therefore holds a
+health-check JVM's sub-second recording, never the SUT's — the SUT is force-removed at teardown and
+never dumps on exit — which is why the deep run takes its recording with `jcmd JFR.dump` and sets no
+`filename`. The same applies to the GC log: with one shared file name, each health-check JVM rotates
+the SUT's live log aside at start-up, and once the five rotation slots are used it can overwrite it.
+The deep run therefore names the log per process (`gc-%p.log`); the SUT is pid 1, so its log is
+`gc-1.log`, and the health-check JVMs' logs are left out of the bundle. The health-check JVMs still pay
+NMT and JFR start-up cost inside the SUT's CPU allocation.
 
 ### `jcmd` attach needs an exact uid match
 

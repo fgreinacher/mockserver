@@ -180,6 +180,9 @@ rate(mock_server_requests_received_total[5m])</code></pre>
         <tr><td><span class="inline_code">jvm_memory_committed_bytes</span></td><td><span class="inline_code">area</span></td><td>Memory committed by the JVM</td></tr>
         <tr><td><span class="inline_code">jvm_memory_max_bytes</span></td><td><span class="inline_code">area</span></td><td>Max memory (-1 if undefined)</td></tr>
         <tr><td><span class="inline_code">jvm_memory_allocated_bytes</span></td><td>&mdash;</td><td>Cumulative bytes allocated across all threads since JVM start (monotonic counter; a difference of two scrapes is the allocation churn in that window). Absent on a JVM without HotSpot allocation accounting.</td></tr>
+        <tr><td><span class="inline_code">jvm_buffer_pool_used_bytes</span></td><td><span class="inline_code">pool</span> = direct / mapped / &hellip;</td><td>Off-heap memory held by each JVM buffer pool &mdash; memory the heap figures do not include</td></tr>
+        <tr><td><span class="inline_code">jvm_buffer_pool_used_buffers</span></td><td><span class="inline_code">pool</span></td><td>Number of buffers in each pool</td></tr>
+        <tr><td><span class="inline_code">netty_direct_memory_used_bytes</span></td><td>&mdash;</td><td>Off-heap memory used by MockServer's network buffers, as tracked by Netty. In the Docker images this is where most network buffer memory appears (rather than the <span class="inline_code">direct</span> pool above), so add the two when judging total off-heap use. Absent when Netty is not tracking it.</td></tr>
         <tr><td><span class="inline_code">jvm_threads_current</span></td><td>&mdash;</td><td>Live thread count</td></tr>
         <tr><td><span class="inline_code">jvm_threads_daemon</span></td><td>&mdash;</td><td>Daemon thread count</td></tr>
         <tr><td><span class="inline_code">jvm_gc_collection_count</span></td><td>&mdash;</td><td>Total GC collections</td></tr>

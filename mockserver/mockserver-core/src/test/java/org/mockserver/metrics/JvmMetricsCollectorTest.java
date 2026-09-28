@@ -1,14 +1,19 @@
 package org.mockserver.metrics;
 
+import io.netty.util.internal.PlatformDependent;
 import io.prometheus.metrics.model.snapshots.GaugeSnapshot;
 import io.prometheus.metrics.model.snapshots.MetricSnapshot;
 import io.prometheus.metrics.model.snapshots.MetricSnapshots;
 import org.junit.Test;
 
+import java.nio.ByteBuffer;
+
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.hasItems;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.core.Is.is;
 
 public class JvmMetricsCollectorTest {
@@ -49,6 +54,27 @@ public class JvmMetricsCollectorTest {
     }
 
     @Test
+    public void exposesDirectBufferPoolUsageIncludingALiveDirectBuffer() {
+        ByteBuffer held = ByteBuffer.allocateDirect(1024 * 1024);
+
+        MetricSnapshots snapshots = new JvmMetricsCollector().collect();
+
+        assertThat(poolValue(gauge(snapshots, "jvm_buffer_pool_used_bytes"), "direct"), greaterThanOrEqualTo((double) held.capacity()));
+        assertThat(poolValue(gauge(snapshots, "jvm_buffer_pool_used_buffers"), "direct"), greaterThanOrEqualTo(1.0));
+    }
+
+    @Test
+    public void omitsNettyDirectMemoryWhenNettyDoesNotTrackIt() {
+        GaugeSnapshot netty = gauge(new JvmMetricsCollector().collect(), "netty_direct_memory_used_bytes");
+
+        if (PlatformDependent.usedDirectMemory() < 0) {
+            assertThat(netty, nullValue());
+        } else {
+            assertThat(netty.getDataPoints().get(0).getValue(), greaterThanOrEqualTo(0.0));
+        }
+    }
+
+    @Test
     public void exposesRuntimeInfoWithGcAndJdkLabels() {
         MetricSnapshots snapshots = new JvmMetricsCollector().collect();
 
@@ -72,7 +98,17 @@ public class JvmMetricsCollectorTest {
     @Test
     public void listsItsPrometheusNames() {
         assertThat(new JvmMetricsCollector().getPrometheusNames(), hasItems(
-            "jvm_memory_used_bytes", "jvm_memory_allocated_bytes", "jvm_threads_current", "jvm_gc_collection_count", "jvm_runtime_info"));
+            "jvm_memory_used_bytes", "jvm_memory_allocated_bytes", "jvm_buffer_pool_used_bytes",
+            "jvm_buffer_pool_used_buffers", "netty_direct_memory_used_bytes", "jvm_threads_current", "jvm_gc_collection_count", "jvm_runtime_info"));
+    }
+
+    private static double poolValue(GaugeSnapshot snapshot, String pool) {
+        assertThat(snapshot, notNullValue());
+        return snapshot.getDataPoints().stream()
+            .filter(point -> pool.equals(point.getLabels().get("pool")))
+            .findFirst()
+            .orElseThrow(() -> new AssertionError("no " + pool + " pool data point"))
+            .getValue();
     }
 
     private static GaugeSnapshot gauge(MetricSnapshots snapshots, String name) {
