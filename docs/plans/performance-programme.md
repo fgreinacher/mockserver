@@ -72,3 +72,22 @@ candidates 1, 6 and 11 were declined (see [Decided against](#decided-against)).
 ### Checked and not worth pursuing
 
 io_uring (blocked by Docker's default seccomp, would silently fall back); `FlushConsolidationHandler` (HTTP/1.1 flushes once per response — already consolidated); explicit `TCP_NODELAY`/`SO_RCVBUF`/`SO_SNDBUF`; `AlwaysPreTouch` (slower start); THP by default (needs host `shmem_enabled`); `SoftMaxHeapSize`; two non-secure UUIDs per request (externally visible ids).
+
+---
+
+## §3 — Coverage-gap candidates (found 2026-09-28)
+
+Source: a read-only review for paths the rig never exercises, and a leak audit (12 identical
+mixed-workload cycles under ZGC and G1 at `-Xmx512m` held a flat live heap; the 2 h soak in
+build 340 held a flat floor). Each item is in progress in its own unit unless noted.
+
+| # | Candidate | What is known | Next step |
+|---|---|---|---|
+| 18 | Disk capture (`persistRecordedRequestsToDisk`) serialises pretty, collapses whitespace with a per-entry regex (quadratic on long space runs) and flushes per line on the event-log consumer | With capture on, an 8-client proxy load at `WARN` drops thousands of log entries; none without it | Compact writer, newline-safe fallback, flush per Disruptor batch; JMH first |
+| 19 | Client certificates re-parsed on every request; TLS context lookup hops to a pool and rebuilds a sorted SAN signature per handshake; SAN bookkeeping per request | mTLS is optional by default, so any client presenting a certificate pays the re-parse | Cast and memoise per connection; cached-context fast path; JMH/handshake benchmark first |
+| 20 | Per-thread JSON body parse cache is unbounded in size and survives reset; JSONPath re-parses the body per candidate; XPath creates a JAXP factory per evaluation | 64 × 10 MB JSON bodies left 325 MB live after reset (~70–80 MB pinned in the daily run) | Bound/clear the cache; parse once per request; reuse builders; `MatchingBenchmark` arms first |
+| 21 | HTTP/2 builds a fresh codec and mapper chain per stream | Estimated 0.5–1.5 KB per h2 request | Reuse connection-scoped pieces; `Http2StreamChannelBenchmark` first |
+| 22 | Retention bounded only by count or not at all: removed expectations' request definitions, drift percentile windows per removed expectation (and an `Integer` overflow), unbounded drift/template executor queues; evicted-entries metric counts episodes not entries | Found by code read and a churn reproduction; not seen in the perf run | Remove on expectation removal, bound best-effort queues, count entries |
+| 23 | Rig coverage: HTTPS connection churn, mTLS, HTTP/2 at load, JSONPath/XPath/schema matchers at many candidates, disk capture under load, large proxied downloads | None of these paths is measured today | New notify-only k6 arms (control change, needs approval) |
+| 24 | Header-value sharing across requests on a connection (retained heap) and a `-XX:+UseStringDeduplication` rig A/B | Estimated ~0.5 KB less retained per bodiless request | Queued: A/B after build 496 |
+| 25 | Weekly 2 h soak never runs on schedule: the `perf_soak_weekly` Terraform schedule was never applied | Only two manual runs (324 invalid, 340 flat) | Apply `terraform/buildkite-pipelines` (gated, needs approval) |
