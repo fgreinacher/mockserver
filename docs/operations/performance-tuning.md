@@ -160,7 +160,7 @@ Each behaviour is measured twice: `<op>_http` over plain HTTP and `<op>_https_h2
 Two artifacts are produced per run and merged by the compare step before persisting to S3:
 
 - `perf-result.json` — `{metadata, behaviours: {<op>_<proto>: {p50_ms, p95_ms, p99_ms, throughput_rps, error_rate}}, growth: {cpu_peak, heap_start, heap_end, heap_peak, heap_ratio, gc_seconds_delta, threads_peak, p95_start, p95_end, p95_ratio}}`
-- `perf-microbench.json` — `{microbench: {<matcherType>_<count>: {time_per_op, time_unit, alloc_bytes_per_op}}}`
+- `perf-microbench.json` — `{microbench: {<matcherType>_<count>_detailed: {time_per_op, time_unit, alloc_bytes_per_op}}}`
 
 ### Regression thresholds
 

@@ -57,8 +57,8 @@ Parameters:
 Metrics are off and INFO logging is off. The `detailedMatchFailures=false` arm is
 the common case Part A optimizes; the `true` arm is measured and given its own
 absolute allocation floor by the per-merge `perf-alloc-gate.sh` so a regression
-re-introducing eager formatting fails the gate. Single-workload consumers pin the
-param `false` (the daily micro-bench primary run and the scaling sweep below); the
+re-introducing eager formatting fails the gate. The daily micro-bench primary run
+pins `true` (the shipped default); the scaling sweep below pins `false`; the
 allocation gate pins both. The headline number for the allocation work is
 **`gc.alloc.rate.norm`** (B/op); `ns/op` (shown as µs/op) is the secondary signal.
 

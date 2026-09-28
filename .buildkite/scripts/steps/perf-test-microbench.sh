@@ -8,7 +8,7 @@ set -euo pipefail
 # independent of the stored baseline — this is the class of signal that proved
 # issue #2329 (O(n)-vs-O(1) per-op cost).
 #
-# Emits perf-microbench.json {microbench: {<matcherType>_<count>: {...}}} as a
+# Emits perf-microbench.json {microbench: {<matcherType>_<count>[_detailed]: {...}}} as a
 # Buildkite artifact; perf-test-compare.sh merges it into the run result.
 #
 # Heavy (builds mockserver-netty + its upstream reactor deps — the set the benchmark
@@ -33,14 +33,13 @@ MAVEN_IMAGE="${MAVEN_IMAGE:-mockserver/mockserver:maven}"
 # @Benchmark, and the explicit class include below pins this run to it so the newly
 # promoted dark benchmarks (run separately, below) cannot leak junk rows in here.
 #
-# detailedMatchFailures is pinned to `false` (the opt-out, NOT the shipped default): this primary
-# run's gating .microbench.*.time_per_op baseline describes the NON-detailed matcher
-# hot path, and the reshape below keys rows by matcherType_expectationCount — leaving
-# the param unpinned would expand each matcherType into two rows that collide on that
-# key (from_entries silently keeps the last), half-dropping the run AND mixing the
-# detailed path into a gating metric. The detailed arm is floored by the per-merge
-# perf-alloc-gate.sh, not here.
-JMH_ARGS="${JMH_ARGS:--f 2 -wi 2 -i 3 -r 2 -w 2 -p matcherType=EXACT,REGEX,JSON_BODY -p expectationCount=100 -p logLevel=INFO -p detailedMatchFailures=false -prof gc}"
+# detailedMatchFailures is pinned to `true`, the shipped default, so the gating
+# .microbench.* baseline describes the matcher path users actually run. The reshape
+# below suffixes that arm's keys `_detailed`, so its rows never share a key (or a
+# rolling history) with `false`-arm rows. Keep exactly one arm pinned: unpinned, JMH
+# runs both and both land in the gating set. The `false` arm keeps its per-merge
+# allocation floor in perf-alloc-gate.sh.
+JMH_ARGS="${JMH_ARGS:--f 2 -wi 2 -i 3 -r 2 -w 2 -p matcherType=EXACT,REGEX,JSON_BODY -p expectationCount=100 -p logLevel=INFO -p detailedMatchFailures=true -prof gc}"
 JMH_INCLUDE="${JMH_INCLUDE:-org\.mockserver\.benchmark\.MatchingBenchmark\.}"
 
 # --- item 15b: promote the dark benchmarks -----------------------------------
@@ -206,7 +205,8 @@ if [ ! -f "$REPO_ROOT/$RESULT_RAW" ]; then
   exit 1
 fi
 
-# Reshape JMH's array into {microbench: {<matcherType>_<count>: {time_per_op, time_unit, alloc_bytes_per_op}}}.
+# Reshape JMH's array into {microbench: {<matcherType>_<count>[_detailed]: {time_per_op, time_unit, alloc_bytes_per_op}}}.
+# The `_detailed` suffix marks a detailedMatchFailures=true row (see the pin note on JMH_ARGS).
 #
 # Also record the JMH METHODOLOGY under .config.jmh (item 15c baseline-discontinuity
 # guard). The .microbench.*.time_per_op metric GATES, and its S3 rolling baseline was
@@ -231,7 +231,8 @@ fi
 # a future proxy-arg change causes a harmless notify-only annotation on those rows.
 jq --arg args "$JMH_ARGS" --arg argsExtra "$JMH_ARGS_EXTRA" --arg argsScaling "$JMH_ARGS_SCALING" \
    '[.[] | {
-      key: (.params.matcherType + "_" + .params.expectationCount),
+      key: (.params.matcherType + "_" + .params.expectationCount
+            + (if .params.detailedMatchFailures == "true" then "_detailed" else "" end)),
       value: {
         time_per_op: .primaryMetric.score,
         time_unit: .primaryMetric.scoreUnit,

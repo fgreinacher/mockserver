@@ -8,7 +8,7 @@ closed this file is deleted in the same commit — it is not an archive.
 The latency tail is closed: a steady 24k run (build 473, docker bridge, no per-rung ramp)
 measured client p99 0.343 ms and p99.9 1.43 ms, with no server request over 5 ms in 7.25M, so
 the 10–16 ms ladder tail was a rung-onset transient in the rig, not MockServer or the bridge.
-What remains is the tuning candidates that need a rig measurement or a decision (§2).
+What remains is the tuning candidates that need a rig measurement or a small change (§2).
 
 Published figures and rig measurement gates are in
 [docs/code/performance-measurement.md](../code/performance-measurement.md). The GC-default
@@ -20,7 +20,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | rig A/B runs for the event-loop count and three JVM/Netty flags; two small code items; one gate decision |
+| 2 | Tuning candidates | rig A/B runs for the event-loop count and three JVM/Netty flags; small code and rig items |
 
 ## Decided against
 
@@ -64,12 +64,6 @@ candidate 1 was declined (see [Decided against](#decided-against)).
 | 16 | The per-merge alloc gate pins `matcherType=EXACT`, whose candidate index empties the bucket, so it never exercises the per-candidate scan | Found during unit U3 (the scan saving showed only on `HEADERS_MISS`) | Add a scan-exercising arm once it has run history to derive a budget |
 | 18 | The ladder's published tail percentiles include each rung's onset transient (at 24k all stalls fall in the rung's first bucket) | A steady 24k run shows p99 0.343 ms against 10.6 ms on the ladder rung | Exclude rung-onset samples from the published tail statistic, or publish the steady-state figure alongside (control-class rig change) |
 | 17 | The level-aware event-log byte-budget divisor predates the body-release fixes, so it is now conservative | See `docs/code/memory-management.md` | Re-derive from a fresh `jmap -histo:live` before retightening |
-
-### Gate decision pending
-
-- The daily microbench (`perf-test-microbench.sh`) pins `detailedMatchFailures=false`, the opt-out,
-  so its tracked `time_per_op` baseline describes a non-default arm. Moving the pin to `true` resets
-  that baseline, so it needs a deliberate decision.
 
 ### Checked and not worth pursuing
 

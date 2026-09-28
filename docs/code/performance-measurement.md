@@ -59,7 +59,7 @@ artifacts and gates only the metrics explicitly marked `gating: true` in the com
 Everything else is reported in the Buildkite annotation but does not change the exit code.
 
 **Currently gating:**
-- `MatchingBenchmark` — `time_per_op` and `alloc_bytes_per_op` per matcher type / expectation count
+- `MatchingBenchmark` — `time_per_op` and `alloc_bytes_per_op` per matcher type / expectation count, on the shipped-default `detailedMatchFailures=true` arm (keys `<matcherType>_100_detailed`)
 - `forward.error_rate` (discriminating pass/fail, not a tuned threshold)
 
 **Notify-only until ≥ 10 clean run history exists to derive a budget from:**
@@ -204,6 +204,28 @@ fork underestimates real run-to-run dispersion and makes any derived budget too 
 wall-clock; the gate is self-calibrating (rolling `median + 3 × 1.4826 × MAD` with a 5% floor)
 rather than a fixed number.
 
+It runs the **shipped default**, `detailedMatchFailures=true`, so the gate tracks what users run.
+Rows are keyed `<matcherType>_<expectationCount>_detailed` (for example `EXACT_100_detailed`); a
+`detailedMatchFailures=false` row would carry no suffix. The opt-out `false` arm is not measured
+daily; the per-merge `perf-alloc-gate.sh` gives both arms an absolute allocation floor.
+
+**Switching the arm resets this baseline, and needs no S3 or budget change.** The budgets are the
+wildcards `microbench.*.time_per_op` / `microbench.*.alloc_bytes_per_op` with `floor: null`, so every
+threshold comes from the rolling S3 history for that exact metric name. Two things isolate the new arm
+from the old history, and either one alone is enough:
+
+| Mechanism | Effect on the first runs after a switch |
+|---|---|
+| New metric keys (`_detailed`) | No prior run has a value under that name, so the metric reports `:new: new` |
+| `config.jmh.args` fingerprint changes | Compare drops every baseline run with a different fingerprint, so the whole `microbench.*` / `microbench_extra.*` family reports `:new: new` and the annotation shows "microbench baseline reset" until the whole baseline window has turned over |
+
+Gating resumes once 5 (`PERF_MIN_BASELINE`) runs share the new fingerprint. The retired keys
+(`EXACT_100`, `REGEX_100`, `JSON_BODY_100`) simply stop being compared: compare only looks at metrics
+the head run emits, so a key that is present in history but absent from the head trips no
+missing-metric check (that check covers a head metric with no budget, not the reverse). One side
+effect: because the fingerprint covers the whole `.config.jmh` object, the notify-only
+`microbench_extra.*` metrics also restart their 5-run warm-up.
+
 **This backstop was once silently dark for several days** (fixed in `bb3c41246`) because a reactor dependency drift
 stopped the benchmark classpath resolving. `perf-test-microbench.sh` now emits a failure
 annotation so a broken backstop is visible as a red build, not a silent absent artifact.
@@ -306,8 +328,9 @@ review in a way an absent field does not. That is fixed (`19686f9f1`); runs miss
 block are annotated but not backfilled.
 
 `perf-test-compare.sh` skips baseline runs whose `config.jmh` fingerprint differs from the
-current run's, so a JMH methodology change (fork count, warmup/measurement iterations) does not
-fire a spurious gating regression against history collected under different settings.
+current run's, so a JMH methodology change (fork count, warmup/measurement iterations, or a pinned
+`-p` value such as `detailedMatchFailures`) does not fire a spurious gating regression against
+history collected under different settings.
 
 ## Published Figures
 

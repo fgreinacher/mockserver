@@ -512,7 +512,7 @@ The pipeline compare step (`perf-test-compare.sh`) merges two artifacts and pers
 ```json
 {
   "microbench": {
-    "<matcherType>_<count>": { "time_per_op": 0, "time_unit": "ns/op", "alloc_bytes_per_op": 0 }
+    "<matcherType>_<count>_detailed": { "time_per_op": 0, "time_unit": "ns/op", "alloc_bytes_per_op": 0 }
   }
 }
 ```
