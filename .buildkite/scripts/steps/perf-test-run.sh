@@ -103,6 +103,33 @@ if [ "$PERF_WORKLOAD" = "forward" ]; then
     fi
   done
 fi
+
+# --- OPT-IN latency-tail experiment levers (performance-programme.md §1) ---------
+# Both default so a run with neither set is byte-identical to before AND stays
+# baseline-eligible; each flips a profile below so an experiment never enters the
+# published baseline. PERF_NETWORK_MODE=host puts SUT+upstream+k6 on --network host
+# (Linux CI) to take the docker bridge out of the path. One host stack cannot hold
+# the multi-SUT secondary phases (INFO/streaming/clustered/forward/handshake) on the
+# same port, so host mode runs only the primary path (regression/sweep/growth/steady)
+# and disables them here.
+PERF_NETWORK_MODE="${PERF_NETWORK_MODE:-bridge}"
+case "$PERF_NETWORK_MODE" in
+  bridge|host) : ;;
+  *) echo "ERROR: PERF_NETWORK_MODE='$PERF_NETWORK_MODE' is not one of: bridge (default) | host" >&2; exit 1 ;;
+esac
+# PERF_STEADY_RATE=<rps> runs ONE constant-arrival-rate pass at a single rate (no
+# per-rung ramp), warm-up excluded (PERF_STEADY_WARMUP) from the reported window.
+PERF_STEADY_RATE="${PERF_STEADY_RATE:-}"
+if [ -n "$PERF_STEADY_RATE" ] && ! printf '%s' "$PERF_STEADY_RATE" | grep -Eq '^[1-9][0-9]*$'; then
+  echo "ERROR: PERF_STEADY_RATE='$PERF_STEADY_RATE' is not a positive integer (requests/second)" >&2; exit 1
+fi
+PERF_STEADY_DURATION="${PERF_STEADY_DURATION:-5m}"
+PERF_STEADY_WARMUP="${PERF_STEADY_WARMUP:-30s}"
+if [ "$PERF_NETWORK_MODE" = host ]; then
+  echo "--- PERF_NETWORK_MODE=host — primary path only (regression, sweep, growth, steady); multi-SUT secondary phases skipped"
+  PERF_INFO_ARM=false; PERF_STREAMING=false; PERF_CLUSTERED=false; PERF_PROXY_PROFILE=false
+fi
+
 RUN_ID="${BUILDKITE_BUILD_ID:-local}-$$"
 NETWORK="mockserver-perf-${RUN_ID}"
 SERVER="mockserver-perf-${RUN_ID}"
@@ -507,7 +534,7 @@ cleanup() {
   # The item 14 handshake SUTs (deterministic names from RUN_ID) — removed here too
   # so an early exit before the proxy block's own cleanup never leaks them.
   docker rm -f "$SERVER" "$UPSTREAM" "$SWEEP_K6" "$STREAM_K6" "$STREAM_SUT" \
-    "$INFO_SERVER" "$INFO_SWEEP_K6" \
+    "$INFO_SERVER" "$INFO_SWEEP_K6" "${STEADY_K6:-}" \
     "$CLU_CTRL" "$CLU_A" "$CLU_B" \
     "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
@@ -703,10 +730,14 @@ UPSTREAM_PHYS_CORES="$(phys_core_count "${UPSTREAM_CPUS:-}")"; UPSTREAM_PHYS_COR
 K6_PHYS_CORES="$(phys_core_count "${K6_CPUS:-}")"; K6_PHYS_CORES="${K6_PHYS_CORES:-null}"
 echo "--- resolved physical cores: server=$SERVER_PHYS_CORES upstream=$UPSTREAM_PHYS_CORES k6=$K6_PHYS_CORES (vcpu ids server=${SERVER_CPUS:-none} upstream=${UPSTREAM_CPUS:-none} k6=${K6_CPUS:-none})"
 
-docker network create "$NETWORK" >/dev/null
+# host mode shares the agent's network stack, so there is no user-defined bridge to
+# create; bridge mode is unchanged.
+if [ "$PERF_NETWORK_MODE" != host ]; then
+  docker network create "$NETWORK" >/dev/null
+fi
 
 start_mockserver() {
-  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}" no_rm="${9:-}"
+  local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}" no_rm="${9:-}" port="${10:-1080}"
   # log_level defaults to ERROR — the tracked baseline's level, which every existing
   # caller relies on. The INFO publication arm (plan open question 5) passes INFO
   # explicitly; nothing else does, so the ERROR baseline is unaffected.
@@ -738,20 +769,25 @@ start_mockserver() {
     combined_java_opts="$(compose_java_tool_options "$SUT_IMAGE_JAVA_TOOL_OPTIONS" "$combined_java_opts")"
     java_opts_arg=(-e "JAVA_TOOL_OPTIONS=$combined_java_opts")
   fi
+  # host mode: no user-defined bridge, so no network-scoped alias and no port
+  # publish (the SUT is already on the host at 127.0.0.1:$port). bridge mode expands
+  # to the exact prior tokens.
+  local net_flags=(--network "$NETWORK" --network-alias "$alias") publish_flag=(${publish:+-p 127.0.0.1::1080})
+  if [ "$PERF_NETWORK_MODE" = host ]; then net_flags=(--network host); publish_flag=(); fi
   # shellcheck disable=SC2046
-  docker run -d $rm_flag --name "$name" --network "$NETWORK" --network-alias "$alias" \
+  docker run -d $rm_flag --name "$name" "${net_flags[@]}" \
     $(cpuset_arg "$cpus") \
     ${mem:+--memory="$mem"} \
     ${mount:+-v "$mount"} \
     ${diag_mount_arg[@]+"${diag_mount_arg[@]}"} \
-    ${publish:+-p 127.0.0.1::1080} \
+    ${publish_flag[@]+"${publish_flag[@]}"} \
     ${java_opts_arg[@]+"${java_opts_arg[@]}"} \
     -e MOCKSERVER_LOG_LEVEL="$log_level" \
     -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
     -e MOCKSERVER_MAX_EVENT_LOG_SIZE_IN_BYTES="$PERF_MAX_EVENT_LOG_BYTES" \
     ${PERF_SO_BACKLOG:+-e MOCKSERVER_SO_BACKLOG="$PERF_SO_BACKLOG"} \
-    "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null
+    "$MOCKSERVER_IMAGE" -serverPort "$port" >/dev/null
 }
 
 wait_ready() {
@@ -773,6 +809,24 @@ wait_ready() {
 # local/private target — so the HTTPS pass auto-trusts the self-signed cert with
 # no per-VU TLS warning, and no reliance on an explicit insecure flag.
 SERVER_ALIAS="mockserver"
+
+# --- network-mode addressing --------------------------------------------------
+# bridge: containers join $NETWORK under their alias and clients reach them by
+#   alias:1080 — every value below is the exact string used before this lever.
+# host: SUT+upstream+clients share the host stack; the SUT stays on 127.0.0.1:1080
+#   and the upstream moves to a distinct port so two servers can coexist.
+SUT_PORT=1080
+if [ "$PERF_NETWORK_MODE" = host ]; then UPSTREAM_PORT=1081; else UPSTREAM_PORT=1080; fi
+# Client-container network flag as an array (byte-identical to `--network "$NETWORK"`
+# in bridge). Every primary-path k6/curl container expands this.
+if [ "$PERF_NETWORK_MODE" = host ]; then NET_CLIENT=(--network host); else NET_CLIENT=(--network "$NETWORK"); fi
+if [ "$PERF_NETWORK_MODE" = host ]; then
+  SUT_BASE_HTTP="http://127.0.0.1:${SUT_PORT}"; SUT_BASE_HTTPS="https://127.0.0.1:${SUT_PORT}"
+  UPSTREAM_HOSTPORT="127.0.0.1:${UPSTREAM_PORT}"
+else
+  SUT_BASE_HTTP="http://${SERVER_ALIAS}:1080"; SUT_BASE_HTTPS="https://${SERVER_ALIAS}:1080"
+  UPSTREAM_HOSTPORT="${UPSTREAM}:1080"
+fi
 
 # --- SUT image freshness: pull the mutable tag before measuring (part D) --------
 # MOCKSERVER_IMAGE is a MUTABLE tag (mockserver-snapshot-graaljs) rebuilt on every
@@ -834,8 +888,8 @@ fi
 SUT_IMAGE_JAVA_TOOL_OPTIONS="$(image_java_tool_options "$MOCKSERVER_IMAGE")"
 
 echo "--- starting upstream + MockServer ($MOCKSERVER_IMAGE)"
-start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream" "" "" "" "ERROR" "" "keep"
-start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "ERROR" "sut"
+start_mockserver "$UPSTREAM" "$UPSTREAM_CPUS" "mockserver-upstream" "" "" "" "ERROR" "" "keep" "$UPSTREAM_PORT"
+start_mockserver "$SERVER" "$SERVER_CPUS" "$SERVER_ALIAS" "publish" "$SERVER_MEMORY" "$FILE_BODY_MOUNT" "ERROR" "sut" "" "$SUT_PORT"
 # Follow the SUT's stdout/stderr into a host file from the moment it starts. The follow stream ENDS
 # when the container dies, so the file survives the container's reaping and captures the JVM's dying
 # words — an OutOfMemoryError stack, a "Terminating due to java.lang.OutOfMemoryError" from
@@ -852,8 +906,14 @@ wait_ready "$SERVER"
 # (curl on the agent) instead of spawning a container per sample — avoids adding
 # CPU noise to the very box being measured. k6 still reaches the server over the
 # docker network (container alias), unaffected by this host publish.
-SERVER_METRICS="$(docker port "$SERVER" 1080/tcp 2>/dev/null | head -1)"
-SERVER_METRICS_URL="http://${SERVER_METRICS:-127.0.0.1:1080}/mockserver/metrics"
+# host mode publishes no port (the SUT is directly on the host); bridge mode reads
+# the host-mapped port exactly as before.
+if [ "$PERF_NETWORK_MODE" = host ]; then
+  SERVER_METRICS_URL="http://127.0.0.1:${SUT_PORT}/mockserver/metrics"
+else
+  SERVER_METRICS="$(docker port "$SERVER" 1080/tcp 2>/dev/null | head -1)"
+  SERVER_METRICS_URL="http://${SERVER_METRICS:-127.0.0.1:1080}/mockserver/metrics"
+fi
 
 # --- self-describing config block (make a result record what it WAS) -----------
 # The comparison machinery, budget ratchet, hardware-invalidation rule and the
@@ -991,6 +1051,11 @@ if [ -n "${PERF_SERVER_CPUS:-}" ] \
    || [ -n "${PERF_K6_CPUS:-}" ]; then
   RIG_PROFILE="pinned"
 fi
+# host networking is rig TOPOLOGY (a different data path), so — like a cpuset
+# override — it excludes the run from the baseline via rig_profile != default.
+if [ "$PERF_NETWORK_MODE" = host ]; then
+  RIG_PROFILE="host-network"
+fi
 
 CONFIG_PROFILE="default"
 if [ -n "${PERF_SO_BACKLOG:-}" ] \
@@ -1007,6 +1072,13 @@ fi
 # exactly as a tuned run does.
 if [ -n "$PERF_WORKLOAD" ]; then
   CONFIG_PROFILE="workload-${PERF_WORKLOAD}"
+fi
+# The steady-state pass measures a DIFFERENT load shape (one fixed rate, no ladder)
+# than the published curve, so it must never be persisted to the baseline. Labelled
+# distinctly (as workload is) so a reader sees which experiment the result describes;
+# flips baseline_eligible below exactly as a tuned run does.
+if [ -n "$PERF_STEADY_RATE" ]; then
+  CONFIG_PROFILE="steady-${PERF_STEADY_RATE}"
 fi
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
@@ -1352,8 +1424,8 @@ echo "--- seeding upstream /simple (forward target)"
 # HERE, after printing the upstream's post-mortem (the --rm-dropped container's .State + last logs).
 # curl exit 6 (unresolved host) prints 000; one cheap retry covers a transient.
 seed_upstream() {
-  docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT \
-    "http://${UPSTREAM}:1080/mockserver/expectation" -H 'Content-Type: application/json' \
+  docker run --rm "${NET_CLIENT[@]}" curlimages/curl:8.11.1 -s -o /dev/null -w '%{http_code}' -X PUT \
+    "http://${UPSTREAM_HOSTPORT}/mockserver/expectation" -H 'Content-Type: application/json' \
     -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"upstream"},"times":{"unlimited":true}}]' 2>/dev/null || true
 }
 UPSTREAM_SEED_CODE="$(seed_upstream)"
@@ -1378,11 +1450,15 @@ fi
 run_regression() {
   local proto="$1" base_url="$2" insecure="$3" out="$4"
   echo "--- regression.js ($proto)"
+  # host mode: the forward arm's upstream is no longer resolvable by alias, so point
+  # it at the host port; empty in bridge, keeping the command byte-identical.
+  local fwd_env=(); [ "$PERF_NETWORK_MODE" = host ] && fwd_env=(-e "FORWARD_UPSTREAM_HOST=$UPSTREAM_HOSTPORT")
   # shellcheck disable=SC2046
-  docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+  docker run --rm "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
     -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
     -v "$OUT_DIR:/out" \
     -e "BASE_URL=$base_url" \
+    ${fwd_env[@]+"${fwd_env[@]}"} \
     -e "PROTO=$proto" \
     -e "INSECURE_SKIP_TLS_VERIFY=$insecure" \
     -e "K6_RESULT_PATH=/out/$out" \
@@ -1559,8 +1635,8 @@ if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ]; then
   live_heap_histo_sampler "$SERVER" "sut" & LIVE_HISTO_PID=$!
 fi
 
-run_regression "http" "http://${SERVER_ALIAS}:1080" "false" "regression-http.json"
-run_regression "https_h2" "https://${SERVER_ALIAS}:1080" "true" "regression-https.json"
+run_regression "http" "$SUT_BASE_HTTP" "false" "regression-http.json"
+run_regression "https_h2" "$SUT_BASE_HTTPS" "true" "regression-https.json"
 abort_if_sut_died
 
 # --- throughput-vs-latency sweep ----------------------------------------------
@@ -1657,11 +1733,13 @@ run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_hos
   # Register this ladder so the liveness gate can stop it the instant the SUT dies.
   printf '%s' "$k6name" > "$ACTIVE_LOAD_FILE" 2>/dev/null || true
   local sweep_rc=0
+  # host mode addresses the SUT on the host; bridge keeps the alias URL unchanged.
+  local sweep_base="http://${target_alias}:1080"; [ "$PERF_NETWORK_MODE" = host ] && sweep_base="$SUT_BASE_HTTP"
   # shellcheck disable=SC2046
-  docker run --rm --name "$k6name" --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+  docker run --rm --name "$k6name" "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
     -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
     -v "$OUT_DIR:/out" \
-    -e "BASE_URL=http://${target_alias}:1080" \
+    -e "BASE_URL=$sweep_base" \
     -e "PROTO=http" \
     -e "K6_SWEEP_RATES=$SWEEP_RATES" \
     -e "K6_SWEEP_STEP=$SWEEP_STEP" \
@@ -1851,6 +1929,91 @@ else
   add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
 fi
 
+# --- OPT-IN steady-state latency-tail experiment (performance-programme.md §1) --
+# One constant-arrival-rate pass at PERF_STEADY_RATE on the main SUT, before growth.
+# The server histogram delta approximates the client's measured window: it starts
+# WARMUP_S after the k6 container launches (so it may hold a few seconds of warm-up)
+# and includes the metric scrapes themselves. Never baseline-eligible; skipped when
+# PERF_STEADY_RATE is unset.
+STEADY_JSON='{}'
+if [ -n "$PERF_STEADY_RATE" ]; then
+  echo "+++ opt-in steady-state pass: PERF_STEADY_RATE=$PERF_STEADY_RATE warmup=$PERF_STEADY_WARMUP measure=$PERF_STEADY_DURATION mode=$PERF_NETWORK_MODE (config_profile=$CONFIG_PROFILE, baseline_eligible=$BASELINE_ELIGIBLE)"
+  abort_if_sut_died
+  STEADY_K6="mockserver-perf-k6-steady-${RUN_ID}"
+  for d in "$PERF_STEADY_WARMUP" "$PERF_STEADY_DURATION"; do
+    [[ "$d" =~ ^[0-9]+[smh]$ ]] || { echo "PERF_STEADY_WARMUP/DURATION must be <n>s|m|h, got '$d'" >&2; exit 1; }
+  done
+  STEADY_WARMUP_S="$(to_secs "$PERF_STEADY_WARMUP")"
+  # Cumulative server request-duration histogram: count sum le5 le10 le25 le50 le100.
+  steady_server_hist() {
+    curl -s --max-time 4 "$SERVER_METRICS_URL" 2>/dev/null | awk -F' ' '
+      /^mock_server_request_duration_seconds_count /{c=$2}
+      /^mock_server_request_duration_seconds_sum /{s=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.005"\}/{b5=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.01"\}/{b10=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.025"\}/{b25=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.05"\}/{b50=$2}
+      /^mock_server_request_duration_seconds_bucket\{le="0\.1"\}/{b100=$2}
+      END{printf "%s %s %s %s %s %s %s", c+0,s+0,b5+0,b10+0,b25+0,b50+0,b100+0}'
+  }
+  printf '%s' "$STEADY_K6" > "$ACTIVE_LOAD_FILE" 2>/dev/null || true
+  # Background k6 so the shell can snapshot the server histogram at the warm-up
+  # boundary and again at the end — the delta is the measured window, warm-up excluded.
+  # shellcheck disable=SC2046
+  docker run --rm --name "$STEADY_K6" "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
+    -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+    -v "$OUT_DIR:/out" \
+    -e "BASE_URL=$SUT_BASE_HTTP" \
+    -e "PROTO=http" \
+    -e "K6_STEADY_RATE=$PERF_STEADY_RATE" \
+    -e "K6_STEADY_WARMUP=$PERF_STEADY_WARMUP" \
+    -e "K6_STEADY_DURATION=$PERF_STEADY_DURATION" \
+    -e "K6_STEADY_RESULT_PATH=/out/steady.json" \
+    "$K6_IMAGE" run /k6/steady.js &
+  STEADY_PID=$!
+  sleep "$STEADY_WARMUP_S"
+  STEADY_HIST_START="$(steady_server_hist)"
+  wait "$STEADY_PID" || echo "WARNING: steady.js exited non-zero — steady block may be partial (notify-only)" >&2
+  STEADY_HIST_END="$(steady_server_hist)"
+  : > "$ACTIVE_LOAD_FILE" 2>/dev/null || true
+  abort_if_sut_died
+  # Fold the k6 client result together with the server-side window delta + comparison.
+  STEADY_CLIENT_JSON="$(cat "$OUT_DIR/steady.json" 2>/dev/null || echo '{}')"
+  jq -e . >/dev/null 2>&1 <<<"$STEADY_CLIENT_JSON" || STEADY_CLIENT_JSON='{}'
+  # le50/le100 buckets are captured but not reported (the tail of interest is <=25ms).
+  read -r sc0 ss0 s50 s100 s250 _ _ <<<"$STEADY_HIST_START"
+  read -r sc1 ss1 e50 e100 e250 _ _ <<<"$STEADY_HIST_END"
+  STEADY_JSON="$(jq -nc \
+    --arg mode "$PERF_NETWORK_MODE" \
+    --argjson rate "$PERF_STEADY_RATE" \
+    --argjson client "$STEADY_CLIENT_JSON" \
+    --argjson c0 "${sc0:-0}" --argjson c1 "${sc1:-0}" \
+    --argjson su0 "${ss0:-0}" --argjson su1 "${ss1:-0}" \
+    --argjson b5_0 "${s50:-0}" --argjson b5_1 "${e50:-0}" \
+    --argjson b10_0 "${s100:-0}" --argjson b10_1 "${e100:-0}" \
+    --argjson b25_0 "${s250:-0}" --argjson b25_1 "${e250:-0}" '
+    (($c1 - $c0)) as $n
+    | (($su1 - $su0)) as $sum
+    | { network_mode:$mode, steady_rate:$rate,
+        client: $client,
+        server: {
+          # Server request-duration histogram over the SAME measured window (deltas).
+          req_dur_count: $n,
+          req_dur_mean_ms: (if $n > 0 then (($sum / $n) * 1000 | .*1000|round/1000) else null end),
+          frac_over_5ms:  (if $n > 0 then ((1 - (($b5_1 - $b5_0) / $n)) | .*100000|round/100000) else null end),
+          frac_over_10ms: (if $n > 0 then ((1 - (($b10_1 - $b10_0) / $n)) | .*100000|round/100000) else null end),
+          frac_over_25ms: (if $n > 0 then ((1 - (($b25_1 - $b25_0) / $n)) | .*100000|round/100000) else null end)
+        } }
+    # Comparison: is the client waiting tail present in the server histogram?
+    | .comparison = {
+        client_p99_ms: ($client.p99_ms // null),
+        client_waiting_p99_ms: ($client.waiting_p99_ms // null),
+        server_frac_over_5ms: (.server.frac_over_5ms),
+        server_frac_over_10ms: (.server.frac_over_10ms)
+      }' 2>/dev/null || echo '{}')"
+  echo "--- steady: client p99=$(jq -r '.client.p99_ms//"?"' <<<"$STEADY_JSON")ms waiting_p99=$(jq -r '.client.waiting_p99_ms//"?"' <<<"$STEADY_JSON")ms | server over5ms=$(jq -r '.server.frac_over_5ms//"?"' <<<"$STEADY_JSON") over10ms=$(jq -r '.server.frac_over_10ms//"?"' <<<"$STEADY_JSON") (n=$(jq -r '.server.req_dur_count//"?"' <<<"$STEADY_JSON"))"
+fi
+
 # --- INFO-log-level publication arm (plan open question 5) ---------------------
 # Re-measure ONLY the two PUBLISHED figure families — the knee curve (sweep.js) and
 # the per-behaviour percentiles (regression.js, http + https_h2) — against a SECOND
@@ -1997,10 +2160,10 @@ abort_if_sut_died
 echo "--- growth.js (sustained load + resource sampling)"
 sampler & SAMPLER_PID=$!
 # shellcheck disable=SC2046
-docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
+docker run --rm "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
   -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
   -v "$OUT_DIR:/out" \
-  -e "BASE_URL=http://${SERVER_ALIAS}:1080" \
+  -e "BASE_URL=$SUT_BASE_HTTP" \
   -e "K6_GROWTH_RESULT_PATH=/out/growth.json" \
   ${K6_GROWTH_DURATION:+-e K6_GROWTH_DURATION="$K6_GROWTH_DURATION"} \
   ${K6_GROWTH_RATE:+-e K6_GROWTH_RATE="$K6_GROWTH_RATE"} \
@@ -2018,20 +2181,23 @@ kill "$SAMPLER_PID" >/dev/null 2>&1 || true; SAMPLER_PID=""
 # compare's forward.error_rate row), NOT a rig-invalidity, so it does not touch
 # the validity block. Runs last: forward.js resets the SUT in teardown.
 abort_if_sut_died
-echo "--- forward.js (forward connection-pool regression guard)"
 FORWARD_EXIT=0
-# shellcheck disable=SC2046
-docker run --rm --network "$NETWORK" $(cpuset_arg "$K6_CPUS") \
-  -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
-  -v "$OUT_DIR:/out" \
-  -e "BASE_URL=http://${SERVER_ALIAS}:1080" \
-  -e "FORWARD_UPSTREAM_HOST=mockserver-upstream:1080" \
-  -e "K6_FORWARD_RESULT_PATH=/out/forward.json" \
-  ${K6_FWD_PEAK_RATE:+-e K6_FWD_PEAK_RATE="$K6_FWD_PEAK_RATE"} \
-  ${K6_FWD_HOLD:+-e K6_FWD_HOLD="$K6_FWD_HOLD"} \
-  "$K6_IMAGE" run /k6/forward.js || FORWARD_EXIT=$?
-if [ "$FORWARD_EXIT" -ne 0 ]; then
-  echo "WARNING: forward.js exited $FORWARD_EXIT — forward-pool guard threshold TRIPPED (error rate over limit)" >&2
+# Secondary phase: skipped under host mode (multi-SUT phases do not run there).
+if [ "$PERF_NETWORK_MODE" != host ]; then
+  echo "--- forward.js (forward connection-pool regression guard)"
+  # shellcheck disable=SC2046
+  docker run --rm "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
+    -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
+    -v "$OUT_DIR:/out" \
+    -e "BASE_URL=$SUT_BASE_HTTP" \
+    -e "FORWARD_UPSTREAM_HOST=mockserver-upstream:1080" \
+    -e "K6_FORWARD_RESULT_PATH=/out/forward.json" \
+    ${K6_FWD_PEAK_RATE:+-e K6_FWD_PEAK_RATE="$K6_FWD_PEAK_RATE"} \
+    ${K6_FWD_HOLD:+-e K6_FWD_HOLD="$K6_FWD_HOLD"} \
+    "$K6_IMAGE" run /k6/forward.js || FORWARD_EXIT=$?
+  if [ "$FORWARD_EXIT" -ne 0 ]; then
+    echo "WARNING: forward.js exited $FORWARD_EXIT — forward-pool guard threshold TRIPPED (error rate over limit)" >&2
+  fi
 fi
 FORWARD_JSON="$(cat "$OUT_DIR/forward.json" 2>/dev/null || echo '{}')"
 abort_if_sut_died
@@ -2286,7 +2452,7 @@ abort_if_sut_died
 # fast/shadowed upstream answers in ~0 ms and cannot clear it). A run that silently
 # fell back reds the build (add_check ok=false -> validity.valid=false).
 WORKLOAD_JSON='{}'
-if [ "$PERF_WORKLOAD" = "forward" ]; then
+if [ "$PERF_WORKLOAD" = "forward" ] && [ "$PERF_NETWORK_MODE" != host ]; then
   echo "+++ opt-in workload: PERF_WORKLOAD=forward (config_profile=$CONFIG_PROFILE, baseline_eligible=$BASELINE_ELIGIBLE)"
   WL_FWD_RATE="${PERF_WORKLOAD_FORWARD_RATE:-500}"
   WL_FWD_VUS="${PERF_WORKLOAD_FORWARD_VUS:-256}"
@@ -3464,6 +3630,8 @@ jq -n \
   --arg build_number "${BUILDKITE_BUILD_NUMBER:-}" --arg build_url "${BUILDKITE_BUILD_URL:-}" \
   --arg instance_type "$INSTANCE_TYPE" --arg instance_type_src "$INSTANCE_TYPE_SRC" --arg image "$MOCKSERVER_IMAGE" \
   --arg server_cpus "${SERVER_CPUS:-none}" --arg k6_cpus "${K6_CPUS:-none}" \
+  --arg network_mode "$PERF_NETWORK_MODE" \
+  --argjson steady "$STEADY_JSON" \
   --argjson server_phys_cores "$SERVER_PHYS_CORES" --argjson k6_phys_cores "$K6_PHYS_CORES" \
   --slurpfile http "$OUT_DIR/regression-http.json" \
   --slurpfile https "$OUT_DIR/regression-https.json" \
@@ -3517,7 +3685,7 @@ jq -n \
     commit: $commit, harness_commit: $harness_commit, branch: $branch, timestamp_utc: $ts,
     build_number: $build_number, build_url: $build_url,
     agent: { instance_type: $instance_type, instance_type_source: $instance_type_src, queue: "perf",
-             server_cpus: $server_cpus, k6_cpus: $k6_cpus,
+             server_cpus: $server_cpus, k6_cpus: $k6_cpus, network_mode: $network_mode,
              server_physical_cores: $server_phys_cores, k6_physical_cores: $k6_phys_cores },
     config: $config,
     # Event-log scaling profile: the EFFECTIVE (gauge-resolved) maxLogEntries and
@@ -3613,6 +3781,10 @@ jq -n \
     # served-via-upstream check rides .validity (added above), so this block is
     # head-driven data for the reader, not a second gate.
     workload: $workload,
+    # OPT-IN steady-state pass (PERF_STEADY_RATE): one fixed rate, warm-up excluded,
+    # with the client tail and the server request-duration histogram over the same
+    # window plus their comparison (performance-programme.md §1). {} on a default run.
+    steady_experiment: $steady,
     validity: $validity,
     # Part C — baseline eligibility. false ONLY for an instrumented (PERF_JVM_DIAGNOSTICS
     # =deep) run: perf-test-compare.sh records it but refuses to persist/compare it (and
