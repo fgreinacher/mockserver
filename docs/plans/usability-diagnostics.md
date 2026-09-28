@@ -86,7 +86,7 @@ drift values in non-credential fields get JWT and URL masking but not the `key=v
    them. No runtime cost, no new dependency, the model stays the user's choice.
 2. **Deterministic explanations are the base** (A3, A8, B3): reproducible, testable, offline,
    and consumed by both MCP and a bring-your-own LLM.
-3. **Bring-your-own LLM stays optional and off by default** (B4, B5), reusing the existing `llm*`
+3. **Bring-your-own LLM stays optional and off by default** (B5), reusing the existing `llm*`
    configuration and no bundled SDK; redaction fails closed.
 4. **No hosted LLM, no bundled model, no SaaS.**
 
