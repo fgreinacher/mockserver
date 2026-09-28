@@ -107,3 +107,27 @@ The `GeminiCodec.encodeStreaming()` method re-serialises tool-call arguments thr
 ### `whenContainsToolResultFor` E2E false-negative for Gemini and Ollama — RESOLVED
 
 **Resolved.** This was previously reported as an E2E-only false-negative (the matcher unit tests passed for all providers, but the predicate was believed to fail through the full Netty pipeline for Gemini/Ollama turn-2 requests). It no longer reproduces: `LlmAgentLoopE2eTest.shouldMatchContainsToolResultForGeminiEndToEnd` and `…ForOllamaEndToEnd` drive turn 2 purely via `whenContainsToolResultFor` (not scenario ordering), through the real Netty pipeline, and both pass — Gemini's name-keyed correlation and Ollama's positional fallback work end-to-end. These regression tests guard against recurrence. (The earlier behaviour was fixed by subsequent matcher/codec work; the body is delivered to the matcher correctly E2E, as the Anthropic/OpenAI/Azure/Bedrock predicate-driven E2E tests also demonstrate.) Not a security issue.
+
+## Outbound prompt redaction — `generateExpectation` and drift (2026-09-28)
+
+**Outcome:** Prompts built for an external LLM backend are redacted before they leave the process. This closes a gap where `PUT /mockserver/generateExpectation`, with an LLM backend configured, sent the unmatched request's `Authorization`, `Cookie` and API-key headers, up to 2,000 characters of body, and the paths of up to 10 existing expectations to a third-party service unredacted.
+
+Redaction here is **always on** and **independent of `redactSecretsInLog`** — that setting governs the local event log, whereas this governs data leaving the process to a third party — and it operates on **copies**: the served request, the event log and the returned expectations are never mutated.
+
+### What is redacted before a prompt is sent
+
+| Element | Rule |
+|---------|------|
+| Request / context headers | Values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `x-api-key`, `api-key` (reusing `FixtureRedactor.defaultSensitiveHeaders()`), plus `X-Auth-Token`, `X-Access-Token`, `X-Amz-Security-Token`, `X-Csrf-Token` and the configured `dataPlaneApiKeyAuthenticationHeader`, matched case-insensitively, are replaced with `FixtureRedactor.REDACTED_PLACEHOLDER` (`***REDACTED***`). Header names are kept; a multi-value header is collapsed to one masked value. The extra headers are added in `LlmPromptRedactor` only — `FixtureRedactor`'s defaults are unchanged. |
+| Query string | Sensitive query parameters (`key`, `api_key`, `apikey`, `access_token`, `token`, `signature`, …) masked via `FixtureRedactor` (defence in depth). |
+| JSON body | Values of credential-like fields (`password`, `passwd`, `secret`, `token`, `access_token`, `refresh_token`, `id_token`, `client_secret`, `api_key`, `apikey`, `authorization`, …) masked at any depth. Every JSON string leaf is also swept: a stringified-JSON value (`{"data":"{\"password\":\"x\"}"}`) is parsed and redacted recursively, and `key=value` credentials inside a string leaf are masked. |
+| JWTs | `eyJ`-prefixed three-segment base64url tokens masked anywhere in a body. |
+| URL userinfo | `scheme://user:pass@host` → `scheme://***REDACTED***@host` in request path, context paths and bodies. |
+| Non-JSON body | `key=value` credential pairs (same field set) masked in form / plain-text bodies. A field matches when it is not preceded by an ASCII letter or digit (so `my_password=` / `x-api_key=` match) and is a whole word (so `tokenizer=on` is not treated as `token`). |
+| Unparseable JSON | A body that declares or looks like JSON but cannot be parsed is **dropped** (`[body omitted: could not be parsed for redaction]`) — fail closed. |
+| Binary body | Omitted from the prompt. |
+| Body length | Redacted body then truncated to 2,000 characters. |
+
+Implemented in `org.mockserver.llm.LlmPromptRedactor`, applied by `StubGenerationPromptBuilder` (constructed with the configured data-plane API-key header name in `HttpState.handleGenerateExpectation`) and by `SemanticDriftExtension.buildPrompt` (drift analysis sends response bodies and drift record values, not headers, so it redacts those). Header and query masking reuse `FixtureRedactor`; JSON-tree field masking, stringified-JSON descent, JWT, URL-userinfo and non-JSON `key=value` masking are done in `LlmPromptRedactor` because a prompt is free text rather than a structured expectation.
+
+**Note on `EmbeddedCredentialRedaction`:** despite its name it masks configuration credentials by field/header *name* only and, by its own documented design, does **not** redact credentials embedded in a URL. URL-userinfo masking for prompts is therefore implemented in `LlmPromptRedactor`, not delegated to that class.

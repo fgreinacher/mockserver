@@ -589,7 +589,7 @@ The MCP tool resolves a backend via `LlmBackendResolver` and is **disabled** (re
 
 ### Behaviour
 
-1. **LLM-powered** (when a runtime LLM backend is configured via `LlmBackendResolver`): `StubGenerationPromptBuilder` builds a prompt containing the unmatched request details and up to 10 existing expectations as context. The prompt is sent via `LlmCompletionService` and the response is parsed as expectation JSON. If the LLM response is unparseable, falls back to template generation.
+1. **LLM-powered** (when a runtime LLM backend is configured via `LlmBackendResolver`): `StubGenerationPromptBuilder` builds a prompt containing the unmatched request details and up to 10 existing expectations as context. The prompt is sent via `LlmCompletionService` and the response is parsed as expectation JSON. If the LLM response is unparseable, falls back to template generation. **Credentials are always redacted from the prompt before it leaves the process** (independent of `redactSecretsInLog`, on copies so the served request is unchanged): sensitive headers, credential-like JSON fields at any depth, JWTs, `key=value` credentials in non-JSON bodies and URL userinfo — see [LLM security audit → Outbound prompt redaction](llm-security-audit.md#outbound-prompt-redaction--generateexpectation-and-drift-2026-09-28) and `llm/LlmPromptRedactor`.
 
 2. **Template fallback** (no LLM backend): generates a simple expectation matching the request's method and path with an appropriate status code (200 for GET, 201 for POST, 204 for DELETE) and a `{"status":"ok"}` body. Confidence is reported as `0.5`.
 
@@ -604,6 +604,7 @@ The MCP tool resolves a backend via `LlmBackendResolver` and is **disabled** (re
 | File | Purpose |
 |------|---------|
 | `llm/StubGenerationPromptBuilder.java` | Builds the LLM prompt from the unmatched request + existing expectations context |
+| `llm/LlmPromptRedactor.java` | Redacts credentials (headers, JSON fields, JWTs, URL userinfo, non-JSON `key=value`) from outbound LLM prompts (`generateExpectation` + drift) |
 | `llm/StubGenerationResult.java` | Result DTO with suggestions, confidence, explanation, raw LLM response |
 | `mock/HttpState.handleGenerateExpectation()` | Control-plane handler for `PUT /mockserver/generateExpectation` |
 | `mock/HttpState.generateSimpleStub()` | Template-based fallback when no LLM is available |

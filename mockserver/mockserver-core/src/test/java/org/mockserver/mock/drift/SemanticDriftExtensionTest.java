@@ -15,6 +15,7 @@ import java.util.Optional;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.nullValue;
 import static org.mockserver.model.HttpResponse.response;
 
@@ -178,6 +179,29 @@ public class SemanticDriftExtensionTest {
         // Should not throw
         ext.enrich(records, "exp1", response(), response());
         assertThat(records.get(0).getSemanticSeverity(), is(nullValue()));
+    }
+
+    @Test
+    public void buildPromptRedactsCredentialsInBodiesAndValues() {
+        LlmCompletionService service = new StubLlmCompletionService(null);
+        LlmBackend backend = LlmBackend.of(Provider.OPENAI, "test-key");
+        SemanticDriftExtension ext = new SemanticDriftExtension(service, backend);
+
+        String jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhYmMifQ.abcDEF123_-xyzSIG";
+        List<DriftRecord> records = List.of(
+            new DriftRecord().setDriftType(DriftType.SCHEMA_TYPE_CHANGED).setField("access_token")
+                .setExpectedValue("old-secret-token").setActualValue("new-secret-token")
+        );
+        HttpResponse stub = response().withStatusCode(200).withBody("{\"token\":\"stub-token-secret\"}");
+        HttpResponse real = response().withStatusCode(200).withBody("{\"note\":\"" + jwt + "\"}");
+
+        String prompt = ext.buildPrompt(records, stub, real);
+
+        assertThat(prompt, not(containsString("stub-token-secret")));
+        assertThat(prompt, not(containsString("old-secret-token")));
+        assertThat(prompt, not(containsString("new-secret-token")));
+        assertThat(prompt, not(containsString(jwt)));
+        assertThat(prompt, containsString("***REDACTED***"));
     }
 
     /**

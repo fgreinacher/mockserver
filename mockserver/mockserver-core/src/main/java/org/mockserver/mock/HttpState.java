@@ -5951,7 +5951,8 @@ public class HttpState {
             }
 
             // Build prompt and call LLM
-            org.mockserver.llm.StubGenerationPromptBuilder promptBuilder = new org.mockserver.llm.StubGenerationPromptBuilder();
+            org.mockserver.llm.StubGenerationPromptBuilder promptBuilder =
+                new org.mockserver.llm.StubGenerationPromptBuilder(configuration.dataPlaneApiKeyAuthenticationHeader());
             String prompt = promptBuilder.build(unmatchedRequest, contextExpectations);
 
             ParsedConversation conversation = ParsedConversation.of(Collections.singletonList(

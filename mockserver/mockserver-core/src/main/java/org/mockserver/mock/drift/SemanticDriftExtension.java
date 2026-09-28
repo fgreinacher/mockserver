@@ -1,5 +1,6 @@
 package org.mockserver.mock.drift;
 
+import org.mockserver.llm.LlmPromptRedactor;
 import org.mockserver.llm.ParsedConversation;
 import org.mockserver.llm.ParsedMessage;
 import org.mockserver.llm.client.LlmBackend;
@@ -29,6 +30,10 @@ public class SemanticDriftExtension {
 
     private final LlmCompletionService completionService;
     private final LlmBackend backend;
+    // Redacts credentials before the drift prompt (response bodies + drift values)
+    // leaves the process to the external LLM. Drift sends no headers, so no
+    // data-plane header name is needed.
+    private final LlmPromptRedactor redactor = new LlmPromptRedactor(null);
 
     public SemanticDriftExtension(LlmCompletionService completionService, LlmBackend backend) {
         this.completionService = completionService;
@@ -71,14 +76,15 @@ public class SemanticDriftExtension {
         StringBuilder sb = new StringBuilder();
         sb.append("You are an API compatibility expert. Classify each API drift as BREAKING, WARNING, or INFORMATIONAL.\n\n");
         sb.append("STUB RESPONSE: status=").append(stub != null ? stub.getStatusCode() : "unknown")
-            .append(", body=").append(truncate(stub != null ? stub.getBodyAsString() : null)).append("\n");
+            .append(", body=").append(truncate(redactor.redactText(stub != null ? stub.getBodyAsString() : null))).append("\n");
         sb.append("REAL RESPONSE: status=").append(real != null ? real.getStatusCode() : "unknown")
-            .append(", body=").append(truncate(real != null ? real.getBodyAsString() : null)).append("\n\n");
+            .append(", body=").append(truncate(redactor.redactText(real != null ? real.getBodyAsString() : null))).append("\n\n");
         sb.append("DRIFT RECORDS:\n");
         for (int i = 0; i < records.size(); i++) {
             DriftRecord r = records.get(i);
             sb.append(i + 1).append(". ").append(r.getDriftType()).append(" on field '").append(r.getField())
-                .append("': expected=").append(r.getExpectedValue()).append(", actual=").append(r.getActualValue()).append("\n");
+                .append("': expected=").append(redactor.maskDriftValue(r.getField(), r.getExpectedValue()))
+                .append(", actual=").append(redactor.maskDriftValue(r.getField(), r.getActualValue())).append("\n");
         }
         sb.append("\nFor each numbered drift, reply with: <number>|<BREAKING|WARNING|INFORMATIONAL>|<one sentence explanation>\n");
         sb.append("Return exactly one line per drift.");

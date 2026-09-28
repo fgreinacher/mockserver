@@ -28,6 +28,20 @@ This release delivers a sustained performance and memory programme alongside dat
   dashboard had the same gap. Both are now redacted, using the effective configuration where the
   caller supplies one and the configured value otherwise. If you enabled `redactSecretsInLog` and
   relied on it, treat logs captured before this release as still containing those values.
+- **`/mockserver/generateExpectation` now redacts credentials from the prompt sent to an external
+  LLM backend.** If you configured an LLM backend for stub generation, the prompt built from the
+  unmatched request was sent to that third-party service with `Authorization`, `Proxy-Authorization`,
+  `Cookie`, `Set-Cookie`, `x-api-key`, `api-key` (and your configured data-plane API-key header)
+  values in full, along with up to 2,000 characters of the request body and the paths of up to 10
+  existing expectations. Sensitive header values are now replaced with `***REDACTED***`; credential-like
+  JSON fields (`password`, `token`, `api_key`, `client_secret`, `access_token`, …) at any depth,
+  JWT-shaped tokens, `key=value` credentials in form or plain-text bodies, and credentials embedded in
+  URLs (`user:pass@host`) are masked too; a body that looks like JSON but cannot be parsed is dropped
+  rather than sent. The same redaction is applied to the LLM drift-analysis prompt. Redaction is always
+  on for these outbound prompts and independent of `redactSecretsInLog`, and it operates on copies — the
+  served request, the event log and the returned expectations are unchanged. If you used
+  `generateExpectation` or LLM drift analysis with a backend configured, treat any credentials in those
+  requests as previously exposed to that LLM service.
 
 ### Added
 
