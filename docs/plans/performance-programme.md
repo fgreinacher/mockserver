@@ -20,7 +20,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | rig A/B series in progress (builds 482 onward: control, event loops 8/12/4, compact headers, leak detection off, pooled allocator); items 15–18 below |
+| 2 | Tuning candidates | rig A/B series in progress (builds 482 onward: control, event loops 8/12/4, compact headers, leak detection off, pooled allocator); items 16–18 below |
 
 ## Decided against
 
@@ -51,7 +51,7 @@ worker loops, 10% on the event-log thread.
 
 ### Remaining candidates
 
-Candidates 2–5 and 7–10 from the original list landed (see `changelog.md` and git history);
+Candidates 2–5, 7–10 and 15 from the original list landed (see `changelog.md` and git history);
 candidate 1 was declined (see [Decided against](#decided-against)).
 
 | # | Candidate | What is known | Next step |
@@ -60,7 +60,6 @@ candidate 1 was declined (see [Decided against](#decided-against)).
 | 11 | Compact object headers (`-XX:+UseCompactObjectHeaders`, JDK 25+) for the ZGC JDK 25/26 images | Implemented and smoke-tested in a held branch; archive maps when trained with the flag; header 16 → 8 bytes confirmed, but a local MockServer workload showed no measurable live-set change | Running (rig A/B); if it ships, the held image change lands with the approved `docker_compose_appcds_archive_mapped` flag addition |
 | 12 | Netty leak detection left at its default (SIMPLE) in the images | CI runs paranoid leak detection and fails on any leak, so the production signal is marginal | Running (rig A/B with `-Dio.netty.leakDetection.level=disabled`) |
 | 13 | Two `ByteBuf` allocator families live | Confirmed: HTTP/2 child stream channels use Netty 4.2's adaptive default while everything else is pinned to `PooledByteBufAllocator` | Running (rig A/B with `-Dio.netty.allocator.type=pooled`), judged on RSS and throughput |
-| 15 | The force-response-index header is parsed twice per served request (`RequestMatchers` and `HttpActionHandler`) | Found during unit U7 | Thread the parsed index through; small |
 | 16 | The per-merge alloc gate pins `matcherType=EXACT`, whose candidate index empties the bucket, so it never exercises the per-candidate scan | Found during unit U3 (the scan saving showed only on `HEADERS_MISS`) | Add a scan-exercising arm, notify-only until it has run history to derive a budget (CI gate change, needs approval) |
 | 17 | The level-aware event-log byte-budget divisor predates the body-release fixes, so it is now conservative | See `docs/code/memory-management.md` | Re-derive from a fresh `jmap -histo:live` before retightening |
 | 18 | The ladder's published tail percentiles include each rung's onset transient (at 24k all stalls fall in the rung's first bucket) | A steady 24k run shows p99 0.343 ms against 10.6 ms on the ladder rung | Exclude rung-onset samples from the published tail statistic, or publish the steady-state figure alongside (control-class rig change, needs approval) |
