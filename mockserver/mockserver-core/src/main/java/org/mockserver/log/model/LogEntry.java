@@ -186,7 +186,9 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * copies and the rendered {@code arguments} are transient — recomputed on every call by
      * {@link #getHttpUpdatedRequests(org.mockserver.configuration.Configuration)} /
      * {@link #getHttpUpdatedResponse(org.mockserver.configuration.Configuration)} and never retained on the
-     * entry — so they are excluded, as is the memoized {@code message} string. The {@code message} is the one large
+     * entry (an argument derived from the entry's own request, such as its curl form, is stored as a
+     * {@link DeferredLogArgument} for the same reason) — so they are excluded, as is the memoized
+     * {@code message} string. The {@code message} is the one large
      * term that is level-dependent: it is materialized on the retained entry only at a rendering log
      * level ({@code INFO}/{@code DEBUG}/{@code TRACE}, where {@code writeToSystemOut} renders each entry),
      * and it is populated <em>after</em> this weight is first computed and memoized, so it cannot be
@@ -195,7 +197,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * weight equals the evict-time weight exactly. The residual message cost is instead handled at the
      * budget-sizing layer, whose default divisor is already log-level-aware (tighter at rendering levels)
      * precisely to cover it — see {@code ConfigurationProperties.defaultMaxEventLogSizeInBytes}. So the
-     * estimate lands near 1x real retention at {@code WARN} and remains a fraction under at {@code INFO}.
+     * estimate is at or above real retention at {@code WARN} (a request body shared by an exchange's
+     * entries is charged to each of them) and below it at {@code INFO}.
      * <p>
      * Reads the {@code httpRequests} field directly (not {@link #getHttpRequests()}, which substitutes a
      * default request when unset), and all counted terms are stable once the entry is built, so the value
@@ -829,6 +832,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
                 } else if (argument instanceof HttpResponse) {
                     HttpResponse updated = updateBody((HttpResponse) argument);
                     return redactor == null ? updated : redactor.redactResponseObject(updated);
+                } else if (argument instanceof DeferredLogArgument) {
+                    return ((DeferredLogArgument) argument).render();
                 } else {
                     return argument;
                 }
@@ -840,8 +845,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * The arguments exactly as stored — the raw {@link HttpRequest}/{@link HttpResponse} references (bodies unparsed)
      * with only {@code null} normalised to {@code ""}. Used by {@link #clone()} and {@link #translateTo} so copying an
      * entry (including the Disruptor ring-buffer copy that populates the retained event-log entry) carries the raw form
-     * and never materialises a parsed body tree onto the retained copy. Also the basis of {@link #equals(Object)} /
-     * {@link #hashCode()}.
+     * and never materialises a parsed body tree onto the retained copy. {@link #equals(Object)} compares these with any
+     * {@link DeferredLogArgument} rendered to its String; {@link #hashCode()} leaves the arguments out.
      */
     @JsonIgnore
     Object[] getRawArguments() {
@@ -916,6 +921,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
         );
     }
 
+    // Both updateBody forms read without caching: they render retained, released entries on retrieve and
+    // dashboard reads, and a caching read would re-attach the decoded String to the retained body.
     private RequestDefinition updateBody(RequestDefinition requestDefinition) {
         if (requestDefinition instanceof HttpRequest) {
             HttpRequest httpRequest = (HttpRequest) requestDefinition;
@@ -925,26 +932,26 @@ public class LogEntry implements EventTranslator<LogEntry> {
                     return httpRequest
                         .shallowClone()
                         .withBody(
-                            new LogEntryBody(OBJECT_MAPPER.readTree(body.toString()))
+                            new LogEntryBody(OBJECT_MAPPER.readTree(body.toStringWithoutCaching()))
                         );
                 } catch (Throwable throwable) {
                     return httpRequest
                         .shallowClone()
                         .withBody(
-                            new LogEntryBody(body.toString())
+                            new LogEntryBody(body.toStringWithoutCaching())
                         );
                 }
             } else if (body instanceof ParameterBody) {
                 return httpRequest
                     .shallowClone()
                     .withBody(
-                        new LogEntryBody(body.toString())
+                        new LogEntryBody(body.toStringWithoutCaching())
                     );
             } else if (body instanceof BodyWithContentType && !(body instanceof LogEntryBody)) {
                 return httpRequest
                     .shallowClone()
                     .withBody(
-                        new LogEntryBody(body.toString())
+                        new LogEntryBody(body.toStringWithoutCaching())
                     );
             } else {
                 return httpRequest;
@@ -962,20 +969,20 @@ public class LogEntry implements EventTranslator<LogEntry> {
                     return httpResponse
                         .shallowClone()
                         .withBody(
-                            new LogEntryBody(OBJECT_MAPPER.readTree(body.toString()))
+                            new LogEntryBody(OBJECT_MAPPER.readTree(body.toStringWithoutCaching()))
                         );
                 } catch (Throwable throwable) {
                     return httpResponse
                         .shallowClone()
                         .withBody(
-                            new LogEntryBody(body.toString())
+                            new LogEntryBody(body.toStringWithoutCaching())
                         );
                 }
             } else if (body != null && !(body instanceof LogEntryBody)) {
                 return httpResponse
                     .shallowClone()
                     .withBody(
-                        new LogEntryBody(body.toString())
+                        new LogEntryBody(body.toStringWithoutCaching())
                     );
             } else {
                 return httpResponse;
@@ -1068,7 +1075,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
             expectationIsSynthetic == logEntry.expectationIsSynthetic &&
             Objects.equals(expectationId, logEntry.expectationId) &&
             Objects.equals(consumer, logEntry.consumer) &&
-            Arrays.equals(arguments, logEntry.arguments) &&
+            renderedArgumentsEqual(arguments, logEntry.arguments) &&
             Arrays.equals(httpRequests, logEntry.httpRequests);
     }
 
@@ -1076,11 +1083,31 @@ public class LogEntry implements EventTranslator<LogEntry> {
     public int hashCode() {
         if (hashCode == 0) {
             int result = Objects.hash(epochTime, deleted, type, logLevel, alwaysLog, messageFormat, httpResponse, httpError, expectation, expectationIsSynthetic, expectationId, consumer);
-            result = 31 * result + Arrays.hashCode(arguments);
             result = 31 * result + Arrays.hashCode(httpRequests);
             hashCode = result;
         }
         return hashCode;
+    }
+
+    // Equality treats a DeferredLogArgument as the String it renders, as it was before rendering was deferred.
+    // hashCode leaves the arguments out, so hashing (and the hash pre-check in equals) never renders one.
+    private static boolean renderedArgumentsEqual(Object[] a, Object[] b) {
+        if (a == b) {
+            return true;
+        }
+        if (a == null || b == null || a.length != b.length) {
+            return false;
+        }
+        for (int i = 0; i < a.length; i++) {
+            if (!Objects.equals(rendered(a[i]), rendered(b[i]))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static Object rendered(Object argument) {
+        return argument instanceof DeferredLogArgument ? ((DeferredLogArgument) argument).render() : argument;
     }
 
     @Override

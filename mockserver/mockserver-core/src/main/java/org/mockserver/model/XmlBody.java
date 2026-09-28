@@ -66,6 +66,17 @@ public class XmlBody extends BodyWithContentType<String> {
     }
 
     @Override
+    public String getValueWithoutCaching() {
+        String value = xml;
+        return value != null ? value : decodeRawBytes(rawBytes);
+    }
+
+    @Override
+    public String toStringWithoutCaching() {
+        return getValueWithoutCaching();
+    }
+
+    @Override
     public void releaseDerivedForms() {
         String value = xml;
         if (value != null && rawBytes != null && value.equals(decodeRawBytes(rawBytes))) {

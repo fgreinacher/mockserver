@@ -14,6 +14,7 @@ import org.mockserver.grpc.GrpcForwardTranslator;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.httpclient.SocketCommunicationException;
+import org.mockserver.log.model.DeferredLogArgument;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.CrossProtocolEventBus;
@@ -1178,7 +1179,7 @@ public class HttpActionHandler {
                                         .setHttpResponse(logResponse)
                                         .setExpectation(request, logResponse)
                                         .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                        .setArguments(logResponse, request, httpRequestToCurlSerializer.toCurl(request, remoteAddress))
+                                        .setArguments(logResponse, request, deferredCurl(request, remoteAddress))
                                 );
                                 // OpenTelemetry: emit GenAI span for the unmatched streaming forward path
                                 // after the stream completes and the full body is available
@@ -1215,7 +1216,7 @@ public class HttpActionHandler {
                                                 .setHttpResponse(logResponse)
                                                 .setExpectation(request, logResponse)
                                                 .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                                .setArguments(logResponse, request, httpRequestToCurlSerializer.toCurl(request, remoteAddress))
+                                                .setArguments(logResponse, request, deferredCurl(request, remoteAddress))
                                         );
                                         responseWriter.writeResponse(request, responseToWrite, false);
                                     }, null)) {
@@ -1235,7 +1236,7 @@ public class HttpActionHandler {
                                     .setHttpResponse(logResponse)
                                     .setExpectation(request, logResponse)
                                     .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                    .setArguments(logResponse, request, httpRequestToCurlSerializer.toCurl(request, remoteAddress))
+                                    .setArguments(logResponse, request, deferredCurl(request, remoteAddress))
                             );
                             responseWriter.writeResponse(request, response, false);
                         }
@@ -1403,7 +1404,7 @@ public class HttpActionHandler {
                             .setHttpResponse(logResponse)
                             .setExpectation(originalRequest, logResponse)
                             .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                            .setArguments(logResponse, originalRequest, httpRequestToCurlSerializer.toCurl(originalRequest, remoteAddress))
+                            .setArguments(logResponse, originalRequest, deferredCurl(originalRequest, remoteAddress))
                     );
                     // OpenTelemetry: emit GenAI span after stream completes and full body is available
                     emitForwardGenAiSpan(requestToForward, logResponse);
@@ -1436,7 +1437,7 @@ public class HttpActionHandler {
                                     .setHttpResponse(logResponse)
                                     .setExpectation(originalRequest, logResponse)
                                     .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                    .setArguments(logResponse, originalRequest, httpRequestToCurlSerializer.toCurl(originalRequest, remoteAddress))
+                                    .setArguments(logResponse, originalRequest, deferredCurl(originalRequest, remoteAddress))
                             );
                             responseWriter.writeResponse(originalRequest, responseToWrite, false);
                         }, null)) {
@@ -1456,7 +1457,7 @@ public class HttpActionHandler {
                         .setHttpResponse(logResponse)
                         .setExpectation(originalRequest, logResponse)
                         .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                        .setArguments(logResponse, originalRequest, httpRequestToCurlSerializer.toCurl(originalRequest, remoteAddress))
+                        .setArguments(logResponse, originalRequest, deferredCurl(originalRequest, remoteAddress))
                 );
                 responseWriter.writeResponse(originalRequest, response, false);
             }
@@ -1584,7 +1585,7 @@ public class HttpActionHandler {
                                         .setHttpResponse(logResponse)
                                         .setExpectation(request, logResponse)
                                         .setMessageFormat("returning response:{}for proxy pass forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                        .setArguments(logResponse, request, httpRequestToCurlSerializer.toCurl(request, targetAddress))
+                                        .setArguments(logResponse, request, deferredCurl(request, targetAddress))
                                 );
                             });
                         } else {
@@ -1603,7 +1604,7 @@ public class HttpActionHandler {
                                     .setHttpResponse(logResponse)
                                     .setExpectation(request, logResponse)
                                     .setMessageFormat("returning response:{}for proxy pass forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}")
-                                    .setArguments(logResponse, request, httpRequestToCurlSerializer.toCurl(request, targetAddress))
+                                    .setArguments(logResponse, request, deferredCurl(request, targetAddress))
                             );
                             responseWriter.writeResponse(request, response, false);
                         }
@@ -2805,7 +2806,7 @@ public class HttpActionHandler {
                                     .setExpectation(request, logResponse)
                                     .setExpectationId(action != null ? action.getExpectationId() : null)
                                     .setMessageFormat(logMessageFormat)
-                                    .setArguments(logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action != null ? action.getExpectationId() : null)
+                                    .setArguments(logResponse, responseFuture.getHttpRequest(), deferredCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action != null ? action.getExpectationId() : null)
                             );
                             responseWriter.writeResponse(request, responseToWrite, false);
                         }, postProcessor)) {
@@ -2849,7 +2850,7 @@ public class HttpActionHandler {
                                 .setExpectation(request, logResponse)
                                 .setExpectationId(action.getExpectationId())
                                 .setMessageFormat(logMessageFormat)
-                                .setArguments(logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action.getExpectationId())
+                                .setArguments(logResponse, responseFuture.getHttpRequest(), deferredCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action.getExpectationId())
                         );
                         responseWriter.writeResponse(request, effectiveResponse, false);
                         if (postProcessor != null) {
@@ -2913,8 +2914,8 @@ public class HttpActionHandler {
                         .setExpectationId(action != null ? action.getExpectationId() : null)
                         .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}" + (action != null ? "for action:{}from expectation:{}" : ""))
                         .setArguments(action != null
-                            ? new Object[]{logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action.getExpectationId()}
-                            : new Object[]{logResponse, responseFuture.getHttpRequest(), httpRequestToCurlSerializer.toCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress())}
+                            ? new Object[]{logResponse, responseFuture.getHttpRequest(), deferredCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress()), action, action.getExpectationId()}
+                            : new Object[]{logResponse, responseFuture.getHttpRequest(), deferredCurl(responseFuture.getHttpRequest(), responseFuture.getRemoteAddress())}
                         )
                 );
                 // OpenTelemetry: emit GenAI span after stream completes and full body is available
@@ -2941,6 +2942,15 @@ public class HttpActionHandler {
         streamingBody.addCompletionListener(logAndPostProcess);
     }
 
+    /**
+     * The curl form of a forwarded request, rendered when its log entry is rendered rather than stored as a
+     * String copy of the request on the retained entry. The request is already retained by the same entry.
+     */
+    private DeferredLogArgument deferredCurl(HttpRequest request, InetSocketAddress remoteAddress) {
+        HttpRequestToCurlSerializer serializer = httpRequestToCurlSerializer;
+        return DeferredLogArgument.deferred(() -> serializer.toCurl(request, remoteAddress));
+    }
+
     void writeForwardActionResponse(final HttpResponse response, final ResponseWriter responseWriter, final HttpRequest request, final Action action) {
         try {
             // Log before write — the verify/retrieve visibility guarantee depends on the log entry
@@ -2956,7 +2966,7 @@ public class HttpActionHandler {
                     .setExpectation(request, response)
                     .setExpectationId(action.getExpectationId())
                     .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}")
-                    .setArguments(response, response, httpRequestToCurlSerializer.toCurl(request), action, action.getExpectationId())
+                    .setArguments(response, response, deferredCurl(request, null), action, action.getExpectationId())
             );
             responseWriter.writeResponse(request, response, false);
         } catch (Throwable throwable) {

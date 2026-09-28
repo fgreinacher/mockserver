@@ -64,7 +64,11 @@ public class BodyDecoderEncoder {
         if (body != null) {
             if (body instanceof BinaryBody) {
                 return body.getRawBytes();
-            } else if (body.getValue() instanceof String) {
+            }
+            // Not getValue(): a response is logged before it is written, so its log entry may already be
+            // retained and released; a caching read would re-attach the decoded String to it, uncounted.
+            Object value = body.getValueWithoutCaching();
+            if (value instanceof String) {
                 Charset contentTypeCharset = MediaType.parse(contentTypeHeader).getCharsetOrDefault();
                 Charset bodyCharset = body.getCharset(contentTypeCharset);
                 Charset wireCharset = bodyCharset != null ? bodyCharset : MediaType.DEFAULT_TEXT_HTTP_CHARACTER_SET;
@@ -83,7 +87,7 @@ public class BodyDecoderEncoder {
                 if (materialised != null && declaredCharset != null && declaredCharset.equals(wireCharset)) {
                     return materialised;
                 }
-                return ((String) body.getValue()).getBytes(wireCharset);
+                return ((String) value).getBytes(wireCharset);
             } else {
                 return body.getRawBytes();
             }

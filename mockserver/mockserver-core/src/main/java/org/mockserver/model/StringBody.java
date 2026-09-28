@@ -80,6 +80,17 @@ public class StringBody extends BodyWithContentType<String> {
     }
 
     @Override
+    public String getValueWithoutCaching() {
+        String v = value;
+        return v != null ? v : decodeRawBytes(rawBytes);
+    }
+
+    @Override
+    public String toStringWithoutCaching() {
+        return getValueWithoutCaching();
+    }
+
+    @Override
     public void releaseDerivedForms() {
         String v = value;
         if (v != null && rawBytes != null && v.equals(decodeRawBytes(rawBytes))) {

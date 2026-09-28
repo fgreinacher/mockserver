@@ -34,6 +34,25 @@ public abstract class Body<T> extends Not {
 
     public abstract T getValue();
 
+    /**
+     * The same value as {@link #getValue()}, but a text body whose decoded view is not currently cached
+     * decodes it afresh instead of caching it. For a reader that can run after this body's log entry was
+     * retained and its derived forms released (see {@link #releaseDerivedForms()}): a caching read there
+     * would re-attach a copy to the retained entry that the event-log byte budget never counts.
+     */
+    @JsonIgnore
+    public T getValueWithoutCaching() {
+        return getValue();
+    }
+
+    /**
+     * {@link #toString()} without caching a decoded view; see {@link #getValueWithoutCaching()}.
+     */
+    @JsonIgnore
+    public String toStringWithoutCaching() {
+        return toString();
+    }
+
     @JsonIgnore
     public byte[] getRawBytes() {
         return toString().getBytes(UTF_8);

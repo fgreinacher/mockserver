@@ -150,6 +150,17 @@ public class JsonBody extends BodyWithContentType<String> {
     }
 
     @Override
+    public String getValueWithoutCaching() {
+        String value = json;
+        return value != null ? value : decodeRawBytes(rawBytes);
+    }
+
+    @Override
+    public String toStringWithoutCaching() {
+        return getValueWithoutCaching();
+    }
+
+    @Override
     public void releaseDerivedForms() {
         String value = json;
         if (value != null && rawBytes != null && value.equals(decodeRawBytes(rawBytes))) {
