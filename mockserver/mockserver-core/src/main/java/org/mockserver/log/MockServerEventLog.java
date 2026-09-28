@@ -639,10 +639,18 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         if (configuration.maxLoggedBodyBytes() > 0) {
             truncateBodiesForLog(logEntry);
         }
-        // The retained entry no longer needs the decoded String view its bodies cached while matching:
-        // it is faithfully re-derivable from the canonical raw bytes on the next render/verify. Drop it
-        // BEFORE add() so the weight add() computes reflects the released body (roughly raw bytes plus the
-        // structural constants) rather than double-counting the second copy.
+        // Render BEFORE releasing derived forms: getMessage decodes each text body, and releasing
+        // afterwards drops that decode instead of re-caching it on the retained entry. A render failure
+        // must not lose the entry.
+        try {
+            writeToSystemOut(logger, logEntry, configuration);
+        } catch (Exception renderFailure) {
+            logger.error("exception writing log entry to system out", renderFailure);
+        }
+        // The retained entry no longer needs the decoded String view its bodies cached while matching (or
+        // that the render above re-derived): it is faithfully re-derivable from the canonical raw bytes on
+        // the next render/verify. Drop it BEFORE add() so the weight add() computes reflects the released
+        // body (roughly raw bytes plus the structural constants) rather than double-counting the second copy.
         logEntry.releaseDerivedForms();
         // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
         // budget — truncation has already run, and the estimate is computed lazily inside add().
@@ -662,7 +670,6 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 configuration.logLevel()));
         }
         notifyListeners(this, false);
-        writeToSystemOut(logger, logEntry, configuration);
     }
 
     /**

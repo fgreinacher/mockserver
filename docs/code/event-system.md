@@ -90,10 +90,13 @@ sequenceDiagram
     RB->>CT: Event available
     CT->>CT: processLogEntry(slot)
     CT->>CT: clone = slot.cloneAndClear()
+    CT->>CT: writeToSystemOut() renders while bodies still decoded
+    CT->>CT: clone.releaseDerivedForms() drops the decoded body copies
     CT->>EL: eventLog.add(clone)
     CT->>CT: notifyListeners()
-    CT->>CT: writeToSystemOut()
 ```
+
+`writeToSystemOut()` runs **before** `releaseDerivedForms()`: rendering a body to stdout decodes it, so doing that first lets the release drop that decode instead of leaving it re-cached on the retained entry (which undid the release at `INFO`, the default level). The release stays **before** `eventLog.add()` so the entry's weight reflects the released body.
 
 ### LogEntry as EventTranslator
 

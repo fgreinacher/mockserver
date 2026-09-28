@@ -5,7 +5,6 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.mock.HttpState;
-import org.mockserver.version.Version;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
@@ -54,8 +53,7 @@ public class MockServerLogger {
                 LogManager.getLogManager().readConfiguration(new ByteArrayInputStream(("" +
                     "handlers=org.mockserver.logging.StandardOutConsoleHandler" + NEW_LINE +
                     "org.mockserver.logging.StandardOutConsoleHandler.level=ALL" + NEW_LINE +
-                    "org.mockserver.logging.StandardOutConsoleHandler.formatter=java.util.logging.SimpleFormatter" + NEW_LINE +
-                    "java.util.logging.SimpleFormatter.format=%1$tF %1$tT " + Version.getVersion() + " %4$s %5$s %6$s%n" + NEW_LINE +
+                    "org.mockserver.logging.StandardOutConsoleHandler.formatter=org.mockserver.logging.MockServerLogFormatter" + NEW_LINE +
                     "org.mockserver.level=INFO" + NEW_LINE +
                     "io.netty.level=WARNING").getBytes(UTF_8)));
             }
@@ -79,8 +77,7 @@ public class MockServerLogger {
                     String loggingConfiguration = "" +
                         (!ConfigurationProperties.disableSystemOut() ? "handlers=org.mockserver.logging.StandardOutConsoleHandler" + NEW_LINE +
                             "org.mockserver.logging.StandardOutConsoleHandler.level=ALL" + NEW_LINE +
-                            "org.mockserver.logging.StandardOutConsoleHandler.formatter=java.util.logging.SimpleFormatter" + NEW_LINE : "") +
-                        "java.util.logging.SimpleFormatter.format=%1$tF %1$tT " + Version.getVersion() + " %4$s %5$s %6$s%n" + NEW_LINE +
+                            "org.mockserver.logging.StandardOutConsoleHandler.formatter=org.mockserver.logging.MockServerLogFormatter" + NEW_LINE : "") +
                         "org.mockserver.level=" + ConfigurationProperties.javaLoggerLogLevel() + NEW_LINE +
                         "io.netty.level=" + (Arrays.asList("TRACE", "FINEST").contains(ConfigurationProperties.javaLoggerLogLevel()) ? "FINE" : "WARNING");
                     LogManager.getLogManager().readConfiguration(new ByteArrayInputStream(loggingConfiguration.getBytes(UTF_8)));

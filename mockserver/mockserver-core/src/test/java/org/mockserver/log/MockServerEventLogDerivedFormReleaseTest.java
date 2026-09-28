@@ -59,6 +59,54 @@ public class MockServerEventLogDerivedFormReleaseTest {
             .maxLoggedBodyBytes(0);
     }
 
+    // As retainingConfiguration but at the DEFAULT log level, so the (INFO-level) entry is rendered to
+    // stdout as well as retained - the case retainingConfiguration deliberately avoids.
+    private Configuration renderingConfiguration() {
+        return retainingConfiguration().logLevel(Level.INFO);
+    }
+
+    /**
+     * The retained-path release must survive being rendered to stdout at the DEFAULT log level. At INFO the
+     * entry IS written to system-out, and {@code writeToSystemOut -> getMessage} decodes the body to render
+     * it; unless that render happens BEFORE {@link LogEntry#releaseDerivedForms()}, the decoded String is
+     * re-cached on the retained body AFTER the release, silently undoing it (b413de937) at the level
+     * MockServer runs at by default. This is the INFO counterpart of
+     * {@link #shouldReleaseJsonBodyDerivedFormsWhenEntryIsRetained}, which uses WARN to dodge the render.
+     */
+    @Test
+    public void shouldReleaseJsonBodyDerivedFormsWhenEntryIsRenderedToStdOutAtInfo() {
+        MockServerEventLog log = synchronousEventLog(renderingConfiguration());
+        try {
+            String json = "{ \"name\" : \"value\" }";
+            byte[] rawBytes = json.getBytes(StandardCharsets.UTF_8);
+            JsonBody body = new JsonBody(new String(rawBytes, StandardCharsets.UTF_8), rawBytes, JsonBody.DEFAULT_JSON_CONTENT_TYPE, ONLY_MATCHING_FIELDS);
+            HttpRequest request = request().withMethod("POST").withPath("/json").withBody(body);
+
+            // warm the caches as request-matching would, so the release has something to drop
+            assertThat(body.getValue(), is(json));
+            body.get("name");
+            assertThat(field(body, "json"), is(notNullValue()));
+            assertThat(field(body, "jsonNode"), is(notNullValue()));
+
+            log.add(new LogEntry()
+                .setType(RECEIVED_REQUEST)
+                .setLogLevel(Level.INFO)
+                .setHttpRequest(request)
+                .setMessageFormat("received request:{}")
+                .setArguments(request));
+
+            // rendered to stdout, yet the retained body must NOT be left holding the re-decoded String
+            assertThat(field(body, "json"), is(nullValue()));
+            assertThat(field(body, "jsonNode"), is(nullValue()));
+
+            // still readable, re-derived identically from the canonical bytes
+            assertThat(body.getValue(), is(json));
+            assertThat(request.getBodyAsString(), is(json));
+        } finally {
+            log.stop();
+        }
+    }
+
     @Test
     public void shouldReleaseJsonBodyDerivedFormsWhenEntryIsRetained() {
         MockServerEventLog log = synchronousEventLog(retainingConfiguration());
