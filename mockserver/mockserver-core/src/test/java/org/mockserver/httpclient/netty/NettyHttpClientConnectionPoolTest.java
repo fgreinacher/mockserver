@@ -60,6 +60,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
@@ -1075,6 +1076,114 @@ public class NettyHttpClientConnectionPoolTest {
     }
 
     /**
+     * A GET forwarded on a REUSED pooled connection that the upstream closes before responding (the
+     * stale-connection race: an idle keep-alive connection the upstream drops in the window after the
+     * pool's isActive() check) is transparently retried ONCE on a fresh connection and succeeds, instead
+     * of surfacing the "Channel handler removed before valid response" error. On the unfixed code the
+     * second request completes exceptionally with that SocketConnectionException.
+     */
+    @Test
+    public void shouldRetryIdempotentRequestOnFreshConnectionWhenReusedConnectionClosedBeforeResponse() throws Exception {
+        CloseOnReusedRequestUpstream closingUpstream = new CloseOnReusedRequestUpstream();
+        try {
+            NettyHttpClient client = pooledClient();
+
+            // first request establishes and pools a keep-alive connection
+            HttpResponse first = client.sendRequest(request().withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(first.getStatusCode(), is(200));
+
+            // second request reuses that pooled connection; the upstream reads it then closes without
+            // responding, so the client must retry on a fresh connection and still get a 200
+            HttpResponse second = client.sendRequest(request().withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(second.getStatusCode(), is(200));
+
+            // the reused connection was closed and a fresh one opened for the retry
+            assertThat(closingUpstream.acceptedConnections(), is(greaterThanOrEqualTo(2)));
+        } finally {
+            closingUpstream.stop();
+        }
+    }
+
+    @Test
+    public void shouldRetryIdempotentPutWithBodyOnFreshConnectionWhenReusedConnectionClosedBeforeResponse() throws Exception {
+        CloseOnReusedRequestUpstream closingUpstream = new CloseOnReusedRequestUpstream();
+        String payload = "{\"id\":1,\"name\":\"retried\"}";
+        try {
+            NettyHttpClient client = pooledClient();
+
+            HttpResponse first = client.sendRequest(request().withMethod("PUT").withBody(payload).withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(first.getStatusCode(), is(200));
+
+            HttpResponse second = client.sendRequest(request().withMethod("PUT").withBody(payload).withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(second.getStatusCode(), is(200));
+
+            // first request, the reused attempt the upstream dropped, then the retry: every copy of the body is intact
+            assertThat(closingUpstream.receivedBodies(), contains(payload, payload, payload));
+        } finally {
+            closingUpstream.stop();
+        }
+    }
+
+    /**
+     * A POST (non-idempotent) forwarded on a REUSED pooled connection the upstream closes before
+     * responding is NOT silently retried — retrying could double-submit the body — so it completes
+     * exceptionally with the clean SocketConnectionException, preserving the documented "let the caller
+     * retry" contract. Only the idempotent path auto-retries.
+     */
+    @Test
+    public void shouldNotRetryNonIdempotentRequestWhenReusedConnectionClosedBeforeResponse() throws Exception {
+        CloseOnReusedRequestUpstream closingUpstream = new CloseOnReusedRequestUpstream();
+        try {
+            NettyHttpClient client = pooledClient();
+
+            HttpResponse first = client.sendRequest(request().withMethod("POST").withBody("payload").withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                .get(10, TimeUnit.SECONDS);
+            assertThat(first.getStatusCode(), is(200));
+
+            try {
+                client.sendRequest(request().withMethod("POST").withBody("payload").withHeader("Host", "127.0.0.1:" + closingUpstream.port()))
+                    .get(10, TimeUnit.SECONDS);
+                org.junit.Assert.fail("expected a non-idempotent POST on a closed reused connection to fail, not auto-retry");
+            } catch (ExecutionException e) {
+                assertThat(e.getCause(), org.hamcrest.Matchers.instanceOf(SocketConnectionException.class));
+            }
+        } finally {
+            closingUpstream.stop();
+        }
+    }
+
+    /**
+     * The HTTP/2 analogue: a GET forwarded on a REUSED pooled h2 PARENT connection whose upstream closes
+     * it before responding to the reused stream is transparently retried once on a fresh connection and
+     * succeeds. Exercises the pooled-parent reuse path end to end over real h2/TLS.
+     */
+    @Test
+    public void shouldRetryHttp2RequestOnFreshConnectionWhenReusedParentClosedBeforeResponse() throws Exception {
+        Http2CloseOnReusedStreamUpstream http2Upstream = new Http2CloseOnReusedStreamUpstream();
+        try {
+            NettyHttpClient client = securePooledClient();
+
+            HttpResponse first = client.sendRequest(
+                request().withSecure(true).withProtocol(Protocol.HTTP_2).withHeader("Host", "127.0.0.1:" + http2Upstream.port())
+            ).get(10, TimeUnit.SECONDS);
+            assertThat(first.getStatusCode(), is(200));
+
+            HttpResponse second = client.sendRequest(
+                request().withSecure(true).withProtocol(Protocol.HTTP_2).withHeader("Host", "127.0.0.1:" + http2Upstream.port())
+            ).get(10, TimeUnit.SECONDS);
+            assertThat(second.getStatusCode(), is(200));
+
+            assertThat(http2Upstream.acceptedConnections(), is(greaterThanOrEqualTo(2)));
+        } finally {
+            http2Upstream.stop();
+        }
+    }
+
+    /**
      * A minimal TLS HTTP/1.1 upstream (self-signed, no ALPN) that counts accepted TCP connections and
      * replies with a keep-alive {@code 200 OK}. Used by the secure pooling test.
      */
@@ -1178,6 +1287,157 @@ public class NettyHttpClientConnectionPoolTest {
                                                     streamCtx.writeAndFlush(new DefaultHttp2DataFrame(
                                                         Unpooled.copiedBuffer("OK", CharsetUtil.UTF_8), true));
                                                 }
+                                            }
+                                        });
+                                    }
+                                }));
+                            }
+                        });
+                    }
+                });
+            serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
+        }
+
+        int port() {
+            return ((InetSocketAddress) serverChannel.localAddress()).getPort();
+        }
+
+        int acceptedConnections() {
+            return accepted.get();
+        }
+
+        void stop() {
+            serverChannel.close().syncUninterruptibly();
+            bossGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * An HTTP/1.1 upstream that answers the FIRST request on each connection with a keep-alive 200 (so
+     * the connection is pooled), but reads the SECOND request on the same connection and closes the
+     * socket WITHOUT responding. Because it only ever closes in response to a reused request — never
+     * proactively — the client's pooled connection is reliably still active when the second request is
+     * dispatched, deterministically exercising the "reused connection closed before any response" path.
+     */
+    private static final class CloseOnReusedRequestUpstream {
+
+        private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        private final EventLoopGroup workerGroup = new NioEventLoopGroup(2);
+        private final AtomicInteger accepted = new AtomicInteger();
+        private final java.util.Queue<String> receivedBodies = new java.util.concurrent.ConcurrentLinkedQueue<>();
+        private final Channel serverChannel;
+
+        CloseOnReusedRequestUpstream() {
+            ServerBootstrap bootstrap = new ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        accepted.incrementAndGet();
+                        AtomicInteger requestsOnConnection = new AtomicInteger();
+                        ch.pipeline().addLast(new HttpServerCodec());
+                        ch.pipeline().addLast(new HttpObjectAggregator(64 * 1024));
+                        ch.pipeline().addLast(new SimpleChannelInboundHandler<FullHttpRequest>() {
+                            @Override
+                            protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest msg) {
+                                receivedBodies.add(msg.content().toString(StandardCharsets.UTF_8));
+                                if (requestsOnConnection.incrementAndGet() >= 2) {
+                                    // reused request: read it, then close without responding
+                                    ctx.close();
+                                    return;
+                                }
+                                byte[] body = "OK".getBytes(StandardCharsets.UTF_8);
+                                FullHttpResponse response = new DefaultFullHttpResponse(
+                                    HttpVersion.HTTP_1_1,
+                                    io.netty.handler.codec.http.HttpResponseStatus.OK,
+                                    ctx.alloc().buffer().writeBytes(body));
+                                response.headers().set(HttpHeaderNames.CONTENT_LENGTH, body.length);
+                                response.headers().set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+                                ctx.writeAndFlush(response);
+                            }
+                        });
+                    }
+                });
+            serverChannel = bootstrap.bind(new InetSocketAddress("127.0.0.1", 0)).syncUninterruptibly().channel();
+        }
+
+        int port() {
+            return ((InetSocketAddress) serverChannel.localAddress()).getPort();
+        }
+
+        int acceptedConnections() {
+            return accepted.get();
+        }
+
+        java.util.List<String> receivedBodies() {
+            return new java.util.ArrayList<>(receivedBodies);
+        }
+
+        void stop() {
+            serverChannel.close().syncUninterruptibly();
+            bossGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+            workerGroup.shutdownGracefully(0, 0, TimeUnit.MILLISECONDS);
+        }
+    }
+
+    /**
+     * A TLS HTTP/2 upstream (self-signed, ALPN h2) that answers the FIRST stream on each connection with
+     * a 200 (so the parent is pooled) but closes the connection WITHOUT responding when a SECOND stream
+     * is opened on it. Only ever closes in response to a reused stream, so the pooled parent is reliably
+     * still active at dispatch — deterministically exercising the reused-parent "closed before response".
+     */
+    private static final class Http2CloseOnReusedStreamUpstream {
+
+        private final EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+        private final EventLoopGroup workerGroup = new NioEventLoopGroup(2);
+        private final AtomicInteger accepted = new AtomicInteger();
+        private final Channel serverChannel;
+
+        Http2CloseOnReusedStreamUpstream() throws Exception {
+            SelfSignedCertificate ssc = new SelfSignedCertificate();
+            final SslContext sslContext = SslContextBuilder.forServer(ssc.certificate(), ssc.privateKey())
+                .applicationProtocolConfig(new ApplicationProtocolConfig(
+                    ApplicationProtocolConfig.Protocol.ALPN,
+                    ApplicationProtocolConfig.SelectorFailureBehavior.NO_ADVERTISE,
+                    ApplicationProtocolConfig.SelectedListenerFailureBehavior.ACCEPT,
+                    ApplicationProtocolNames.HTTP_2, ApplicationProtocolNames.HTTP_1_1))
+                .build();
+            ServerBootstrap bootstrap = new ServerBootstrap()
+                .group(bossGroup, workerGroup)
+                .channel(NioServerSocketChannel.class)
+                .childHandler(new ChannelInitializer<SocketChannel>() {
+                    @Override
+                    protected void initChannel(SocketChannel ch) {
+                        accepted.incrementAndGet();
+                        AtomicInteger streamsOnConnection = new AtomicInteger();
+                        ch.pipeline().addLast(sslContext.newHandler(ch.alloc()));
+                        ch.pipeline().addLast(new ApplicationProtocolNegotiationHandler(ApplicationProtocolNames.HTTP_1_1) {
+                            @Override
+                            protected void configurePipeline(ChannelHandlerContext ctx, String protocol) {
+                                ctx.pipeline().addLast(Http2FrameCodecBuilder.forServer().build());
+                                ctx.pipeline().addLast(new Http2MultiplexHandler(new ChannelInitializer<Channel>() {
+                                    @Override
+                                    protected void initChannel(Channel streamCh) {
+                                        boolean reusedStream = streamsOnConnection.incrementAndGet() >= 2;
+                                        streamCh.pipeline().addLast(new SimpleChannelInboundHandler<Http2Frame>() {
+                                            @Override
+                                            protected void channelRead0(ChannelHandlerContext streamCtx, Http2Frame frame) {
+                                                boolean endStream = (frame instanceof Http2HeadersFrame && ((Http2HeadersFrame) frame).isEndStream())
+                                                    || (frame instanceof Http2DataFrame && ((Http2DataFrame) frame).isEndStream());
+                                                if (!endStream) {
+                                                    return;
+                                                }
+                                                if (reusedStream) {
+                                                    // reused parent: close the whole connection with no response
+                                                    streamCtx.channel().parent().close();
+                                                    return;
+                                                }
+                                                Http2Headers responseHeaders = new DefaultHttp2Headers().status("200");
+                                                streamCtx.write(new DefaultHttp2HeadersFrame(responseHeaders, false));
+                                                streamCtx.writeAndFlush(new DefaultHttp2DataFrame(
+                                                    Unpooled.copiedBuffer("OK", CharsetUtil.UTF_8), true));
                                             }
                                         });
                                     }

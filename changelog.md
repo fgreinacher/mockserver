@@ -77,6 +77,12 @@ This release delivers a sustained performance and memory programme alongside dat
   local ephemeral ports within a minute, and clients then saw `502`s (`Cannot assign requested
   address`). HTTP/2 upstream connections are now pooled and reused like HTTP/1.1 ones; set
   `forwardConnectionPoolEnabled=false` to restore a fresh connection per request.
+- **Forwarded requests no longer fail when the upstream has just closed a reused connection.**
+  If an upstream closed a pooled keep-alive connection (idle timeout, HTTP/2 GOAWAY or a restart)
+  just as MockServer reused it, the forwarded request failed with `Channel handler removed before
+  valid response has been received`. Idempotent requests (GET, HEAD, PUT, DELETE, OPTIONS, TRACE)
+  that fail this way before any response arrives are now retried once on a fresh connection;
+  POST and PATCH still fail rather than risk being sent twice.
 - **Forwarding to a TLS upstream now honours the configured connection timeout for the handshake
   instead of a fixed 10 seconds.** When MockServer forwards or proxies a request over HTTPS, the TLS
   handshake with the upstream was always bounded by Netty's built-in 10-second default, ignoring

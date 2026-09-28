@@ -1,6 +1,7 @@
 package org.mockserver.httpclient;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.buffer.ByteBufUtil;
 import io.netty.buffer.PooledByteBufAllocator;
@@ -231,12 +232,32 @@ public class NettyHttpClient {
                 // dispatch directly on the channel's event loop (pipeline is already configured).
                 connectionEstablishedMillis.set(requestStartedMillis);
                 final Channel reused = pooledChannel;
-                reused.attr(RESPONSE_FUTURE).set(responseFuture);
+                // Dispatch the reused connection's request on a private future so a pre-response failure
+                // (the upstream closed / sent GOAWAY on the pooled connection in the window after acquire's
+                // isActive() check) can be retried ONCE on a fresh connection for an idempotent request,
+                // rather than surfacing as a spurious forward error. A non-idempotent request keeps the
+                // historical "fail, let the caller retry" contract so it is never silently double-sent.
+                final CompletableFuture<Message> reuseAttemptFuture = new CompletableFuture<>();
+                reuseAttemptFuture.whenComplete((reuseMessage, reuseThrowable) -> {
+                    if (reuseThrowable == null) {
+                        responseFuture.complete(reuseMessage);
+                    } else if (firstByteMillis.get() == 0 && isRetryableReusedConnectionFailure(reuseThrowable) && isIdempotent(httpRequest)) {
+                        connectFresh(httpRequest, effectiveRemoteAddress, connectionTimeoutMillis, disableStreaming, secure, httpProtocol, poolKey, responseFuture, firstByteMillis, connectionEstablishedMillis, httpResponseFuture);
+                    } else {
+                        responseFuture.completeExceptionally(reuseThrowable);
+                    }
+                });
+                reused.attr(RESPONSE_FUTURE).set(reuseAttemptFuture);
                 reused.attr(ERROR_IF_CHANNEL_CLOSED_WITHOUT_RESPONSE).set(true);
                 reused.attr(FIRST_BYTE_MILLIS).set(firstByteMillis);
                 reused.attr(DISABLE_RESPONSE_STREAMING).set(disableStreaming ? Boolean.TRUE : null);
                 reused.attr(EXPECT_STREAMING_RESPONSE).set(expectStreaming ? Boolean.TRUE : null);
                 reused.eventLoop().execute(() -> {
+                    // The upstream may have closed the pooled connection before this task runs; that close
+                    // already resolved reuseAttemptFuture (and retried above), so do not dispatch again.
+                    if (reuseAttemptFuture.isDone()) {
+                        return;
+                    }
                     if (reused.isActive()) {
                         // Guard this in-flight request: a reused idle connection whose upstream has
                         // silently gone away would otherwise hang with no read timeout (pooled channels
@@ -244,13 +265,17 @@ public class NettyHttpClient {
                         armPooledInFlightReadTimeout(reused);
                         reused.writeAndFlush(httpRequest).addListener((ChannelFutureListener) writeFuture -> {
                             if (!writeFuture.isSuccess()) {
-                                responseFuture.completeExceptionally(writeFuture.cause());
+                                reuseAttemptFuture.completeExceptionally(writeFuture.cause());
                                 reused.close();
                             }
                         });
                     } else {
-                        // Raced with a server-side close between acquire and dispatch — fall back to a
-                        // fresh connection. Safe to call from the event loop: bootstrap.connect() is non-blocking.
+                        // Raced with a server-side close between acquire and dispatch, before any request
+                        // byte was written — fall back to a fresh connection for ANY method (nothing was
+                        // sent, so this cannot double-send). Detach the reused channel's future first so its
+                        // close does not also trigger the idempotent retry above. Safe from the event loop:
+                        // bootstrap.connect() is non-blocking.
+                        reused.attr(RESPONSE_FUTURE).set(null);
                         reused.close();
                         connectFresh(httpRequest, effectiveRemoteAddress, connectionTimeoutMillis, disableStreaming, secure, httpProtocol, poolKey, responseFuture, firstByteMillis, connectionEstablishedMillis, httpResponseFuture);
                     }
@@ -594,6 +619,37 @@ public class NettyHttpClient {
 
     public HttpResponse sendRequest(HttpRequest httpRequest, long timeout, TimeUnit unit) {
         return sendRequest(httpRequest, timeout, unit, false);
+    }
+
+    /**
+     * Idempotent HTTP methods (RFC 7231 section 4.2.2), for which a request that failed on a REUSED pooled
+     * connection before any response byte may be safely retried once on a fresh connection. A request
+     * with no explicit method is treated as GET, matching the wire mapping.
+     */
+    private static final ImmutableSet<String> IDEMPOTENT_METHODS =
+        ImmutableSet.of("GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE");
+
+    private static boolean isIdempotent(HttpRequest httpRequest) {
+        String method = httpRequest.getMethod("GET");
+        return method == null || method.isEmpty() || IDEMPOTENT_METHODS.contains(method.toUpperCase());
+    }
+
+    /**
+     * True when a request failed on a REUSED pooled connection with a connection-level closure/reset:
+     * the stale-connection race (idle keep-alive close, HTTP/2 GOAWAY, upstream restart) that is safe to
+     * retry on a fresh connection. Excludes read timeouts (a stalled-but-open upstream, bounded by the
+     * in-flight read timeout) and TLS/decode failures, which are genuine and must not be retried.
+     */
+    private static boolean isRetryableReusedConnectionFailure(Throwable cause) {
+        if (cause instanceof SocketConnectionException) {
+            return true;
+        }
+        if (cause instanceof java.net.SocketException) {
+            String message = cause.getMessage();
+            return message != null
+                && (message.contains("Connection reset") || message.contains("Broken pipe") || message.contains("broken pipe"));
+        }
+        return false;
     }
 
     private boolean isHostNotOnNoProxyHostList(InetSocketAddress remoteAddress) {
