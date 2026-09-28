@@ -115,6 +115,9 @@ def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
       # A self-describing run resolves these from the running JVM (item 0), so a
       # published provenance line is checkable rather than asserted.
       config_recorded: (($c // null) != null),
+      # Seconds at the start of each rung excluded from its latency percentiles;
+      # null = a run from before the onset exclusion (onset included).
+      sweep_latency_settle_s: (.sweep.latency_window.settle_s // null),
       # The CI perf profile reduces logging below the shipped INFO default; the
       # page must say so rather than imply default-configuration figures.
       note: "Measured on the pinned CI perf host; the load generator runs on separate cores. Logging is reduced below the shipped INFO default for measurement (see log_level)."

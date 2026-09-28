@@ -12,7 +12,9 @@
 // steps so one step's tail latency does not bleed into the next step's
 // percentiles. Every request is tagged rate:<offered> so the per-step
 // http_req_duration / http_req_failed / http_reqs submetrics are computed in the
-// summary. There are deliberately NO aborting thresholds — at the top of the
+// summary. The first K6_SWEEP_SETTLE of each rung (the onset transient) is
+// excluded from its latency percentiles only — see latency_window in the output.
+// There are deliberately NO aborting thresholds — at the top of the
 // ladder k6 may drop iterations (VU-starved) and latency/errors may degrade
 // sharply; observing that degradation IS the point.
 //
@@ -103,6 +105,14 @@ function round(v, dp = 3) {
 const RATES = SWEEP.rates;
 const STEP_SECONDS = toSeconds(SWEEP.step);
 const GAP_SECONDS = toSeconds(SWEEP.gap);
+if (!/^\d+(ms|s)$/.test(String(SWEEP.settle).trim())) {
+  throw new Error(`sweep.js: K6_SWEEP_SETTLE must be a whole number of ms or s (e.g. 3s), got "${SWEEP.settle}"`);
+}
+const SETTLE_SECONDS = toSeconds(SWEEP.settle);
+const SETTLE_MS = SETTLE_SECONDS * 1000;
+if (SETTLE_SECONDS >= STEP_SECONDS) {
+  throw new Error(`sweep.js: K6_SWEEP_SETTLE (${SWEEP.settle}) must be shorter than K6_SWEEP_STEP (${SWEEP.step}) or no rung has a measured latency window.`);
+}
 
 // Finding-3 invariant made unbreakable: within every rung preAllocatedVUs ==
 // maxVUs, so no rung's executor can allocate a VU (a fresh connection) mid-run —
@@ -217,14 +227,19 @@ function buildScenarios() {
 function sweepThresholds() {
   const t = {};
   for (const rate of RATES) {
-    t[`http_req_duration{rate:${rate}}`] = ['p(50)>=0', 'p(90)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
+    // Published percentiles are post-settle; the whole-rung set feeds full_rung_ms.
+    t[`http_req_duration{win:${rate}_steady}`] = ['p(50)>=0', 'p(90)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
+    t[`http_req_duration{rate:${rate}}`] = ['p(50)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
+    t[`http_reqs{win:${rate}_steady}`] = ['count>=0'];
+    t[`http_reqs{win:${rate}_settle}`] = ['count>=0'];
+    t[`sweep_stalls{win:${rate}_steady}`] = ['count>=0'];
     // Per-phase breakdown submetrics (see PHASES). p95 + p99 ONLY: the question
     // is which phase owns the TAIL, so only the high percentiles carry it (a mean
     // or median cannot locate a tail); p99.9 is omitted because a per-phase p99.9
     // needs more samples than the low rungs produce in one short step. Same
     // notify-only materialise-via-threshold trick as http_req_duration.
     for (const [metric] of PHASES) {
-      t[`${metric}{rate:${rate}}`] = ['p(95)>=0', 'p(99)>=0'];
+      t[`${metric}{win:${rate}_steady}`] = ['p(95)>=0', 'p(99)>=0'];
     }
     t[`http_req_failed{rate:${rate}}`] = ['rate>=0'];
     t[`http_reqs{rate:${rate}}`] = ['count>=0'];
@@ -282,7 +297,9 @@ export function matchAt() {
   const active = exec.instance.vusActive;
   vusActiveTrend.add(active, rateTag);
 
-  const res = getSimple({ rate });
+  // Rung-relative clock: the onset window is measured from THIS scenario's start.
+  const win = `${rate}_${Date.now() - exec.scenario.startTime >= SETTLE_MS ? 'steady' : 'settle'}`;
+  const res = getSimple({ rate, win });
 
   // Stall accounting: a request slower than STALL_MS is deep-tail latency — the
   // observable signature of the hypothesised transient stall. Record its count,
@@ -290,7 +307,7 @@ export function matchAt() {
   // piled up?), and WHEN within the rung it fell (clustered vs uniform).
   const duration = res && res.timings ? res.timings.duration : 0;
   if (duration > STALL_MS) {
-    stallCounter.add(1, rateTag);
+    stallCounter.add(1, { rate, win });
     // Re-read vusActive HERE rather than reusing the iteration-start `active`. A
     // pile-up builds DURING the slow request, so the iteration-start reading
     // understates it — and a field named stall_concurrency must measure
@@ -322,7 +339,12 @@ export function teardown() {
 export function handleSummary(data) {
   const points = [];
   for (const rate of RATES) {
-    const dur = data.metrics[`http_req_duration{rate:${rate}}`];
+    const dur = data.metrics[`http_req_duration{win:${rate}_steady}`];
+    const fullDur = data.metrics[`http_req_duration{rate:${rate}}`];
+    const fv = fullDur && fullDur.values ? fullDur.values : {};
+    const steadyReqs = data.metrics[`http_reqs{win:${rate}_steady}`];
+    const settleReqs = data.metrics[`http_reqs{win:${rate}_settle}`];
+    const steadyStalls = data.metrics[`sweep_stalls{win:${rate}_steady}`];
     const failed = data.metrics[`http_req_failed{rate:${rate}}`];
     const reqs = data.metrics[`http_reqs{rate:${rate}}`];
     const dropped = data.metrics[`dropped_iterations{scenario:rate_${rate}}`];
@@ -334,7 +356,7 @@ export function handleSummary(data) {
     // This is what discriminates the tail's OWNER — see PHASES for the reading.
     const phaseMs = {};
     for (const [metric, key] of PHASES) {
-      const pm = data.metrics[`${metric}{rate:${rate}}`];
+      const pm = data.metrics[`${metric}{win:${rate}_steady}`];
       const pv = pm && pm.values ? pm.values : {};
       phaseMs[key] = { p95_ms: round(pv['p(95)']), p99_ms: round(pv['p(99)']) };
     }
@@ -373,6 +395,17 @@ export function handleSummary(data) {
       // UNSUPPRESSED here so the published knee/percentile charts keep their exact
       // contract; suppression is applied by the consumer that needs it.
       sample_count: round(count, 0),
+      // Tail suppression uses measured_sample_count (post-settle); drop and
+      // achieved accounting keep sample_count (whole rung).
+      measured_sample_count: steadyReqs && steadyReqs.values ? round(steadyReqs.values.count, 0) : 0,
+      settle_excluded: settleReqs && settleReqs.values ? round(settleReqs.values.count, 0) : 0,
+      // Whole-rung percentiles INCLUDING the onset, for audit of the exclusion.
+      full_rung_ms: {
+        p50_ms: round(fv['p(50)'] !== undefined ? fv['p(50)'] : fv.med),
+        p95_ms: round(fv['p(95)']),
+        p99_ms: round(fv['p(99)']),
+        p999_ms: round(fv['p(99.9)']),
+      },
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
       // Client-side drop count for this rung: > 0 means k6 could not keep up
       // with the offered arrival rate (VU starvation), so achieved_rps is bounded
@@ -403,6 +436,8 @@ export function handleSummary(data) {
       //   discriminating signal, and a PROXY for drop timing (drops themselves
       //   cannot be timestamped in-script — a dropped iteration never runs code).
       stalls: stalls && stalls.values ? round(stalls.values.count, 0) : 0,
+      // Set against `stalls`, shows what the settle window removed.
+      stalls_post_settle: steadyStalls && steadyStalls.values ? round(steadyStalls.values.count, 0) : 0,
       stall_ms_threshold: STALL_MS,
       stall_concurrency_max: round(scV.max, 1),
       stall_concurrency_avg: round(scV.avg, 1),
@@ -425,6 +460,8 @@ export function handleSummary(data) {
   const initBaseline = INIT_BASELINE;
   const out = {
     proto: SWEEP.proto,
+    // Absent on results from before the onset exclusion (percentiles include it).
+    latency_window: { settle_s: SETTLE_SECONDS, measured_s: STEP_SECONDS - SETTLE_SECONDS },
     points,
     // Additive, namespaced, WHOLE-RUN block (deliberately not per rung — pool
     // growth cannot be attributed to a single rung here; see the note). Lets a

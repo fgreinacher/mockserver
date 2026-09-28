@@ -8,6 +8,7 @@ closed this file is deleted in the same commit — it is not an archive.
 The latency tail is closed: a steady 24k run (build 473, docker bridge, no per-rung ramp)
 measured client p99 0.343 ms and p99.9 1.43 ms, with no server request over 5 ms in 7.25M, so
 the 10–16 ms ladder tail was a rung-onset transient in the rig, not MockServer or the bridge.
+The ladder now excludes each rung's first 3 s from its published percentiles.
 What remains is the tuning candidates that need a rig measurement or a small change (§2).
 
 Published figures and rig measurement gates are in
@@ -20,7 +21,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | rig A/B series in progress (builds 486 onward: compact headers, leak detection off, pooled allocator); items 16–18 below |
+| 2 | Tuning candidates | rig A/B series in progress (builds 486 onward: compact headers, leak detection off, pooled allocator); items 16–17 below |
 
 ## Decided against
 
@@ -64,7 +65,6 @@ candidates 1 and 6 were declined (see [Decided against](#decided-against)).
 | 13 | Two `ByteBuf` allocator families live | Confirmed: HTTP/2 child stream channels use Netty 4.2's adaptive default while everything else is pinned to `PooledByteBufAllocator` | Running (rig A/B with `-Dio.netty.allocator.type=pooled`), judged on RSS and throughput |
 | 16 | Graduate the per-merge alloc gate's `HEADERS_MISS` scan arm (four rows: INFO/WARN × `detailedMatchFailures` false/true) from notify-only to gating | Scan arm shipped: it runs on every Java build, notify-only, against provisional floors (`premerge_alloc.MatchingBenchmark_HEADERS_MISS_*`); see [performance-measurement.md](../code/performance-measurement.md#perf-alloc-gatesh--per-merge-allocation-floors) | Once ~10 gate runs exist, set each floor from their `jmh-alloc-gate.json` artifacts (median + 3 × 1.4826 × MAD) and add `gating: true` (control-class budget change, needs approval) |
 | 17 | The level-aware event-log byte-budget divisor predates the body-release fixes, so it is now conservative | See `docs/code/memory-management.md` | Re-derive from a fresh `jmap -histo:live` before retightening |
-| 18 | The ladder's published tail percentiles include each rung's onset transient (at 24k all stalls fall in the rung's first bucket) | A steady 24k run shows p99 0.343 ms against 10.6 ms on the ladder rung | Exclude rung-onset samples from the published tail statistic, or publish the steady-state figure alongside (control-class rig change, needs approval) |
 
 ### Checked and not worth pursuing
 

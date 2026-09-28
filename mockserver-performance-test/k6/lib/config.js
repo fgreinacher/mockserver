@@ -297,6 +297,10 @@ export const SWEEP = {
     .filter((r) => Number.isFinite(r) && r > 0),
   step: env('K6_SWEEP_STEP', '20s'), // duration each rate step holds
   gap: env('K6_SWEEP_GAP', '5s'), // quiet gap between steps (no requests)
+  // Leading slice of each rung excluded from its latency percentiles (load still
+  // runs and still counts toward achieved/error/drop figures). Sized to cover the
+  // rung-onset transient; see docs/code/performance-measurement.md.
+  settle: env('K6_SWEEP_SETTLE', '3s'),
   // Finding-3 no-mid-run-allocation invariant, applied PER RUNG (sizing helper in
   // sweep.js: poolForRate). Each ladder rung gets its OWN fixed pool where
   // preAllocatedVUs == maxVUs, so no executor can allocate a VU (open a fresh

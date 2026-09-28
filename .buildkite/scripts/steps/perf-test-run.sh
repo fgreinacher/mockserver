@@ -1661,7 +1661,9 @@ SWEEP_CPU_LOG="$OUT_DIR/sweep-k6-cpu.csv"
 # static ladder/pin config, never on a sweep's output, so hoisting them here keeps
 # the two sweeps' saturation derivation identical (a fair ERROR-vs-INFO comparison
 # requires the SAME knee methodology). SETTLE_S / err-eps are the same tunables the
-# derivation used inline before this was factored out.
+# derivation used inline before this was factored out. SETTLE_S also sets sweep.js's
+# K6_SWEEP_SETTLE, so both windows skip the same settle length; the latency window is
+# anchored at each k6 scenario's start, the CPU window at the ladder's host-side T0.
 STEP_S="$(to_secs "$SWEEP_STEP")"
 GAP_S="$(to_secs "$SWEEP_GAP")"
 SETTLE_S="${PERF_SWEEP_SETTLE_S:-3}"
@@ -1744,6 +1746,7 @@ run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_hos
     -e "K6_SWEEP_RATES=$SWEEP_RATES" \
     -e "K6_SWEEP_STEP=$SWEEP_STEP" \
     -e "K6_SWEEP_GAP=$SWEEP_GAP" \
+    -e "K6_SWEEP_SETTLE=${SETTLE_S}s" \
     -e "K6_SWEEP_RESULT_PATH=/out/$(basename "$out_json")" \
     ${K6_SWEEP_PRE_VUS:+-e K6_SWEEP_PRE_VUS="$K6_SWEEP_PRE_VUS"} \
     ${K6_SWEEP_MAX_VUS:+-e K6_SWEEP_MAX_VUS="$K6_SWEEP_MAX_VUS"} \
@@ -2122,7 +2125,7 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
       # The knee curve at INFO + its derived saturation (rig_valid_peak_achieved_rps here
       # is the rig-valid peak — max achieved over rig-valid rungs, a property of the k6 rig,
       # see derive_saturation; saturation_rps is the ladder-quantised knee).
-      sweep: { proto: ($sweep.proto // "http"), points: ($sweep.points // []) },
+      sweep: { proto: ($sweep.proto // "http"), latency_window: ($sweep.latency_window // null), points: ($sweep.points // []) },
       saturation: $saturation,
       rig_valid_peak_achieved_rps: ($saturation.rig_valid_peak_achieved_rps // null),
       saturation_rps: ($saturation.saturation_rps // null)

@@ -289,7 +289,7 @@ for C in "${CORES_ARR[@]}"; do
     -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
     -e "BASE_URL=http://mockserver:1080" -e "PROTO=http" \
     -e "K6_SWEEP_RATES=$WARMUP_RATE" -e "K6_SWEEP_STEP=$WARMUP_DURATION" -e "K6_SWEEP_GAP=1s" \
-    -e "K6_SWEEP_RESULT_PATH=/out/warmup-C${C}.json" \
+    -e "K6_SWEEP_SETTLE=0s" -e "K6_SWEEP_RESULT_PATH=/out/warmup-C${C}.json" \
     -e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS" -e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS" \
     "$K6_IMAGE" run /k6/sweep.js >/dev/null 2>&1 || true
   WARMUP_P50="$(jq -r '(.points[0].p50_ms) // null' "$WARMUP_JSON" 2>/dev/null || echo null)"
@@ -320,7 +320,7 @@ for C in "${CORES_ARR[@]}"; do
     -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
     -e "BASE_URL=http://mockserver:1080" -e "PROTO=http" \
     -e "K6_SWEEP_RATES=$SWEEP_RATES" -e "K6_SWEEP_STEP=$SWEEP_STEP" -e "K6_SWEEP_GAP=$SWEEP_GAP" \
-    -e "K6_SWEEP_RESULT_PATH=/out/sweep-C${C}.json" \
+    -e "K6_SWEEP_SETTLE=${SWEEP_SETTLE_S}s" -e "K6_SWEEP_RESULT_PATH=/out/sweep-C${C}.json" \
     -e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS" -e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS" \
     "$K6_IMAGE" run --quiet /k6/sweep.js >&2 || true
   kill "$SAMPLER_PID" >/dev/null 2>&1 || true
@@ -381,7 +381,7 @@ for C in "${CORES_ARR[@]}"; do
   # reader to treat a valid ceiling reading as a false green because it carried drops.)
   # perf-test-run.sh:1185 does include $no_drops; do not "restore" it here. rig_valid_peak_achieved_rps
   # = max achieved over rig-valid rungs. p95/p99 are SUPPRESSED to null on any rung
-  # whose sample_count < MIN_TAIL_SAMPLES (the repo rule) so a low-C, low-rate rung
+  # whose post-settle sample count < MIN_TAIL_SAMPLES (the repo rule) so a low-C, low-rate rung
   # never reports a tail that is really just its max.
   AGG="$(jq -nc \
     --slurpfile sweep "$SWEEP_JSON" \
@@ -407,6 +407,7 @@ for C in "${CORES_ARR[@]}"; do
         | (.error_rate // 0) as $err
         | (.offered_rps) as $off | (.achieved_rps // 0) as $ach
         | (.sample_count // 0) as $n
+        | (.measured_sample_count // $n) as $n_tail
         | (($k6cores <= 0) or ($c == null) or ($c <= $cpu_ceiling)) as $headroom
         | ($err <= $err_eps) as $low_err
         # A rung is CLIENT-SOUND (trustworthy as a SERVER figure) iff the k6 client
@@ -422,9 +423,10 @@ for C in "${CORES_ARR[@]}"; do
         # server_saturated: dropped iterations WITH client headroom — the server,
         # not the client, was the limit at this rung.
         | ($drops > 0 and $headroom) as $server_saturated
-        | ($n >= $min_tail) as $enough_tail
+        | ($n_tail >= $min_tail) as $enough_tail
         | {
             offered_rps:$off, achieved_rps:$ach, sample_count:$n,
+            measured_sample_count:.measured_sample_count, settle_excluded:.settle_excluded,
             p50_ms:.p50_ms,
             # tail suppression: null below MIN_TAIL_SAMPLES (see comment above).
             p95_ms:(if $enough_tail then .p95_ms else null end),
@@ -457,7 +459,7 @@ for C in "${CORES_ARR[@]}"; do
             # hypothesis), uniform => steady limit — a proxy for drop timing (a
             # dropped iteration never runs code, so drops cannot be timestamped).
             vus_active_max:.vus_active_max, vus_active_p95:.vus_active_p95, vus_active_avg:.vus_active_avg,
-            stalls:.stalls, stall_ms_threshold:.stall_ms_threshold,
+            stalls:.stalls, stalls_post_settle:.stalls_post_settle, stall_ms_threshold:.stall_ms_threshold,
             stall_concurrency_max:.stall_concurrency_max, stall_concurrency_avg:.stall_concurrency_avg,
             stall_time_buckets:.stall_time_buckets
           } ] as $rungs
@@ -559,7 +561,7 @@ jq -nc \
   --argjson max_measured "$MAX_MEASURED" \
   --arg ladder "$CORE_LADDER" \
   --arg rates "$SWEEP_RATES" \
-  --arg step "$SWEEP_STEP" --arg gap "$SWEEP_GAP" '
+  --arg step "$SWEEP_STEP" --arg gap "$SWEEP_GAP" --argjson settle "$SWEEP_SETTLE_S" '
   {
     attempted:true,
     proto:"http",
@@ -568,7 +570,9 @@ jq -nc \
     max_cores_measured:$max_measured,
     # explicit, un-skimmable statement of where the curve ends and why (item 18).
     curve_complete_to_16:(($points | map(.cores) | max // 0) >= 16),
-    sweep:{rates:$rates, step:$step, gap:$gap},
+    # latency_settle_s: the methodology fingerprint perf-test-compare.sh keys the
+    # p50-derived healthy-ceiling metrics on.
+    sweep:{rates:$rates, step:$step, gap:$gap, latency_settle_s:$settle},
     healthy_ceiling_definition:"lib/perf-website-figures.jq headline (Finding 1: highest rung achieved>=0.95*offered, zero errors, p50<=3x flat-region p50) — reused, not re-implemented",
     points:($points | sort_by(.cores)),
     skipped:$skipped

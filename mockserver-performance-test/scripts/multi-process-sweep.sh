@@ -374,7 +374,7 @@ for N in "${PROCS_ARR[@]}"; do
     -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
     -e "BASE_URL=$BASE_URL" -e "PROTO=http" \
     -e "K6_SWEEP_RATES=$WARMUP_RATE" -e "K6_SWEEP_STEP=$WARMUP_DURATION" -e "K6_SWEEP_GAP=1s" \
-    -e "K6_SWEEP_RESULT_PATH=/out/warmup-N${N}.json" \
+    -e "K6_SWEEP_SETTLE=0s" -e "K6_SWEEP_RESULT_PATH=/out/warmup-N${N}.json" \
     ${SWEEP_PRE_VUS:+-e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS"} ${SWEEP_MAX_VUS:+-e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS"} \
     "$K6_IMAGE" run /k6/sweep.js >/dev/null 2>&1 || true
 
@@ -417,7 +417,7 @@ for N in "${PROCS_ARR[@]}"; do
       -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
       -e "BASE_URL=$BASE_URL" -e "PROTO=http" \
       -e "K6_SWEEP_RATES=$PP_RATES" -e "K6_SWEEP_STEP=$SWEEP_STEP" -e "K6_SWEEP_GAP=$SWEEP_GAP" \
-      -e "K6_SWEEP_RESULT_PATH=/out/sweep-N${N}-p${i}.json" \
+      -e "K6_SWEEP_SETTLE=${SWEEP_SETTLE_S}s" -e "K6_SWEEP_RESULT_PATH=/out/sweep-N${N}-p${i}.json" \
       ${SWEEP_PRE_VUS:+-e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS"} ${SWEEP_MAX_VUS:+-e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS"} \
       "$K6_IMAGE" run --quiet /k6/sweep.js >"$WORK/k6-N${N}-p${i}.log" 2>&1 &
     PIDS+=("$!")
@@ -536,6 +536,7 @@ for N in "${PROCS_ARR[@]}"; do
         | ([ $rung[] | .achieved_rps // 0 ] | add) as $ach
         | ([ $rung[] | .dropped_iterations // 0 ] | add) as $drops
         | ([ $rung[] | .sample_count // 0 ] | add) as $samples
+        | ([ $rung[] | .measured_sample_count // .sample_count // 0 ] | add) as $tail_samples
         | ([ $rung[] | .error_rate // 0 ] | max) as $err_max
         | ([ $rung[] | .p50_ms // 0 ] | max) as $p50_max
         | ([ $rung[] | .p95_ms // empty ] | max) as $p95_max
@@ -552,7 +553,7 @@ for N in "${PROCS_ARR[@]}"; do
         # drops mean the SERVER (or the shared path) could not keep up — that IS
         # the signal, not a per-process client limit.
         | ((($any_client_at_pin | not)) and $low_err) as $client_sound
-        | ($samples >= $min_tail) as $enough_tail
+        | ($tail_samples >= $min_tail) as $enough_tail
         | {
             nominal_agg_offered_rps:$aggrate,
             agg_offered_rps:$off,
@@ -695,7 +696,7 @@ jq -nc \
   --argjson host_cores "$HOST_CORES" \
   --arg procs "$PROCS_LADDER" \
   --arg agg_rates "$AGG_RATES" \
-  --arg step "$SWEEP_STEP" --arg gap "$SWEEP_GAP" \
+  --arg step "$SWEEP_STEP" --arg gap "$SWEEP_GAP" --argjson settle "$SWEEP_SETTLE_S" \
   --arg target "${TARGET_URL:-launched}" \
   --argjson server_cores "$SERVER_CORES" \
   --argjson client_cores_each "$CLIENT_CORES_EACH" '
@@ -710,7 +711,7 @@ jq -nc \
     procs_requested:($procs|split(",")|map(tonumber)),
     procs_measured:($points|map(.procs)),
     agg_rates:$agg_rates,
-    sweep:{step:$step, gap:$gap},
+    sweep:{step:$step, gap:$gap, latency_settle_s:$settle},
     healthy_ceiling_definition:"lib/perf-website-figures.jq headline (Finding 1: highest client-sound rung achieved>=keep*offered, zero errors, p50<=3x flat-region p50) applied to the AGGREGATE offered/achieved series — reused, not re-implemented",
     aggregation_note:"agg_offered/agg_achieved are SUMS across the N disjoint processes (no double-counting); latency is per-process, and the aggregate reports the WORST (max) percentile across processes, not a merged one",
     scaling:$scaling,

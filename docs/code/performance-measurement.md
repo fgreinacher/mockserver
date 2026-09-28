@@ -102,6 +102,21 @@ Offers the match path at an ascending ladder of fixed rates and records per rung
 `p50_ms` through `p999_ms`, and `error_rate`. The ladder now extends to 64,000 rps; the earlier
 16,000 ceiling sat below saturation so the knee could not be observed.
 
+**Rung-onset exclusion.** Each rung's latency percentiles (`p50_ms`–`p999_ms` and `phase_ms`)
+exclude its first `K6_SWEEP_SETTLE` seconds (default 3 s). CI sets it from `PERF_SWEEP_SETTLE_S`
+for the main and INFO ladders and from `PERF_PERCORE_SETTLE_S` / `PERF_MULTI_SETTLE_S` for the
+per-core and multi-process rigs — in each case the value that already trims the start of the
+rung's CPU-attribution window; their unmeasured warm-up drives pass `0s`. The onset is a rig transient,
+not server latency: in build 464, 5,337 of the 24,000 rps rung's 5,343 stalls fell in its first 2.5 s
+(the first of six time buckets of the 15 s rung), and a steady 24,000 rps run (build 473) measured p99 0.343 ms
+against 10.6 ms on that ladder rung. Only the percentiles change: `achieved_rps`, `error_rate`,
+`dropped_iterations`, `sample_count` and the VU/stall diagnostics still cover the whole rung, so
+rig validity, occupancy, `rig_valid_peak_achieved_rps` and `saturation_rps` are derived exactly as
+before. Each result records `latency_window.settle_s`; per rung, `settle_excluded` counts the
+excluded requests, `measured_sample_count` the requests behind the percentiles, `full_rung_ms`
+the whole-rung percentiles, and `stalls_post_settle` the stalls left after the window opens (set
+against `stalls`, a large remaining share at a sub-knee rung suggests the settle is too short).
+
 The healthy operating ceiling is the highest rung where `achieved_rps` is within 5% of
 `offered_rps` **and** latency is within a stated multiple of the flat-ladder baseline. The peak
 `achieved_rps` (top of the overload curve) is a different, higher number; do not publish one
@@ -467,6 +482,8 @@ Six non-obvious constraints apply when analysing MockServer's heap and saturatio
 ### Saturation-series comparability break
 
 Widening k6's cpuset (from cores 7–10 to 7–23, to give the client enough headroom at the server's default 6-core config) changed the rig. The hardware-mismatch guard keys on `instance_type`, which did not change, so nothing in the tooling flags it. Stored `saturation_rps` and sweep latencies from before this change are not comparable with those after it. Similarly, adding rungs to the default ladder introduces ladder-position history that has no prior comparable points. When reviewing a stored run's `saturation_rps` against an older run, confirm both used the same k6 cpuset and the same ladder rungs.
+
+The rung-onset exclusion is a second break, in latency only. Sweep percentiles from a run whose `.sweep` has no `latency_window` include each rung's onset, which dominated the tail at moderate load (ladder p99 10.6 ms against a steady-state 0.343 ms at 24,000 rps); never compare the two. `achieved_rps`, drops, errors, `rig_valid_peak_achieved_rps` and `saturation_rps` compare across it freely (their accounting did not change); the healthy ceiling does not, because it is gated on p50. The compare step enforces this for the metrics it budgets from sweep p50s — `serving_percore.*.healthy_ceiling_rps`, `.rps_per_core`, `.healthy_ceiling_p50_ms`, `serving_multiproc_aggregate_healthy_ceiling_rps` and `serving_multiproc_scales_with_procs` (a ratio of two healthy ceilings): each compares only against runs whose block carries the same `sweep.latency_settle_s` and stays `:new:` until `MIN_BASELINE` such runs exist, and while it does the annotation says so ("sweep latency baseline reset"). The same fingerprint resets them again if the settle is ever changed. The website publish step treats a changed `source.sweep_latency_settle_s` as drift, so the first post-change run emits a refresh patch rather than leaving onset-inflated tails on the page.
 
 ### GC log cycle times are not stop-the-world pause times
 

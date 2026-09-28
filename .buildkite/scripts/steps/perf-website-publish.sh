@@ -291,6 +291,12 @@ else
     | (max // 0) | (.*10|round)/10')"
   awk -v m="${MAX_MOVE:-0}" -v t="$MOVE_PCT" 'BEGIN{exit !(m+0 > t+0)}' \
     && { TRIGGER="yes"; REASONS+=("a headline metric moved ${MAX_MOVE}% (> ${MOVE_PCT}%)"); }
+  # A different latency window changes what every published percentile means.
+  OLD_SETTLE="$(jq -c '.source.sweep_latency_settle_s // null' "$DATA_FILE")"
+  NEW_SETTLE="$(jq -c '.source.sweep_latency_settle_s // null' "$WORK/candidate.json")"
+  if [ "$OLD_SETTLE" != "$NEW_SETTLE" ]; then
+    TRIGGER="yes"; REASONS+=("sweep latency window changed (settle ${OLD_SETTLE} -> ${NEW_SETTLE} s)")
+  fi
 fi
 
 if [ "$TRIGGER" != "yes" ]; then

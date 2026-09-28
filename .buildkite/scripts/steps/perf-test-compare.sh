@@ -822,8 +822,9 @@ def metrics:
   # item 18 — req/s per core for the SERVING path. One point per pinned core-count
   # C under .serving_percore.points; keyed serving_percore.<C>c.<metric> so a
   # wildcard bkey (serving_percore.*.<metric>) covers every C. NOT part of
-  # .behaviours, so it does not touch the k6 arm-set fingerprint; it rides the FULL
-  # baseline (the arm set here is the stable {1,2,4,8,...} core ladder). All
+  # .behaviours, so it does not touch the k6 arm-set fingerprint. rig_valid_peak_achieved_rps
+  # rides the FULL baseline; the three p50-gated metrics (healthy_ceiling_rps, rps_per_core,
+  # healthy_ceiling_p50_ms) are keyed on the sweep latency-window fingerprint (latfam). All
   # NON-GATING (perf-budgets.json omits `gating`). A disabled/failed profile leaves
   # .serving_percore {} (no points), so this emits ZERO metrics rather than a
   # fail-closed missing-budget error — the wholesale-failure case is caught by the
@@ -846,12 +847,14 @@ def metrics:
   #     computed to the Finding-1 definition by REUSING lib/perf-website-figures.jq on the
   #     AGGREGATE offered/achieved series, never a third copy of the rule. `max` of the
   #     per-N numbers; [] (no client-sound rung) -> null -> dropped by $headmetrics.
-  #     dir DOWN, `hw` (a throughput figure, machine-dependent) -> full HW-matched baseline.
+  #     dir DOWN, `hw` (a throughput figure, machine-dependent) -> HW-matched baseline,
+  #     keyed on the sweep latency-window fingerprint (latfam) because it is p50-gated.
   #   scales_with_procs  the scaling verdict coerced to 1/0 (true/false); the boolean
   #     is coerced because a raw boolean head value trips the compare not-numeric GATING
   #     path. A null/insufficient-points verdict -> null -> dropped. dir DOWN (1->0, i.e.
   #     stopped scaling, is worse). NOT `hw`: like clustered_state.* it is a WITHIN-run
-  #     comparison (min-N vs max-N ceiling) that already cancels the environment.
+  #     comparison (min-N vs max-N ceiling) that already cancels the environment. Both
+  #     ceilings are p50-gated, so it is keyed on the sweep latency-window fingerprint too.
   # BOTH are NOT part of .behaviours (no k6 fingerprint) and NON-GATING (perf-budgets.json
   # omits `gating`) — the day-one notify-only rule; the two bkeys below MUST exist in
   # perf-budgets.json or the fail-closed missing-budget rule REDs the build. A disabled/
@@ -895,6 +898,19 @@ def metrics:
 # and iterating null throws — an empty run set must yield an empty map, not an error.
 def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != null))
   | group_by(.name) | map({key:.[0].name, value:[.[].value]}) | from_entries);
+
+# Sweep latency-window fingerprint (docs/code/performance-measurement.md, "Rung-onset
+# exclusion"). These bkeys derive from sweep p50s (the healthy ceiling is p50-gated), whose
+# window changed when sweep.js began excluding the onset of each rung; a block without
+# sweep.latency_settle_s predates that. They compare only against runs of the same family
+# measured with the same settle, and need MIN_BASELINE of them.
+def latfam: if IN("serving_percore.*.healthy_ceiling_rps", "serving_percore.*.rps_per_core",
+                  "serving_percore.*.healthy_ceiling_p50_ms") then "serving_percore"
+            elif IN("serving_multiproc_aggregate_healthy_ceiling_rps",
+                    "serving_multiproc_scales_with_procs") then "serving_multiproc"
+            else null end;
+def latfp($f): (.[$f].sweep.latency_settle_s // null);
+def latpresent($f): (((.[$f] // {}).points // []) | length) > 0;
 
 # JMH methodology fingerprint of the HEAD run (item 15c baseline-discontinuity guard).
 # microbench / microbench_extra metrics are only comparable against baseline runs
@@ -974,6 +990,12 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
 | bmapof($bhwruns) as $bmapAllHw
 | bmapof($bmicrohwruns) as $bmapMicroHw
 | bmapof($bk6hwruns) as $bmapK6Hw
+| ({serving_percore: latfp("serving_percore"), serving_multiproc: latfp("serving_multiproc")}) as $headlat
+| ($headlat | with_entries(.key as $f | .value as $v | .value = {
+    all: bmapof([ $ballruns[] | select(latfp($f) == $v) ]),
+    hw: bmapof([ $bhwruns[] | select(latfp($f) == $v) ]),
+    comparable: ([ $ballruns[] | select(latpresent($f) and latfp($f) == $v) ] | length),
+    other: ([ $ballruns[] | select(latpresent($f) and latfp($f) != $v) ] | length) })) as $bmapLat
 | ([ [ . | metrics ][] | select(.value != null) ]) as $headmetrics
 # FAIL CLOSED: any run metric with a non-null value whose budget key is absent
 # from the committed perf-budgets.json is reported as `missing` (the bash caller
@@ -984,7 +1006,10 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
     baseline_microbench_comparable: ($bmicroruns|length),
     baseline_k6_comparable: ($bk6runs|length),
     head_jmh_present: ($headjmh != null),
-    head_k6fp_present: (($headarms | length) > 0) } as $meta
+    head_k6fp_present: (($headarms | length) > 0),
+    sweep_latency_reset: ([ $headmetrics[] | .bkey | latfam | select(. != null) ] | unique
+      | map({family: ., head_settle_s: $headlat[.], comparable: $bmapLat[.].comparable, other: $bmapLat[.].other})
+      | map(select(.other > 0))) } as $meta
 | if ($missing | length) > 0
   then ($meta + { missing:$missing, rows:[], count:0, gating_count:0, nongating_count:0 })
   else
@@ -997,7 +1022,9 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
       # microbench(_extra) compare only against JMH-config-matching baselines;
       # behaviours (k6 arms) compare only against k6-fingerprint-matching baselines
       # (same image + arm set). growth/sweep/forward keep the full baseline.
-      | (if $m.hw then
+      | ($m.bkey | latfam) as $lf
+      | (if $lf != null then ($bmapLat[$lf][if $m.hw then "hw" else "all" end][$m.name] // [])
+         elif $m.hw then
            (if ($m.bkey|startswith("microbench")) then ($bmapMicroHw[$m.name] // [])
             elif ($m.bkey|startswith("behaviours")) then ($bmapK6Hw[$m.name] // [])
             else ($bmapAllHw[$m.name] // []) end)
@@ -1016,7 +1043,7 @@ def bmapof($runs): (($runs | map([metrics]) | add) // [] | map(select(.value != 
       # BASE_COUNT warm-up (which keys off the UNFILTERED baseline and so does NOT
       # cover these filtered subsets). The remaining metrics (growth/sweep/forward)
       # are never fingerprint-filtered and keep the existing >=1 behaviour.
-      | (if $m.hw then $minbaseline
+      | (if $m.hw or ($lf != null) then $minbaseline
          elif ($m.bkey|startswith("microbench")) then $minbaseline
          elif ($m.bkey|startswith("behaviours")) then $minbaseline
          else 1 end) as $minreq
@@ -1118,6 +1145,12 @@ if [ "$HEAD_K6FP_PRESENT" = "true" ] && [ "$K6_COMPARABLE" -lt "$BASE_TOTAL_CMP"
 :information_source: **k6 behaviour baseline reset — arm set changed.** Only ${K6_COMPARABLE}/${BASE_TOTAL_CMP} baseline run(s) share this run's set of behaviour arms, so the per-behaviour \`*.p95_ms\` / \`*.p99_ms\` / \`*.error_rate\` metrics compare ONLY against those (growth / sweep / forward keep the full baseline). They stay \`:new: new\` (no comparable baseline, NOT flagged) until at least ${MIN_BASELINE} arm-set-matching runs exist — the same warm-up threshold the global baseline uses — so adding or removing an arm (or switching the -graaljs/file capability, which changes which arms run) self-invalidates the k6 baseline window instead of comparing a different arm mix straight across the discontinuity and producing a misleading (notify-only) flag. The fingerprint is the arm set ALONE, which is stable across snapshot rebuilds, so once ${MIN_BASELINE} matching runs have accrued the metrics re-arm and then compare normally across rebuilds. These metrics are notify-only, so this never blocks the build."
 fi
 
+# Sweep latency-window discontinuity (docs/code/performance-measurement.md, "Rung-onset
+# exclusion"): shown only while the matching history is still below MIN_BASELINE.
+SWEEPLAT_NOTE="$(printf '%s' "$RESULT_CMP" | jq -r --argjson minb "$MIN_BASELINE" '
+  (.sweep_latency_reset // [])[] | select(.comparable < $minb)
+  | "\n\n:information_source: **sweep latency baseline reset — \(.family).** \(.other) baseline run(s) measured its p50-gated healthy-ceiling metrics under a different sweep latency window (this run: settle \(.head_settle_s // "none")s; no settle = rung onset included). Those metrics compare only against runs with the same window — \(.comparable) so far — and stay `:new: new` (not flagged) until \($minb) exist. Notify-only; this never blocks the build."')"
+
 # --- 5. render annotation -----------------------------------------------------
 # The Status column distinguishes the two kinds of flagged regression:
 #   :red_circle: REGRESSION (fails build)  -> a GATING metric crossed its budget
@@ -1216,7 +1249,7 @@ fi
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}${MP_NOTE}"
+${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${SWEEPLAT_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}${MP_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did
