@@ -100,7 +100,7 @@ sequenceDiagram
 
 ### LogEntry as EventTranslator
 
-`LogEntry` implements LMAX Disruptor's `EventTranslator<LogEntry>` interface. Its `translateTo()` method copies all fields from the source entry into the pre-allocated ring buffer slot, then clears the source. This avoids object allocation in the hot path.
+`LogEntry` implements LMAX Disruptor's `EventTranslator<LogEntry>` interface. Its `translateTo()` method copies all fields from the source entry into the pre-allocated ring buffer slot, then clears the source. This avoids object allocation in the hot path. It also copies the memoised `estimatedHeapSize`, so the consumer subtracts exactly the weight `add()` counted into the in-flight byte total (see [Ring In-Flight Bounding and Drops](memory-management.md#ring-in-flight-bounding-and-drops)).
 
 ### Serialized Read Operations
 

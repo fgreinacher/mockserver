@@ -195,8 +195,8 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // consumer also renders every entry to the log), that backlog — not the deque — is what exhausts
     // the heap. Tracking it lets add() drop, rather than OOM, once the in-flight bodies would exceed
     // the same maxEventLogSizeInBytes budget. Incremented on a successful publish in add(), decremented
-    // in processLogEntry as each entry is consumed; both use LogEntry.estimatedHeapSize(), which is
-    // deterministic for the same body references, so the two sides balance exactly.
+    // in processLogEntry as each entry is consumed, by the weight add() memoised: translateTo carries it
+    // into the ring slot, so the two sides balance exactly and the counter returns to 0 when idle.
     private final AtomicLong inFlightBytes = new AtomicLong(0);
     // The in-flight byte budget in force, mirrored from configuration.maxEventLogSizeInBytes() at
     // construction and refreshed by applyConfigurationCapacity() so a live PUT /mockserver/configuration
@@ -610,11 +610,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     }
 
     private void processLogEntry(LogEntry logEntry) {
-        // This entry is leaving the in-flight backlog. Decrement by the SAME weight add() incremented
-        // by (estimatedHeapSize is deterministic for the same body references), before cloneAndClear
-        // clears the slot. Unconditional on the asynchronous path — matching the unconditional
-        // increment in add() — so the pair balances even if maxEventLogSizeInBytes is changed at
-        // runtime; in the synchronous path nothing was ever published to the ring, so nothing to undo.
+        // This entry is leaving the in-flight backlog. Decrement by the SAME weight add() incremented by,
+        // before cloneAndClear clears the slot. It must be the memo translateTo carried into the slot, NOT
+        // a recompute: a sibling entry sharing this request (RECEIVED_REQUEST + EXPECTATION_RESPONSE) may
+        // already have released its body's decoded String, shrinking a recompute and leaking phantom bytes.
+        // Unconditional on the asynchronous path, matching add(); the synchronous path never published.
         if (asynchronousEventProcessing) {
             long inFlightWeight = logEntry.estimatedHeapSize();
             if (inFlightWeight > 0) {

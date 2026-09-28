@@ -5,10 +5,13 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpRequest;
+import org.mockserver.model.HttpResponse;
+import org.mockserver.model.JsonBody;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.verify.Verification;
 import org.slf4j.event.Level;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -24,8 +27,11 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockserver.configuration.Configuration.configuration;
+import static org.mockserver.log.model.LogEntry.LogMessageType.EXPECTATION_RESPONSE;
 import static org.mockserver.log.model.LogEntry.LogMessageType.RECEIVED_REQUEST;
+import static org.mockserver.matchers.MatchType.ONLY_MATCHING_FIELDS;
 import static org.mockserver.model.HttpRequest.request;
+import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.verify.Verification.verification;
 import static org.mockserver.verify.VerificationTimes.atMost;
 import static org.mockserver.verify.VerificationTimes.never;
@@ -102,6 +108,77 @@ public class MockServerEventLogInFlightBytesTest {
             }
             drain(log);
 
+            assertThat(log.getInFlightBytes(), is(0L));
+        } finally {
+            log.stop();
+        }
+    }
+
+    @Test
+    public void shouldReturnInFlightBytesToZeroWhenEntriesShareAReleasedRequestBodyAtWarn() throws Exception {
+        shouldReturnInFlightBytesToZeroWhenEntriesShareAReleasedRequestBody(Level.WARN);
+    }
+
+    @Test
+    public void shouldReturnInFlightBytesToZeroWhenEntriesShareAReleasedRequestBodyAtInfo() throws Exception {
+        shouldReturnInFlightBytesToZeroWhenEntriesShareAReleasedRequestBody(Level.INFO);
+    }
+
+    // A mocked exchange logs RECEIVED_REQUEST and EXPECTATION_RESPONSE for the SAME HttpRequest. Both are
+    // weighed at publish while the matcher's decoded body String is still cached; processing the first
+    // releases that String, so the second must still be subtracted at its publish-time weight.
+    private void shouldReturnInFlightBytesToZeroWhenEntriesShareAReleasedRequestBody(Level logLevel) throws Exception {
+        Configuration configuration = configuration()
+            .logLevel(logLevel)
+            .maxLogEntries(1000)
+            .maxEventLogSizeInBytes(64L * 1024 * 1024)
+            .maxLoggedBodyBytes(0);
+        MockServerEventLog log = asynchronousEventLog(configuration);
+        try {
+            CountDownLatch release = blockConsumer(log);
+            for (int i = 0; i < 20; i++) {
+                addMockedExchange(log, "/shared", 10_000);
+            }
+            release.countDown();
+            drain(log);
+
+            assertThat(log.getDroppedLogEventCount(), is(0L));
+            assertThat(log.getInFlightBytes(), is(0L));
+            log.reset();
+            assertThat(log.getInFlightBytes(), is(0L));
+        } finally {
+            log.stop();
+        }
+    }
+
+    @Test
+    public void shouldKeepRecordingUnderSustainedTenKilobyteJsonExchangesAtInfo() throws Exception {
+        // Each batch of 20 exchanges holds ~1.3 MB in flight, well inside the 4 MB budget, so nothing is
+        // legitimately over budget. If each exchange left even its released request String (~20 KB) as
+        // phantom in-flight bytes, the budget would fill within ~200 exchanges and every later entry
+        // would be dropped. Compact format keeps stdout small; the full message is still rendered.
+        Configuration configuration = configuration()
+            .logLevel(Level.INFO)
+            .compactLogFormat(true)
+            .maxLogEntries(1000)
+            .maxEventLogSizeInBytes(4L * 1024 * 1024)
+            .maxLoggedBodyBytes(0);
+        MockServerEventLog log = asynchronousEventLog(configuration);
+        try {
+            for (int batch = 0; batch < 150; batch++) {
+                CountDownLatch release = blockConsumer(log);
+                for (int i = 0; i < 20; i++) {
+                    addMockedExchange(log, "/load", 10_240);
+                }
+                release.countDown();
+                drain(log);
+            }
+            addMockedExchange(log, "/final", 10_240);
+            CompletableFuture<List<LogEntry>> recorded = new CompletableFuture<>();
+            log.retrieveMessageLogEntries(request("/final"), recorded::complete);
+
+            assertThat(log.getDroppedLogEventCount(), is(0L));
+            assertThat(recorded.get(60, SECONDS).isEmpty(), is(false));
             assertThat(log.getInFlightBytes(), is(0L));
         } finally {
             log.stop();
@@ -315,6 +392,35 @@ public class MockServerEventLogInFlightBytesTest {
             .setHttpRequest(request)
             .setMessageFormat("received request:{}")
             .setArguments(request);
+    }
+
+    // Log a mocked exchange as the server does: RECEIVED_REQUEST then EXPECTATION_RESPONSE, both holding
+    // the same HttpRequest, whose JSON body's decoded String is cached as request matching leaves it.
+    private void addMockedExchange(MockServerEventLog log, String path, int bodyChars) {
+        StringBuilder json = new StringBuilder("{\"data\":\"");
+        while (json.length() < bodyChars - 2) {
+            json.append('x');
+        }
+        String value = json.append("\"}").toString();
+        byte[] rawBytes = value.getBytes(StandardCharsets.UTF_8);
+        JsonBody body = new JsonBody(value, rawBytes, JsonBody.DEFAULT_JSON_CONTENT_TYPE, ONLY_MATCHING_FIELDS);
+        assertThat(body.retainedDerivedFormBytes(), is(greaterThan(0L)));
+        HttpRequest request = request().withMethod("POST").withPath(path).withBody(body);
+        HttpResponse response = response().withStatusCode(200).withBody("{\"ok\":true}");
+        log.add(new LogEntry()
+            .setType(RECEIVED_REQUEST)
+            .setLogLevel(Level.INFO)
+            .setHttpRequest(request)
+            .setMessageFormat("received request:{}")
+            .setArguments(request));
+        log.add(new LogEntry()
+            .setType(EXPECTATION_RESPONSE)
+            .setLogLevel(Level.INFO)
+            .setHttpRequest(request)
+            .setHttpResponse(response)
+            .setExpectation(request, response)
+            .setMessageFormat("returning response:{}for request:{}")
+            .setArguments(response, request));
     }
 
     // Occupy the single consumer thread until the returned latch is counted down, so entries added in

@@ -6,17 +6,22 @@ import org.mockserver.matchers.TimeToLive;
 import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.model.HttpResponse;
+import org.mockserver.model.JsonBody;
 import org.mockserver.model.RequestDefinition;
 import org.mockserver.serialization.ObjectMapperFactory;
+
+import java.nio.charset.StandardCharsets;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.greaterThan;
 import static org.hamcrest.Matchers.not;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.hamcrest.core.Is.is;
+import static org.mockserver.matchers.MatchType.ONLY_MATCHING_FIELDS;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
 
@@ -463,6 +468,31 @@ public class LogEntryTest {
         assertThat(
             withRealExpectation.estimatedHeapSize() - synthetic.estimatedHeapSize(),
             is(expectation.estimatedHeapSize()));
+    }
+
+    @Test
+    public void translateToCarriesThePublishTimeWeightIntoTheRingSlot() {
+        // The event log adds an entry's weight to its in-flight counter at publish and subtracts the ring
+        // slot's weight when the consumer processes it. A sibling entry sharing the same request can
+        // release the body's decoded String in between, so the slot must carry the weight that was added
+        // rather than recompute a smaller one.
+        String json = "{\"name\":\"value\"}";
+        byte[] rawBytes = json.getBytes(StandardCharsets.UTF_8);
+        JsonBody body = new JsonBody(json, rawBytes, JsonBody.DEFAULT_JSON_CONTENT_TYPE, ONLY_MATCHING_FIELDS);
+        LogEntry published = new LogEntry().setHttpRequest(request().withMethod("POST").withPath("/p").withBody(body));
+        long publishTimeWeight = published.estimatedHeapSize();
+        assertThat(body.retainedDerivedFormBytes(), is(greaterThan(0L)));
+
+        LogEntry slot = new LogEntry();
+        published.translateTo(slot, 0);
+        body.releaseDerivedForms();
+
+        assertThat(body.retainedDerivedFormBytes(), is(0L));
+        assertThat(slot.estimatedHeapSize(), is(publishTimeWeight));
+        // once the slot is cleared for reuse the carried weight must not leak into the next entry
+        slot.clear();
+        slot.setHttpRequest(request().withMethod("POST").withPath("/p").withBody(body));
+        assertThat(slot.estimatedHeapSize(), is(publishTimeWeight - (long) json.length() * 2));
     }
 
     @Test

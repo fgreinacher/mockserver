@@ -1037,6 +1037,10 @@ public class LogEntry implements EventTranslator<LogEntry> {
             .setConsumer(getConsumer())
             .setDeleted(isDeleted())
             .setSkipRecordedRequestPersistence(isSkipRecordedRequestPersistence());
+        // Carry the publish-time weight (after the setters, which reset it): the event log decrements its
+        // in-flight counter by the slot's weight, and a recompute on the slot would differ from what was
+        // added once a sibling entry sharing this request has released or re-cached its decoded body.
+        event.estimatedHeapSize = estimatedHeapSize;
         clear();
     }
 
