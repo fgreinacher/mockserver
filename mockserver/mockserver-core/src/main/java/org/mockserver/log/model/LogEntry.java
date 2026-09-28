@@ -850,10 +850,12 @@ public class LogEntry implements EventTranslator<LogEntry> {
 
     public LogEntry setArguments(Object... arguments) {
         if (arguments != null) {
-            this.arguments = Arrays
-                .stream(arguments)
-                .map(argument -> argument == null ? "" : argument)
-                .toArray(Object[]::new);
+            Object[] normalised = new Object[arguments.length];
+            for (int i = 0; i < arguments.length; i++) {
+                Object argument = arguments[i];
+                normalised[i] = argument == null ? "" : argument;
+            }
+            this.arguments = normalised;
         } else {
             this.arguments = null;
         }

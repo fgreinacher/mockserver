@@ -14,6 +14,7 @@ import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.hamcrest.core.Is.is;
 import static org.mockserver.model.HttpRequest.request;
@@ -150,5 +151,76 @@ public class LogEntryDeferredArgumentConversionTest {
         assertThat(logEntry.getRawArguments(), is(arrayWithSize(1)));
         assertThat(logEntry.getRawArguments()[0], is(""));
         assertThat(logEntry.getArguments()[0], is(""));
+    }
+
+    // ---- setArguments normalisation semantics (pinned so the stream -> loop rewrite is behaviour-preserving) ----
+
+    @Test
+    public void nullArgumentsArrayIsStoredAsNull() {
+        // given - the whole varargs array is null (distinct from a single null element)
+        LogEntry logEntry = new LogEntry()
+            .setMessageFormat("value:{}")
+            .setArguments((Object[]) null);
+
+        // then
+        assertThat(logEntry.getRawArguments(), is(nullValue()));
+        assertThat(logEntry.getArguments(), is(nullValue()));
+    }
+
+    @Test
+    public void mixedNullAndNonNullArgumentsNormaliseElementwisePreservingOrder() {
+        // given
+        Object first = "first";
+        Object third = 42;
+        LogEntry logEntry = new LogEntry()
+            .setMessageFormat("{}{}{}")
+            .setArguments(first, null, third);
+
+        // then - only null elements become "", order preserved, non-null elements kept unchanged
+        Object[] raw = logEntry.getRawArguments();
+        assertThat(raw, is(arrayWithSize(3)));
+        assertThat(raw[0], is(sameInstance(first)));
+        assertThat(raw[1], is(""));
+        assertThat(raw[2], is(sameInstance(third)));
+    }
+
+    @Test
+    public void nonNullArgumentsAreStoredByReferenceNotCopied() {
+        // given - a raw HttpRequest argument must be retained as the same instance
+        HttpRequest httpRequest = request().withPath("/api/thing").withBody(json(REQUEST_JSON));
+        LogEntry logEntry = new LogEntry()
+            .setMessageFormat("received request:{}")
+            .setArguments(httpRequest);
+
+        // then
+        assertThat(logEntry.getRawArguments()[0], is(sameInstance(httpRequest)));
+    }
+
+    @Test
+    public void setArgumentsDoesNotAliasTheCallerSuppliedArray() {
+        // given - callers (and the varargs mechanism) own the passed array; a later mutation of it
+        // must not change what the entry stored
+        Object[] callerArray = {"a", "b"};
+        LogEntry logEntry = new LogEntry()
+            .setMessageFormat("{}{}")
+            .setArguments(callerArray);
+
+        // when
+        callerArray[0] = "MUTATED";
+
+        // then - the stored array is a private copy
+        assertThat(logEntry.getRawArguments()[0], is("a"));
+    }
+
+    @Test
+    public void eachSetArgumentsCallStoresAFreshArray() {
+        // given
+        Object[] rawArguments = {"a", "b"};
+        LogEntry first = new LogEntry().setMessageFormat("{}{}").setArguments(rawArguments);
+        LogEntry second = new LogEntry().setMessageFormat("{}{}").setArguments(rawArguments);
+
+        // then - two entries built from the same source array do not share a stored array
+        assertThat(first.getRawArguments(), is(not(sameInstance(second.getRawArguments()))));
+        assertThat(first.getRawArguments(), is(not(sameInstance(rawArguments))));
     }
 }
