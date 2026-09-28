@@ -828,19 +828,24 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // before the DTO walk, sendMessage acquires it just below - so this only serialises and writes, on the
     // send scheduler.
     private void writeAcquiredMessage(ChannelOutboundInvoker ctx, ImmutableMap<String, Object> message) {
-        scheduler.submit(() -> {
-            try {
-                String text = objectWriter.writeValueAsString(message);
-                ctx.writeAndFlush(new TextWebSocketFrame(text));
-            } catch (JsonProcessingException jpe) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception with serialising UI data " + jpe.getMessage())
-                        .setThrowable(jpe)
-                );
-            }
-        });
+        scheduler.submit(() -> writeMessageNow(ctx, message));
+    }
+
+    // Serialise and write one frame on the CURRENT thread. Used both by writeAcquiredMessage (on the send
+    // scheduler) and by the trailing flush, which serves every pending connection inside ONE scheduler task
+    // so a batch of N connections cannot overrun the 1-deep DiscardOldest queue as N separate submits would.
+    private void writeMessageNow(ChannelOutboundInvoker ctx, ImmutableMap<String, Object> message) {
+        try {
+            String text = objectWriter.writeValueAsString(message);
+            ctx.writeAndFlush(new TextWebSocketFrame(text));
+        } catch (JsonProcessingException jpe) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setLogLevel(Level.ERROR)
+                    .setMessageFormat("exception with serialising UI data " + jpe.getMessage())
+                    .setThrowable(jpe)
+            );
+        }
     }
 
     // Throttled write of a PRE-BUILT message (the error frame). Unlike sendUpdate there is no DTO walk to
@@ -899,15 +904,35 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
     }
 
-    // One permit per window: at most one pending connection writes; the rest miss again and stay pending.
+    // One permit per window serves EVERY pending connection in one task, so none waits O(connections)
+    // windows and the refill never front-runs a connection driving its own sendUpdate.
     private void deliverPendingTrailingUpdates() {
         if (pendingTrailingUpdates.isEmpty() || scheduler == null || scheduler.isShutdown()) {
             return;
         }
-        for (Map.Entry<ChannelOutboundInvoker, HttpRequest> registryEntry : clientRegistrySnapshot()) {
-            if (pendingTrailingUpdates.remove(registryEntry.getKey())) {
-                sendUpdate(registryEntry.getKey(), registryEntry.getValue());
-            }
+        if (!semaphore.tryAcquire()) {
+            return;
+        }
+        List<Map.Entry<ChannelOutboundInvoker, HttpRequest>> snapshot = clientRegistrySnapshot();
+        try {
+            scheduler.submit(() -> {
+                for (Map.Entry<ChannelOutboundInvoker, HttpRequest> registryEntry : snapshot) {
+                    if (pendingTrailingUpdates.remove(registryEntry.getKey())) {
+                        try {
+                            walkAndSend(registryEntry.getKey(), registryEntry.getValue(), true);
+                        } catch (RuntimeException e) {
+                            mockServerLogger.logEvent(
+                                new LogEntry()
+                                    .setLogLevel(Level.ERROR)
+                                    .setMessageFormat("exception delivering trailing dashboard update")
+                                    .setThrowable(e)
+                            );
+                        }
+                    }
+                }
+            });
+        } catch (RejectedExecutionException shuttingDown) {
+            // The send scheduler was shut down between the guard and submit; the permit refills next window.
         }
     }
 
@@ -934,6 +959,14 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
         }
         // About to bring this connection up to date; a newer miss during the walk re-adds it.
         pendingTrailingUpdates.remove(ctx);
+        walkAndSend(ctx, httpRequest, false);
+    }
+
+    // Walk the log/matcher stores for one connection and send the resulting frame. deliverInline=false
+    // hands the write to the send scheduler (the permit-holding leading path); deliverInline=true writes on
+    // the current thread (the trailing flush already runs inside one scheduler task, see
+    // deliverPendingTrailingUpdates).
+    private void walkAndSend(ChannelOutboundInvoker ctx, RequestDefinition httpRequest, boolean deliverInline) {
         // Client-requested log-row limit for THIS connection (DEFAULT when it requested nothing).
         // Expectations are NOT governed by it - they keep the fixed EXPECTATION_UPDATE_ITEM_LIMIT.
         final int logItemLimit = logItemLimitFor(ctx);
@@ -1018,16 +1051,21 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
                         reverseLogEventsStream, true, logItemLimit,
                         logMessages, recordedRequests, proxiedRequests,
                         logMessagesDescriptionProcessor, recordedRequestsDescriptionProcessor, proxiedRequestsDescriptionProcessor);
-                    // The write permit was acquired at the top of sendUpdate, before this walk, so just
-                    // serialise and write - do not re-acquire or re-walk.
-                    writeAcquiredMessage(ctx, ImmutableMap.of(
+                    // The write permit was acquired before this walk (leading path) or held by the flush, so
+                    // just serialise and write - do not re-acquire or re-walk.
+                    ImmutableMap<String, Object> message = ImmutableMap.of(
                         "logMessages", logMessages,
                         "activeExpectations", activeExpectations,
                         "activeExpectationsTotal", activeExpectationsTotal,
                         "activeExpectationsIncludeLlm", activeExpectationsIncludeLlm,
                         "recordedRequests", recordedRequests,
                         "proxiedRequests", proxiedRequests // reverse
-                    ));
+                    );
+                    if (deliverInline) {
+                        writeMessageNow(ctx, message);
+                    } else {
+                        writeAcquiredMessage(ctx, message);
+                    }
                 }
             );
     }

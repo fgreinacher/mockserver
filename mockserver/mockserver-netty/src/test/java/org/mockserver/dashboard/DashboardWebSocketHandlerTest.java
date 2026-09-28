@@ -2194,7 +2194,12 @@ public class DashboardWebSocketHandlerTest {
             track(new DashboardWebSocketHandler(httpState, false, true))
                 .registerListeners();
         MockChannelHandlerContext mockChannelHandlerContext = track(new MockChannelHandlerContext());
-        handler.getClientRegistry().put(mockChannelHandlerContext, request());
+        // Register with the SAME filter the test then drives sendUpdate with, mirroring production: the pull
+        // path stores the client's filter in the registry (registry.put) before calling sendUpdate, so the
+        // registry filter always equals the driven filter. A trailing flush re-drives with the registry
+        // filter, so registering an empty filter here while driving a non-empty one would let the flush
+        // deliver an unfiltered frame that clobbers the filtered one under load.
+        handler.getClientRegistry().put(mockChannelHandlerContext, (HttpRequest) requestFilter);
 
         // when - retry until a frame is produced. The send throttle is ~1/sec, and at the shipped
         // discard-queue capacity of 1 a single send competes with the initial post-upgrade update, so one
@@ -2883,7 +2888,15 @@ public class DashboardWebSocketHandlerTest {
         MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
         handler.getClientRegistry().put(ctx, request());
 
-        Thread.sleep(1500); // let the initial post-registration update drain
+        java.lang.reflect.Field pendingField = DashboardWebSocketHandler.class.getDeclaredField("pendingTrailingUpdates");
+        pendingField.setAccessible(true);
+        java.util.Set<?> pending = (java.util.Set<?>) pendingField.get(handler);
+        long settle = System.currentTimeMillis() + 15000;
+        while (System.currentTimeMillis() < settle && !pending.isEmpty()) {
+            Thread.sleep(50);
+        }
+        assertThat("no trailing updates left over from registration", pending.isEmpty(), is(true));
+        Thread.sleep(1500); // let any in-flight write from registration land before the frames are reset
         ctx.textWebSocketFrame = null;
 
         java.lang.reflect.Field semaphoreField = DashboardWebSocketHandler.class.getDeclaredField("semaphore");
@@ -3034,6 +3047,50 @@ public class DashboardWebSocketHandlerTest {
         }
         assertThat("a surviving dashboard still receives update frames", survivorFrame, is(not(nullValue())));
         assertThat("the survivor's update carries live content", survivorFrame, containsString("/only"));
+    }
+
+    @Test
+    public void everyPendingConnectionIsServedWithinABoundedTimeNotOnePerRefillWindow() throws Exception {
+        // With many connections pending at once, the LAST in registry order must be served within a bounded
+        // time; serving one pending connection per ~1/second window would need ~N seconds.
+        DashboardWebSocketHandler handler = newSeededHandler(Collections.singletonList(received("/only")));
+        int connectionCount = 30;
+        List<MockChannelHandlerContext> connections = new ArrayList<>();
+        for (int i = 0; i < connectionCount; i++) {
+            MockChannelHandlerContext ctx = track(new MockChannelHandlerContext());
+            connections.add(ctx);
+            handler.getClientRegistry().put(ctx, request());
+        }
+        java.lang.reflect.Field pendingField = DashboardWebSocketHandler.class.getDeclaredField("pendingTrailingUpdates");
+        pendingField.setAccessible(true);
+        java.util.Set<?> pending = (java.util.Set<?>) pendingField.get(handler);
+        long settle = System.currentTimeMillis() + 15000;
+        while (System.currentTimeMillis() < settle && !pending.isEmpty()) {
+            Thread.sleep(50);
+        }
+        assertThat("no trailing updates left over from registration", pending.isEmpty(), is(true));
+        Thread.sleep(1500); // let any in-flight write from registration land before the frames are reset
+
+        // Mark EVERY connection pending: drain the permit so each sendUpdate misses and is remembered. The
+        // throttle refill then re-adds a permit ~1/second and the flush must serve them all, not one per window.
+        java.lang.reflect.Field semaphoreField = DashboardWebSocketHandler.class.getDeclaredField("semaphore");
+        semaphoreField.setAccessible(true);
+        java.util.concurrent.Semaphore semaphore = (java.util.concurrent.Semaphore) semaphoreField.get(handler);
+        semaphore.drainPermits();
+        for (MockChannelHandlerContext ctx : connections) {
+            ctx.textWebSocketFrame = null;
+            handler.sendUpdate(ctx, request());
+        }
+
+        // The LAST connection in registry order is the worst case for a one-per-window round-robin.
+        MockChannelHandlerContext last = connections.get(connectionCount - 1);
+        long deadline = System.currentTimeMillis() + 6000; // must be well below connectionCount seconds
+        while (System.currentTimeMillis() < deadline && last.textWebSocketFrame == null) {
+            Thread.sleep(50);
+        }
+        assertThat("a connection late in registry order is served within a bounded time, not one-per-window",
+            last.textWebSocketFrame, is(org.hamcrest.CoreMatchers.notNullValue()));
+        assertThat("its update carries live content", last.textWebSocketFrame.text(), containsString("/only"));
     }
 
 
