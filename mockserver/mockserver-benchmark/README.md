@@ -59,7 +59,8 @@ the common case Part A optimizes; the `true` arm is measured and given its own
 absolute allocation floor by the per-merge `perf-alloc-gate.sh` so a regression
 re-introducing eager formatting fails the gate. The daily micro-bench primary run
 pins `true` (the shipped default); the scaling sweep below pins `false`; the
-allocation gate pins both. The headline number for the allocation work is
+allocation gate pins both, and also runs a notify-only `HEADERS_MISS` arm at INFO
+and WARN, because `EXACT` never reaches the per-candidate matching scan. The headline number for the allocation work is
 **`gc.alloc.rate.norm`** (B/op); `ns/op` (shown as µs/op) is the secondary signal.
 
 ## Scaling sweep (`run-scaling.sh`)

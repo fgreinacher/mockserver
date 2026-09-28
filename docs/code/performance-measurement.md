@@ -18,6 +18,7 @@ regressions hide and stale claims get published.
 | `streaming.js` | LLM/SSE streaming concurrency vs match latency | Daily (perf queue) | No — notify-only |
 | `clustered_crossing.js` | Cross-node request latency in a cluster | Daily (perf queue) | **Notify-only.** `perf-test-compare.sh` reads `clustered_state.*` as notify-only metrics. This measured NOTHING until the clustered image was published to the perf queue: the run gates the A/B on `docker image inspect`, nothing pulled or built that image, so every run took the absent-image skip and emitted no `clustered_state` block to read. The snapshot push now builds `mockserver-snapshot-clustered` in the same job, from the same jar and commit as the SUT image, and the run refuses to measure if the two image revisions disagree (`clustered_skip_reason=revision_mismatch`) — a ratio computed across two commits would be arithmetically fine and describe code the measured binary never contained |
 | `MatchingBenchmark` JMH | Matcher hot-path time/op and allocation/op | Daily (perf queue) | Yes — `time_per_op` + `alloc_bytes_per_op` |
+| `perf-alloc-gate.sh` (JMH `gc.alloc.rate.norm`) | Allocation/op for matching, inbound decode and response write at pinned params, plus a matching-scan arm | Per merge (every Java pipeline build) | Yes for the four pinned rows; the four scan-arm rows are notify-only |
 | `CandidateIndexBenchmark` JMH | Index vs scan scaling | Daily (perf queue) | No |
 | Promoted dark benchmarks (7 classes, see below) | Various hot paths | Daily (perf queue) | No — notify-only |
 | Proxy-path benchmarks (`RelayByteCopyBenchmark`, `SocksHandshakeBenchmark`) | CONNECT/relay byte cost; SOCKS handshake cost | Daily (perf queue) | No — notify-only |
@@ -229,6 +230,49 @@ effect: because the fingerprint covers the whole `.config.jmh` object, the notif
 **This backstop was once silently dark for several days** (fixed in `bb3c41246`) because a reactor dependency drift
 stopped the benchmark classpath resolving. `perf-test-microbench.sh` now emits a failure
 annotation so a broken backstop is visible as a red build, not a silent absent artifact.
+
+### `perf-alloc-gate.sh` — per-merge allocation floors
+
+Runs on every Java pipeline build (PRs and master) and compares each row's `gc.alloc.rate.norm`
+(bytes/op) with an absolute floor under `premerge_alloc.*` in
+`mockserver-performance-test/perf-budgets.json`. Two JMH invocations produce eight rows, which
+are evaluated together:
+
+| Rows | Params | Budget key (`premerge_alloc.<key>.alloc_bytes_per_op`) | Fails the build? |
+|---|---|---|---|
+| `MatchingBenchmark`, both `detailedMatchFailures` arms | `EXACT`, 100 expectations, INFO | `MatchingBenchmark`, `MatchingBenchmark_detailed` | Yes |
+| `InboundDecodeBenchmark` | `bodySize=16384` | `InboundDecodeBenchmark` | Yes |
+| `ResponseWriteBenchmark` | `responseSize=16384`, `declareBodyCharset=false` | `ResponseWriteBenchmark` | Yes |
+| `MatchingBenchmark` scan arm, four rows | `HEADERS_MISS`, 100 expectations, {INFO, WARN} × `detailedMatchFailures` {false, true} | `MatchingBenchmark_HEADERS_MISS_<INFO\|WARN>`, plus `_detailed` for the `true` arm | No — notify-only |
+
+**Why the scan arm exists.** With `EXACT`, the request's path narrows through the candidate
+index to an empty bucket, so the pinned matching rows never run the per-candidate matching scan.
+At INFO only the closest-match diagnostic rescans the list; at WARN nothing does. `HEADERS_MISS`
+registers 100 expectations with the same method and path, so all 100 share one bucket and the
+scan visits every one, missing on each header matcher. That is where per-candidate savings show:
+`ce24dc676` (per-candidate detail recorded only when INFO can read it) cut `HEADERS_MISS` at WARN
+with detail on from about 1.45 MB/op to 0.46 MB/op, a change the pinned rows could not see. The
+two WARN rows now take the same code path, so a regression that brings back per-candidate detail
+at WARN shows as `WARN_detailed` rising about 1 MB/op above `WARN`.
+
+**The WARN rows are bimodal on amd64.** In the gate's own image, each fork of either WARN row
+reads exactly 295,017 or exactly 439,017 B/op (1,440 B per candidate, a JIT escape-analysis
+outcome that varies per fork); arm64 reads 295,017 every time. `gc.alloc.rate.norm` is stable
+within a fork but not always across forks, so the WARN floors sit above the upper mode.
+
+**Gating and notify-only.** A row fails the build only when its budget has `gating: true`. The
+scan-arm budgets have a provisional floor and no `gating` key, so a breach prints `:warning:` and
+posts a separate warning annotation (`perf-alloc-gate-notify`) while the build stays green. Every
+row still needs a numeric floor: a row with no budget entry, or with no `gc.alloc.rate.norm`
+reading, fails closed whether it gates or not. The step also fails if the row count is not the
+expected 8, or if two rows route to the same budget key.
+
+**Graduation.** Each run uploads its merged JMH result, `jmh-alloc-gate.json`, as a build
+artifact. Once about 10 runs exist, replace each scan-arm floor with the median + 3 × 1.4826 × MAD
+of those runs and add `gating: true`. For a WARN row, never seat the floor below the upper mode:
+ten runs that all land on one mode give a MAD of 0 and a floor the other mode breaches. This is
+tracked as item 16 in
+[docs/plans/performance-programme.md](../plans/performance-programme.md).
 
 ### `Http2StreamChannelBenchmark` JMH — notify-only by design
 

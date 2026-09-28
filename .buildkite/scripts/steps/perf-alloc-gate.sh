@@ -10,7 +10,9 @@ set -euo pipefail
 # ResponseWriteBenchmark (response serialise + write) — captures each one's
 # gc.alloc.rate.norm (bytes/op), and FAILS the build if any exceeds its ABSOLUTE
 # committed floor in mockserver-performance-test/perf-budgets.json
-# (premerge_alloc.<Class>.alloc_bytes_per_op).
+# (premerge_alloc.<Class>.alloc_bytes_per_op). A row whose budget lacks
+# `gating: true` is NOTIFY-ONLY: a breach is annotated as a warning, not a failure.
+# Every row still needs a numeric floor — a missing budget fails closed either way.
 #
 # WHY it is separate from the daily perf-test-microbench.sh + perf-test-compare.sh:
 #   * Coverage. MatchingBenchmark alone measures MATCHING only — not Netty decode
@@ -30,8 +32,10 @@ set -euo pipefail
 #     or base-image bump that shifts allocation reaches this gate only via the
 #     daily run — this step does NOT cover that class of change.)
 #
-# gc.alloc.rate.norm is DETERMINISTIC (bytes allocated per op — independent of CPU
-# speed), so an absolute regression here is trustworthy on cloud CI. Some floors
+# gc.alloc.rate.norm is bytes allocated per op, independent of CPU speed, so an
+# absolute regression here is trustworthy on cloud CI. It is stable within a fork,
+# but a JIT escape-analysis outcome can differ ACROSS forks (the HEADERS_MISS WARN
+# rows are bimodal on amd64), so a floor must clear every mode. Some floors
 # are PROVISIONAL (see perf-budgets.json): derived from local measurement with
 # headroom rather than from >=10 notify-only runs, because these benchmarks have
 # no history yet. ResponseWrite is ALSO promoted notify-only into the daily
@@ -80,22 +84,32 @@ BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-b
 # floor-describes-its-own-workload reason (ResponseWrite's floor came from the
 # implicit-charset shape; the explicit arm is measured by perf-test-microbench.sh).
 #
-# Row count: MatchingBenchmark 1x1x1x{false,true}=2 + InboundDecode 1 + ResponseWrite
+# Pinned-run row count: MatchingBenchmark 1x1x1x{false,true}=2 + InboundDecode 1 + ResponseWrite
 # 1x1 = 4 rows.
 JMH_INCLUDE="${PERF_ALLOC_INCLUDE:-org\.mockserver\.benchmark\.(MatchingBenchmark|InboundDecodeBenchmark|ResponseWriteBenchmark)\.}"
 JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=EXACT -p expectationCount=100 -p logLevel=INFO -p detailedMatchFailures=false,true -p bodySize=16384 -p responseSize=16384 -p declareBodyCharset=false}"
 
+# SCAN arm (4 rows): EXACT narrows to an EMPTY candidate bucket, so the rows above
+# never run the per-candidate matching scan; HEADERS_MISS puts all 100 expectations
+# in one bucket. A separate invocation because JMH crosses every -p list (adding
+# HEADERS_MISS/WARN above would also add EXACT/WARN rows). Its budgets are
+# notify-only until ~10 runs of history exist — see perf-budgets.json.
+SCAN_JMH_INCLUDE="${PERF_ALLOC_SCAN_INCLUDE:-org\.mockserver\.benchmark\.MatchingBenchmark\.}"
+SCAN_JMH_ARGS="${PERF_ALLOC_SCAN_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=HEADERS_MISS -p expectationCount=100 -p logLevel=INFO,WARN -p detailedMatchFailures=false,true}"
+
 # EXACT expected row count — a fail-closed guard against include/param drift (a
-# renamed class, or a param that stops pinning, silently drops a row). Four rows:
-# MatchingBenchmark's two detailedMatchFailures arms, InboundDecode, ResponseWrite.
-EXPECTED_ROWS="${PERF_ALLOC_EXPECTED_ROWS:-4}"
+# renamed class, or a param that stops pinning, silently drops a row). Eight rows:
+# the four pinned rows above plus the four scan-arm rows.
+EXPECTED_ROWS="${PERF_ALLOC_EXPECTED_ROWS:-8}"
 
 RESULT_RAW="mockserver/mockserver-benchmark/target/jmh-alloc-gate.json"
+RESULT_PINNED="mockserver/mockserver-benchmark/target/jmh-alloc-gate-pinned.json"
+RESULT_SCAN="mockserver/mockserver-benchmark/target/jmh-alloc-gate-scan.json"
 
 annotate_on_failure() {
   local ec=$?
   if [ "$ec" -ne 0 ] && command -v buildkite-agent >/dev/null 2>&1; then
-    printf '%s\n' ":x: **Per-merge allocation gate FAILED** (exit ${ec}) — a benchmark allocated more bytes/op than its committed floor in perf-budgets.json, OR the gate could not measure (build/resolve failure, include matched wrong row count, missing budget). See this step's log for the per-benchmark table." \
+    printf '%s\n' ":x: **Per-merge allocation gate FAILED** (exit ${ec}) — a gating benchmark allocated more bytes/op than its committed floor in perf-budgets.json, OR the gate could not measure (build/resolve failure, include matched wrong row count, missing budget). See this step's log for the per-benchmark table." \
       | buildkite-agent annotate --style error --context perf-alloc-gate || true
   fi
 }
@@ -150,7 +164,11 @@ evaluate() {
           # describing the NON-detailed shape it was derived from. Benchmarks that do
           # not declare the param (InboundDecode, ResponseWrite) have
           # params.detailedMatchFailures==null, so they take the base key unchanged.
-          | (if (.params.detailedMatchFailures == "true") then ($cls + "_detailed") else $cls end) as $label
+          # The pinned EXACT/INFO shape keeps the base key; any other MatchingBenchmark
+          # shape (the scan arm) is qualified by its matcherType and logLevel.
+          | (if ((.params.matcherType // "EXACT") == "EXACT" and (.params.logLevel // "INFO") == "INFO")
+             then $cls else ($cls + "_" + .params.matcherType + "_" + .params.logLevel) end) as $shape
+          | (if (.params.detailedMatchFailures == "true") then ($shape + "_detailed") else $shape end) as $label
           | ("premerge_alloc." + $label + ".alloc_bytes_per_op") as $bkey
           | (.secondaryMetrics["gc.alloc.rate.norm"].score) as $alloc
           | ($b[$bkey]) as $budget
@@ -162,8 +180,12 @@ evaluate() {
               bkey: $bkey,
               floor: $floor,
               provisional: ($budget.provisional == true),
+              # Only an explicit `gating: true` fails the build; absent or false is
+              # notify-only, the same default perf-test-compare.sh applies.
+              gating: ($budget.gating == true),
               # fail-closed: a row with no bytes/op reading (gc profiler absent) or
-              # no committed floor cannot be judged, so it is a HARD failure.
+              # no committed floor cannot be judged, so it is a HARD failure even
+              # when notify-only.
               measured: (($alloc | type) == "number"),
               # A floor is only a floor if it is a NUMBER; a quoted one would make
               # every comparison below unconditionally true. The budget file is
@@ -172,13 +194,19 @@ evaluate() {
               haveFloor: ($budget != null and ($floor | type) == "number"),
               ok: (($alloc | type) == "number" and $budget != null and ($floor | type) == "number" and ($alloc <= $floor))
             }
+          | .fails = (((.measured and .haveFloor) | not) or (.gating and (.ok | not)))
+          | .notifyBreach = (.measured and .haveFloor and (.gating | not) and (.ok | not))
         ] as $rows
+      # Two rows routed to one key would let one shape mask the other under a
+      # single floor; the row count alone cannot see a dropped-plus-duplicated pair.
+      | ($rows | map(.label) | group_by(.) | map(select(length > 1) | .[0])) as $dupes
       | {
           rows: $rows,
           rowCount: ($rows | length),
           expected: $expected,
           countOk: (($rows | length) == $expected),
-          allOk: (($rows | all(.ok)) and (($rows | length) == $expected))
+          dupes: $dupes,
+          allOk: (($rows | all(.fails | not)) and (($rows | length) == $expected) and ($dupes | length) == 0)
         }
     ')"
 
@@ -186,11 +214,12 @@ evaluate() {
   echo "--- per-merge allocation gate — measured bytes/op vs committed floor"
   echo "$report" | jq -r '
     .rows[]
-    | "  " + (if .ok then ":white_check_mark:" else ":x:" end)
+    | "  " + (if .ok then ":white_check_mark:" elif .notifyBreach then ":warning:" else ":x:" end)
       + " " + .label
       + "  alloc=" + ((.alloc // 0) | floor | tostring) + " B/op"
       + "  floor=" + ((.floor // "MISSING") | tostring)
       + (if .provisional then "  (provisional)" else "" end)
+      + (if .gating then "" else "  (notify-only)" end)
       + (if (.measured | not) then "  [NO gc.alloc.rate.norm — profiler absent]" else "" end)
       + (if (.haveFloor | not) then "  [NO FLOOR in perf-budgets.json — fail-closed]" else "" end)'
 
@@ -202,13 +231,32 @@ evaluate() {
     echo "ERROR: allocation gate measured ${rowCount} benchmark row(s), expected ${expected} — include/param drift, a crashed fork, or a deliberate surface change that did not bump PERF_ALLOC_EXPECTED_ROWS." >&2
     return 1
   fi
+  if [ "$(echo "$report" | jq -r '.dupes | length')" != "0" ]; then
+    echo "ERROR: more than one benchmark row routed to the same budget key: $(echo "$report" | jq -c '.dupes') — a param that the routing in evaluate() does not qualify." >&2
+    return 1
+  fi
+
+  # A notify-only breach never fails the build, but it is never silent either:
+  # it gets its own warning annotation on every run it persists.
+  local breaches
+  breaches="$(echo "$report" | jq -r '.rows[] | select(.notifyBreach)
+    | "- " + .label + ": alloc=" + ((.alloc // 0) | floor | tostring) + " B/op > floor=" + (.floor | tostring)')"
+  if [ -n "$breaches" ]; then
+    echo "--- :warning: notify-only allocation budget(s) exceeded (not failing the build):"
+    echo "$breaches" | sed 's/^/  /'
+    if command -v buildkite-agent >/dev/null 2>&1; then
+      printf '%s\n' ":warning: **Per-merge allocation gate: notify-only budget exceeded** — these rows have no \`gating: true\` in perf-budgets.json yet, so they do not fail the build.
+
+${breaches}" | buildkite-agent annotate --style warning --context perf-alloc-gate-notify || true
+    fi
+  fi
 
   if [ "$(echo "$report" | jq -r '.allOk')" = "true" ]; then
-    echo "--- :white_check_mark: allocation gate PASSED — every benchmark within its floor"
+    echo "--- :white_check_mark: allocation gate PASSED — every gating benchmark within its floor"
     if command -v buildkite-agent >/dev/null 2>&1; then
       local tbl
-      tbl="$(echo "$report" | jq -r '.rows[] | "| " + .label + " | " + ((.alloc // 0) | floor | tostring) + " | " + ((.floor // "MISSING") | tostring) + (if .provisional then " (prov.)" else "" end) + " |"')"
-      printf '%s\n' ":white_check_mark: **Per-merge allocation gate PASSED** — every allocation benchmark within its committed floor.
+      tbl="$(echo "$report" | jq -r '.rows[] | "| " + .label + " | " + ((.alloc // 0) | floor | tostring) + " | " + ((.floor // "MISSING") | tostring) + (if .provisional then " (prov.)" else "" end) + (if .gating then "" else " (notify-only)" end) + " |"')"
+      printf '%s\n' ":white_check_mark: **Per-merge allocation gate PASSED** — every gating allocation benchmark within its committed floor.
 
 | benchmark | bytes/op | floor |
 |---|---:|---:|
@@ -217,8 +265,8 @@ ${tbl}" | buildkite-agent annotate --style success --context perf-alloc-gate || 
     return 0
   fi
 
-  echo "ERROR: allocation gate FAILED — one or more benchmarks over floor (or unmeasurable/floor-less):" >&2
-  echo "$report" | jq -r '.rows[] | select(.ok | not)
+  echo "ERROR: allocation gate FAILED — a gating benchmark over its floor, or a row with no reading or no numeric floor:" >&2
+  echo "$report" | jq -r '.rows[] | select(.fails)
     | "  - " + .label + ": alloc=" + ((.alloc // 0) | floor | tostring)
       + " B/op floor=" + ((.floor // "MISSING") | tostring)' >&2
   return 1
@@ -247,6 +295,8 @@ echo "--- building mockserver-netty + upstream (benchmark compile deps), then ru
   -w /build \
   -e "JMH_ARGS=$JMH_ARGS" \
   -e "JMH_INCLUDE=$JMH_INCLUDE" \
+  -e "SCAN_JMH_ARGS=$SCAN_JMH_ARGS" \
+  -e "SCAN_JMH_INCLUDE=$SCAN_JMH_INCLUDE" \
   -- -c '
     set -euo pipefail
     cd /build/mockserver
@@ -254,14 +304,21 @@ echo "--- building mockserver-netty + upstream (benchmark compile deps), then ru
     cd mockserver-benchmark
     mvn -q compile dependency:build-classpath -Dmdep.outputFile=target/classpath.txt -Djacoco.skip=true
     CP="target/classes:$(cat target/classpath.txt)"
+    rm -f target/jmh-alloc-gate-pinned.json target/jmh-alloc-gate-scan.json
     # shellcheck disable=SC2086
-    java -cp "$CP" org.openjdk.jmh.Main "$JMH_INCLUDE" $JMH_ARGS -rf json -rff target/jmh-alloc-gate.json
+    java -cp "$CP" org.openjdk.jmh.Main "$JMH_INCLUDE" $JMH_ARGS -rf json -rff target/jmh-alloc-gate-pinned.json
+    # shellcheck disable=SC2086
+    java -cp "$CP" org.openjdk.jmh.Main "$SCAN_JMH_INCLUDE" $SCAN_JMH_ARGS -rf json -rff target/jmh-alloc-gate-scan.json
   '
 
-if [ ! -f "$REPO_ROOT/$RESULT_RAW" ]; then
-  echo "ERROR: JMH did not produce $RESULT_RAW" >&2
-  exit 1
-fi
+for part in "$RESULT_PINNED" "$RESULT_SCAN"; do
+  if [ ! -f "$REPO_ROOT/$part" ]; then
+    echo "ERROR: JMH did not produce $part" >&2
+    exit 1
+  fi
+done
+# One result file, so evaluate() and the PERF_ALLOC_JMH_RESULT hook see every row.
+jq -s 'add' "$REPO_ROOT/$RESULT_PINNED" "$REPO_ROOT/$RESULT_SCAN" > "$REPO_ROOT/$RESULT_RAW"
 
 if command -v buildkite-agent >/dev/null 2>&1; then
   buildkite-agent artifact upload "$RESULT_RAW" || true
