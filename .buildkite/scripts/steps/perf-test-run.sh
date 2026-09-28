@@ -675,7 +675,7 @@ if [ "$CORES" -ge 16 ]; then
   # PERF_SERVER_CPUS and the guard re-proves disjointness for whatever is active.
   #
   # Changing this cpuset breaks comparability of the stored saturation series and
-  # nothing in the tooling announces it; see docs/plans/memory-optimisation-programme.md.
+  # nothing in the tooling announces it; see docs/code/performance-measurement.md#saturation-series-comparability-break.
   #
   # In use (6-vCPU arm): 6 (server) + 1 (upstream) + 17 (k6) physical cores, highest
   # id 23, so the box needs 24 physical cores; c5.12xlarge has exactly 24. A smaller
