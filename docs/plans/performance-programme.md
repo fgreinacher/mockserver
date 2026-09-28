@@ -21,7 +21,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | rig A/B series in progress (builds 486 onward: compact headers, leak detection off, pooled allocator); items 16–17 below |
+| 2 | Tuning candidates | rig A/B series in progress (builds 491 onward: leak detection off, pooled allocator); items 16–17 below |
 
 ## Decided against
 
@@ -42,6 +42,10 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 - **Changing the worker event-loop count from 5** — on the 6-core perf server, 4, 8 and 12 loops peaked at
   59,578, 59,594 and 59,484 rps against 59,805 for the default 5 (builds 485, 483, 484, 482), within
   run-to-run noise, with the same median latency at every rate.
+- **Compact object headers (`-XX:+UseCompactObjectHeaders`) in the JDK 25/26 images** — build 486 peaked at
+  59,603 rps with the same median latency as the default-header runs (59,484–59,805, builds 482–485), and
+  its end-of-growth heap low (438 MB) sat inside their 442–598 MB spread. A local workload also showed no
+  live-set change, so the saving does not justify changing six images and the AppCDS archive training.
 - **`-XX:InitialRAMPercentage=60` as an image default** — commits 60% of the container up front,
   raising idle memory for the many short-lived test containers; users with sustained load can set it.
 
@@ -56,11 +60,10 @@ worker loops, 10% on the event-log thread.
 ### Remaining candidates
 
 Candidates 2–5, 7–10 and 15 from the original list landed (see `changelog.md` and git history);
-candidates 1 and 6 were declined (see [Decided against](#decided-against)).
+candidates 1, 6 and 11 were declined (see [Decided against](#decided-against)).
 
 | # | Candidate | What is known | Next step |
 |---|---|---|---|
-| 11 | Compact object headers (`-XX:+UseCompactObjectHeaders`, JDK 25+) for the ZGC JDK 25/26 images | Implemented and smoke-tested in a held branch; archive maps when trained with the flag; header 16 → 8 bytes confirmed, but a local MockServer workload showed no measurable live-set change | Running (rig A/B); if it ships, the held image change lands with the approved `docker_compose_appcds_archive_mapped` flag addition |
 | 12 | Netty leak detection left at its default (SIMPLE) in the images | CI runs paranoid leak detection and fails on any leak, so the production signal is marginal | Running (rig A/B with `-Dio.netty.leakDetection.level=disabled`) |
 | 13 | Two `ByteBuf` allocator families live | Confirmed: HTTP/2 child stream channels use Netty 4.2's adaptive default while everything else is pinned to `PooledByteBufAllocator` | Running (rig A/B with `-Dio.netty.allocator.type=pooled`), judged on RSS and throughput |
 | 16 | Graduate the per-merge alloc gate's `HEADERS_MISS` scan arm (four rows: INFO/WARN × `detailedMatchFailures` false/true) from notify-only to gating | Scan arm shipped: it runs on every Java build, notify-only, against provisional floors (`premerge_alloc.MatchingBenchmark_HEADERS_MISS_*`); see [performance-measurement.md](../code/performance-measurement.md#perf-alloc-gatesh--per-merge-allocation-floors) | Once ~10 gate runs exist, set each floor from their `jmh-alloc-gate.json` artifacts (median + 3 × 1.4826 × MAD) and add `gating: true` (control-class budget change, needs approval) |
