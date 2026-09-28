@@ -44,7 +44,7 @@ Both `maxLogEntries` and `maxExpectations` are computed from the JVM heap **ceil
 ### Formula
 
 ```
-heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling, -Xmx)
+heapAvailableInKB = maxHeap / 1024 - 20480      (maxHeap is the heap ceiling the JVM reports, see below)
 
 maxLogEntries          = min(heapAvailableInKB / 8, 250000)          (entry-count bound)
 maxExpectations        = min(heapAvailableInKB / 10, 15000)
@@ -75,7 +75,7 @@ maxEventLogSizeInBytes = (heapAvailableInKB / 12) * 1024 at INFO/DEBUG/TRACE   (
 | Ring buffer default resolution | `ConfigurationProperties.java` | `resolveRingBufferSize(int)` |
 | `maxEventLogSizeInBytes()` default | `ConfigurationProperties.java` | `defaultMaxEventLogSizeInBytes(long, Level)` |
 | Level-aware rendering check | `ConfigurationProperties.java` | `rendersEveryLogEntry(Level)` |
-| Heap measurement | `MemoryMonitoring.java` | `getJVMMemory()` |
+| Heap ceiling source | `ConfigurationProperties.java` | `heapAvailableInKB()` (`MemoryMXBean` heap max and `Runtime.maxMemory()`) |
 
 ### Example: Default Limits by Heap Size
 
@@ -135,13 +135,42 @@ This was previously a real defect. The budget used to be `(maxHeap − usedHeap)
 
 Note the change moves the basis from "size to currently-free heap" to "size to the heap the JVM is allowed" — the default now over-provisions slightly relative to free memory on a heavily-used small heap, deterministically. Deployments that need a smaller store set `mockserver.maxLogEntries` / `mockserver.maxExpectations` explicitly (which is unaffected by this change and always wins).
 
+### How the Heap Ceiling Is Read
+
+`heapAvailableInKB()` takes the ceiling from the **whole-heap** figures the JVM reports:
+`ManagementFactory.getMemoryMXBean().getHeapMemoryUsage().getMax()` and `Runtime.maxMemory()`. When both
+are defined it uses the smaller. On HotSpot both return the collector's own `max_capacity()`, so they
+are equal. The "smaller wins" rule is there so that a source that over-reports cannot inflate the defaults.
+
+It must **never sum the heap memory pools** (`MemoryPoolMXBean`), because pools can overlap. Generational
+ZGC (JDK 21 with `+ZGenerational`, and plain `+UseZGC` on JDK 23+) reports the full `-Xmx` as the max of
+**both** its young and old pools. Summing the pools therefore doubled the ceiling and every default
+derived from it. The Docker images default to ZGC on JDK 25+, so they were affected. So was any user who
+ran generational ZGC themselves. The same rule applies to the heap columns of the memory-usage CSV
+(`MemoryMonitoring`): `heapMaxAllowed` / `heapCommitted` / `heapUsed` / `heapInitialAllocation` come from
+the `MemoryMXBean`. Only the non-heap columns still sum pools.
+
+Measured at `-Xmx1g` (heap ceiling in bytes; eclipse-temurin 21/25 in Docker and a local JDK 17):
+
+| Collector | Summed pool max (old basis) | Whole-heap max (current basis) | `heapAvailableInKB` old → new |
+|-----------|----------------------------|--------------------------------|-------------------------------|
+| G1 | 1,073,741,822 (Eden/Survivor report `-1`) | 1,073,741,824 | 1,028,095 → 1,028,096 |
+| ZGC, non-generational (JDK 17/21) | 1,073,741,824 | 1,073,741,824 | unchanged |
+| ZGC, generational (JDK 21 `+ZGenerational`, JDK 25) | **2,147,483,648** | 1,073,741,824 | **2,076,672 → 1,028,096** |
+| Shenandoah | 1,073,741,824 | 1,073,741,824 | unchanged |
+| Serial | 1,037,959,168 | 1,037,959,168 | unchanged |
+| Parallel | 1,048,576,000–1,068,498,944 (depends on CPU count) | 954,728,448 | ~1,003,520–1,022,976 → 911,872 |
+
+Under Parallel the pool sum counts one survivor space that the collector's own ceiling excludes, so the
+Parallel defaults drop by about 9–11%. This is a correction in the conservative direction.
+
 ### Undefined Heap Max (JMX `getMax()` = -1)
 
-The JMX spec allows `MemoryUsage.getMax()` to return **-1 (undefined)**. In some environments the aggregated heap-pool max reports as `-1`/`0` — verified on a **GraalVM native image** of the shaded jar, and possible in exotic JVM/WAR setups. Left unguarded, `max / 1024 - 20480` would then be a large **negative** number, driving `maxExpectations`/`maxLogEntries` to `<= 0` — so the expectation store and log ring buffer silently drop everything (`PUT /mockserver/expectation` returns 201 but the expectation never matches; "Log event ring buffer full" at startup).
+The JMX spec allows `MemoryUsage.getMax()` to return **-1 (undefined)**. In some environments the JMX heap max reports as `-1`/`0` — verified on a **GraalVM native image** of the shaded jar, and possible in exotic JVM/WAR setups. Left unguarded, `max / 1024 - 20480` would then be a large **negative** number, driving `maxExpectations`/`maxLogEntries` to `<= 0` — so the expectation store and log ring buffer silently drop everything (`PUT /mockserver/expectation` returns 201 but the expectation never matches; "Log event ring buffer full" at startup).
 
 `heapAvailableInKB()` is therefore robust to an undefined heap max (see `computeHeapAvailableInKB(...)`):
 
-1. When the aggregated JMX heap max is `<= 0`, it falls back to `Runtime.maxMemory()` for the ceiling. (`Runtime.maxMemory()` may be `Long.MAX_VALUE` when the heap is unbounded — the result stays non-negative and the very large value is clamped by the `min(..., cap)` in the callers.)
+1. When the JMX heap max is `<= 0`, it falls back to `Runtime.maxMemory()` for the ceiling (and vice versa). (`Runtime.maxMemory()` may be `Long.MAX_VALUE` when the heap is unbounded — the result stays non-negative and the very large value is clamped by the `min(..., cap)` in the callers.)
 2. When neither JMX nor `Runtime` yields a usable ceiling, it returns `0`.
 3. The result is **floored at 0** — never negative.
 

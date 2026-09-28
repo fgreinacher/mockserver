@@ -8,6 +8,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.closeTo;
 import static org.hamcrest.Matchers.lessThan;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 
 /**
  * Unit tests for the heap-based sizing of {@code maxLogEntries} / {@code maxExpectations} defaults.
@@ -19,7 +21,8 @@ import static org.hamcrest.Matchers.greaterThan;
  * silently shrank the capacity of every store for the rest of the JVM (silent ring-buffer eviction, and a
  * later {@code verify} that stops finding what it should). Sizing off the fixed ceiling makes the default
  * deterministic and independent of allocation history. These tests lock that contract, plus the robustness
- * to an undefined JMX heap-pool max (-1), e.g. in a GraalVM native image.
+ * to an undefined JMX heap max (-1), e.g. in a GraalVM native image, and to heap pools that overlap
+ * (generational ZGC), which must never be summed into the ceiling.
  * <p>
  * These tests exercise the pure package-private seams
  * ({@link ConfigurationProperties#computeHeapAvailableInKB(long, long)} and
@@ -27,8 +30,8 @@ import static org.hamcrest.Matchers.greaterThan;
  * global {@code ConfigurationProperties} state and can run in the parallel Surefire phase.
  */
 // @ParallelStateGuardSuppress: only calls the pure static functions computeHeapAvailableInKB(...) and
-// heapBasedDefaultOrFloor(...) (the guard's setter pattern false-positives on them); no global
-// ConfigurationProperties state is read or mutated.
+// heapBasedDefaultOrFloor(...) (the guard's setter pattern false-positives on them), plus
+// heapAvailableInKB(), which reads only the JVM; no global ConfigurationProperties state is read or mutated.
 public class HeapAvailableSizingTest {
 
     private static final long BASE_KB = ConfigurationProperties.BASE_MEMORY_IN_KB; // 20 MB reservation
@@ -36,17 +39,58 @@ public class HeapAvailableSizingTest {
     // ----- computeHeapAvailableInKB: derives from the heap ceiling, not free heap -----
 
     @Test
-    public void shouldComputeBudgetFromJmxCeilingWhenMaxDefined() {
-        // given a normal JVM: 512 MB heap ceiling (the Runtime fallback must be ignored when JMX is usable)
+    public void shouldComputeBudgetFromHeapCeilingWhenMaxDefined() {
+        // given a normal HotSpot JVM: JMX and Runtime agree on a 512 MB heap ceiling
         long maxBytes = 512L * 1024 * 1024;
 
         // when
-        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(maxBytes, 1L);
+        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(maxBytes, maxBytes);
 
-        // then it uses the JMX ceiling: 512 MB / 1024 - 20 MB reservation (no dependence on used heap)
+        // then 512 MB / 1024 - 20 MB reservation (no dependence on used heap)
         long expected = (maxBytes / 1024L) - BASE_KB;
         assertThat(availableKB, is(expected));
         assertThat(availableKB, is(greaterThan(0L)));
+    }
+
+    @Test
+    public void shouldNotDoubleTheCeilingWhenJmxReportsTheSumOfOverlappingGenerationalZgcPools() {
+        // Generational ZGC (JDK 21 +ZGenerational, JDK 23+ +UseZGC) reports the full -Xmx as the max of
+        // BOTH its young and old pools, so summing the heap pools gives 2x the real ceiling.
+        long xmx = 1024L * 1024 * 1024;
+        long summedZgcPools = xmx + xmx;
+
+        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(summedZgcPools, xmx);
+
+        assertThat(availableKB, is((xmx / 1024L) - BASE_KB));
+        assertThat(availableKB, is(1_028_096L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(availableKB, Level.WARN), is(131_596_288L));
+        assertThat(ConfigurationProperties.heapBasedDefaultOrFloor(availableKB, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES), is(128_512));
+        // symmetric: whichever source over-reports, the smaller defined ceiling wins
+        assertThat(ConfigurationProperties.computeHeapAvailableInKB(xmx, summedZgcPools), is(availableKB));
+    }
+
+    @Test
+    public void shouldUseJmxCeilingWhenRuntimeMaxIsUndefined() {
+        long jmxMax = 256L * 1024 * 1024;
+
+        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(jmxMax, -1L);
+
+        assertThat(availableKB, is((jmxMax / 1024L) - BASE_KB));
+    }
+
+    @Test
+    public void shouldNeverExceedThisJvmsOwnHeapCeiling() {
+        // Live check against the running JVM: whatever the collector, the budget must be derived from
+        // (at most) Runtime.maxMemory(), never from a sum of heap pools that can exceed it. The JVM running
+        // this test decides which collector is exercised; run with generational ZGC to cover that case.
+        long runtimeCeilingKB = (Runtime.getRuntime().maxMemory() / 1024L) - BASE_KB;
+        long toleranceKB = 1024L;
+
+        long availableKB = ConfigurationProperties.heapAvailableInKB();
+
+        assertThat(availableKB, is(greaterThan(0L)));
+        assertThat(availableKB, is(lessThanOrEqualTo(runtimeCeilingKB + toleranceKB)));
+        assertThat(availableKB, is(greaterThanOrEqualTo(runtimeCeilingKB - toleranceKB)));
     }
 
     @Test
@@ -116,7 +160,7 @@ public class HeapAvailableSizingTest {
         long maxBytes = 10L * 1024 * 1024;
 
         // when
-        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(maxBytes, 1L);
+        long availableKB = ConfigurationProperties.computeHeapAvailableInKB(maxBytes, maxBytes);
 
         // then floored at zero (10 MB ceiling - 20 MB reservation would be negative)
         assertThat(availableKB, is(0L));

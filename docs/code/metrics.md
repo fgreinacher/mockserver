@@ -565,6 +565,8 @@ Lifecycle mirrors the OTLP exporter: `PrometheusRemoteWriteExporter.startIfEnabl
 | `nonHeapCommitted` | JVM non-heap committed (bytes) |
 | `nonHeapMaxAllowed` | JVM non-heap max allowed (bytes) |
 
+The four `heap*` columns come from `MemoryMXBean.getHeapMemoryUsage()` (so `heapInitialAllocation` is the initial heap size, `-Xms`). They are never a sum of heap memory pools, because pools can overlap: generational ZGC reports the full `-Xmx` as the max of both its young and old pools. The `nonHeap*` columns are still the sum of the non-heap pools. See [memory-management.md → How the Heap Ceiling Is Read](memory-management.md#how-the-heap-ceiling-is-read).
+
 ## Key Classes
 
 | Class | Module | Path |

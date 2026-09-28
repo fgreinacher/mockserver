@@ -14,7 +14,9 @@ import java.util.List;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.arrayWithSize;
 import static org.hamcrest.Matchers.greaterThan;
+import static org.hamcrest.Matchers.greaterThanOrEqualTo;
 import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.lessThanOrEqualTo;
 import static org.mockserver.configuration.Configuration.configuration;
 
 /**
@@ -41,6 +43,7 @@ public class MemoryMonitoringTest {
     );
     // Index of the heapUsed column within a CSV row (JVM heap in use is always a positive number).
     private static final int HEAP_USED_COLUMN_INDEX = EXPECTED_HEADER_KEYS.indexOf("heapUsed");
+    private static final int HEAP_MAX_ALLOWED_COLUMN_INDEX = EXPECTED_HEADER_KEYS.indexOf("heapMaxAllowed");
 
     @Rule
     public final TemporaryFolder temporaryFolder = new TemporaryFolder();
@@ -89,6 +92,25 @@ public class MemoryMonitoringTest {
         // and - the heapUsed column holds a real, positive numeric heap value
         long heapUsed = Long.parseLong(dataColumns[HEAP_USED_COLUMN_INDEX].trim());
         assertThat("heapUsed should be a positive number of bytes", heapUsed, greaterThan(0L));
+    }
+
+    @Test
+    public void shouldReportTheJvmsOwnHeapCeilingAsHeapMaxAllowed() throws Exception {
+        // Live check: heapMaxAllowed must be this JVM's heap ceiling under any collector, never a sum of
+        // heap pools (which doubles it under generational ZGC, whose young and old pools both report -Xmx).
+        Configuration configuration = configuration()
+            .outputMemoryUsageCsv(true)
+            .memoryUsageCsvDirectory(temporaryFolder.getRoot().getAbsolutePath());
+        MemoryMonitoring memoryMonitoring = new MemoryMonitoring(configuration, null, null);
+
+        memoryMonitoring.logMemoryMetrics();
+
+        String[] dataColumns = readLines(singleCsvFile()).get(1).split(",", -1);
+        long heapMaxAllowed = Long.parseLong(dataColumns[HEAP_MAX_ALLOWED_COLUMN_INDEX].trim());
+        long runtimeMax = Runtime.getRuntime().maxMemory();
+        long tolerance = 1024L * 1024L;
+        assertThat(heapMaxAllowed, lessThanOrEqualTo(runtimeMax + tolerance));
+        assertThat(heapMaxAllowed, greaterThanOrEqualTo(runtimeMax - tolerance));
     }
 
     @Test

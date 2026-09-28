@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryPoolMXBean;
 import java.lang.management.MemoryType;
+import java.lang.management.MemoryUsage;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -82,6 +83,11 @@ public class MemoryMonitoring implements MockServerLogListener, MockServerMatche
         }
     }
 
+    /**
+     * Sums the memory pools of the given type. Do not use it for a heap ceiling: heap pools can overlap
+     * (generational ZGC reports the full {@code -Xmx} as the max of both its young and old pools), so
+     * the summed max can be twice the real one. Use {@code MemoryMXBean#getHeapMemoryUsage()} instead.
+     */
     public static Summary getJVMMemory(MemoryType heap) {
         return new Summary(memoryPoolMXBeans.stream().filter(bean -> bean.getType() == heap).collect(Collectors.toList()));
     }
@@ -109,7 +115,8 @@ public class MemoryMonitoring implements MockServerLogListener, MockServerMatche
     }
 
     private List<ImmutablePair<String, Object>> buildStatistics() {
-        Summary heap = getJVMMemory(MemoryType.HEAP);
+        // Whole-heap MXBean, not getJVMMemory(HEAP): heap pools can overlap (see getJVMMemory).
+        MemoryUsage heap = ManagementFactory.getMemoryMXBean().getHeapMemoryUsage();
         Summary nonHeap = getJVMMemory(MemoryType.NON_HEAP);
         List<ImmutablePair<String, Object>> memoryStatistics = new ArrayList<>();
         memoryStatistics.add(ImmutablePair.of("mockServerPort", getPort()));
@@ -117,10 +124,10 @@ public class MemoryMonitoring implements MockServerLogListener, MockServerMatche
         memoryStatistics.add(ImmutablePair.of("maxLogEntries", configuration.maxLogEntries()));
         memoryStatistics.add(ImmutablePair.of("expectationsSize", currentExpectationsCount.get()));
         memoryStatistics.add(ImmutablePair.of("maxExpectations", configuration.maxExpectations()));
-        memoryStatistics.add(ImmutablePair.of("heapInitialAllocation", heap.getNet().getInit()));
-        memoryStatistics.add(ImmutablePair.of("heapUsed", heap.getNet().getUsed()));
-        memoryStatistics.add(ImmutablePair.of("heapCommitted", heap.getNet().getCommitted()));
-        memoryStatistics.add(ImmutablePair.of("heapMaxAllowed", heap.getNet().getMax()));
+        memoryStatistics.add(ImmutablePair.of("heapInitialAllocation", heap.getInit()));
+        memoryStatistics.add(ImmutablePair.of("heapUsed", heap.getUsed()));
+        memoryStatistics.add(ImmutablePair.of("heapCommitted", heap.getCommitted()));
+        memoryStatistics.add(ImmutablePair.of("heapMaxAllowed", heap.getMax()));
         memoryStatistics.add(ImmutablePair.of("nonHeapInitialAllocation", nonHeap.getNet().getInit()));
         memoryStatistics.add(ImmutablePair.of("nonHeapUsed", nonHeap.getNet().getUsed()));
         memoryStatistics.add(ImmutablePair.of("nonHeapCommitted", nonHeap.getNet().getCommitted()));
