@@ -39,6 +39,9 @@ public class Configuration {
 
     // logging
     private Level logLevel;
+    // Memo of the JVM-wide logLevel default, re-resolved when ConfigurationProperties.modificationCount()
+    // changes. The value may be null (OFF), so the holder reference, not the value, marks "resolved".
+    private volatile ResolvedLogLevel resolvedLogLevel;
     private Consumer<LogEntry> logEventListener;
     private Boolean disableSystemOut;
     private Boolean disableLogging;
@@ -461,10 +464,21 @@ public class Configuration {
 
 
     public Level logLevel() {
-        if (logLevel == null) {
-            return ConfigurationProperties.logLevel();
+        Level instanceLevel = logLevel;
+        if (instanceLevel != null) {
+            return instanceLevel;
         }
-        return logLevel;
+        // Called 5-10 times per request; runtime changes still apply because every property write bumps
+        // modificationCount.
+        long generation = ConfigurationProperties.modificationCount();
+        ResolvedLogLevel memo = resolvedLogLevel;
+        if (memo != null && memo.generation == generation) {
+            return memo.value;
+        }
+        Level resolved = ConfigurationProperties.logLevel();
+        // Two threads re-resolving the same generation compute the same value, so the race is benign.
+        resolvedLogLevel = new ResolvedLogLevel(generation, resolved);
+        return resolved;
     }
 
     /**
@@ -474,6 +488,7 @@ public class Configuration {
      */
     public Configuration logLevel(Level level) {
         this.logLevel = level;
+        this.resolvedLogLevel = null;
         return this;
     }
 
@@ -484,6 +499,7 @@ public class Configuration {
      */
     public Configuration logLevel(String level) {
         this.logLevel = Level.valueOf(level);
+        this.resolvedLogLevel = null;
         return this;
     }
 
@@ -1648,6 +1664,20 @@ public class Configuration {
         private final Map<String, String> value;
 
         private ResolvedLogLevelOverrides(long generation, Map<String, String> value) {
+            this.generation = generation;
+            this.value = value;
+        }
+    }
+
+    /**
+     * Immutable (resolved-value, generation) pair for the memoised {@link #logLevel()} fall-through,
+     * published atomically behind a single volatile reference. {@code value} may be null (log level OFF).
+     */
+    private static final class ResolvedLogLevel {
+        private final long generation;
+        private final Level value;
+
+        private ResolvedLogLevel(long generation, Level value) {
             this.generation = generation;
             this.value = value;
         }

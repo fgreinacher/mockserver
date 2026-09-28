@@ -6405,14 +6405,14 @@ public class ConfigurationProperties {
         return inetSocketAddress;
     }
 
-    private static Integer readIntegerProperty(String key, String environmentVariableKey, int defaultValue) {
+    private static int readIntegerProperty(String key, String environmentVariableKey, int defaultValue) {
         try {
-            return Integer.parseInt(readPropertyHierarchically(PROPERTIES, key, environmentVariableKey, "" + defaultValue));
+            return Integer.parseInt(readPropertyHierarchically(PROPERTIES, key, environmentVariableKey, defaultValue));
         } catch (NumberFormatException nfe) {
             LoggerHolder.LOGGER.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("NumberFormatException converting " + key + " with value [" + readPropertyHierarchically(PROPERTIES, key, environmentVariableKey, "" + defaultValue) + "]")
+                    .setMessageFormat("NumberFormatException converting " + key + " with value [" + readPropertyHierarchically(PROPERTIES, key, environmentVariableKey, defaultValue) + "]")
                     .setThrowable(nfe)
             );
             return defaultValue;
@@ -6833,6 +6833,18 @@ public class ConfigurationProperties {
         System.clearProperty(systemPropertyKey);
         // Bump LAST so a reader that sees the new count also sees the cache/System-property writes above.
         MODIFICATION_COUNT.incrementAndGet();
+    }
+
+    // int-default variant that avoids materialising the default as a String on the common cache-hit
+    // path. readIntegerProperty is called per request (e.g. maxLoggedBodyBytes), and building
+    // "" + defaultValue on every call was profiled as a meaningful share of allocation; the resolved
+    // value is cached after the first read, so the default string is only ever needed on a miss.
+    private static String readPropertyHierarchically(Properties properties, String systemPropertyKey, String environmentVariableKey, int defaultValue) {
+        String cachedPropertyValue = getPropertyCache().get(systemPropertyKey);
+        if (cachedPropertyValue != null) {
+            return cachedPropertyValue;
+        }
+        return readPropertyHierarchically(properties, systemPropertyKey, environmentVariableKey, Integer.toString(defaultValue));
     }
 
     private static String readPropertyHierarchically(Properties properties, String systemPropertyKey, String environmentVariableKey, String defaultValue) {

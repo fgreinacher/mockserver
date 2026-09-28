@@ -112,6 +112,44 @@ public class ConfigurationTest {
         }
     }
 
+    /**
+     * {@code MockServerLogger.isEnabledForInstance} resolves the effective level through
+     * {@code Configuration.logLevel()} 5-10 times per request. That getter memoises the JVM-wide
+     * fall-through so it is not re-read per call — this proves the memo still reflects a RUNTIME change
+     * of the global level (a live change is never a silent no-op), and that dropping an instance override
+     * re-resolves to the current global. Guards against re-introducing the "resolve once and freeze"
+     * caching bug.
+     */
+    @Test
+    public void shouldReflectRuntimeChangeToLogLevelViaMemoisedInstanceGetter() {
+        String original = ConfigurationProperties.logLevel().name();
+        try {
+            ConfigurationProperties.logLevel("WARN");
+
+            // resolve once through the memoised fall-through getter (no instance override) — memoises WARN
+            assertThat(configuration.logLevel(), equalTo(Level.WARN));
+
+            // change the global level at runtime — the memo MUST re-resolve, not serve the frozen WARN
+            ConfigurationProperties.logLevel("ERROR");
+            assertThat(configuration.logLevel(), equalTo(Level.ERROR));
+
+            // change again — proves it is not frozen to the first non-default resolution either
+            ConfigurationProperties.logLevel("DEBUG");
+            assertThat(configuration.logLevel(), equalTo(Level.DEBUG));
+
+            // an instance override wins over the global default...
+            configuration.logLevel(Level.TRACE);
+            assertThat(configuration.logLevel(), equalTo(Level.TRACE));
+
+            // ...and dropping it re-resolves to the current global (which changed while masked)
+            ConfigurationProperties.logLevel("INFO");
+            configuration.logLevel((Level) null);
+            assertThat(configuration.logLevel(), equalTo(Level.INFO));
+        } finally {
+            ConfigurationProperties.logLevel(original);
+        }
+    }
+
     @Test
     public void shouldSetAndGetDisableSystemOut() {
         boolean original = ConfigurationProperties.disableSystemOut();

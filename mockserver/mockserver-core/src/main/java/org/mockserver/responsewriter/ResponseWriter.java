@@ -35,14 +35,25 @@ public abstract class ResponseWriter {
 
     protected final Configuration configuration;
     protected final MockServerLogger mockServerLogger;
-    private final CORSHeaders corsHeaders;
+    // CORS headers are only added for control-plane / dashboard responses or when
+    // enableCORSForAllResponses is on (both off for default mock traffic), so the CORSHeaders
+    // resolution — five configuration lookups and a String concat — is built lazily on first use
+    // rather than for every per-request ResponseWriter. A ResponseWriter serves a single request flow,
+    // so no locking is needed.
+    private CORSHeaders corsHeaders;
     private final DefaultResponseHeaders defaultResponseHeaders;
 
     protected ResponseWriter(Configuration configuration, MockServerLogger mockServerLogger) {
         this.configuration = configuration;
         this.mockServerLogger = mockServerLogger;
-        corsHeaders = new CORSHeaders(configuration);
         defaultResponseHeaders = new DefaultResponseHeaders(configuration);
+    }
+
+    private CORSHeaders corsHeaders() {
+        if (corsHeaders == null) {
+            corsHeaders = new CORSHeaders(configuration);
+        }
+        return corsHeaders;
     }
 
     public void writeResponse(final HttpRequest request, final HttpResponseStatus responseStatus) {
@@ -71,7 +82,7 @@ public abstract class ResponseWriter {
         // enableCORSForAPI. Mock/proxy responses (apiResponse == false) remain governed solely by
         // enableCORSForAllResponses so mocked APIs are unaffected unless explicitly opted in.
         if (configuration.enableCORSForAllResponses() || apiResponse) {
-            corsHeaders.addCORSHeaders(request, response);
+            corsHeaders().addCORSHeaders(request, response);
         }
         // Stamp the configured default response headers (add-if-absent) onto every response
         // MockServer returns - mock responses, control-plane / dashboard responses, and
