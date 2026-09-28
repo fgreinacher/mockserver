@@ -39,26 +39,26 @@ These are the heuristics maintainers reach for when tuning real workloads. They 
 
 ## JVM flags
 
-The maven CI build agent invokes the JVM with `-Xms2048m -Xmx6144m` (see `scripts/buildkite_quick_build.sh`). For production-like load testing, set both `-Xms` and `-Xmx` to the same value to avoid heap-resize stalls during the run. The shipped Dockerfiles do not set heap defaults — `JAVA_OPTS` from the container environment wins.
+The maven CI build agent invokes the JVM with `-Xms2048m -Xmx6144m` (see `scripts/buildkite_quick_build.sh`). For production-like load testing, set both `-Xms` and `-Xmx` to the same value to avoid heap-resize stalls during the run.
 
-A heap dump on OOM is *not* enabled by default; for triage runs add `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/mockserver/` via `JAVA_OPTS`.
+**Docker image heap and GC defaults.** The shipped Docker images cap the JVM heap at 60% of the container memory limit (`-XX:MaxRAMPercentage=60.0` hard-coded in the ENTRYPOINT) and default to ZGC via `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"` (the standard and local images run JDK 26; the root, snapshot and GraalJS images run JDK 25 — ZGC is generational by default on both). The `-clustered` image uses `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC -XX:+ZGenerational"` (JDK 21 base, where ZGenerational must be set explicitly). The `-aot` image keeps G1 (no `JAVA_TOOL_OPTIONS`; see `docker/aot/Dockerfile`). To override the GC or set an explicit heap, set `JAVA_TOOL_OPTIONS` on the container — it replaces the default entirely, so include `-XX:+UseZGC` if you still want it. Setting `-Xmx` disables `MaxRAMPercentage`; choose one mechanism. Passing a different `MaxRAMPercentage` via `JAVA_TOOL_OPTIONS` does not work: the ENTRYPOINT flag is applied last and wins. For the standalone JAR the JVM default collector (G1) is used unless you pass flags yourself.
+
+A heap dump on OOM is *not* enabled by default; for triage runs add `-XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/var/log/mockserver/` via `JAVA_OPTS` (standalone JAR) or `JAVA_TOOL_OPTIONS` (Docker).
 
 ### GC selection
 
 ZGC has been production-ready since Java 17. For latency-sensitive deployments — particularly those running with large `maxLogEntries` (deep event ring buffers) — `-XX:+UseZGC` typically holds stop-the-world pauses in the single-digit millisecond range (1–5 ms) regardless of heap size, where G1 (the server-class default) commonly sits in the 50–200 ms range during mixed cycles under sustained allocation.
 
-**Which ZGC you get depends on the JVM.** The Docker images bundle Java 25 or later, where ZGC is *generational* and `-XX:+UseZGC` alone selects it. The separate `-XX:+ZGenerational` flag was removed in JDK 24: passing it does no harm but has no effect — the JVM logs `Ignoring option ZGenerational; support was removed in 24.0` and starts normally — so drop it from your flags. On your own Java 17 JVM, `-XX:+UseZGC` gives the older non-generational collector, whose pauses are single-digit milliseconds rather than the sub-millisecond figures generational ZGC reaches.
+**Which ZGC you get depends on the JVM.** The Docker images (other than `-clustered`) bundle Java 25 or 26, where ZGC is *generational* and `-XX:+UseZGC` alone selects it. The separate `-XX:+ZGenerational` flag was removed in JDK 24: passing it does no harm but has no effect — the JVM logs `Ignoring option ZGenerational; support was removed in 24.0` and starts normally — so drop it from your flags on the main images. On the `-clustered` image (JDK 21) `-XX:+ZGenerational` is already set. On your own Java 17 JVM, `-XX:+UseZGC` gives the older non-generational collector, whose pauses are single-digit milliseconds rather than the sub-millisecond figures generational ZGC reaches.
 
 These numbers are based on typical GC behaviour, not MockServer-specific benchmarks. Use the `mockserver-performance-test/` k6 harness with `mockserver.outputMemoryUsageCsv=true` to confirm your workload before switching.
 
-Rules of thumb:
-- **Heap < 2 GB:** stay on the default (G1). ZGC's fixed overhead isn't worth it.
-- **Heap 2–4 GB:** G1 (the default) is fine for almost everything. Switch to ZGC only if you've measured GC pauses showing up on the matcher path.
+Rules of thumb for the **standalone JAR** (Docker images already use ZGC by default):
+- **Heap < 2 GB:** stay on G1 (the JDK default). ZGC's fixed overhead is not worth it for small heaps.
+- **Heap 2–4 GB:** G1 is fine for almost everything. Switch to ZGC only if you've measured GC pauses on the matcher path.
 - **Heap ≥ 4 GB and p99 latency matters:** add `-XX:+UseZGC` via `JAVA_OPTS`. Set `-Xms` and `-Xmx` to the same value (e.g. `-Xms4g -Xmx4g`) so the heap is pre-committed.
 
 In containerised deployments, size the container memory limit at least ~1.5× the `-Xmx` value when using ZGC. The kernel OOM-killer reacts to physical memory (RSS), not virtual address space — what eats RSS beyond `-Xmx` is the JVM's own overhead (code cache, metaspace, JIT, thread stacks) plus Netty's direct buffer pool. ZGC adds a further wrinkle on some cgroup setups: it multi-maps the same physical pages for its coloured-pointer scheme, and under certain RSS-accounting modes those pages are counted multiple times against the cgroup limit, so the kernel can OOM-kill the process even though the actual physical footprint fits. Example: `-Xmx4g` → `--memory=6g`.
-
-ZGC is not the default because (a) MockServer's typical deployment is a small fixture in a test pipeline where G1 is fine, and (b) ZGC adds a fixed memory overhead that hurts small-heap scenarios.
 
 Shenandoah is deliberately omitted: it has been production-ready since OpenJDK 15 (JEP 379) and is therefore available in OpenJDK 17, but it is absent from Oracle JDK 17 and not universally available across all JDK distributions. ZGC is the simpler recommendation because it ships in every JDK 17 distribution MockServer supports.
 

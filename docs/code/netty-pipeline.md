@@ -64,7 +64,7 @@ Dedicated activation tests in `EpollTransportIntegrationTest` (`mockserver-netty
 | SO_BACKLOG | 1024 | Connection queue depth |
 | AUTO_READ | true | Automatic read on new channels |
 | ALLOCATOR | `PooledByteBufAllocator.DEFAULT` | Memory-efficient buffer allocation |
-| WRITE_BUFFER_WATER_MARK | 8KB - 32KB | Backpressure control |
+| WRITE_BUFFER_WATER_MARK | 8KB low / 32KB high — server socket only; accepted child channels use Netty's default (32KB low / 64KB high) | Write-buffer backpressure on the acceptor socket. Set via `.option()`, which applies to the `ServerSocketChannel`, not to accepted child channels. `WriteBufferWaterMark.DEFAULT` in Netty 4.2 is 32 KB / 64 KB; `MockServer.java` (line ~205) intentionally sets a narrower mark on the acceptor, but child channels retain the Netty default. |
 
 ### Channel Attributes
 

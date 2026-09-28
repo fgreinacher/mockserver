@@ -255,8 +255,8 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             // computed once here — before publish clears the source via translateTo — and always
             // tracked (increment on publish, decrement in processLogEntry) INDEPENDENT of the budget,
             // so the counter cannot drift if maxEventLogSizeInBytes is changed at runtime; the budget
-            // gates only the drop DECISION below. 0 for a body-less entry, so tracking is a no-op on
-            // the overwhelming majority of (small) entries.
+            // gates only the drop DECISION below. 0 for a pure diagnostic entry with no HTTP messages
+            // (e.g. RUNNABLE/control events), so tracking is a no-op on the overwhelming majority of entries.
             long budget = maxInFlightBytes;
             long inFlightWeight = logEntry.estimatedHeapSize();
             // Would admitting this entry push the in-flight bodies over the budget? (See
