@@ -1177,9 +1177,23 @@ public class Expectation extends ObjectWithJsonToString {
     @JsonIgnore
     public boolean isForcedResponseServe(Integer forcedResponseIndex) {
         return forcedResponseIndex != null
-            && (steps == null || steps.isEmpty())
-            && httpResponses != null && !httpResponses.isEmpty()
+            && hasForceableResponseSequence()
             && forcedResponseIndex >= 0 && forcedResponseIndex < httpResponses.size();
+    }
+
+    private boolean hasForceableResponseSequence() {
+        return (steps == null || steps.isEmpty()) && httpResponses != null && !httpResponses.isEmpty();
+    }
+
+    /**
+     * The {@link #FORCE_RESPONSE_INDEX_HEADER} index for {@code request} as this expectation would use it:
+     * {@link #parseForcedResponseIndex} when it has a forceable response sequence, otherwise {@code null}
+     * without reading the header. Every consumer of the index ({@link #isForcedResponseServe}) ignores it for
+     * an expectation without such a sequence, so the result is indistinguishable from always parsing.
+     */
+    @JsonIgnore
+    public Integer forcedResponseIndexFor(RequestDefinition request) {
+        return hasForceableResponseSequence() ? parseForcedResponseIndex(request) : null;
     }
 
     /**

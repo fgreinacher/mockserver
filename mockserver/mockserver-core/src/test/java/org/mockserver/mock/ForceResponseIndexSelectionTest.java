@@ -200,6 +200,41 @@ public class ForceResponseIndexSelectionTest {
         assertThat(Expectation.parseForcedResponseIndex(null), is(nullValue()));
     }
 
+    // --- per-expectation lookup ------------------------------------------------------------
+
+    @Test
+    public void shouldResolveForcedIndexForMultiResponseExpectation() {
+        Expectation expectation = sequentialExpectation(response().withStatusCode(200), response().withStatusCode(500));
+
+        assertThat(expectation.forcedResponseIndexFor(
+            request().withHeader(Expectation.FORCE_RESPONSE_INDEX_HEADER, " 1 ")), is(1));
+        assertThat(expectation.forcedResponseIndexFor(
+            request().withHeader(Expectation.FORCE_RESPONSE_INDEX_HEADER, "7")), is(7));
+        assertThat(expectation.forcedResponseIndexFor(
+            request().withHeader(Expectation.FORCE_RESPONSE_INDEX_HEADER, "-1")), is(-1));
+        assertThat(expectation.forcedResponseIndexFor(
+            request().withHeader(Expectation.FORCE_RESPONSE_INDEX_HEADER, "abc")), is(nullValue()));
+        assertThat(expectation.forcedResponseIndexFor(request().withPath("/seq")), is(nullValue()));
+        assertThat(expectation.forcedResponseIndexFor(null), is(nullValue()));
+    }
+
+    @Test
+    public void shouldNotResolveForcedIndexWhenExpectationHasNoForceableSequence() {
+        org.mockserver.model.HttpRequest forcing = request().withHeader(Expectation.FORCE_RESPONSE_INDEX_HEADER, "0");
+        Expectation singleResponse = new Expectation(request().withPath("/plain"), Times.unlimited(), TimeToLive.unlimited(), 0)
+            .thenRespond(response().withStatusCode(201));
+        Expectation withSteps = sequentialExpectation(response().withStatusCode(200), response().withStatusCode(500))
+            .withSteps(org.mockserver.model.ExpectationStep.step()
+                .withHttpResponse(response().withStatusCode(202))
+                .withResponder(true));
+
+        assertThat(singleResponse.forcedResponseIndexFor(forcing), is(nullValue()));
+        assertThat(withSteps.forcedResponseIndexFor(forcing), is(nullValue()));
+        // the null is indistinguishable from the parsed index for such an expectation
+        assertThat(singleResponse.isForcedResponseServe(Expectation.parseForcedResponseIndex(forcing)), is(false));
+        assertThat(withSteps.isForcedResponseServe(Expectation.parseForcedResponseIndex(forcing)), is(false));
+    }
+
     // --- Times / peek bookkeeping -----------------------------------------------------------
 
     @Test

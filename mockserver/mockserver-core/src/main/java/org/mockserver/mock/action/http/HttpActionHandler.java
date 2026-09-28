@@ -226,7 +226,7 @@ public class HttpActionHandler {
         // The control header is NOT stripped from the (shared, already-logged) request here — it is omitted
         // only when the outbound forward request is built (MockServerHttpRequestToFullHttpRequest), so
         // recorded traffic deterministically retains it and forwards never carry it.
-        final Integer forcedResponseIndex = Expectation.parseForcedResponseIndex(request);
+        final Integer forcedResponseIndex = expectation.forcedResponseIndexFor(request);
         // declarative capture (WS2.2): extract request value(s) into scenario state for early-matched
         // expectations too (header/query/cookie/path sources; body-based sources are typically empty here)
         org.mockserver.mock.CaptureProcessor.process(expectation.getCapture(), request);
@@ -508,7 +508,7 @@ public class HttpActionHandler {
         // when the outbound forward request is built (MockServerHttpRequestToFullHttpRequest), so recorded
         // traffic retains it and forwards never carry it. A null / invalid / out-of-bounds index leaves
         // normal selection in place (see Expectation.getPrimaryAction).
-        final Integer forcedResponseIndex = Expectation.parseForcedResponseIndex(request);
+        final Integer forcedResponseIndex = expectation.forcedResponseIndexFor(request);
         // declarative capture (WS2.2): extract value(s) from the matched request into scenario
         // state BEFORE the response is built, so a response template can read them via scenario.get(name)
         org.mockserver.mock.CaptureProcessor.process(expectation.getCapture(), request);
