@@ -1083,14 +1083,17 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         }
 
         if (configuration.metricsEnabled()) {
-            if (matchedExpectation == null || matchedExpectation.getAction() == null) {
+            // resolve the action once — getAction() walks the expectation's action fields, so calling it
+            // three times here tripled that work (and, before the id-write fix, its shared-field store)
+            final Action matchedAction = matchedExpectation != null ? matchedExpectation.getAction() : null;
+            if (matchedAction == null) {
                 metrics.increment(EXPECTATIONS_NOT_MATCHED_COUNT);
-            } else if (matchedExpectation.getAction().getType().direction == Action.Direction.FORWARD) {
+            } else if (matchedAction.getType().direction == Action.Direction.FORWARD) {
                 metrics.increment(FORWARD_EXPECTATIONS_MATCHED_COUNT);
             } else {
                 metrics.increment(RESPONSE_EXPECTATIONS_MATCHED_COUNT);
             }
-            if (matchedExpectation != null && matchedExpectation.getAction() != null) {
+            if (matchedAction != null) {
                 // Opt-in per-expectation counter (perExpectationMetricsEnabled).
                 // No-op unless the counter is registered; labeled by the stable
                 // expectation id to bound Prometheus cardinality.

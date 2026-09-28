@@ -975,7 +975,7 @@ public class Expectation extends ObjectWithJsonToString {
                 if (Boolean.TRUE.equals(step.getResponder())) {
                     Action action = resolveStepAction(step);
                     if (action != null) {
-                        action.setExpectationId(getId());
+                        stampExpectationId(action);
                     }
                     return action;
                 }
@@ -985,21 +985,23 @@ public class Expectation extends ObjectWithJsonToString {
         if (httpResponses != null && !httpResponses.isEmpty()) {
             HttpResponse selected = selectFromResponses();
             if (selected != null) {
-                selected.setExpectationId(getId());
+                stampExpectationId(selected);
                 return selected;
             }
         }
-        List<Action> actions = getAllActions();
-        if (actions.isEmpty()) {
+        // Fast path: an expectation almost always has exactly one action field set, so resolve it
+        // directly rather than allocating the getAllActions() list — getAction is called several times
+        // per request. getAllActions() is walked only for the rare multi-action primary tie-break.
+        Action first = firstConfiguredAction();
+        if (first == null) {
             return null;
         }
-        if (actions.size() == 1) {
-            Action action = actions.get(0);
-            action.setExpectationId(getId());
-            return action;
+        if (!hasMultipleConfiguredActions()) {
+            stampExpectationId(first);
+            return first;
         }
         Action primary = null;
-        for (Action action : actions) {
+        for (Action action : getAllActions()) {
             if (action.isPrimary()) {
                 if (primary != null) {
                     throw new IllegalArgumentException("multiple actions marked as primary, only one action can be primary when multiple action types are configured");
@@ -1010,8 +1012,158 @@ public class Expectation extends ObjectWithJsonToString {
         if (primary == null) {
             throw new IllegalArgumentException("when multiple action types are configured, exactly one must be marked as primary");
         }
-        primary.setExpectationId(getId());
+        stampExpectationId(primary);
         return primary;
+    }
+
+    /**
+     * Stamps the resolved action with this expectation's id, writing only when the value actually
+     * changes. The id is stable for an expectation's serving life, so after the first stamp this is a
+     * read-and-compare — removing a store to the shared {@link Action} field from every request, which
+     * would otherwise invalidate that cache line across every event-loop thread serving this
+     * expectation. A later {@link #withId(String)} changes the id and the next resolve re-stamps, so the
+     * served action's id is always correct.
+     */
+    private void stampExpectationId(Action action) {
+        String id = getId();
+        if (!id.equals(action.getExpectationId())) {
+            action.setExpectationId(id);
+        }
+    }
+
+    /**
+     * The first configured top-level action in precedence order, or {@code null} if none is set. The
+     * field set and order MUST stay in sync with {@link #getAllActions()}.
+     */
+    @JsonIgnore
+    private Action firstConfiguredAction() {
+        if (getHttpResponse() != null && (httpResponses == null || httpResponses.isEmpty())) {
+            return getHttpResponse();
+        }
+        if (getHttpResponseTemplate() != null) {
+            return getHttpResponseTemplate();
+        }
+        if (getHttpResponseClassCallback() != null) {
+            return getHttpResponseClassCallback();
+        }
+        if (getHttpResponseObjectCallback() != null) {
+            return getHttpResponseObjectCallback();
+        }
+        if (getHttpForward() != null) {
+            return getHttpForward();
+        }
+        if (getHttpForwardTemplate() != null) {
+            return getHttpForwardTemplate();
+        }
+        if (getHttpForwardClassCallback() != null) {
+            return getHttpForwardClassCallback();
+        }
+        if (getHttpForwardObjectCallback() != null) {
+            return getHttpForwardObjectCallback();
+        }
+        if (getHttpOverrideForwardedRequest() != null) {
+            return getHttpOverrideForwardedRequest();
+        }
+        if (getHttpForwardValidateAction() != null) {
+            return getHttpForwardValidateAction();
+        }
+        if (getHttpForwardWithFallback() != null) {
+            return getHttpForwardWithFallback();
+        }
+        if (getHttpSseResponse() != null) {
+            return getHttpSseResponse();
+        }
+        if (getHttpLlmResponse() != null) {
+            return getHttpLlmResponse();
+        }
+        if (getHttpWebSocketResponse() != null) {
+            return getHttpWebSocketResponse();
+        }
+        if (getGrpcStreamResponse() != null) {
+            return getGrpcStreamResponse();
+        }
+        if (getGrpcBidiResponse() != null) {
+            return getGrpcBidiResponse();
+        }
+        if (getBinaryResponse() != null) {
+            return getBinaryResponse();
+        }
+        if (getDnsResponse() != null) {
+            return getDnsResponse();
+        }
+        if (getHttpError() != null) {
+            return getHttpError();
+        }
+        return null;
+    }
+
+    /**
+     * Whether more than one top-level action field is set — the only case that needs the primary
+     * tie-break and the only case in which {@link #getSecondaryActions()} is non-empty. Early-exits on
+     * the second action, so the common single-action path allocates nothing. The field set and order
+     * MUST stay in sync with {@link #getAllActions()}.
+     */
+    @JsonIgnore
+    private boolean hasMultipleConfiguredActions() {
+        int count = 0;
+        if (getHttpResponse() != null && (httpResponses == null || httpResponses.isEmpty()) && ++count > 1) {
+            return true;
+        }
+        if (getHttpResponseTemplate() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpResponseClassCallback() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpResponseObjectCallback() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForward() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForwardTemplate() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForwardClassCallback() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForwardObjectCallback() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpOverrideForwardedRequest() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForwardValidateAction() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpForwardWithFallback() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpSseResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpLlmResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpWebSocketResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getGrpcStreamResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getGrpcBidiResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getBinaryResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getDnsResponse() != null && ++count > 1) {
+            return true;
+        }
+        if (getHttpError() != null && ++count > 1) {
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1230,15 +1382,17 @@ public class Expectation extends ObjectWithJsonToString {
 
     @JsonIgnore
     public List<Action> getSecondaryActions() {
-        List<Action> all = getAllActions();
-        if (all.size() <= 1) {
+        // Only a multi-action expectation has secondary actions; the common single-action case returns
+        // empty without allocating the getAllActions() list (this is called once per request).
+        if (!hasMultipleConfiguredActions()) {
             return Collections.emptyList();
         }
+        List<Action> all = getAllActions();
         Action primary = getPrimaryAction();
         List<Action> secondary = new ArrayList<>();
         for (Action action : all) {
             if (action != primary) {
-                action.setExpectationId(getId());
+                stampExpectationId(action);
                 secondary.add(action);
             }
         }
@@ -1544,14 +1698,25 @@ public class Expectation extends ObjectWithJsonToString {
      */
     private void recordMatch(Integer forcedResponseIndex) {
         matchCount.incrementAndGet();
-        if (isForcedResponseServe(forcedResponseIndex)) {
-            lastRotationSnapshot.set(rotationCount.get());
-        } else {
-            lastRotationSnapshot.set(rotationCount.incrementAndGet());
+        // The rotation position is consulted only by selectFromResponses(), i.e. only for a multi-response
+        // (httpResponses) expectation. For the common single-response expectation nothing reads it, so
+        // neither the shared rotationCount nor the per-thread snapshot is touched — removing a contended
+        // atomic write and a ThreadLocal write from every match. httpResponses only ever transitions
+        // empty -> non-empty (no setter clears it), and the counter is only read once it is non-empty,
+        // so skipping the advance while it is empty is unobservable.
+        if (httpResponses != null && !httpResponses.isEmpty()) {
+            if (isForcedResponseServe(forcedResponseIndex)) {
+                lastRotationSnapshot.set(rotationCount.get());
+            } else {
+                lastRotationSnapshot.set(rotationCount.incrementAndGet());
+            }
         }
-        // record the first-match instant (via the controllable clock) once, to anchor
-        // any time-based chaos outage window on this expectation
-        chaosFirstMatchEpochMillis.compareAndSet(0L, TimeService.currentTimeMillis());
+        // record the first-match instant (via the controllable clock) once, to anchor any time-based
+        // chaos outage window on this expectation. The get()==0 pre-check keeps the CAS and the
+        // currentTimeMillis() call off every match after the first (get() is a cheap volatile read).
+        if (chaosFirstMatchEpochMillis.get() == 0L) {
+            chaosFirstMatchEpochMillis.compareAndSet(0L, TimeService.currentTimeMillis());
+        }
     }
 
     @JsonIgnore
