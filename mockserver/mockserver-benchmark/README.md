@@ -52,7 +52,7 @@ Parameters:
 |-------|--------|---------|
 | `expectationCount` | 1, 10, 100, 1000 | number of registered expectations (scan length) |
 | `matcherType` | EXACT, REGEX, JSON_BODY | shape of the registered matchers |
-| `detailedMatchFailures` | false, true | `false` = shipped-default matcher hot path; `true` = the `MatchDifference` → `StringFormatter` formatting path (the #1/#2 production allocation sites, made lazy by `a8898b263`) |
+| `detailedMatchFailures` | false, true | `false` = the opt-out matcher hot path; `true` (the shipped default) = the `MatchDifference` → `StringFormatter` formatting path (the #1/#2 production allocation sites, made lazy by `a8898b263`) |
 
 Metrics are off and INFO logging is off. The `detailedMatchFailures=false` arm is
 the common case Part A optimizes; the `true` arm is measured and given its own

@@ -33,7 +33,7 @@ MAVEN_IMAGE="${MAVEN_IMAGE:-mockserver/mockserver:maven}"
 # @Benchmark, and the explicit class include below pins this run to it so the newly
 # promoted dark benchmarks (run separately, below) cannot leak junk rows in here.
 #
-# detailedMatchFailures is pinned to `false` (the shipped default): this primary
+# detailedMatchFailures is pinned to `false` (the opt-out, NOT the shipped default): this primary
 # run's gating .microbench.*.time_per_op baseline describes the NON-detailed matcher
 # hot path, and the reshape below keys rows by matcherType_expectationCount — leaving
 # the param unpinned would expand each matcherType into two rows that collide on that

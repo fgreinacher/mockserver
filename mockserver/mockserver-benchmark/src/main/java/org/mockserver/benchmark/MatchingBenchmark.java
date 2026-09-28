@@ -43,8 +43,8 @@ import static org.mockserver.model.HttpResponse.response;
  * <pre>./run.sh -prof gc MatchingBenchmark</pre>
  *
  * <p>Metrics are off; {@code detailedMatchFailures} and the log level are
- * parameterised. The {@code detailedMatchFailures=false} arm is the common case
- * Part A optimizes; the {@code true} arm exercises the {@code MatchDifference}
+ * parameterised. The {@code detailedMatchFailures=false} arm is the opt-out Part A
+ * optimizes; the {@code true} arm (the shipped default) exercises the {@code MatchDifference}
  * formatting path (the #1/#2 production allocation sites, made lazy by
  * a8898b263). Capture {@code -prof gc} numbers here before and after each A1/A2
  * change; a reduction in {@code gc.alloc.rate.norm} is the proof an allocation
@@ -106,8 +106,8 @@ public class MatchingBenchmark {
     public String logLevel;
 
     /**
-     * Whether detailed match-failure reports are recorded. {@code false} is the
-     * shipped default and the common case Part A optimizes. {@code true} turns on
+     * Whether detailed match-failure reports are recorded. {@code true} is the
+     * shipped default; {@code false} is the opt-out Part A optimizes. {@code true} turns on
      * the {@code MatchDifference.addDifference} -> {@code StringFormatter} path a
      * sustained-load JFR profile identified as the #1 and #2 allocation sites in
      * production (together ~28-33% of sampled allocation) — the path commit
@@ -132,8 +132,8 @@ public class MatchingBenchmark {
     @Setup(Level.Trial)
     public void setup() {
         // model a deployment at the given log level with detailed match reports
-        // either off (the shipped default, the common case Part A optimizes) or on
-        // (the MatchDifference formatting path a8898b263 made lazy) per the param.
+        // either off (the opt-out Part A optimizes) or on (the shipped default: the
+        // MatchDifference formatting path a8898b263 made lazy) per the param.
         // Configuration.configuration() MUST be constructed AFTER these statics are
         // set: it snapshots ConfigurationProperties (detailedMatchFailures() falls
         // back to the static when its own field is null), so the trial's param

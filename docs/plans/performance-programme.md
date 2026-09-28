@@ -96,7 +96,7 @@ These are control-class items requiring gated approval — do not fix in this ch
 
 - `docs/code/netty-pipeline.md` documents a write-buffer water mark for connections, but `MockServer.java` sets it with `.option` (listening socket only), so accepted channels get Netty's default.
 - `docs/operations/performance-tuning.md` GC/heap guidance predates the ZGC default and the 60% cap.
-- `perf-budgets.json` labels the `detailedMatchFailures=false` arm as the shipped-default hot path, but the shipped default is `true`, so the per-merge alloc gate protects a non-default arm.
+- The daily microbench (`perf-test-microbench.sh`) pins `detailedMatchFailures=false`, the opt-out, so its tracked `time_per_op` baseline describes a non-default arm. Moving the pin to `true` resets that baseline, so it needs a deliberate gate decision. (The alloc gate already measures both arms; its labels were corrected.)
 - The comment at `MockServerEventLog` "0 for a body-less entry" is stale.
 
 ### Checked and not worth pursuing

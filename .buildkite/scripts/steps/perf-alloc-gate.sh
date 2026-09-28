@@ -63,10 +63,11 @@ BUDGETS_FILE="${PERF_BUDGETS_FILE:-$REPO_ROOT/mockserver-performance-test/perf-b
 #
 # MatchingBenchmark's detailedMatchFailures is pinned to BOTH values
 # (`false,true`) DELIBERATELY — the gate measures and floors each arm separately:
-#   * The `false` arm is the shipped-default matcher hot path; its committed floor
+#   * The `false` arm is the detailedMatchFailures opt-out; its committed floor
 #     (premerge_alloc.MatchingBenchmark.alloc_bytes_per_op) was derived from that
 #     non-detailed shape and MUST keep describing it.
-#   * The `true` arm exercises the MatchDifference -> StringFormatter formatting
+#   * The `true` arm is the SHIPPED DEFAULT (detailedMatchFailures defaults to true)
+#     and exercises the MatchDifference -> StringFormatter formatting
 #     path a sustained-load JFR profile found to be the #1/#2 production allocation
 #     sites (~28-33% of sampled allocation), made lazy by a8898b263. Left
 #     un-measured, a regression re-introducing eager formatting would sail straight
