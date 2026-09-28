@@ -9,11 +9,6 @@ expensive; the first item makes it cheaper. Explanations are **recomputed on dem
 stored request plus the current expectations, not recorded on every request. Nothing is sent to
 an external LLM unless the user configures one, and MockServer stays self-hosted.
 
-**First priority:** `PUT /generateExpectation` with an LLM backend configured copies the
-request's headers (including `Authorization` and `Cookie`) and up to 2,000 characters of body
-into the prompt with no redaction (`StubGenerationPromptBuilder` lines 30–38, called from
-`HttpState` ~5954). Fix before building anything else on the LLM path (item B4).
-
 ## Where each idea's cost lands
 
 ```mermaid
@@ -60,14 +55,16 @@ flowchart LR
 
 **Gaps:** explaining why a request matched X instead of a higher-priority Y; expectation lint and
 shadowing detection; config did-you-mean; a likely-cause for forward failures; a template dry run;
-located OpenAPI errors; redaction on the LLM prompt path.
+located OpenAPI errors.
+
+**Done:** per-candidate match detail is now recorded only when INFO logging reads it (`ce24dc676`),
+and outbound LLM prompts are redacted (`f5e1e6ce0`). One small follow-up from its security audit:
+drift values in non-credential fields get JWT and URL masking but not the `key=value` sweep.
 
 ## Items
 
 | # | Problem → proposal | Cost | Performance reasoning | Effort | Risks | Priority |
 |---|---|---|---|---|---|---|
-| A1 | Match differences are built for every non-matching candidate even when nothing reads them → gate to where a reader exists; rely on explainUnmatched / A3 for the "why" | (i) → removes cost | A net **gain**: ~12.5% of allocation (~1.5 KB/req) on build 464, more with many expectations. Same change as performance-programme §2 candidate 3 (in progress as unit U3) | S | Audit readers below INFO; `perf-budgets.json` gates the non-default arm | P0 |
-| B4 | LLM prompt sends raw credentials → redact headers, cookies and body secrets (reuse the existing credential redaction), make body inclusion opt-in per call, expose an MCP tool only when a backend is configured | (iii) | Outbound call only on explicit request, never on the data path | S | Redaction must fail closed | P0 |
 | A2 | A 404 flood rescans every expectation per miss for the closest-match hint → cap the scan and memoise per (method, path) until expectations change | (ii) | 404-heavy and proxy-miss loads currently pay O(expectations) per miss | S | A capped hint can miss the true closest match; say so in the header | P1 |
 | A3 | "Why did this specific request match X (or nothing)?" → `explain?correlationId=`: re-evaluate the stored request, including why a higher-priority expectation lost | (iii) | Zero hot-path cost | M | Expectations may have changed since arrival: return an `expectationsChangedSince` marker and label results "recomputed now" | P0 |
 | B1 | MCP diagnosis tools as the primary AI route: `explain_request` (A3), `explain_forward_failure` (A4), `lint_expectations` (A8), `test_template` (A5), `diagnose_config` (A7), `suggest_expectation_fix` (B3) | (iii) | MockServer runs deterministic computation only; the user's assistant does the reasoning | M | Tool output carries user traffic to the assistant: apply the log redaction settings to tool results by default | P0 |
@@ -95,7 +92,7 @@ located OpenAPI errors; redaction on the LLM prompt path.
 
 ## Sequence
 
-1. **Wave 0 — hygiene and performance:** A1 (in progress as performance unit U3), B4, A2.
+1. **Wave 0 — hygiene and performance:** A2 (A1 and B4 are done).
 2. **Wave 1 — explain engine:** A3, B1 (A3 plus existing tools with redacted output), A10.
 3. **Wave 2 — failure classes:** A4, A5, A6, A7, each with an MCP tool and a dashboard entry.
 4. **Wave 3 — fixes:** A8 (including the CLI), B3, B2, A9.
@@ -117,4 +114,3 @@ located OpenAPI errors; redaction on the LLM prompt path.
 ## Open questions
 
 - Does the dashboard call `/generateExpectation`?
-- Is any reader of the in-loop match difference active below INFO? (Being answered by U3.)
