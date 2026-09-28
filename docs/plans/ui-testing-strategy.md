@@ -2,20 +2,11 @@
 
 ## TL;DR
 
-The motivating bug — a panel row opened by the user closing itself the moment
-new data arrived — exposed a structural gap: 3,084 passing jsdom tests could
-not reproduce it because jsdom has no layout engine. Scroll position, viewport
-height, and virtualisation mount/unmount are all invisible there. A single
-Playwright test in a real browser would have caught it immediately. This plan
-adds a targeted real-browser live-update suite to the existing Playwright
-harness (already wired to CI), documents the layer boundary so future
-contributors know when jsdom is the wrong tool, and fixes a class of test that
-asserts a true invariant at the wrong layer.
+P0 (Playwright live-update row-readability test) has shipped. Three items remain:
 
-The existing jsdom suite is not rewritten. The three concrete additions are:
-1. A Playwright test that asserts the opened row survives data arrival.
-2. A written rule about user-visible versus implementation invariants in tests.
-3. A jsdom-upgrade protocol to reduce the recurring environment fragility.
+1. **P1** — Re-aim the existing jsdom auto-scroll test with a comment naming what it does not cover.
+2. **P2** — Add a layer-boundary comment block near the top of `mockserver-ui/src/test-setup.ts`.
+3. **P3** — Pin jsdom to the exact minor version that works and document the upgrade protocol.
 
 ---
 
@@ -40,6 +31,7 @@ flowchart TD
         E2["Expectation CRUD vs real API (#17)"]
         E3["Monaco editor round-trip (#64)"]
         E4["CRUD resource dialog (#64-crud)"]
+        E5["Scroll anchor / live-update row (#scroll-anchor)"]
     end
 
     UT --> jsdom
@@ -143,51 +135,6 @@ in `beforeEach`). Parallelism would require per-test server isolation
 
 ## What to Add
 
-### P0 — Live-update list-usability tests (Playwright) — **DONE, and the original
-### sketch of it would not have worked**
-
-**Status: shipped.** `mockserver-ui/e2e/scroll-anchor.pw.ts` (3 tests, harness) and
-`mockserver-ui/e2e/dashboard-live-scroll.spec.ts` (1 test, real server).
-
-This section originally sketched a single test: fire one request, expand its log
-entry, fire 20 more, assert the entry is still visible and expanded. That test
-would have **passed against a fix that did nothing on a real server**, and the
-reasons are the useful part of this document.
-
-**Three requirements the original sketch missed.** Any test of this bug class must
-satisfy all of them, because the defect lives in their interaction:
-
-| Requirement | Why the sketch failed it | What the real bug needed |
-|---|---|---|
-| **The list must be at its cap** | It grows 1 → 21 rows, so `count` changes on every push | `DashboardWebSocketHandler` caps a panel at `DEFAULT_LOG_UPDATE_ITEM_LIMIT` (100) and evicts as it prepends. Past 100 the count is **constant forever**. A fix gated on the count rising is inert exactly when traffic is live — and one shipped. Seed past the cap first |
-| **The reader must be scrolled away from the top** | It expands an entry near the top | At the top, tail-following applies and anchoring does not. The reported symptom only occurs below the top, where prepends land *above* the viewport |
-| **Assert the row has not MOVED, not just that it exists** | "still visible and still expanded" | A row can stay mounted while drifting down and out of view. Assert its viewport position is unchanged (±few px), and assert the click actually expanded it — otherwise the test can pass by holding a *collapsed* row still |
-
-**A fourth, learned later:** also assert what happens on the way **back**.
-Scrolling to the top must leave the reader at the top. A stale anchor dragged the
-viewport to the bottom of the list, and none of the first three tests caught it
-because none of them scrolled back up.
-
-**Row identity is not row text.** The panel renders a display ordinal
-(`filtered.length - i`) that changes for the *same* request whenever a newer one
-arrives. Matching a row by its rendered text reports a present row as missing.
-Match on the request path.
-
-**Both layers are needed, and the harness alone is not enough.** The harness suite
-is fast and can drive exact scenarios; the server-backed suite cannot disagree
-with production about how the list behaves. The shipped fix was certified by a
-harness test that was green, degrade-confirmed red, on the right components — and
-still wrong, because the harness modelled a growing list while production's is
-permanently full. **A degrade test proves the code causes the behaviour the test
-measures; it says nothing about whether the test measures the situation the user
-is in.** Before trusting one, state the production invariant it assumes and go
-check it against the producer.
-
-**What only a real browser can see (unchanged from the analysis above):** the
-`scrollTop = 0` effect, virtualisation unmount, scroll anchoring, and the browser
-reducing `scrollTop` itself as estimated row heights are replaced by measured
-ones — that last one silently defeated a guard that compared scroll positions.
-
 ### P1 — Re-aim the existing jsdom auto-scroll test
 
 **Files:** the test(s) in `mockserver-ui/src/__tests__/` that assert "expansion
@@ -244,8 +191,8 @@ Recommended approach:
 The nvm coupling (v22.21.1, Homebrew node v26 breaks rolldown) is a separate
 issue. The `.nvmrc` should pin the exact Node version, and CI's `node:22` image
 provides a stable reference. The local mismatch happens when developers use
-Homebrew node; the current workaround (`unset NVM_DIR` before the build) should
-be documented in `docs/code/dashboard-ui.md`.
+Homebrew node; the current workaround (`unset NVM_DIR` before the build) is
+documented in `docs/code/dashboard-ui.md` under the Local Development section.
 
 ---
 
@@ -253,18 +200,14 @@ be documented in `docs/code/dashboard-ui.md`.
 
 | Priority | Work item | Estimated effort | CI impact |
 |----------|-----------|-----------------|-----------|
-| P0 | Playwright live-update row-readability test | 0.5 day | +0 min (within 30 min Playwright step) |
 | P1 | Comment on existing jsdom auto-scroll tests | 1 hour | none |
 | P2 | Layer boundary comment in test-setup.ts | 30 min | none |
 | P3 | jsdom version pin + upgrade protocol | 1 hour | none (prevents future breakage) |
 
-P0 is the only item that directly catches the bug class. P1 and P2 are
-documentation that prevents future contributors from drawing the wrong
+P1 and P2 are documentation that prevents future contributors from drawing the wrong
 conclusion from a passing suite. P3 reduces the environmental fragility that
-causes CI breaks on routine Dependabot bumps.
-
-P0 through P3 are independent and can land in any order. P0 is the one to do
-first if time is limited.
+causes CI breaks on routine Dependabot bumps. All three are independent and can
+land in any order.
 
 ---
 
@@ -299,6 +242,7 @@ Key files:
 - `mockserver-ui/src/test-setup.ts` — jsdom patches, Monaco mock, ResizeObserver stub
 - `mockserver-ui/e2e/playwright.config.ts` — Playwright config, JAR topology, CI external-server mode
 - `mockserver-ui/e2e/dashboard.spec.ts` — existing real-browser tests (live WS, CRUD, Monaco, CRUD resource)
+- `mockserver-ui/e2e/scroll-anchor.pw.ts` — scroll-anchor / live-update row tests (P0, shipped)
 - `mockserver-ui/e2e/start-mockserver.mjs` — JAR locator / builder for local Playwright runs
 - `.buildkite/scripts/steps/ui-test.sh` — CI jsdom step
 - `.buildkite/scripts/steps/ui-e2e.sh` — CI Playwright step (builds JAR, boots server container, runs browser)

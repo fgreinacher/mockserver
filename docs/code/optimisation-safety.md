@@ -243,6 +243,10 @@ secrets-redaction gap that had shipped because the redaction tests asserted on t
 field and never on the two neighbouring fields that carried the same data unredacted. When a
 defect is found, add the assertion whose absence let it through — not only the fix.
 
+### Log-level guards and diff coverage
+
+Wrapping a `logEvent(new LogEntry()...)` call in an `if (isEnabled(LEVEL))` guard is correct for the hot path — it avoids the allocation. A side-effect is that the guarded body changes status in the diff-coverage gate from covered (statement executed and discarded inside `logEvent`) to uncovered (statement never reached). Recording the now-uncovered lines in `.buildkite/diff-coverage-ledger.json` appears harmless but creates a latent break: the ledger's staleness ratchet fails the build the moment any other test covers those lines (e.g., a suite that runs at `DEBUG`). The safe options are either to accept the coverage gap (the gate is notify-only and the trade is explicit) or to add a test that exercises the code path at a level where the guard is false.
+
 ### Declined optimisations — do not re-propose
 
 The following units were investigated and declined with documented reasons. Re-opening them

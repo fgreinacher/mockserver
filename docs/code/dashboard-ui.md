@@ -1413,6 +1413,10 @@ Or directly in a browser: `http://localhost:1080/mockserver/dashboard`
 
 ## Local Development
 
+### Node Version
+
+The UI build requires Node.js v22 (pinned in `.nvmrc`). CI uses the `node:22` Docker image. Locally, use nvm: `nvm use` in `mockserver-ui/` picks up the pinned version. If you use Homebrew node instead of nvm, Homebrew node v26+ breaks the `@rolldown/binding-darwin-arm64` native module — the build silently fails or errors at the rolldown binding step. The fix is to unset the Homebrew nvm shims (`unset -f nvm`) and activate nvm's v22.21.1 before running any `npm` command in `mockserver-ui/`.
+
 ### Dev Environment Script
 
 `scripts/local_ui_dev.sh` launches both MockServer and the Vite dev server for UI development:

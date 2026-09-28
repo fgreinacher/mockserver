@@ -110,10 +110,20 @@ without the other.
 CPU headroom, low errors, and the VU pool was not exhausted. The original check keyed off
 `vus_active_max`, which is right-censored: it cannot exceed the pool size, so a single stall
 pileup that temporarily drains the pool makes the rung read as client-limited even when the pool
-sat at 1% utilisation for 95% of the measurement. The criterion is `vus_active_p95 < pool`
-(`bac8a96b7`): low rungs are certified correctly; rungs where the pool is genuinely under pressure
-are still excluded. Reading `vus_active_max == pool` as "client-limited" when `vus_active_p95` is
-a small fraction of the pool is a server property being reported as a client limitation.
+sat at 1% utilisation for 95% of the measurement. Switching to `vus_active_p95 < pool`
+(`bac8a96b7`) fixed the low rungs but was still wrong at the knee: it is true even at 95%
+occupancy, so it discarded the saturating rung it existed to find. The current discriminator
+(`derive_saturation` in `.buildkite/scripts/steps/perf-test-run.sh`) is the occupancy **ratio**
+`vus_active_p95 / pool`: at or above 0.80 the pool is the binding constraint (VUs blocked on server
+responses → server-limited → keep, and label the knee); below 0.80, drops over the 1% tolerance are a
+client-side scheduling stall → exclude. 0.80 sits in the widest gap of the observed ladder (a pinned
+rung reads ~0.86–0.95; a client-limited idle pool ~0.01–0.02). When `vus_active_p95`/`pool_per_rung`
+are absent (older artifacts) the rule stays strict zero-drop.
+
+k6 CPU headroom is judged on the **mean** over the rung's steady window, with the sampler's first
+(startup) `docker stats` reading dropped; the max is still recorded as `k6_cpu_pct_max`. A per-rung
+MAX made one cold-read spike look like sustained client saturation, and a high percentile of a
+window holding ~4 samples is effectively the max.
 
 **Ladder granularity.** A 2,000-rps gap between rungs cannot reliably locate a knee. In build
 420 (2026-09-24) the 38,000-rps rung dipped just below the ratio floor (0.949 vs 0.950); without
@@ -369,9 +379,15 @@ To publish a run's figures:
    the front-matter `description`, the JSON-LD `schema_faq` answers, and matcher-scaling figures
    (a separate JMH source, expected to differ).
 
+## Rig Capacity and k6 CPU Behaviour
+
+The perf box is a `c5.12xlarge`: 48 logical CPUs, 24 physical cores (hyperthread siblings at `N` and `N+24`). All 24 physical cores are allocated across the six-vCPU server arm (6), upstream (1), and k6 (17). A ten-vCPU arm leaves only 13 physical cores for k6, which is not enough at the server's knee — measuring a ten-core arm requires k6 on a separate machine.
+
+**k6 CPU is non-monotonic in offered load.** k6 draws its peak CPU at the last healthy rung; past the knee VUs block on I/O rather than working, so client CPU falls as offered load rises above the knee. A high k6 CPU reading at a given rung therefore locates the knee rather than indicating a bad measurement. Use the mean over the steady window, not the max — the first (startup) sample is inflated and not representative.
+
 ## Heap Profiling Pitfalls
 
-Four non-obvious constraints apply when analysing MockServer's heap and saturation history.
+Six non-obvious constraints apply when analysing MockServer's heap and saturation history.
 
 ### JFR cannot attribute retained heap under ZGC
 
@@ -384,6 +400,12 @@ Four non-obvious constraints apply when analysing MockServer's heap and saturati
 ### Saturation-series comparability break
 
 Widening k6's cpuset (from cores 7–10 to 7–23, to give the client enough headroom at the server's default 6-core config) changed the rig. The hardware-mismatch guard keys on `instance_type`, which did not change, so nothing in the tooling flags it. Stored `saturation_rps` and sweep latencies from before this change are not comparable with those after it. Similarly, adding rungs to the default ladder introduces ladder-position history that has no prior comparable points. When reviewing a stored run's `saturation_rps` against an older run, confirm both used the same k6 cpuset and the same ladder rungs.
+
+### GC log cycle times are not stop-the-world pause times
+
+`-Xlog:gc` records GC cycle duration, not stop-the-world (STW) pause duration. A 1,000 ms p95 cycle under generational ZGC is concurrent work and is consistent with a request p95 of ~74 ms — not 1,000 ms. For STW pauses use `-Xlog:gc+phases`. ZGC's actual STW pauses are typically under 1 ms regardless of heap size.
+
+Separately: the live set under MockServer tracks the event-log budget, not the workload. Increasing the heap without increasing `maxEventLogSizeInBytes` leaves most of the extra heap unused; the budget, not the workload size, is the dominant driver of GC pressure and retained heap.
 
 ### Measurement condition is load-bearing for heap histograms
 
