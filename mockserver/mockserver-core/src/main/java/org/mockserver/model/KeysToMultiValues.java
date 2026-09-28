@@ -450,13 +450,13 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
         }
         for (int i = 0; i < size; i++) {
             NottableString key = keys[i];
-            if (isFirstOccurrence(key, i) && key != null && key.equalsIgnoreCase(name)) {
-                List<NottableString> nottableStrings = valuesForExactKey(key);
-                if (!nottableStrings.isEmpty()) {
-                    NottableString next = nottableStrings.get(0);
-                    if (next != null) {
-                        return next.getValue();
-                    }
+            // Cheap name test first, then the O(i) first-occurrence scan, so a non-matching key
+            // short-circuits before the scan (a miss is O(n), not O(n^2)). At a first occurrence
+            // values[i] is exactly valuesForExactKey(key).get(0), so return it directly.
+            if (key != null && key.equalsIgnoreCase(name) && isFirstOccurrence(key, i)) {
+                NottableString value = values[i];
+                if (value != null) {
+                    return value.getValue();
                 }
             }
         }
@@ -479,7 +479,7 @@ public abstract class KeysToMultiValues<T extends KeyToMultiValue, K extends Key
         return containsEntry(string(name), string(value));
     }
 
-    boolean containsEntry(final NottableString name, final NottableString value) {
+    public boolean containsEntry(final NottableString name, final NottableString value) {
         if (!isEmpty() && name != null && value != null) {
             for (int i = 0; i < size; i++) {
                 NottableString entryKey = keys[i];

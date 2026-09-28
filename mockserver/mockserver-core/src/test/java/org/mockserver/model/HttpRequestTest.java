@@ -434,6 +434,24 @@ public class HttpRequestTest {
     }
 
     @Test
+    public void splitHostPortIsIdenticalToSplitOnColonForNonBracketedInputs() {
+        // The non-bracketed path replaced hostPort.split(":") with an indexOf-based parse that only takes
+        // a shortcut for the two dominant shapes ("host" and "host:port") and falls back to split for
+        // everything else. This differential corpus asserts byte-for-byte equality with the original
+        // split(":"), adversarial in the dimensions the change touches: no colon, leading/trailing colon,
+        // empty tokens, and runs of colons (which exercise split's trailing-empty-token removal).
+        String[] corpus = {
+            "", ":", "::", ":::", "a", "a:", ":a", "a:b", "a:b:c", "a:b:c:d", "a::b", "::1",
+            ":b:c", "a:b:", "a::", "localhost", "127.0.0.1", "localhost:32890", "127.0.0.1:0",
+            "host:", ":8080", " ", " : ", "1:2:3:4:5:6:7:8",
+        };
+        for (String input : corpus) {
+            assertThat("splitHostPort differs from split(\":\") for: \"" + input + "\"",
+                HttpRequest.splitHostPort(input), is(input.split(":")));
+        }
+    }
+
+    @Test
     public void shouldParseIpv6SocketAddressFromHostHeader() {
         // Given
         HttpRequest request = request()

@@ -419,6 +419,23 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
                 }
             }
         }
+        return splitOnColon(hostPort);
+    }
+
+    // Faithful replacement for hostPort.split(":") that avoids the ArrayList split allocates on the two
+    // dominant host-header shapes ("host" and "host:port"). Everything else falls back to split so the
+    // result is byte-for-byte identical to the original, including trailing-empty-token removal and the
+    // no-delimiter case.
+    private static String[] splitOnColon(String hostPort) {
+        int first = hostPort.indexOf(':');
+        if (first < 0) {
+            return new String[]{hostPort};
+        }
+        // exactly one colon with a non-empty host and a non-empty port ("host:port"): the one case where
+        // split's trailing-empty handling never applies, so a direct two-element array is identical.
+        if (first > 0 && first < hostPort.length() - 1 && hostPort.indexOf(':', first + 1) < 0) {
+            return new String[]{hostPort.substring(0, first), hostPort.substring(first + 1)};
+        }
         return hostPort.split(":");
     }
 

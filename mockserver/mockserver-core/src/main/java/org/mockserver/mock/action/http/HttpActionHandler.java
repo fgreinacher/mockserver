@@ -60,6 +60,7 @@ import static org.mockserver.model.HttpResponse.badGatewayResponse;
 import static org.mockserver.model.HttpResponse.notFoundResponse;
 import static org.mockserver.model.HttpResponse.response;
 import static org.mockserver.model.HttpStatusCode.SERVICE_UNAVAILABLE_503;
+import static org.mockserver.model.NottableString.string;
 import static org.slf4j.event.Level.TRACE;
 
 /**
@@ -81,6 +82,11 @@ public class HttpActionHandler {
 
     private final Configuration configuration;
     private final HttpState httpStateHandler;
+    // Loop-prevention header name/value as NottableStrings, converted once (they are constant for the
+    // life of this handler) so the per-request containsEntry check in processAction does not allocate
+    // two NottableStrings on every received request.
+    private final NottableString loopPreventionHeaderName;
+    private final NottableString loopPreventionHeaderValue;
     private final Scheduler scheduler;
     private MockServerLogger mockServerLogger;
     private HttpResponseActionHandler httpResponseActionHandler;
@@ -122,6 +128,8 @@ public class HttpActionHandler {
     public HttpActionHandler(Configuration configuration, java.util.function.Supplier<EventLoopGroup> eventLoopGroupSupplier, HttpState httpStateHandler, List<ProxyConfiguration> proxyConfigurations, NettySslContextFactory nettySslContextFactory) {
         this.configuration = configuration;
         this.httpStateHandler = httpStateHandler;
+        this.loopPreventionHeaderName = string(httpStateHandler.getUniqueLoopPreventionHeaderName());
+        this.loopPreventionHeaderValue = string(httpStateHandler.getUniqueLoopPreventionHeaderValue());
         this.scheduler = httpStateHandler.getScheduler();
         this.mockServerLogger = httpStateHandler.getMockServerLogger();
         this.httpRequestToCurlSerializer = new HttpRequestToCurlSerializer(mockServerLogger);
@@ -250,7 +258,7 @@ public class HttpActionHandler {
     }
 
     public void processAction(final HttpRequest request, final ResponseWriter responseWriter, final ChannelHandlerContext ctx, Set<String> localAddresses, boolean proxyingRequest, final boolean synchronous) {
-        if (request.getHeaders() == null || !request.getHeaders().containsEntry(httpStateHandler.getUniqueLoopPreventionHeaderName(), httpStateHandler.getUniqueLoopPreventionHeaderValue())) {
+        if (request.getHeaders() == null || !request.getHeaders().containsEntry(loopPreventionHeaderName, loopPreventionHeaderValue)) {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setType(RECEIVED_REQUEST)
