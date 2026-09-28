@@ -88,6 +88,25 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 
 ### Fixed
 
+- **Matching no longer keeps using an out-of-date expectation list after expectations change while
+  requests are being served.** A request that arrived at the same moment as an expectation was added,
+  updated, removed or cleared could cache the list of expectations as it was before that change, and
+  MockServer then matched later requests against that stale list until expectations changed again
+  (any add, update, removal or clear, including a limited-`times` expectation being used up).
+  Depending on the change, requests got a `404` for an expectation that had been added, were still
+  answered by one that had been cleared, or matched in the old priority order. The timing window is
+  small, so it showed up as an intermittent failure, most often when one test adds expectations while
+  another sends requests to the same MockServer.
+  - With fewer than 64 expectations (the default of `mockserver.candidateIndexThreshold`), all request
+    matching was affected.
+  - With more, most matching was unaffected. Still affected: requests whose method or path contains
+    non-ASCII characters (with the default case-insensitive matching), `respondBeforeBody`
+    expectations, gRPC bidirectional-streaming expectations, and the closest-match hint logged for an
+    unmatched request.
+  - In one rare case the problem did not clear on the next change: an expectation added while
+    `matchExactCase` was being changed at runtime could be left out of normal matching (with 64 or
+    more expectations) until it was updated or re-added, or `matchExactCase` changed again.
+
 - **HTTPS forward proxying over HTTP/2 no longer runs out of local ports under sustained load.**
   When a client negotiated HTTP/2 inside a `CONNECT` tunnel (k6, Go clients and browsers do by
   default), MockServer opened and closed a new upstream connection for every request, because only

@@ -26,7 +26,9 @@ import java.util.stream.Stream;
  * {@link #size()}, {@link #keyMap()}) may run concurrently with the single
  * writer and are eventually consistent: a read concurrent with an in-flight
  * mutation may not yet reflect it, but never returns nulls (the
- * {@code filter(nonNull)} guard) or corrupt state.
+ * {@code filter(nonNull)} guard) or corrupt state. Once a mutation has
+ * returned, every later {@link #toSortedList()} reflects it, and a mutation
+ * listener already sees it from {@link #toSortedList()} when notified.
  * <p>
  * <b>Precondition:</b> {@link #add(Object)} must not be called for a key that
  * already exists in the queue — use {@link #replaceValue(Object, Object)} for
@@ -67,10 +69,22 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     // right property in a warn-once.
     private final AtomicLong byteEvictedCount = new AtomicLong(0);
     private final ConcurrentMap<K, V> byKey = new ConcurrentHashMap<>();
-    // Cached snapshot of the sorted list; nulled on every mutation so toSortedList()
-    // rebuilds lazily. volatile ensures the null write is visible to all threads
-    // immediately (no stale-cache reads after an add/remove).
-    private volatile List<V> sortedCache = null;
+    // Cached sorted list, tagged with the generation it was built at. Nulling alone is not enough:
+    // a reader that built its list before a mutation can publish it after the mutation's null write.
+    // The tag makes such a list unservable, since the mutation bumped the generation after changing
+    // the store and every read checks the tag against the current generation.
+    private final AtomicLong sortedGeneration = new AtomicLong(0);
+    private volatile SortedSnapshot<V> sortedCache = null;
+
+    private static final class SortedSnapshot<V> {
+        private final long generation;
+        private final List<V> list;
+
+        private SortedSnapshot(long generation, List<V> list) {
+            this.generation = generation;
+            this.list = list;
+        }
+    }
     // Invoked once for every element evicted by overflow past maxSize, AFTER the
     // element has been removed from all three backing structures. Default is a
     // no-op so existing users/tests are unaffected. Used to clean up satellite
@@ -170,7 +184,6 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
         if (maxSize > 0) {
             evictExcess();
         }
-        sortedCache = null;
     }
 
     /**
@@ -180,7 +193,6 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     public void setMaxBytes(long maxBytes) {
         this.maxBytes = maxBytes;
         evictExcessBytes();
-        sortedCache = null;
     }
 
     /**
@@ -211,6 +223,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             if (elementToRemove != null) {
                 subtractWeight(elementToRemove);
                 sortOrderSkipList.remove(skipListKeyFunction.apply(elementToRemove));
+                invalidateSortedCache();
                 mutationListener.onRemove(elementToRemove);
                 evictionListener.accept(elementToRemove);
             }
@@ -238,6 +251,7 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
                 subtractWeight(elementToRemove);
                 byteEvictedCount.incrementAndGet();
                 sortOrderSkipList.remove(skipListKeyFunction.apply(elementToRemove));
+                invalidateSortedCache();
                 mutationListener.onRemove(elementToRemove);
                 evictionListener.accept(elementToRemove);
             }
@@ -260,17 +274,17 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
     // whose weight is unchanged. A value whose weight changes must go through replaceValue.
     public void removePriorityKey(V element) {
         sortOrderSkipList.remove(skipListKeyFunction.apply(element));
+        invalidateSortedCache();
         // An in-place update is removePriorityKey(matcher-with-OLD-fields) then, after the
         // element is mutated, addPriorityKey(matcher-with-NEW-fields). Firing onRemove here lets a
         // derived index drop the element from its OLD placement before it is re-added below.
         mutationListener.onRemove(element);
-        sortedCache = null;
     }
 
     public void addPriorityKey(V element) {
         sortOrderSkipList.add(skipListKeyFunction.apply(element));
+        invalidateSortedCache();
         mutationListener.onAdd(element);
-        sortedCache = null;
     }
 
     public void add(V element) {
@@ -284,12 +298,12 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             insertionOrderQueue.offer(key);
             queueSize.incrementAndGet();
             addWeight(element);
+            invalidateSortedCache();
             // Notify BEFORE evictExcess so the add is reflected first and any resulting overflow
             // eviction (which fires its own onRemove) is applied on top, matching real order.
             mutationListener.onAdd(element);
             evictExcess();
             evictExcessBytes();
-            sortedCache = null;
         }
     }
 
@@ -317,10 +331,10 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
         // Update priority sort: remove old, add new
         sortOrderSkipList.remove(skipListKeyFunction.apply(existing));
         sortOrderSkipList.add(skipListKeyFunction.apply(newValue));
+        invalidateSortedCache();
         mutationListener.onRemove(existing);
         mutationListener.onAdd(newValue);
         evictExcessBytes();
-        sortedCache = null;
         return true;
     }
 
@@ -335,8 +349,8 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
             }
             byKey.remove(key);
             boolean removed = sortOrderSkipList.remove(skipListKeyFunction.apply(element));
+            invalidateSortedCache();
             mutationListener.onRemove(element);
-            sortedCache = null;
             return removed;
         } else {
             return false;
@@ -386,20 +400,31 @@ public class CircularPriorityQueue<K, V, SLK extends Keyed<K>> {
 
     /**
      * Returns a cached, unmodifiable sorted snapshot of this queue's elements.
-     * The snapshot is rebuilt lazily when any mutation nulls the cache.
+     * The snapshot is rebuilt lazily after any mutation.
      * <p>
      * <b>Eventually-consistent under concurrent mutation:</b> a call to
      * this method concurrent with a control-plane mutation (add/remove/
      * reconcileFromBackend) may return a snapshot that does not yet reflect
-     * the in-flight mutation. This is the existing control-plane / data-plane
-     * concurrency contract — no lock is held on the matching hot path.
+     * the in-flight mutation, but a snapshot built before a mutation is never
+     * served after that mutation has returned. No lock is taken, and a cache
+     * hit allocates nothing.
      */
     public List<V> toSortedList() {
-        List<V> cached = sortedCache;
-        if (cached == null) {
-            cached = Collections.unmodifiableList(stream().collect(Collectors.toList()));
-            sortedCache = cached;
+        SortedSnapshot<V> cached = sortedCache;
+        long generation = sortedGeneration.get();
+        if (cached != null && cached.generation == generation) {
+            return cached.list;
         }
-        return cached;
+        // The generation was read BEFORE iterating, so a mutation this build missed bumps it
+        // afterwards and the published snapshot is never served past that mutation.
+        List<V> sorted = Collections.unmodifiableList(stream().collect(Collectors.toList()));
+        sortedCache = new SortedSnapshot<>(generation, sorted);
+        return sorted;
+    }
+
+    // Call AFTER the store change and BEFORE notifying the mutation listener.
+    private void invalidateSortedCache() {
+        sortedGeneration.incrementAndGet();
+        sortedCache = null;
     }
 }

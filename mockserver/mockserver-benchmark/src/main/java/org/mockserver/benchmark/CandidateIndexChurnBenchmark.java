@@ -39,7 +39,7 @@ import static org.mockserver.model.HttpResponse.response;
  * expectation store is being MUTATED (churned), versus a STATIC store.
  *
  * <p><b>The finding under test (G1).</b> {@code CircularPriorityQueue.toSortedList()} caches
- * the sorted matcher snapshot and NULLS it on every structural mutation; in parallel the
+ * the sorted matcher snapshot and INVALIDATES it on every structural mutation; in parallel the
  * {@link RequestMatchers} modification counter bumps on every mutation and
  * {@code CandidateIndex} rebuilds whenever its generation is stale. So a single mutation
  * forces the NEXT request to rebuild both the full sorted list and (when engaged) the
@@ -54,9 +54,9 @@ import static org.mockserver.model.HttpResponse.response;
  *       the cached sorted list (and, in INDEX mode, the built buckets). This is the baseline.</li>
  *   <li>{@code mode=CHURN} — a SINGLE background writer thread continuously removes and re-adds a
  *       dedicated churn expectation through the real {@code clear(id)} / {@code add} control-plane
- *       API. Each such mutation nulls {@code sortedCache} and bumps the modification counter
- *       exactly as the serving path's lazy removal does — so reader requests observe a stale
- *       cache and rebuild. A single writer honours the {@code CircularPriorityQueue}
+ *       API. Each such mutation invalidates the cached sorted list (bumping its generation) and
+ *       bumps the {@link RequestMatchers} modification counter exactly as the serving path's lazy
+ *       removal does — so reader requests find the cache invalidated and rebuild. A single writer honours the {@code CircularPriorityQueue}
  *       single-writer contract; the reader threads use only the (concurrency-safe) read path.</li>
  *   <li>{@code indexMode=SCAN} — candidate index disabled (threshold above n): the reader
  *       rebuilds only the full sorted list under churn.</li>
@@ -66,8 +66,8 @@ import static org.mockserver.model.HttpResponse.response;
  *
  * <p><b>Threads.</b> The reader thread count is set on the command line ({@code -t 1}, {@code -t 4},
  * {@code -t 8}). The finding claims the cost WORSENS with more cores because
- * {@code toSortedList()}'s cache is a benign race: each concurrent reader that observes the
- * nulled cache rebuilds the whole list independently. Only a multi-thread run can show that.
+ * {@code toSortedList()}'s cache is lock-free: each concurrent reader that finds the cache
+ * invalidated rebuilds the whole list independently (duplicate work, never a stale result). Only a multi-thread run can show that.
  *
  * <p><b>What it does NOT measure.</b> It fixes {@code outcome=HIT} (the rebuild happens before
  * the scan, so a MISS tells the same rebuild story with a longer SCAN tail — omitted to bound
@@ -160,8 +160,8 @@ public class CandidateIndexChurnBenchmark {
             churnRunning = true;
             churnThread = new Thread(() -> {
                 while (churnRunning) {
-                    // clear(id) removes the matcher (nulls sortedCache, bumps the modification
-                    // counter); add re-inserts it (same again). One writer only, so the CPQ
+                    // clear(id) removes the matcher (invalidates the sorted cache, bumps the
+                    // modification counter); add re-inserts it (same again). One writer only, so the CPQ
                     // single-writer contract holds; readers race only on the read/rebuild path.
                     requestMatchers.clear(ExpectationId.expectationId(CHURN_ID), "g1-churn");
                     requestMatchers.add(newChurnExpectation(), API);

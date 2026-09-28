@@ -1210,8 +1210,8 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         // existing scan runs unchanged, so behaviour is identical UNDER THE EVENTUAL-CONSISTENCY
         // CONTRACT this class already documents for data-plane reads (see the threading note above)
         // - not in the stricter sense of "in every possible interleaving". One sub-microsecond window
-        // exists: addPriorityKey adds to the sort-order skip list BEFORE firing onAdd
-        // (CircularPriorityQueue:196-197), so while the LAST remaining respondBeforeBody expectation
+        // exists: CircularPriorityQueue.addPriorityKey adds to the sort-order skip list BEFORE
+        // firing onAdd, so while the LAST remaining respondBeforeBody expectation
         // is being re-keyed in place, a concurrent read can see it in the list but not yet in this
         // set, return null, and let that one request fall through to normal full-body matching. That
         // is graceful degradation of an optimisation, not a wrong answer, and it is the same
@@ -1449,7 +1449,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * incremental per-entry mutations (add/update/remove) to the CPQ — the
      * same granularity as normal control-plane add/remove. The CPQ's
      * {@code toSortedList()} provides an eventually-consistent sorted
-     * snapshot via {@code ConcurrentSkipListSet + volatile sortedCache +
+     * snapshot via {@code ConcurrentSkipListSet + generation-tagged sortedCache +
      * filter(nonNull)}. A matching thread calling {@code toSortedList()}
      * during a reconcile may see a snapshot that lags by one mutation, but
      * will never see a torn/empty view. This matches the pre-existing

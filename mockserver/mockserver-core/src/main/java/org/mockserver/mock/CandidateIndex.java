@@ -378,10 +378,11 @@ class CandidateIndex {
             return current;
         }
         // Read the authoritative list UNDER THIS MONITOR. onAdded/onRemoved serialise on
-        // the same monitor and complete their skipList mutation before their listener
-        // callback, so any mutation whose callback finished before we acquired the lock is
-        // already visible here, and any that has not yet acquired it will apply to the
-        // fresh state after we publish. Capturing outside the lock loses the former.
+        // the same monitor, and the CPQ completes its skipList mutation and invalidates its
+        // sorted snapshot before the listener callback, so any mutation whose callback finished
+        // before we acquired the lock is already visible here, and any that has not yet
+        // acquired it will apply to the fresh state after we publish. Capturing outside the
+        // lock loses the former.
         List<HttpRequestMatcher> authoritative = authoritativeSnapshot.get();
         State fresh = new State(caseInsensitive);
         for (HttpRequestMatcher matcher : authoritative) {
