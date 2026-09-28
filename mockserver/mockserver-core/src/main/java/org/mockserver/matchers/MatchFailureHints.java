@@ -61,8 +61,12 @@ public class MatchFailureHints {
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void addContentTypeCharsetHint(List<String> hints, KeysToMultiValues matcherHeaders, KeysToMultiValues matchedHeaders) {
         List<String> matcherContentTypes = getHeaderValues(matcherHeaders, "Content-Type");
+        if (matcherContentTypes.isEmpty()) {
+            // checked before reading the request side: getEntries() rebuilds every request header
+            return;
+        }
         List<String> matchedContentTypes = getHeaderValues(matchedHeaders, "Content-Type");
-        if (matcherContentTypes.isEmpty() || matchedContentTypes.isEmpty()) {
+        if (matchedContentTypes.isEmpty()) {
             return;
         }
         for (String expected : matcherContentTypes) {

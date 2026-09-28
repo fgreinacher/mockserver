@@ -10,6 +10,7 @@ import org.mockserver.model.HttpResponse;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import static org.mockserver.character.Character.NEW_LINE;
@@ -22,6 +23,9 @@ public class StringFormatter {
     private static final Map<Integer, String> INDENTS = new HashMap<>();
     private static final Splitter fixedLengthSplitter = Splitter.fixedLength(64);
     private static final Joiner newLineJoiner = Joiner.on(NEW_LINE);
+    // compiled once; String.replaceAll / String.split(String) would compile them on every call
+    private static final Pattern START_OF_EACH_LINE = Pattern.compile("(?m)^");
+    private static final Pattern ARGUMENT_PLACEHOLDER = Pattern.compile("\\{}");
 
     static {
         INDENTS.put(0, "");
@@ -41,7 +45,7 @@ public class StringFormatter {
             indentedObjects[i] =
                 new StringBuilder(NEW_LINE)
                     .append(NEW_LINE)
-                    .append(String.valueOf(objects[i]).replaceAll("(?m)^", INDENTS.get(indent)))
+                    .append(START_OF_EACH_LINE.matcher(String.valueOf(objects[i])).replaceAll(INDENTS.get(indent)))
                     .append(NEW_LINE);
         }
         return indentedObjects;
@@ -54,7 +58,7 @@ public class StringFormatter {
     public static String formatLogMessage(final int indent, final String message, final Object... arguments) {
         final StringBuilder logMessage = new StringBuilder();
         final StringBuilder[] formattedArguments = indentAndToString(indent + 1, arguments);
-        final String[] messageParts = message.split("\\{}");
+        final String[] messageParts = ARGUMENT_PLACEHOLDER.split(message);
         for (int messagePartIndex = 0; messagePartIndex < messageParts.length; messagePartIndex++) {
             logMessage.append(INDENTS.get(indent)).append(messageParts[messagePartIndex]);
             if (formattedArguments.length > 0 &&
@@ -85,7 +89,7 @@ public class StringFormatter {
     }
 
     public static String formatCompactLogMessage(final String message, final Object... arguments) {
-        final String[] messageParts = message.split("\\{}");
+        final String[] messageParts = ARGUMENT_PLACEHOLDER.split(message);
         final StringBuilder logMessage = new StringBuilder();
         for (int i = 0; i < messageParts.length; i++) {
             String part = messageParts[i].trim();

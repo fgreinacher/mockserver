@@ -63,6 +63,19 @@ allocation gate pins both, and also runs a notify-only `HEADERS_MISS` arm at INF
 and WARN, because `EXACT` never reaches the per-candidate matching scan. The headline number for the allocation work is
 **`gc.alloc.rate.norm`** (B/op); `ns/op` (shown as µs/op) is the secondary signal.
 
+`MatchingHitBenchmark.firstMatchingExpectation_match` is the matched-path
+companion: N expectations sharing one `(method, path)` candidate-index bucket,
+and a request that matches the FIRST or the LAST of them
+(`expectationCount={64,100,1000}` × `hitPosition` × `logLevel={INFO,WARN}` ×
+`detailedMatchFailures`). Use it to check that work added to the scan does not
+tax requests that match. It is a separate class so the daily micro-bench and
+`perf-alloc-gate.sh`, which include every method of `MatchingBenchmark`, keep
+their row counts; it is wired into no gate.
+
+```bash
+./run.sh -prof gc MatchingHitBenchmark
+```
+
 ## Scaling sweep (`run-scaling.sh`)
 
 `run-scaling.sh` is a sibling of `run.sh` that runs a **fixed** param sweep and
