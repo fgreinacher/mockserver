@@ -378,6 +378,13 @@ export const SWEEP = {
   // via ALPN, but the sweep is HTTP by default (the headline knee curve).
   proto: env('PROTO', baseUrl.startsWith('https') ? (bool('K6_HTTP2', true) ? 'https_h2' : 'https') : 'http'),
   resultPath: env('K6_SWEEP_RESULT_PATH', 'sweep-result.json'),
+  // Opt-in knobs for scripts/rw-multi-k6-sweep.sh (item 31); defaults are the published method.
+  windowMode: env('K6_SWEEP_WINDOW_MODE', 'vu_tag'), // vu_tag | wallclock (no window tag)
+  leanSummary: bool('K6_SWEEP_LEAN_SUMMARY', false), // counts only; no percentile submetrics
+  vuDiagnostics: bool('K6_SWEEP_VU_DIAGNOSTICS', true),
+  startAtMs: num('K6_SWEEP_START_AT_MS', 0), // epoch ms the ladder starts; 0 = after setup
+  quiet: env('K6_SWEEP_QUIET', '0s'), // idle tail after the last rung
+  manageSut: bool('K6_SWEEP_MANAGE_SUT', true), // seed in setup, reset in teardown
 };
 
 // Resource-growth scenario tunables (growth.js). A sustained constant-load run

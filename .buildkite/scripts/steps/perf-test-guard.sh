@@ -101,6 +101,11 @@ if [ "${PERF_SERVING_HW_MATRIX:-false}" = "true" ]; then
   PERF_RUN_TIMEOUT=130
   echo "--- :straight_ruler: PERF_SERVING_HW_MATRIX=true — run step timeout ${PERF_RUN_TIMEOUT}m"
 fi
+# PERF_SERVING_RW_MULTIK6=true (item 31, opt-in) adds ~10 min; +15 leaves margin.
+if [ "${PERF_SERVING_RW_MULTIK6:-false}" = "true" ]; then
+  PERF_RUN_TIMEOUT=$(( PERF_RUN_TIMEOUT + 15 ))
+  echo "--- :straight_ruler: PERF_SERVING_RW_MULTIK6=true — run step timeout ${PERF_RUN_TIMEOUT}m"
+fi
 
 sed "s/@PERF_RUN_TIMEOUT@/${PERF_RUN_TIMEOUT}/" <<'YAML' | buildkite-agent pipeline upload
 steps:
@@ -160,7 +165,8 @@ steps:
     # trim it back once a few runs show the real duration, or set PERF_INFO_ARM=false
     # to drop the arm entirely.
     # Bumped 60 -> 70 for the path-coverage phase (~8 min estimated; PERF_COVERAGE=false
-    # or a PERF_COVERAGE_ARMS subset removes it). 130 on a hardware-matrix build.
+    # or a PERF_COVERAGE_ARMS subset removes it). 130 on a hardware-matrix build; +15 with
+    # PERF_SERVING_RW_MULTIK6=true.
     timeout_in_minutes: @PERF_RUN_TIMEOUT@
     agents:
       queue: "perf"

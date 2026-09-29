@@ -12,6 +12,7 @@ regressions hide and stale claims get published.
 | `regression.js` (HTTP + HTTPS/H2) | Per-behaviour latency percentiles and delivery ratio at 200 rps | Daily (perf queue) | No — notify-only |
 | `growth.js` | Latency slope as the event log fills | Daily (perf queue) | No — notify-only |
 | `sweep.js` | Throughput-vs-latency knee curve | Daily (perf queue) | No — notify-only |
+| `rw-multi-k6-sweep.sh` (`sweep.js` from N processes, merged in Prometheus) | The same knee curve without the single-k6 ceiling (item 31) | **Opt-in** (`PERF_SERVING_RW_MULTIK6=true`) | No — never published; exits 2 on its own accounting/skew/window/cross-check gates |
 | `forward.js` | Forward connection-pool regression guard | Daily (perf queue) | `forward.error_rate` only |
 | `proxy.js` | Proxy and TLS handshake latency | Daily (perf queue) | No — notify-only |
 | `proxy.js` forward + slow upstream | Unmatched-proxy in-flight concurrency cap (unit 21) | **Opt-in** (`PERF_WORKLOAD=forward`) | `workload_forward_served_via_upstream` validity check |
@@ -144,7 +145,7 @@ pileup that temporarily drains the pool makes the rung read as client-limited ev
 sat at 1% utilisation for 95% of the measurement. Switching to `vus_active_p95 < pool`
 (`bac8a96b7`) fixed the low rungs but was still wrong at the knee: it is true even at 95%
 occupancy, so it discarded the saturating rung it existed to find. The current discriminator
-(`derive_saturation` in `.buildkite/scripts/steps/perf-test-run.sh`) is the occupancy **ratio**
+(`derive_saturation` in `.buildkite/scripts/steps/lib/perf-derive-saturation.sh`) is the occupancy **ratio**
 `vus_active_p95 / pool`: at or above 0.80 the pool is the binding constraint (VUs blocked on server
 responses → server-limited → keep, and label the knee); below 0.80, drops over the 1% tolerance are a
 client-side scheduling stall → exclude. 0.80 sits in the widest gap of the observed ladder (a pinned
@@ -190,6 +191,137 @@ starts above the cleanly-served region reports `saturation_rps=0` — every rung
 overload, so none qualifies as the healthy ceiling — which looks like a defect and is not. The
 default ladder (500, 1,000, 2,000, 4,000, 8,000, 16,000, 24,000, 32,000, 36,000, 40,000, 44,000,
 48,000, 64,000 rps) begins well below the knee for exactly this reason.
+
+### `rw-multi-k6-sweep.sh` — the knee curve from N merged k6 processes (opt-in, item 31)
+
+**Outcome.** At the published ceiling one k6 process spends ~4x the server's CPU per request, so
+the top of the ladder measures the load generator. `mockserver-performance-test/scripts/rw-multi-k6-sweep.sh`
+offers each rung from N **independent** k6 processes (1/N of the rate each, no k6-side
+coordination), all starting the ladder at one wall-clock instant and pushing native histograms to
+a pinned Prometheus by remote write. Latency is a **true merged percentile**
+(`histogram_quantile` over the summed histograms), throughput is the summed request count, and the
+healthy ceiling comes from `lib/perf-website-figures.jq` unchanged. It is opt-in and never
+published; switching the published method over is a separate, approved step after a rig
+cross-check.
+
+```mermaid
+flowchart LR
+  start["shared start instant
+(K6_SWEEP_START_AT_MS)"]
+  k6a["k6 p0
+rate/N"]
+  k6b["k6 p1..pN-1
+rate/N"]
+  sut["MockServer SUT"]
+  prom["Prometheus
+native histograms"]
+  merge["harness
+sum + histogram_quantile
+per rung, cut by time"]
+  acct["accounting check
+Prometheus count ==
+each process's own count"]
+  start --> k6a & k6b
+  k6a & k6b --> sut
+  k6a & k6b -->|"remote write, 1 s"| prom
+  prom --> merge --> acct
+```
+
+| Gate (fail-closed: `valid: false`, exit 2) | What it proves |
+|---|---|
+| `rw_accounting` | Per rung and per process, `k6_http_reqs_total` and the histogram count in Prometheus equal the process's own end-of-run `http_reqs` count (tolerance `PERF_RW_ACCOUNT_TOL`, default 0). A lost flush or a process that died without a summary cannot pass |
+| `rw_processes_exited_cleanly` | Every process exited 0 and wrote its summary |
+| `rw_start_skew_within_bound` | Each rung's `exec.scenario.startTime` agrees across processes within `PERF_RW_MAX_SKEW_MS` (100) |
+| `rw_settle_cut_within_bound` | Each process's settle cut lands between its settle boundary and 2 push intervals after it (wall-clock mode) |
+| `rw_settle_cut_measured` | In wall-clock mode every process has a measured cut and cut excess; a missing one (no sample after the boundary, a failed query, a dead process) fails rather than passes |
+| `rw_prometheus_queries_ok` | Every Prometheus query succeeded. A failed query is recorded and read as an empty result, so the run completes and reports this reason instead of aborting |
+| `rw_settle_cut_excess_bounded` | The requests each process completed between its settle boundary and its cut (the counter at the cut minus the counter at the boundary) are no more than its offered rate over 2 push intervals (+`PERF_RW_WINDOW_TOL`, 5%). It measures what a late cut dropped from the steady window directly, so a rung whose throughput collapses under saturation does not trip it |
+| `rw_window_accounts_every_request` | Every merged rung's settle + measured counts equal its request count (`lib/perf-sweep-window.sh`); true by construction in wall-clock mode, so the two gates above carry the window |
+| `rw_cpu_sampled_every_rung` | At least one k6 CPU sample fell in every rung's steady window; `derive_saturation` would otherwise read the rung as 0% CPU, i.e. headroom |
+| `rw_cross_check_same_requests` | One k6 in the published summary mode, **also** remote-writing, measures rungs up to `PERF_RW_XCHECK_MAX_RPS` (24,000); its summary percentiles and the Prometheus merge of the same requests agree within p50 10%, p95 10%, p99 15% (0.005 ms floor) |
+| `rw_no_failed_pushes` | No k6 remote-write send failure |
+| `rw_no_slow_flushes` | No flush took longer than the push interval (k6 warns that samples may then be dropped); `.remote_write.slow_flushes` reports the count and the longest. This also catches Prometheus stalls of 1–2 s, too short for the cut gates. On a contended host it trips first; raise `PERF_RW_PUSH_INTERVAL_S` rather than loosen the gate |
+
+`cross_check.cross_run` separately compares the N-process rungs with that single-process run at
+the same aggregate rate (achieved ratio within 0.02; p50/p95/p99 within 20/35/60%) — two separate
+runs, so it carries run-to-run noise and is reported, with `cross_check.equivalent`, rather than
+gating validity.
+
+**Why these choices.**
+
+- **Native histograms, not trend gauges.** `K6_PROMETHEUS_RW_TREND_STATS` gauges (as the local
+  stack uses) are per-process percentiles and cannot be merged. k6's native histograms use a 1.1
+  bucket factor, so a quantile is resolved to within ~5%; on the same requests the local
+  cross-check agreed to within 3.5% at p50–p99.
+- **Windows as time ranges.** Every request carries its rung's `rate` tag, so each rung is its own
+  series and its final cumulative value is exact. Each process's settle cut is the first pushed
+  sample at or after `rung start + settle`, and the steady histogram is the rung's final histogram
+  minus the one at the cut. The cut never lands inside the settle window, and
+  `rw_settle_cut_within_bound` rejects one more than 2 push intervals late (it normally lands
+  up to about one push interval late; a stalled Prometheus pushes it later and fails the run).
+  The cut is taken from each process's dominant series, so a sparse error series cannot set it. This lets `sweep.js` drop its `win` tag
+  (`K6_SWEEP_WINDOW_MODE=wallclock`); `PERF_RW_WINDOW_MODE=vu_tag` keeps it and splits by label.
+- **Start synchronisation.** The harness picks `start = now + PERF_RW_START_LEAD_S`; `setup()`
+  sleeps until then, so every process's scenario offsets count from the same instant. Process 0
+  seeds (and at the end resets) the SUT before the start; the others do not touch it. Observed skew
+  locally was 0–9 ms; each process's `setup_end_minus_start_at_ms` (and the maximum under
+  `.method`) shows whether `PERF_RW_START_LEAD_S` left enough time for VU initialisation.
+- **Flush safety.** k6 flushes once more when it stops, but a flush that fails, or a process that
+  dies, loses the tail; the `quiet_tail` scenario (`PERF_RW_QUIET_S`, at least 2x the push interval,
+  default 5 s) keeps every process alive past its last rung, and the accounting gate catches
+  whatever is still lost. Stale markers stay off so a rung's final value remains queryable, and
+  Prometheus runs with a 2 h lookback so every rung is read at one instant.
+- **Rig validity reuses the published rule.** `derive_saturation` lives in
+  `lib/perf-derive-saturation.sh` (moved verbatim out of `perf-test-run.sh`) and is fed the busiest
+  process's CPU scaled to one pin, the summed drops and the busiest process's `vus_active_p95`
+  against its own pool; its CPU windows start at the earliest measured rung-0 start.
+  `.per_process[].per_rung` records each process's CPU mean, fraction of pin and drop fraction.
+  **Hyperthread caveat:** the pin counts vCPUs, so a process on 4 physical cores with both
+  hyperthreads has an 800% pin it cannot reach; the 85%-of-pin client-saturation test then trips
+  later than on the single-process rig. This is plan item 30's blind spot, made wider.
+- **Placement.** SUT, Prometheus and every k6 process are proven physically disjoint by
+  `lib/perf-cpu-topology.sh`. On the 48-vCPU rig the defaults are SUT on physical cores 0–5,
+  Prometheus on core 23 (vCPUs 23,47), and four k6 processes on four physical cores each, both
+  hyperthreads (`7-10,31-34` … `19-22,43-46`), which keeps the SUT's siblings idle. Override with
+  `PERF_RW_SERVER_CPUS`, `PERF_RW_PROM_CPUS`, `PERF_RW_K6_CPUSETS` (`;`-separated) and
+  `PERF_RW_PROCS`.
+
+**k6 CPU per request** (cgroup `usage_usec` over the load window, one k6 on 4 vCPUs at 8,000 rps,
+three interleaved rounds on a laptop shared with other load, so ±8 µs noise):
+
+| `sweep.js` mode | µs/request |
+|---|---|
+| Published (VU-tag window, full summary, no remote write) | 143 |
+| Published + remote write | 152 |
+| Remote write, wall-clock window, lean summary, VU diagnostics on (harness default) | 144 |
+| Remote write, wall-clock window, lean summary, VU diagnostics off | 127 |
+| Same, 5 s push interval instead of 1 s | 123 |
+| No remote write, lean summary, diagnostics off: wall-clock / VU-tag window | 122 / 130 |
+
+Remote write costs ~5–9 µs/request, and a 1 s push interval costs no more than 5 s within the noise. The
+per-iteration `vusActive` sample and stall accounting cost ~17 µs; they stay on by default because
+`derive_saturation`'s occupancy rule needs `vus_active_p95` (with them off, any drop makes a rung
+rig-invalid). The saving that lifts the ceiling is from dividing the rate across processes;
+per-process cost stays about where the published mode is.
+
+**Running it.** `PERF_SERVING_RW_MULTIK6=true` on a perf build runs it against the main SUT right
+after the published sweep, on the same ladder, and stores the result under `.serving_rw_multik6`
+and the `serving-rw-multik6.json` artifact; that run is not baseline-eligible. It adds ~10 min, and
+`perf-test-guard.sh` raises the run step's timeout by 15 min when the flag is set. For a trial also
+set `PERF_INFO_ARM=false` and `PERF_COVERAGE=false`, the two default-on phases the run step's
+timeout comment names as removable. Locally:
+
+```bash
+PERF_RW_PROCS=3 PERF_RW_RATES=1500,3000,6000,9000 PERF_RW_STEP=12s PERF_RW_GAP=4s \
+  mockserver-performance-test/scripts/rw-multi-k6-sweep.sh .tmp/rw.json
+# degrade tests — each must end "valid": false and exit 2
+PERF_RW_DEGRADE=kill:1 PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-kill.json      # process dies before its last push
+PERF_RW_DEGRADE=pause_prometheus PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-pause.json   # final pushes fail
+PERF_RW_DEGRADE=stall_prometheus PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-stall.json  # 4 push intervals stalled across a settle boundary
+# cut-gate self-tests: a failed cut query, and a null cut on a live process
+PERF_RW_TEST_CUT_FAULT=main-p1:query PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-cutq.json
+PERF_RW_TEST_CUT_FAULT=main-p1:empty PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-cute.json
+```
 
 ### `forward.js` — forward connection-pool guard
 

@@ -74,6 +74,7 @@
 // ---------------------------------------------------------------------------
 import { Trend, Counter, Gauge } from 'k6/metrics';
 import exec from 'k6/execution';
+import { sleep } from 'k6';
 import { CONFIG, SWEEP } from './lib/config.js';
 import { seedExpectations, resetMockServer, getSimple } from './lib/expectations.js';
 
@@ -114,6 +115,18 @@ const SETTLE_MS = SETTLE_SECONDS * 1000;
 if (SETTLE_SECONDS >= STEP_SECONDS) {
   throw new Error(`sweep.js: K6_SWEEP_SETTLE (${SWEEP.settle}) must be shorter than K6_SWEEP_STEP (${SWEEP.step}) or no rung has a measured latency window.`);
 }
+
+// Opt-in multi-process remote-write mode (item 31); every default below reproduces
+// the single-process published method exactly.
+if (!['vu_tag', 'wallclock'].includes(SWEEP.windowMode)) {
+  throw new Error(`sweep.js: K6_SWEEP_WINDOW_MODE must be vu_tag or wallclock, got "${SWEEP.windowMode}"`);
+}
+const WALLCLOCK = SWEEP.windowMode === 'wallclock';
+const QUIET_SECONDS = toSeconds(SWEEP.quiet === '0' ? '0s' : SWEEP.quiet);
+const START_AT_MS = SWEEP.startAtMs > 0 ? SWEEP.startAtMs : 0;
+// True when the harness cuts wall-clock windows (a synchronised set, or no window tag); the
+// lean summary then keeps the rung-start submetric, which the default summary always keeps.
+const RECORD_RUNG_START = WALLCLOCK || START_AT_MS > 0;
 
 // Finding-3 invariant made unbreakable: within every rung preAllocatedVUs ==
 // maxVUs, so no rung's executor can allocate a VU (a fresh connection) mid-run —
@@ -221,6 +234,18 @@ function buildScenarios() {
       env: { SWEEP_RATE: String(rate) },
     };
   });
+  if (QUIET_SECONDS > 0) {
+    // Idle after the last rung ends so the remote-write output pushes the final
+    // rung's samples on its own period, not only in the shutdown flush.
+    scenarios.quiet_tail = {
+      executor: 'shared-iterations',
+      exec: 'quietTail',
+      vus: 1,
+      iterations: 1,
+      startTime: `${(RATES.length - 1) * (STEP_SECONDS + GAP_SECONDS) + STEP_SECONDS}s`,
+      maxDuration: `${QUIET_SECONDS + 30}s`,
+    };
+  }
   return scenarios;
 }
 
@@ -230,6 +255,9 @@ function buildScenarios() {
 // rate, and the request count per rate tag so handleSummary can read them.
 function sweepThresholds() {
   const t = {};
+  if (SWEEP.leanSummary) {
+    return leanThresholds(t);
+  }
   for (const rate of RATES) {
     // Published percentiles are post-settle; the whole-rung set feeds full_rung_ms.
     t[`http_req_duration{win:${rate}_steady}`] = ['p(50)>=0', 'p(90)>=0', 'p(95)>=0', 'p(99)>=0', 'p(99.9)>=0'];
@@ -271,6 +299,29 @@ function sweepThresholds() {
   return t;
 }
 
+// Lean summary (item 31): only the counts and error rate the harness reconciles
+// against Prometheus. Percentile submetrics are not materialised because latency
+// comes from the merged native histograms.
+function leanThresholds(t) {
+  for (const rate of RATES) {
+    t[`http_reqs{rate:${rate}}`] = ['count>=0'];
+    t[`http_req_failed{rate:${rate}}`] = ['rate>=0'];
+    t[`dropped_iterations{scenario:rate_${rate}}`] = ['count>=0'];
+    if (RECORD_RUNG_START) {
+      t[`sweep_rung_start_epoch_ms{rate:${rate}}`] = ['value>=0'];
+    }
+  }
+  return t;
+}
+
+// setup() may sleep until START_AT_MS, so give it room beyond the default 60 s.
+function setupTimeout() {
+  if (START_AT_MS <= 0) {
+    return undefined;
+  }
+  return `${Math.max(60, Math.ceil((START_AT_MS - Date.now()) / 1000) + 60)}s`;
+}
+
 export const options = {
   insecureSkipTLSVerify: CONFIG.insecureSkipTLSVerify,
   // handleSummary reads these stats off each submetric's `values`; p(50)/p(99)/
@@ -279,10 +330,27 @@ export const options = {
   summaryTrendStats: ['avg', 'min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'p(99.9)', 'max'],
   scenarios: buildScenarios(),
   thresholds: sweepThresholds(),
+  ...(START_AT_MS > 0 ? { setupTimeout: setupTimeout() } : {}),
 };
 
 export function setup() {
-  seedExpectations();
+  if (SWEEP.manageSut) {
+    seedExpectations();
+  }
+  if (START_AT_MS <= 0) {
+    return undefined;
+  }
+  // Sleep until the shared start instant; scenario startTime offsets then count from
+  // the same wall-clock origin in every process.
+  const waitMs = START_AT_MS - Date.now();
+  if (waitMs > 0) {
+    sleep(waitMs / 1000);
+  }
+  return { start_at_ms: START_AT_MS, setup_end_ms: Date.now() };
+}
+
+export function quietTail() {
+  sleep(QUIET_SECONDS);
 }
 
 // Settle/steady window, tracked per VU (each VU has its own JS runtime). `win` is a
@@ -307,11 +375,28 @@ function enterWindow(rate) {
   }
 }
 
+// wallclock mode: no window tag; only note the rung start once per VU per rung.
+function noteRungStart(rate) {
+  if (rate !== winRate) {
+    winRate = rate;
+    rungStartGauge.add(exec.scenario.startTime, { rate });
+  }
+}
+
 // Single exec fn for every rung; the scenario's env.SWEEP_RATE supplies the
 // offered-rate tag so the request lands in this step's submetric.
 export function matchAt() {
   const rate = __ENV.SWEEP_RATE;
   const rateTag = { rate };
+  if (!SWEEP.vuDiagnostics) {
+    if (WALLCLOCK) {
+      noteRungStart(rate);
+    } else {
+      enterWindow(rate);
+    }
+    getSimple(rateTag);
+    return;
+  }
   // Sample active VUs at iteration START. `vusActive` is the process-global count
   // of VUs currently running iterations; because the rungs are staggered with quiet
   // gaps, during a rung only THIS scenario is active, so the sample reflects this
@@ -325,7 +410,11 @@ export function matchAt() {
   vusActiveTrend.add(active, rateTag);
 
   // Rung-relative clock: the onset window is measured from THIS scenario's start.
-  enterWindow(rate);
+  if (WALLCLOCK) {
+    noteRungStart(rate);
+  } else {
+    enterWindow(rate);
+  }
   const res = getSimple(rateTag);
 
   // Stall accounting: a request slower than STALL_MS is deep-tail latency — the
@@ -354,7 +443,9 @@ export function matchAt() {
 }
 
 export function teardown() {
-  resetMockServer();
+  if (SWEEP.manageSut) {
+    resetMockServer();
+  }
 }
 
 // Emit the machine-readable result consumed by the knee-curve chart. Per rung:
@@ -425,8 +516,9 @@ export function handleSummary(data) {
       sample_count: round(count, 0),
       // Tail suppression uses measured_sample_count (post-settle); drop and
       // achieved accounting keep sample_count (whole rung).
-      measured_sample_count: steadyReqs && steadyReqs.values ? round(steadyReqs.values.count, 0) : 0,
-      settle_excluded: settleReqs && settleReqs.values ? round(settleReqs.values.count, 0) : 0,
+      // null in wallclock mode: the harness splits the rung by time in Prometheus.
+      measured_sample_count: WALLCLOCK ? null : steadyReqs && steadyReqs.values ? round(steadyReqs.values.count, 0) : 0,
+      settle_excluded: WALLCLOCK ? null : settleReqs && settleReqs.values ? round(settleReqs.values.count, 0) : 0,
       // Whole-rung percentiles INCLUDING the onset, for audit of the exclusion.
       full_rung_ms: {
         p50_ms: round(fv['p(50)'] !== undefined ? fv['p(50)'] : fv.med),
@@ -435,6 +527,8 @@ export function handleSummary(data) {
         p999_ms: round(fv['p(99.9)']),
       },
       error_rate: failed && failed.values ? round(failed.values.rate, 5) : 0,
+      // Raw failed/total counts, so a multi-process harness can pool error rates.
+      failed_count: failed && failed.values ? round(failed.values.passes, 0) : 0,
       // Client-side drop count for this rung: > 0 means k6 could not keep up
       // with the offered arrival rate (VU starvation), so achieved_rps is bounded
       // by the CLIENT and this rung is not a valid server-ceiling candidate.
@@ -491,7 +585,18 @@ export function handleSummary(data) {
   const out = {
     proto: SWEEP.proto,
     // Absent on results from before the onset exclusion (percentiles include it).
-    latency_window: { settle_s: SETTLE_SECONDS, measured_s: STEP_SECONDS - SETTLE_SECONDS },
+    latency_window: { settle_s: SETTLE_SECONDS, measured_s: STEP_SECONDS - SETTLE_SECONDS, mode: SWEEP.windowMode },
+    // Wall-clock alignment for a synchronised multi-process run (item 31); absent
+    // from a default single-process run.
+    wallclock: !RECORD_RUNG_START && !SWEEP.leanSummary ? undefined : {
+      start_at_ms: data.setup_data ? data.setup_data.start_at_ms : null,
+      setup_end_ms: data.setup_data ? data.setup_data.setup_end_ms : null,
+      step_s: STEP_SECONDS,
+      gap_s: GAP_SECONDS,
+      quiet_s: QUIET_SECONDS,
+      lean_summary: SWEEP.leanSummary,
+      vu_diagnostics: SWEEP.vuDiagnostics,
+    },
     points,
     // Additive, namespaced, WHOLE-RUN block (deliberately not per rung — pool
     // growth cannot be attributed to a single rung here; see the note). Lets a
