@@ -23,8 +23,12 @@ public class NettyHttpToMockServerHttpRequestDecoder extends MessageToMessageDec
     private final MockServerLogger mockServerLogger;
 
     public NettyHttpToMockServerHttpRequestDecoder(Configuration configuration, MockServerLogger mockServerLogger, boolean isSecure, Certificate[] clientCertificates, Integer port) {
+        this(mockServerLogger, new FullHttpRequestToMockServerHttpRequest(configuration, mockServerLogger, isSecure, clientCertificates, port));
+    }
+
+    public NettyHttpToMockServerHttpRequestDecoder(MockServerLogger mockServerLogger, FullHttpRequestToMockServerHttpRequest fullHttpRequestToMockServerRequest) {
         this.mockServerLogger = mockServerLogger;
-        this.fullHttpRequestToMockServerRequest = new FullHttpRequestToMockServerHttpRequest(configuration, mockServerLogger, isSecure, clientCertificates, port);
+        this.fullHttpRequestToMockServerRequest = fullHttpRequestToMockServerRequest;
     }
 
     @Override

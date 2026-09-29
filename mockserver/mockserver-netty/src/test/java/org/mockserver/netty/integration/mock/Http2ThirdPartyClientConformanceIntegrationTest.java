@@ -38,6 +38,7 @@ import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.StringBody.exact;
 import static org.mockserver.stop.Stop.stopQuietly;
 
 /**
@@ -267,6 +268,60 @@ public class Http2ThirdPartyClientConformanceIntegrationTest {
             assertThat("no expectation for responded path " + path, expected, is(notNullValue()));
             assertThat("body for " + path + " was mis-routed or truncated across concurrent streams",
                 response.body(), is(expected));
+        }
+    }
+
+    /**
+     * The request-direction sibling of the test above: concurrent streams on ONE connection each POST their
+     * own marker-stamped body larger than the flow-control window, with their own query parameter. The
+     * server decodes every stream's request with mappers shared across that connection's streams; this is a
+     * regression guard that a body or parameter leaking between streams would miss its expectation (a 404)
+     * or record the wrong request.
+     */
+    @Test(timeout = 90000)
+    public void shouldKeepConcurrentLargeRequestBodiesOnOneConnectionCorrectlyRouted() throws Exception {
+        int streamCount = 8;
+        Map<String, String> requestBodyByPath = new LinkedHashMap<>();
+        for (int i = 0; i < streamCount; i++) {
+            String path = "/concurrent_request_" + i;
+            String body = largeBody("request-" + i);
+            requestBodyByPath.put(path, body);
+            mockServerClient
+                .when(request().withMethod("POST").withPath(path).withQueryStringParameter("stream", String.valueOf(i)).withBody(exact(body)))
+                .respond(response().withStatusCode(200).withBody("matched-" + i));
+        }
+
+        HttpClient client = directClient();
+        assertH2(client.send(
+            getRequest("https://localhost:" + mockServerPort + "/warm_up"),
+            HttpResponse.BodyHandlers.ofString()));
+
+        List<CompletableFuture<HttpResponse<String>>> futures = new ArrayList<>();
+        int i = 0;
+        for (Map.Entry<String, String> entry : requestBodyByPath.entrySet()) {
+            futures.add(client.sendAsync(
+                HttpRequest.newBuilder(URI.create("https://localhost:" + mockServerPort + entry.getKey() + "?stream=" + i++))
+                    .timeout(EXCHANGE_TIMEOUT)
+                    .POST(HttpRequest.BodyPublishers.ofString(entry.getValue()))
+                    .build(),
+                HttpResponse.BodyHandlers.ofString()));
+        }
+        CompletableFuture
+            .allOf(futures.toArray(new CompletableFuture[0]))
+            .get(60, SECONDS);
+
+        for (CompletableFuture<HttpResponse<String>> future : futures) {
+            HttpResponse<String> response = future.get();
+            assertH2(response);
+            String path = response.request().uri().getPath();
+            assertThat("request for " + path + " did not match its own body and parameter",
+                response.body(), is("matched-" + path.substring(path.lastIndexOf('_') + 1)));
+        }
+
+        org.mockserver.model.HttpRequest[] recorded = mockServerClient.retrieveRecordedRequests(request().withPath("/concurrent_request_.*"));
+        assertThat(recorded.length, is(streamCount));
+        for (org.mockserver.model.HttpRequest request : recorded) {
+            assertThat(request.getBodyAsString(), is(requestBodyByPath.get(request.getPath().getValue())));
         }
     }
 

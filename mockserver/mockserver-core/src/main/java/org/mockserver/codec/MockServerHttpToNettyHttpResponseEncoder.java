@@ -16,7 +16,11 @@ public class MockServerHttpToNettyHttpResponseEncoder extends MessageToMessageEn
     private final MockServerHttpResponseToFullHttpResponse mockServerHttpResponseToFullHttpResponse;
 
     public MockServerHttpToNettyHttpResponseEncoder(MockServerLogger mockServerLogger) {
-        mockServerHttpResponseToFullHttpResponse = new MockServerHttpResponseToFullHttpResponse(mockServerLogger);
+        this(new MockServerHttpResponseToFullHttpResponse(mockServerLogger));
+    }
+
+    public MockServerHttpToNettyHttpResponseEncoder(MockServerHttpResponseToFullHttpResponse mockServerHttpResponseToFullHttpResponse) {
+        this.mockServerHttpResponseToFullHttpResponse = mockServerHttpResponseToFullHttpResponse;
     }
 
     @Override

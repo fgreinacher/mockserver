@@ -183,6 +183,18 @@ the notify-only `perf-test-h2multiplex.sh` step (perf queue) records it into the
 run-history baseline; there is **no pass/fail threshold yet** because run-to-run
 variance on real agents is unknown — setting one now would be guessing.
 
+### Bytes per HTTP/2 request (`Http2StreamAllocationBenchmark`)
+
+The allocation companion: a JMH class that opens a fresh stream per op on one h2c
+connection and `POST`s a 64-byte (`SMALL`) or 256 KiB (`OVER_WINDOW`, past the
+65,535-byte flow-control window) body. `-prof gc` counts every thread, so
+`gc.alloc.rate.norm` is client + server bytes per request — an A/B figure for a
+server change, not the server's absolute cost. On demand only; no CI step runs it.
+
+```bash
+./run.sh -prof gc -f 2 Http2StreamAllocationBenchmark
+```
+
 ## HTTP/2 per-connection memory benchmark (`run-h2-connection-memory.sh`) — issue #2669, item 11
 
 The throughput harness above sweeps streams over **one** connection. This one adds the missing

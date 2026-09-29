@@ -7,6 +7,8 @@ import io.netty.handler.codec.http.HttpContentDecompressor;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http2.Http2StreamChannel;
 import io.netty.handler.codec.http2.Http2StreamFrameToHttpObjectCodec;
+import io.netty.util.Attribute;
+import io.netty.util.AttributeKey;
 import org.mockserver.codec.MockServerHttpServerCodec;
 import org.mockserver.codec.PreserveHeadersNettyRemoves;
 import org.mockserver.configuration.Configuration;
@@ -14,6 +16,8 @@ import org.mockserver.dashboard.DashboardWebSocketHandler;
 import org.mockserver.grpc.GrpcProtoDescriptorStore;
 import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.mappers.FullHttpRequestToMockServerHttpRequest;
+import org.mockserver.mappers.MockServerHttpResponseToFullHttpResponse;
 import org.mockserver.mock.HttpState;
 import org.mockserver.mock.action.http.HttpActionHandler;
 import org.mockserver.netty.HttpRequestHandler;
@@ -24,6 +28,8 @@ import org.mockserver.netty.mcp.McpStreamableHttpHandler;
 import org.mockserver.netty.websocketregistry.CallbackWebSocketServerHandler;
 import org.mockserver.socket.NettyAllocator;
 
+import java.net.InetSocketAddress;
+import java.net.SocketAddress;
 import java.security.cert.Certificate;
 
 /**
@@ -48,6 +54,8 @@ import java.security.cert.Certificate;
  * {@link #installReAggregatingChain} method so both this initializer and the router can install it.
  */
 public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2StreamChannel> {
+
+    private static final AttributeKey<ConnectionMappers> CONNECTION_MAPPERS = AttributeKey.valueOf("HTTP2_CONNECTION_MAPPERS");
 
     private final Configuration configuration;
     private final LifeCycle server;
@@ -195,7 +203,7 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
      * @param mockServerLogger              logger
      * @param sslEnabled                    whether TLS is enabled
      * @param clientCertificates            client certificates (may be null)
-     * @param channel                       the child channel (used for localAddress)
+     * @param channel                       the child channel; its connection (parent) scopes the shared codec mappers
      * @param callbackWebSocketServerHandler sharable WebSocket callback handler
      * @param dashboardWebSocketHandler     sharable dashboard WebSocket handler
      * @param mcpStreamableHttpHandler      sharable MCP handler (may be null)
@@ -276,13 +284,7 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
         if (mcpStreamableHttpHandler != null) {
             pipeline.addLast(mcpStreamableHttpHandler);
         }
-        // MockServerHttpServerCodec is NOT @Sharable -- create a fresh instance per child channel
-        java.net.SocketAddress localAddress = channel.parent() != null
-            ? channel.parent().localAddress()
-            : channel.localAddress();
-        pipeline.addLast(new MockServerHttpServerCodec(
-            configuration, mockServerLogger, sslEnabled, clientCertificates, localAddress
-        ));
+        pipeline.addLast(serverCodec(channel, configuration, mockServerLogger, sslEnabled, clientCertificates));
         pipeline.addLast(traceContextHandler);
         if (altSvcHeaderHandler != null) {
             pipeline.addLast(altSvcHeaderHandler);
@@ -292,5 +294,43 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
             pipeline.addLast(grpcToHttpRequestHandler);
         }
         pipeline.addLast(httpRequestHandler);
+    }
+
+    /**
+     * MockServerHttpServerCodec is NOT @Sharable, so every stream gets its own; but its request and response
+     * mappers are stateless apart from the request mapper's memoised connection addresses, so one pair is
+     * built per HTTP/2 connection and reused by all its streams. Stream child channels always run on their
+     * connection's event loop, which is what makes the unsynchronised address cache safe to share.
+     */
+    private static MockServerHttpServerCodec serverCodec(Channel channel, Configuration configuration, MockServerLogger mockServerLogger, boolean sslEnabled, Certificate[] clientCertificates) {
+        if (!(channel instanceof Http2StreamChannel)) {
+            SocketAddress localAddress = channel.parent() != null ? channel.parent().localAddress() : channel.localAddress();
+            return new MockServerHttpServerCodec(configuration, mockServerLogger, sslEnabled, clientCertificates, localAddress);
+        }
+        Attribute<ConnectionMappers> attribute = channel.parent().attr(CONNECTION_MAPPERS);
+        ConnectionMappers mappers = attribute.get();
+        if (mappers == null) {
+            SocketAddress localAddress = channel.parent().localAddress();
+            mappers = new ConnectionMappers(
+                new FullHttpRequestToMockServerHttpRequest(configuration, mockServerLogger, sslEnabled, clientCertificates,
+                    localAddress instanceof InetSocketAddress ? ((InetSocketAddress) localAddress).getPort() : null),
+                new MockServerHttpResponseToFullHttpResponse(mockServerLogger)
+            );
+            ConnectionMappers existing = attribute.setIfAbsent(mappers);
+            if (existing != null) {
+                mappers = existing;
+            }
+        }
+        return new MockServerHttpServerCodec(mockServerLogger, mappers.requestMapper, mappers.responseMapper);
+    }
+
+    private static final class ConnectionMappers {
+        private final FullHttpRequestToMockServerHttpRequest requestMapper;
+        private final MockServerHttpResponseToFullHttpResponse responseMapper;
+
+        private ConnectionMappers(FullHttpRequestToMockServerHttpRequest requestMapper, MockServerHttpResponseToFullHttpResponse responseMapper) {
+            this.requestMapper = requestMapper;
+            this.responseMapper = responseMapper;
+        }
     }
 }

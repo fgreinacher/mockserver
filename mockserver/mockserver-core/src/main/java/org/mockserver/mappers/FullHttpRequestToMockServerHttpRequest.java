@@ -219,8 +219,9 @@ public class FullHttpRequestToMockServerHttpRequest {
     }
 
     // netty memoises both addresses on the channel, so the instance is stable for the life of the
-    // connection and its identity is a safe cache key. The mapper is per pipeline / per HTTP/2 child
-    // channel and only touched from that channel's event-loop thread, so no synchronisation is needed.
+    // connection and its identity is a safe cache key. The mapper is per pipeline, or per HTTP/2
+    // connection (shared by its stream child channels, which all run on the connection's event loop),
+    // so it is only touched from one event-loop thread and no synchronisation is needed.
     private String remoteAddressString(SocketAddress remoteAddress) {
         if (remoteAddress != cachedRemoteAddress) {
             cachedRemoteAddress = remoteAddress;
