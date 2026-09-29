@@ -48,6 +48,6 @@ echo "GET /profile (after login):"
 after=$(curl -s "${MS}/profile"); echo "  -> ${after}"
 
 [ "${before}" = "401" ]            || { echo "FAIL: expected 401 before login"; exit 1; }
-echo "${token}" | grep -q abc123   || { echo "FAIL: expected token from /login"; exit 1; }
-echo "${after}"  | grep -q Alice   || { echo "FAIL: expected profile after login"; exit 1; }
+grep -q abc123 <<<"${token}"   || { echo "FAIL: expected token from /login"; exit 1; }
+grep -q Alice  <<<"${after}"    || { echo "FAIL: expected profile after login"; exit 1; }
 echo "PASS: login state machine"

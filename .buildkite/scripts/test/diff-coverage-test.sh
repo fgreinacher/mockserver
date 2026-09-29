@@ -62,7 +62,7 @@ run_case() {
   set -e
   local ok=1
   [ "$ec" = "$want_exit" ] || ok=0
-  printf '%s\n' "$out" | grep -q -- "$want_sub" || ok=0
+  grep -q -- "$want_sub" <<<"$out" || ok=0
   if [ "$ok" = 1 ]; then
     echo "  PASS: $name (exit=$ec, matched: $want_sub)"; PASS=$((PASS+1))
   else

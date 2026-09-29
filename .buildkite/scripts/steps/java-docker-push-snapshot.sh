@@ -78,7 +78,10 @@ fi
 
 # jvm_memory_allocated_bytes needs the jdk.management module; a jlink module list without it
 # drops the metric silently, so assert it on the image that is about to be published.
-if ! curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep -q '^jvm_memory_allocated_bytes '; then
+# Scrape once into a variable: `curl | grep -q` under pipefail fails when grep exits
+# before curl finishes writing (curl exit 23), a false red (Rule 7 of check-false-green-guards.sh).
+SMOKE_METRICS="$(curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null || true)"
+if ! grep -q '^jvm_memory_allocated_bytes ' <<<"$SMOKE_METRICS"; then
   echo "Smoke test FAILED: jvm_memory_allocated_bytes missing from /mockserver/metrics (is jdk.management in the jlink --add-modules list?)"
   exit 1
 fi
@@ -88,9 +91,9 @@ fi
 # other symptom, so assert the running JVM actually reports a ZGC collector. jvm_runtime_info carries
 # the joined GarbageCollectorMXBean names in its gc label; generational ZGC's beans all contain "ZGC"
 # (e.g. "ZGC Major Cycles"), whereas G1's contain "G1", so this goes red on a regression to G1.
-if ! curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep '^jvm_runtime_info' | grep -q 'gc="[^"]*ZGC'; then
+if ! grep -q '^jvm_runtime_info.*gc="[^"]*ZGC' <<<"$SMOKE_METRICS"; then
   echo "Smoke test FAILED: image is not running ZGC (jvm_runtime_info gc label has no ZGC collector — did the ENV JAVA_TOOL_OPTIONS=-XX:+UseZGC default get dropped?)"
-  curl -s "http://localhost:${SMOKE_PORT}/mockserver/metrics" 2>/dev/null | grep '^jvm_runtime_info' || true
+  grep '^jvm_runtime_info' <<<"$SMOKE_METRICS" || true
   exit 1
 fi
 
@@ -303,7 +306,7 @@ fi
 # org.mock-server, so buildkite_quick_build.sh copies it in separately). Without it
 # /libs holds only third-party jars and MOCKSERVER_STATE_BACKEND=infinispan would
 # fail to resolve the backend at RUNTIME — a working image that cannot cluster.
-if ! find "$CLUSTERED_LIBS_DIR" -name 'mockserver-state-infinispan-*.jar' -type f | grep -q .; then
+if [ -z "$(find "$CLUSTERED_LIBS_DIR" -name 'mockserver-state-infinispan-*.jar' -type f)" ]; then
   echo "ERROR: $CLUSTERED_LIBS_DIR has $CLUSTERED_LIB_COUNT jar(s) but NOT the mockserver-state-infinispan module jar." >&2
   echo "       The image would start but could not resolve the infinispan StateBackend. Failing closed." >&2
   exit 1

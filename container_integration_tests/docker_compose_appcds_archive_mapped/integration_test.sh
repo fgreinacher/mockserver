@@ -59,7 +59,7 @@ function integration_test() {
       # `|| true`: grep exits non-zero when it matches nothing, which under `set -o pipefail`
       # would abort the test before it can record a real result.
       CDS_LOG=$(docker logs "${CONTAINER_ID}" 2>&1 | grep -F '[cds]' || true)
-      if ! echo "${CDS_LOG}" | grep -qF "Opened shared archive file /mockserver.jsa"; then
+      if ! grep -qF "Opened shared archive file /mockserver.jsa" <<<"${CDS_LOG}"; then
         printFailureMessage "The dynamic AppCDS archive /mockserver.jsa was not reported as mapped by -Xlog:cds. The server booted under -Xshare:on but on the base CDS archive alone, which means the entrypoint is no longer loading /mockserver.jsa (check -XX:SharedArchiveFile in docker/Dockerfile's ENTRYPOINT). Startup has silently regressed. CDS log was: \"${CDS_LOG}\""
         TEST_EXIT_CODE=1
       fi

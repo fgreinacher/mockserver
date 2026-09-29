@@ -38,7 +38,7 @@ netty_quiche42_windows_x86_64.dll"
 MISSING=""
 while read -r expected; do
   [ -n "$expected" ] || continue
-  printf '%s\n' "$NATIVES" | grep -qx "$expected" || MISSING="${MISSING}${expected}"$'\n'
+  grep -qx -- "$expected" <<<"$NATIVES" || MISSING="${MISSING}${expected}"$'\n'
 done <<EOF
 $EXPECTED
 EOF

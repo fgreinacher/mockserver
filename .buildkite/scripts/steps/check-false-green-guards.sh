@@ -107,6 +107,13 @@
 #     never auto-merge across a major), so every violation is a real regression, not
 #     a case to wave through.
 #
+#   Rule 7 — a pipe into an early-exit grep in a pipefail shell script.
+#     Under pipefail, `writer | grep -q` fails when grep exits on its first match
+#     while the writer still has output (SIGPIPE): a false RED in `if !`, a false
+#     GREEN in `if`. Scope: tracked *.sh that set pipefail, all of .buildkite/ and
+#     scripts/, and GitHub workflows/actions. The detector is self-tested against
+#     check-false-green-guards.rule7-fixture on every run.
+#
 # ALLOW-LISTS
 #
 # Some Docker-gated files are legitimately NOT assert-suite-ran-paired (the probe's
@@ -346,12 +353,12 @@ while IFS= read -r script; do
   body="$(strip_comments "$script")"
   # Docker socket granted: run-in-docker.sh -s/--docker-socket, or a raw mount.
   mounts_socket=0
-  if printf '%s\n' "$body" | grep -qE '(--docker-socket)|(/var/run/docker\.sock)|(^[[:space:]]*-s[[:space:]]*\\?[[:space:]]*$)'; then
+  if grep -qE '(--docker-socket)|(/var/run/docker\.sock)|(^[[:space:]]*-s[[:space:]]*\\?[[:space:]]*$)' <<<"$body"; then
     mounts_socket=1
   fi
   # Docker-marked tests deselected (pytest -m "not docker" and equivalents).
   deselects_docker=0
-  if printf '%s\n' "$body" | grep -qE "[-]m[[:space:]]+['\"][^'\"]*not[[:space:]]+docker"; then
+  if grep -qE "[-]m[[:space:]]+['\"][^'\"]*not[[:space:]]+docker" <<<"$body"; then
     deselects_docker=1
   fi
   if [ "$mounts_socket" -eq 1 ] && [ "$deselects_docker" -eq 1 ]; then
@@ -373,7 +380,7 @@ if [ "$r2_scanned" -eq 0 ]; then
 fi
 
 for entry in ${R2_ALLOWLIST[@]+"${R2_ALLOWLIST[@]}"}; do
-  if ! printf '%s' "$R2_SEEN" | grep -Fxq "$entry"; then
+  if ! grep -Fxq -- "$entry" <<<"$R2_SEEN"; then
     echo "+++ :bangbang: Rule 2 allow-list entry '${entry}' no longer both mounts the socket and deselects Docker tests — remove it (the allow-list must not rot into a no-op)" >&2
     errors=$(( errors + 1 ))
   fi
@@ -438,7 +445,7 @@ while IFS= read -r hit; do
 done < <(git grep -niE "logTestSkip.*${DEFERRAL_RE}" -- 'container_integration_tests/**' || true)
 
 for entry in ${R3_ALLOWLIST[@]+"${R3_ALLOWLIST[@]}"}; do
-  if ! printf '%s' "$R3_SEEN" | grep -Fxq "$entry"; then
+  if ! grep -Fxq -- "$entry" <<<"$R3_SEEN"; then
     echo "+++ :bangbang: Rule 3 allow-list entry '${entry}' no longer matches a deferral skip — remove it (the allow-list must not rot into a no-op)" >&2
     errors=$(( errors + 1 ))
   fi
@@ -467,7 +474,7 @@ r4_is_allowlisted() {
 # a commented-out `export REQUIRE_*_IMAGE=true` can never satisfy the rule and a
 # comment that merely mentions integration_tests.sh (e.g. docker-build-verify.sh)
 # is not mistaken for a harness invocation.
-r4_has() { printf '%s\n' "$1" | grep -qE "$2"; }
+r4_has() { grep -qE -- "$2" <<<"$1"; }
 
 # Value must be literally true after expansion (the harness compares == "true");
 # accept optional quoting, reject a longer identifier like `trueish`.
@@ -513,7 +520,7 @@ if [ "$r4_helm_running" -eq 0 ]; then
 fi
 
 for entry in ${R4_ALLOWLIST[@]+"${R4_ALLOWLIST[@]}"}; do
-  if ! printf '%s' "$R4_SEEN" | grep -Fxq "$entry"; then
+  if ! grep -Fxq -- "$entry" <<<"$R4_SEEN"; then
     echo "+++ :bangbang: Rule 4 allow-list entry '${entry}' no longer runs the helm harness while missing a REQUIRE_*_IMAGE=true export — remove it (the allow-list must not rot into a no-op)" >&2
     errors=$(( errors + 1 ))
   fi
@@ -662,7 +669,7 @@ for entry in ${R5_ALLOWLIST[@]+"${R5_ALLOWLIST[@]}"}; do
     errors=$(( errors + 1 ))
     continue
   fi
-  if ! printf '%s' "$R5_SEEN" | grep -Fxq "$entry"; then
+  if ! grep -Fxq -- "$entry" <<<"$R5_SEEN"; then
     echo "+++ :bangbang: Rule 5 allow-list entry '${entry}' either no longer matches a global-logging signature or has since been added to the sequential list — the exemption is now meaningless; remove it" >&2
     errors=$(( errors + 1 ))
   fi
@@ -731,7 +738,7 @@ else
       *'/distroless/'*) ;;
       *) echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX ('${DIGEST_BR_RE}') dropped the load-bearing '/distroless/' scope — a date-tagged version bump (e.g. ubuntu 20240115->20240220, whose date tokens are all hex) would then satisfy DIGEST_TITLE_REGEX and auto-merge as a digest bump. This scope is the ONLY thing that rejects it." >&2; errors=$(( errors + 1 )); r6a_ok=0 ;;
     esac
-    if printf '%s' "$DIGEST_BR_RE" | grep -Eq '\[0-9a-f\]\{[0-9]+,\}\$$'; then
+    if grep -Eq '\[0-9a-f\]\{[0-9]+,\}\$$' <<<"$DIGEST_BR_RE"; then
       r6a_floor="$(printf '%s' "$DIGEST_BR_RE" | sed -E 's/.*\[0-9a-f\]\{([0-9]+),\}\$$/\1/')"
       if ! r6_ge "$r6a_floor" 7; then
         echo "+++ :bangbang: Rule 6a: DIGEST_BRANCH_REGEX trailing hex-run floor is {${r6a_floor},} — it must be at least {7,}; a shorter run lets short tag tokens through" >&2; errors=$(( errors + 1 )); r6a_ok=0
@@ -745,7 +752,7 @@ else
   # ── 6b: DIGEST_TITLE_REGEX needs a >=7 hex run on BOTH the from and to sides ──
   r6_title_side() {  # $1=label $2=regex-fragment ; return 1 (with a message) if no >=7 hex run
     local lbl="$1" part="$2" f
-    if ! printf '%s' "$part" | grep -Eq '\[0-9a-f\]\{[0-9]+,\}'; then
+    if ! grep -Eq '\[0-9a-f\]\{[0-9]+,\}' <<<"$part"; then
       echo "+++ :bangbang: Rule 6b: DIGEST_TITLE_REGEX '${lbl}' side has no [0-9a-f]{N,} hex run — collapsing the two-sided sha check lets a version-bump title match" >&2
       return 1
     fi
@@ -787,10 +794,10 @@ else
   if [ -z "$r6c_block" ]; then
     echo "+++ :bangbang: Rule 6c: could not locate path B (the 'elif … DIGEST_BRANCH_REGEX … then' acceptance branch) in ${WF} — the acceptance structure changed; failing closed" >&2
     errors=$(( errors + 1 ))
-  elif ! printf '%s\n' "$r6c_block" | grep -Eq 'if ! .*DIGEST_TITLE_REGEX'; then
+  elif ! grep -Eq 'if ! .*DIGEST_TITLE_REGEX' <<<"$r6c_block"; then
     echo "+++ :bangbang: Rule 6c: path B (distroless digest branch) no longer cross-checks DIGEST_TITLE_REGEX — the two-signal AND has collapsed to the branch shape alone, so a branch matching the shape would auto-merge without a digest-bump title. Restore the title conjunct." >&2
     errors=$(( errors + 1 ))
-  elif ! printf '%s\n' "$r6c_block" | grep -q 'return 1'; then
+  elif ! grep -q 'return 1' <<<"$r6c_block"; then
     echo "+++ :bangbang: Rule 6c: path B references DIGEST_TITLE_REGEX but no longer fails closed (no 'return 1') when the title does not match — the cross-check is non-blocking. Restore the refuse/return." >&2
     errors=$(( errors + 1 ))
   else
@@ -841,7 +848,7 @@ else
         [ -n "$gname" ] || continue
         # Would path A accept a Dependabot branch carrying this group name?
         synthetic="dependabot/testeco/testdir/${gname}-a1b2c3d"
-        if printf '%s' "$synthetic" | grep -Eq "$GROUP_RE"; then
+        if grep -Eq -- "$GROUP_RE" <<<"$synthetic"; then
           r6d_matched=$(( r6d_matched + 1 ))
           bad=""
           if [ -z "$gtypes" ]; then
@@ -919,16 +926,16 @@ EOF
     if [ "$vp_from" = "$VER_PAIR_RE" ]; then
       echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX ('${VER_PAIR_RE}') has no ' to ' separator — it cannot express a from/to version pair" >&2; errors=$(( errors + 1 )); r6e_ok=0
     else
-      if ! printf '%s' "$vp_from" | grep -qF '[0-9]+\.'; then
+      if ! grep -qF '[0-9]+\.' <<<"$vp_from"; then
         echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX 'from' side has no dotted-numeric '[0-9]+\\.' version token — it could match a non-version (or a hex sha), letting path C parse a bogus major" >&2; errors=$(( errors + 1 )); r6e_ok=0
       fi
-      if ! printf '%s' "$vp_to" | grep -qF '[0-9]+\.'; then
+      if ! grep -qF '[0-9]+\.' <<<"$vp_to"; then
         echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX 'to' side has no dotted-numeric '[0-9]+\\.' version token — it could match a non-version (or a hex sha), letting path C parse a bogus major" >&2; errors=$(( errors + 1 )); r6e_ok=0
       fi
     fi
     # The version tokens must NOT admit hex letters — a hex-class token would let a
     # digest sha satisfy the pair regex and collapse the C/B distinction.
-    if printf '%s' "$VER_PAIR_RE" | grep -qF '0-9a-f'; then
+    if grep -qF '0-9a-f' <<<"$VER_PAIR_RE"; then
       echo "+++ :bangbang: Rule 6e: VERSION_PAIR_REGEX ('${VER_PAIR_RE}') admits hex characters ([0-9a-f]) — a digest sha could then satisfy it and be treated as a version bump" >&2; errors=$(( errors + 1 )); r6e_ok=0
     fi
     [ "$r6e_ok" -eq 1 ] && echo "    :white_check_mark: VERSION_PAIR_REGEX: 'bump' title with dotted-numeric (non-hex) from/to versions"
@@ -961,9 +968,15 @@ EOF
       inblk { print; if ($0 ~ /^[[:space:]]*fi[[:space:]]*$/) exit }
     ' "$WF"
   }
-  # True only if the sub-block fails closed on a LIVE (non-comment) line — a comment
-  # mentioning `return 1` must not count.
-  r6e_fails_closed() { printf '%s\n' "$1" | grep -v '^[[:space:]]*#' | grep -q 'return 1'; }
+  # True if $1 has a LIVE (non-comment) line containing the fixed string $2 — a
+  # comment mentioning it must not count. The comment filter feeds a command
+  # substitution (read to EOF), never a pipe into grep -q (see Rule 7).
+  r6e_live_has() {
+    local live
+    live="$(grep -v '^[[:space:]]*#' <<<"$1" || true)"
+    grep -qF -- "$2" <<<"$live"
+  }
+  r6e_fails_closed() { r6e_live_has "$1" 'return 1'; }
 
   if [ -z "$r6e_block" ]; then
     echo "+++ :bangbang: Rule 6e: could not locate path C (the 'elif … SECURITY_BODY_MARKER … then' acceptance branch) in ${WF} — the acceptance structure changed; failing closed" >&2
@@ -971,7 +984,7 @@ EOF
   else
     r6e_blk_ok=1
     # (1) path C must still parse the title into a version pair (live line, not prose).
-    if ! printf '%s\n' "$r6e_block" | grep -v '^[[:space:]]*#' | grep -q 'VERSION_PAIR_REGEX'; then
+    if ! r6e_live_has "$r6e_block" 'VERSION_PAIR_REGEX'; then
       echo "+++ :bangbang: Rule 6e: path C no longer references VERSION_PAIR_REGEX on a live line — it is no longer parsing the title into a version pair before accepting a security PR. Restore the title parse." >&2
       errors=$(( errors + 1 )); r6e_blk_ok=0
     fi
@@ -996,6 +1009,136 @@ EOF
     [ "$r6e_blk_ok" -eq 1 ] && echo "    :white_check_mark: path C: major and 0.x-minor comparisons each present and each fails closed (return 1 bound to its own check)"
   fi
 fi
+
+# ══════════════════════════════════════════════════════════════════════
+# Rule 7 — no pipe into an early-exit grep in a pipefail script
+# ══════════════════════════════════════════════════════════════════════
+echo "--- :droplet: Rule 7: no pipe into an early-exit grep in a pipefail shell script"
+
+# See R1_ALLOWLIST for the format/justification contract. Entry form: "<file>:<lineno>"
+# (the line the pipeline starts on). No legitimate case is known: a bash here-string,
+# or a POSIX heredoc in sh contexts, is always available. Multi-line `sh -c '…'`
+# payloads are deliberately still scanned (not skipped): telling them apart needs
+# cross-line quote parsing that would fail open, and the heredoc fix is always valid.
+R7_ALLOWLIST=()
+
+r7_is_allowlisted() {
+  local loc="$1" entry
+  # ${arr[@]+…} keeps an EMPTY array from tripping `set -u` on bash 3.2.
+  for entry in ${R7_ALLOWLIST[@]+"${R7_ALLOWLIST[@]}"}; do
+    [ "$loc" = "$entry" ] && return 0
+  done
+  return 1
+}
+
+# Print "<lineno>\t<logical line>" for each pipe (`|`, `|&`) into grep -q/-m/--quiet/
+# --silent/--max-count, also wrapped in ( ) or { }, behind command/env/timeout/VAR=,
+# or spelt \grep, /bin/grep, egrep. Lines joined on `\`, `|`, `&&` (blank or comment
+# lines under a pending `|`/`&&` are skipped). Quoted text is blanked so a mention is
+# not flagged, but a line is matched raw if a quote stays open or it runs code:
+# "$(…)", a backtick inside quotes, or eval.
+r7_hits() {
+  strip_comments "$1" | awk '
+    BEGIN {
+      arg = "[[:space:]]+(-[^[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)"
+      prefix = "((command([[:space:]]+-[pvV])*|env(" arg ")*|timeout([[:space:]]+(-[^[:space:]]+|[A-Z0-9.]+[smhd]?))+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*)[[:space:]]+)*"
+      re = "(^|[^|])[|]&?[[:space:]]*([({][[:space:]]*)?" prefix "(\\\\)?((/usr)?/bin/)?(e|f)?grep([[:space:]]+[^|;&]*)?[[:space:]](-[A-Za-z]*[qm][A-Za-z0-9]*|--quiet|--silent|--max-count[=0-9]*)([[:space:]]|$)"
+    }
+    function unquote(s,   out, i, n, c, q) {
+      if (s ~ /(^|[^A-Za-z0-9_])eval[[:space:]]/) return s
+      out = ""; q = ""; n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q == "") {
+          if (c == "\\") { out = out c substr(s, i + 1, 1); i++; continue }
+          if (c == "\047" || c == "\"") q = c
+          out = out c
+        } else if (q == "\"" && (c == "`" || (c == "$" && substr(s, i + 1, 2) ~ /^\([^(]/))) {
+          return s
+        } else if (q == "\"" && c == "\\") { i++ }
+        else if (c == q) { out = out c; q = "" }
+      }
+      return (q == "") ? out : s
+    }
+    function flush() { if (buf != "" && buf ~ re) print start "\t" raw; buf = ""; raw = ""; pend = 0 }
+    {
+      if (buf != "" && pend && $0 ~ /^[[:space:]]*$/) next
+      if (buf == "") start = NR
+      line = $0; cont = 0; pend = 0
+      if (line ~ /\\[[:space:]]*$/) { sub(/\\[[:space:]]*$/, " ", line); cont = 1 }
+      else if (line ~ /[|&][[:space:]]*$/) { cont = 1; pend = 1 }
+      raw = raw line
+      buf = buf unquote(line)
+      if (!cont) flush()
+    }
+    END { flush() }
+  '
+}
+
+# Self-test: the detector must report exactly the fixture lines marked #@flag and
+# none marked #@pass, so a regression in the quote handling fails here, not silently.
+R7_FIXTURE=".buildkite/scripts/steps/check-false-green-guards.rule7-fixture"
+if [ ! -f "$R7_FIXTURE" ]; then
+  echo "+++ :bangbang: Rule 7: detector fixture ${R7_FIXTURE} is missing — the detector cannot be self-tested; failing closed" >&2
+  errors=$(( errors + 1 ))
+else
+  r7_want="$(awk '/^#@flag$/ { print NR + 1 }' "$R7_FIXTURE")"
+  r7_npass="$(awk '/^#@pass$/ { n++ } END { print n + 0 }' "$R7_FIXTURE")"
+  r7_got="$(r7_hits "$R7_FIXTURE" | cut -f1)"
+  if [ -z "$r7_want" ] || [ "$r7_npass" -eq 0 ]; then
+    echo "+++ :bangbang: Rule 7: detector fixture has no #@flag or no #@pass cases — the self-test would prove nothing; failing closed" >&2
+    errors=$(( errors + 1 ))
+  elif [ "$r7_got" != "$r7_want" ]; then
+    echo "+++ :bangbang: Rule 7: detector self-test FAILED on ${R7_FIXTURE} — want lines [$(tr '\n' ' ' <<<"$r7_want")] got [$(tr '\n' ' ' <<<"$r7_got")]. The detector has regressed; fix r7_hits before trusting this rule." >&2
+    errors=$(( errors + 1 ))
+  else
+    echo "    :white_check_mark: detector self-test: $(wc -l <<<"$r7_want" | tr -d ' ') must-flag and ${r7_npass} must-pass fixture cases correct"
+  fi
+fi
+
+# Swept corpus: every tracked *.sh that sets pipefail, plus every *.sh under
+# .buildkite/ and scripts/ (a sourced library inherits its caller's pipefail without
+# naming it), plus every GitHub workflow / composite action: `shell: bash` runs with
+# -o pipefail, and a run: block may `set -o pipefail` itself. Whole YAML files are
+# scanned; outside run: blocks the pattern does not occur.
+R7_SEEN=$'\n'
+r7_scanned=0
+while IFS= read -r script; do
+  [ -n "$script" ] || continue
+  case "$script" in
+    .buildkite/*|scripts/*|.github/workflows/*|.github/actions/*) ;;
+    *) grep -q 'pipefail' "$script" || continue ;;
+  esac
+  r7_scanned=$(( r7_scanned + 1 ))
+  while IFS=$'\t' read -r lineno text; do
+    [ -n "$lineno" ] || continue
+    loc="${script}:${lineno}"
+    if r7_is_allowlisted "$loc"; then
+      R7_SEEN="${R7_SEEN}${loc}"$'\n'
+      echo "    :white_check_mark: allow-list ok: ${loc} (early-exit grep pipeline, justified)"
+    else
+      trimmed="$(sed -E 's/^[[:space:]]*//' <<<"$text")"
+      echo "+++ :bangbang: ${loc}: pipes into an early-exit grep ('${trimmed}') — under pipefail, grep -q exiting on its first match SIGPIPEs a writer that still has output, so the pipeline fails (141, or curl 23): a false RED in an 'if !' check and a false GREEN in an 'if' check. In bash use a here-string (grep -q PAT <<<\"\$x\"); in a POSIX sh context (an 'sh -c' payload, a #!/bin/sh script) use a heredoc (grep -q PAT <<EOF / \$x / EOF), which has no writer process either; or capture the writer's output first." >&2
+      errors=$(( errors + 1 ))
+    fi
+  done < <(r7_hits "$script")
+done < <(git ls-files '*.sh' '.github/workflows/*.yml' '.github/workflows/*.yaml' \
+                       '.github/actions/*.yml' '.github/actions/*.yaml')
+
+# Fail closed on an empty sweep: the corpus always includes this script itself.
+if [ "$r7_scanned" -eq 0 ]; then
+  echo "+++ :bangbang: Rule 7: swept zero shell scripts/workflows — the sweep matched nothing (paths moved?), so the rule can never fire; failing closed" >&2
+  errors=$(( errors + 1 ))
+else
+  echo "    ${r7_scanned} shell script(s) and workflow(s) swept"
+fi
+
+for entry in ${R7_ALLOWLIST[@]+"${R7_ALLOWLIST[@]}"}; do
+  if ! grep -Fxq -- "$entry" <<<"$R7_SEEN"; then
+    echo "+++ :bangbang: Rule 7 allow-list entry '${entry}' no longer starts an early-exit grep pipeline — remove it (the allow-list must not rot into a no-op)" >&2
+    errors=$(( errors + 1 ))
+  fi
+done
 
 # ══════════════════════════════════════════════════════════════════════
 echo "--- :bar_chart: false-green guard summary: ${errors} error(s)"

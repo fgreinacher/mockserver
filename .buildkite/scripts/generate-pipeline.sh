@@ -98,10 +98,14 @@ fi
 # own directory). mockserver-maven-plugin/ is excluded — it has its own
 # pipeline and does not define the wire format.
 SERVER_OR_FIXTURES_CHANGED=false
-if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^mockserver/" | grep -qvE -- "^mockserver/mockserver-maven-plugin/"; then
+# Here-strings and read-to-EOF substitutions, never `printf "$CHANGED_FILES" | grep -q`:
+# under pipefail that pipeline can SIGPIPE the writer on a match and silently skip a
+# trigger (see Rule 7 in check-false-green-guards.sh).
+SERVER_CHANGES="$(grep -E -- "^mockserver/" <<<"$CHANGED_FILES" | grep -vE -- "^mockserver/mockserver-maven-plugin/" || true)"
+if [ -n "$SERVER_CHANGES" ]; then
   SERVER_OR_FIXTURES_CHANGED=true
 fi
-if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^test-fixtures/"; then
+if grep -qE -- "^test-fixtures/" <<<"$CHANGED_FILES"; then
   SERVER_OR_FIXTURES_CHANGED=true
 fi
 
@@ -170,7 +174,7 @@ trigger_if_changed() {
   local path_regex="$1"
   local pipeline_slug="$2"
   local label="$3"
-  if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "$path_regex"; then
+  if grep -qE -- "$path_regex" <<<"$CHANGED_FILES"; then
     echo "--- :pipeline: Triggering ${label} (matched ${path_regex})"
     emit_trigger "$pipeline_slug" "$label"
   fi
@@ -182,7 +186,7 @@ trigger_client_if_changed() {
   local path_regex="$1"
   local pipeline_slug="$2"
   local label="$3"
-  if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "$path_regex"; then
+  if grep -qE -- "$path_regex" <<<"$CHANGED_FILES"; then
     echo "--- :pipeline: Triggering ${label} (matched ${path_regex})"
     emit_trigger "$pipeline_slug" "$label"
   elif [ "$SERVER_OR_FIXTURES_CHANGED" = "true" ]; then
@@ -193,7 +197,8 @@ trigger_client_if_changed() {
 
 # Match changes under mockserver/ excluding the maven-plugin submodule (which has its own pipeline).
 # test-fixtures/ is included: the Java model is round-tripped against the same shared corpus.
-if printf '%s\n' "$CHANGED_FILES" | grep -E -- "^(mockserver/|mockserver-ui/|test-fixtures/)" | grep -qvE -- "^mockserver/mockserver-maven-plugin/"; then
+JAVA_CHANGES="$(grep -E -- "^(mockserver/|mockserver-ui/|test-fixtures/)" <<<"$CHANGED_FILES" | grep -vE -- "^mockserver/mockserver-maven-plugin/" || true)"
+if [ -n "$JAVA_CHANGES" ]; then
   trigger_if_changed "^(mockserver/|mockserver-ui/|test-fixtures/)" "mockserver-java" "MockServer Java"
 fi
 trigger_if_changed "^mockserver-ui/" "mockserver-ui" "MockServer UI"
@@ -229,7 +234,7 @@ trigger_if_changed "^docker_build/maven/" "mockserver-build-image" "MockServer B
 # are enumerated AI-component control paths (commit-workflow.md, AGENTS.md), and both
 # the opencode config lint and the AI eval gate validate them — without this, a commit
 # that only weakens .claude/agents/review-final.md would trigger no pipeline at all.
-if printf '%s\n' "$CHANGED_FILES" | grep -qE -- "^(\.buildkite/|\.github/|terraform/|docker/|scripts/|helm/|docs/|examples/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml|AGENTS\.md|CLAUDE\.md|opencode\.jsonc|\.opencode/|\.claude/)"; then
+if grep -qE -- "^(\.buildkite/|\.github/|terraform/|docker/|scripts/|helm/|docs/|examples/|jekyll-www\.mock-server\.com/mockserver-openapi\.yaml|AGENTS\.md|CLAUDE\.md|opencode\.jsonc|\.opencode/|\.claude/)" <<<"$CHANGED_FILES"; then
   echo "--- :pipeline: Triggering MockServer Infra (infra changes)"
   # Same hybrid as every other trigger (native on push, command on PR).
   emit_trigger "mockserver-infra" "MockServer Infra"

@@ -43,7 +43,7 @@ protected_branches() {
 
 is_protected() {
     # -F fixed string, -x whole line: "agent-a1" must not match "agent-a10".
-    printf '%s\n' "$2" | grep -Fxq -- "$1"
+    grep -Fxq -- "$1" <<<"$2"
 }
 
 sweep() {

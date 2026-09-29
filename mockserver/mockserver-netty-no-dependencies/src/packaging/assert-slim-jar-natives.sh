@@ -58,7 +58,7 @@ fi
 
 # HTTP/3 ships in its own classifier - a quiche native here means the slim
 # descriptor's exclude was dropped and the artifact has silently regrown.
-if printf '%s\n' "$NATIVES" | grep -q 'quiche'; then
+if grep -q 'quiche' <<<"$NATIVES"; then
   echo "ERROR: $(basename "$JAR") carries a QUIC native, which belongs only in the" >&2
   echo "  -jar-with-dependencies-http3 classifier:" >&2
   printf '  %s\n' "$NATIVES" >&2
@@ -75,7 +75,7 @@ if [ "$COUNT" -ne 2 ]; then
 fi
 
 for required in tcnative transport_native_epoll; do
-  printf '%s\n' "$NATIVES" | grep -q "${required}.*${ARCH}\.so$" || {
+  grep -q "${required}.*${ARCH}\.so$" <<<"$NATIVES" || {
     echo "ERROR: $(basename "$JAR") is missing the ${required} native for ${ARCH}" >&2
     echo "  found: $NATIVES" >&2
     exit 1

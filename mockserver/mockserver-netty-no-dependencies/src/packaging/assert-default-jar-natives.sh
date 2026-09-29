@@ -45,7 +45,7 @@ netty_tcnative_windows_x86_64.dll"
 
 # HTTP/3 ships in its own classifier - a quiche native here means the default
 # descriptor's exclude was dropped and the artifact has silently regrown ~11 MiB.
-if printf '%s\n' "$NATIVES" | grep -q 'quiche'; then
+if grep -q 'quiche' <<<"$NATIVES"; then
   echo "ERROR: $(basename "$JAR") carries a QUIC native, which belongs only in the" >&2
   echo "  -jar-with-dependencies-http3 classifier:" >&2
   printf '  %s\n' "$NATIVES" >&2
@@ -56,7 +56,7 @@ fi
 MISSING=""
 while read -r expected; do
   [ -n "$expected" ] || continue
-  printf '%s\n' "$NATIVES" | grep -qx "$expected" || MISSING="${MISSING}${expected}"$'\n'
+  grep -qx -- "$expected" <<<"$NATIVES" || MISSING="${MISSING}${expected}"$'\n'
 done <<EOF
 $EXPECTED
 EOF

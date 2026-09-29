@@ -87,7 +87,7 @@ run_ci() {
   local proof_out
   proof_out="$(java -cp "${CP}" org.mockserver.mock.CandidateIndexChurnRebuildProof 2>&1)" || true
   printf '%s\n' "${proof_out}"
-  if ! printf '%s\n' "${proof_out}" | grep -qx 'PROOF: PASS'; then
+  if ! grep -qx 'PROOF: PASS' <<<"${proof_out}"; then
     echo "ERROR: CandidateIndexChurnRebuildProof did not print 'PROOF: PASS' — the churn arm cannot be trusted to actually churn, so the ratio is meaningless. Failing the step (fail-closed) rather than emitting a green-looking ratio." >&2
     exit 1
   fi
@@ -139,7 +139,7 @@ run_ci() {
   # block with a null value that compare silently drops — the gate would vanish without a red.
   local ratio
   ratio="$(jq -r '.churn.alloc_ratio_index_n15000 // "null"' "${CHURN_RESULT_PATH}")"
-  if ! printf '%s' "${ratio}" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+  if ! grep -Eq '^[0-9]+(\.[0-9]+)?$' <<<"${ratio}"; then
     echo "ERROR: churn reshape produced no numeric alloc ratio (got '${ratio}') — a STATIC or CHURN arm did not emit gc.alloc.rate.norm at n=15000/INDEX. Failing the step (fail-closed)." >&2
     exit 1
   fi

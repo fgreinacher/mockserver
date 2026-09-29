@@ -191,7 +191,7 @@ done
 
 # ── Allow-list rot check: every entry must have matched a real, tracked file ──
 for entry in "${ALLOWLIST[@]}"; do
-  if ! printf '%s' "$ALLOWLIST_SEEN" | grep -Fxq "$entry"; then
+  if ! grep -Fxq -- "$entry" <<<"$ALLOWLIST_SEEN"; then
     echo "+++ :bangbang: allow-list entry '${entry}' matched no git-tracked certificate PEM — remove it or fix the path (the allow-list must not rot into a no-op)" >&2
     errors=$(( errors + 1 ))
   fi

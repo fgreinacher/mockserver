@@ -59,7 +59,7 @@ cov_validate_env() {
               "PERF_COVERAGE_H2_STEP|$COV_H2_STEP|^[1-9][0-9]*s$" \
               "PERF_COVERAGE_H2_RATES|$COV_H2_RATES|^[1-9][0-9]*(,[1-9][0-9]*)*$"; do
     name="${pair%%|*}"; value="${pair#*|}"; pattern="${value#*|}"; value="${value%%|*}"
-    if ! printf '%s' "$value" | grep -Eq "$pattern"; then
+    if ! grep -Eq "$pattern" <<<"$value"; then
       echo "ERROR: ${name}='${value}' does not match ${pattern}" >&2; return 1
     fi
   done

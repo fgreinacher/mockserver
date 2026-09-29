@@ -28,7 +28,7 @@ curl -sf -X PUT "${MS}/mockserver/expectation" -d '{
 # 1. REGISTER - PUT /mockserver/loadScenario with a full LoadScenario definition.
 #    Long stage durations are used so the scenario is observably RUNNING below.
 echo "==> register 'demo-soak' (RATE ramp -> VU hold -> PAUSE)..."
-curl -sf -X PUT "${MS}/mockserver/loadScenario" -d '{
+register_resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario" -d '{
   "name": "demo-soak",
   "templateType": "VELOCITY",
   "profile": {
@@ -41,18 +41,19 @@ curl -sf -X PUT "${MS}/mockserver/loadScenario" -d '{
   "steps": [
     { "name": "ping", "request": { "method": "GET", "path": "/ping" }, "thinkTime": { "timeUnit": "MILLISECONDS", "value": 50 } }
   ]
-}' | grep -q '"state" : "LOADED"' || { echo "FAIL: register did not return LOADED"; exit 1; }
+}') || true
+grep -q '"state" : "LOADED"' <<<"${register_resp}" || { echo "FAIL: register did not return LOADED"; exit 1; }
 
 # 2. START - PUT /mockserver/loadScenario/start with {"names":[...]} (or {"name":"x"}).
 echo "==> start 'demo-soak'..."
 start_resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario/start" -d '{"names":["demo-soak"]}')
-echo "${start_resp}" | grep -q '"state" : "RUNNING"' || { echo "FAIL: start did not return RUNNING (is loadGenerationEnabled=true?)"; echo "${start_resp}"; exit 1; }
+grep -q '"state" : "RUNNING"' <<<"${start_resp}" || { echo "FAIL: start did not return RUNNING (is loadGenerationEnabled=true?)"; echo "${start_resp}"; exit 1; }
 
 # 3. LIST - GET /mockserver/loadScenario returns {"scenarios":[ <status node>, ... ]}.
 echo "==> list scenarios (expect demo-soak RUNNING)..."
 sleep 1
 list_resp=$(curl -sf "${MS}/mockserver/loadScenario")
-echo "${list_resp}" | grep -q '"state" : "RUNNING"' || { echo "FAIL: demo-soak not RUNNING in list"; echo "${list_resp}"; exit 1; }
+grep -q '"state" : "RUNNING"' <<<"${list_resp}" || { echo "FAIL: demo-soak not RUNNING in list"; echo "${list_resp}"; exit 1; }
 
 # A single scenario's live status (throughput/latency) is at GET /mockserver/loadScenario/{name}.
 echo "==> status of 'demo-soak':"
@@ -61,7 +62,7 @@ curl -sf "${MS}/mockserver/loadScenario/demo-soak" \
 
 # 4. STOP - PUT /mockserver/loadScenario/stop with {"names":[...]}; {} or {"all":true} stops all.
 echo "==> stop 'demo-soak'..."
-curl -sf -X PUT "${MS}/mockserver/loadScenario/stop" -d '{"names":["demo-soak"]}' \
-  | grep -q '"state" : "STOPPED"' || { echo "FAIL: stop did not return STOPPED"; exit 1; }
+stop_resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario/stop" -d '{"names":["demo-soak"]}') || true
+grep -q '"state" : "STOPPED"' <<<"${stop_resp}" || { echo "FAIL: stop did not return STOPPED"; exit 1; }
 
 echo "PASS: register -> start -> list -> stop"

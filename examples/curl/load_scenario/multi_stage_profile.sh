@@ -26,13 +26,13 @@ curl -sf -X PUT "${MS}/mockserver/expectation" -d '{
 }' >/dev/null
 
 echo "==> register 'checkout-load' (RATE ramp -> VU hold -> PAUSE, 2 steps)..."
-curl -sf -X PUT "${MS}/mockserver/loadScenario" \
-  --data @"$(dirname "$0")/../../json/load_scenario/checkout_load.json" \
-  | grep -q '"state" : "LOADED"' || { echo "FAIL: register"; exit 1; }
+resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario" \
+  --data @"$(dirname "$0")/../../json/load_scenario/checkout_load.json") || true
+grep -q '"state" : "LOADED"' <<<"${resp}" || { echo "FAIL: register"; exit 1; }
 
 echo "==> start 'checkout-load'..."
-curl -sf -X PUT "${MS}/mockserver/loadScenario/start" -d '{"name":"checkout-load"}' \
-  | grep -q '"state" : "RUNNING"' || { echo "FAIL: start (loadGenerationEnabled=true?)"; exit 1; }
+resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario/start" -d '{"name":"checkout-load"}') || true
+grep -q '"state" : "RUNNING"' <<<"${resp}" || { echo "FAIL: start (loadGenerationEnabled=true?)"; exit 1; }
 
 echo "==> poll live status for 3s..."
 for _ in 1 2 3; do
@@ -43,11 +43,11 @@ for _ in 1 2 3; do
 done
 
 echo "==> stop all running scenarios (empty body)..."
-curl -sf -X PUT "${MS}/mockserver/loadScenario/stop" -d '{}' \
-  | grep -q '"status" : "stopped"' || { echo "FAIL: stop"; exit 1; }
+resp=$(curl -sf -X PUT "${MS}/mockserver/loadScenario/stop" -d '{}') || true
+grep -q '"status" : "stopped"' <<<"${resp}" || { echo "FAIL: stop"; exit 1; }
 
 echo "==> clear the registry (DELETE /mockserver/loadScenario)..."
-curl -sf -X DELETE "${MS}/mockserver/loadScenario" \
-  | grep -q '"status" : "cleared"' || { echo "FAIL: clear"; exit 1; }
+resp=$(curl -sf -X DELETE "${MS}/mockserver/loadScenario") || true
+grep -q '"status" : "cleared"' <<<"${resp}" || { echo "FAIL: clear"; exit 1; }
 
 echo "PASS: multi-stage profile register -> start -> status -> stop -> clear"

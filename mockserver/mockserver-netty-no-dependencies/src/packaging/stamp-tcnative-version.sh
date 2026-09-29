@@ -56,7 +56,7 @@ VERSION="$(basename "$(dirname "$JAR_PATH")")"
 # Sanity: a Netty/tcnative version looks like 2.0.81.Final (digits/dots then a
 # qualifier). Refuse anything that does not, so a layout surprise can never
 # stamp a bogus value that Docker would then try to download.
-if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+(\.[0-9]+)+\.(Final|RELEASE|GA)$'; then
+if ! grep -qE '^[0-9]+(\.[0-9]+)+\.(Final|RELEASE|GA)$' <<<"$VERSION"; then
   echo "stamp-tcnative-version: derived version '$VERSION' from '$JAR_PATH' does not look like a tcnative version — failing closed" >&2
   exit 1
 fi

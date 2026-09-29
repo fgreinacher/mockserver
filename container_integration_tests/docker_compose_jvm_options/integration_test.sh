@@ -36,7 +36,7 @@ function integration_test() {
       # test BEFORE logTestResult — so the test recorded no result at all. `|| true` keeps the 5
       # lines head already captured and lets the test proceed to record a real pass/fail.
       JVM_LOG=$(docker logs "${CONTAINER_ID}" 2>&1 | head -5 || true)
-      if ! echo "${JVM_LOG}" | grep -q "Xmx256m"; then
+      if ! grep -q "Xmx256m" <<<"${JVM_LOG}"; then
         printFailureMessage "JAVA_TOOL_OPTIONS not found in container startup logs. Expected '-Xmx256m' in: \"${JVM_LOG}\""
         TEST_EXIT_CODE=1
       fi

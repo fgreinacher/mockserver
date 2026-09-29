@@ -43,11 +43,11 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     out="$(cargo test -- --ignored --exact tests::start_mockserver_container --nocapture 2>&1)"
     echo "$out"
 
-    if ! echo "$out" | grep -q "RUST_TESTCONTAINERS_STATUS_OK"; then
+    if ! grep -q "RUST_TESTCONTAINERS_STATUS_OK" <<<"$out"; then
       echo "+++ :bangbang: rust container-start test did not emit its status marker — no real container was exercised, failing closed" >&2
       exit 1
     fi
-    if ! echo "$out" | grep -Eq "test tests::start_mockserver_container \.\.\. ok"; then
+    if ! grep -Eq "test tests::start_mockserver_container \.\.\. ok" <<<"$out"; then
       echo "+++ :bangbang: rust container-start test did not run/pass — failing closed" >&2
       exit 1
     fi

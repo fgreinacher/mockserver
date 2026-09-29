@@ -306,7 +306,7 @@ ghcr_registry_status() {
 # from a pull-only one. `write:packages` is required to push to GHCR.
 ghcr_scope_verdict() {
   local scopes="$1"
-  if printf ',%s,' "$scopes" | grep -q ',write:packages,'; then
+  if grep -q ',write:packages,' <<<",${scopes},"; then
     printf 'VALID\tGitHub PAT authenticated with write:packages scope (GHCR push capability confirmed)\n'
   else
     printf 'REJECTED\tPAT authenticated but lacks write:packages scope — GHCR push (ECR-public mirror + Helm OCI) would fail\n'

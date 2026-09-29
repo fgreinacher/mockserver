@@ -107,7 +107,7 @@ function integration_test() {
     printMessage "Post-stop content: ${POST_STOP_CONTENT}"
 
     # The file content must contain our expectation
-    if ! echo "${POST_STOP_CONTENT}" | grep -q "graceful/path"; then
+    if ! grep -q "graceful/path" <<<"${POST_STOP_CONTENT}"; then
       printFailureMessage "Persisted expectations file does not contain the expected path after stop"
       TEST_EXIT_CODE=1
     fi

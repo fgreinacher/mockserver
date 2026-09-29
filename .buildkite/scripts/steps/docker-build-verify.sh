@@ -263,7 +263,7 @@ run_provider_probe() {
         "$IMAGE_TAG" -cp "$IN_IMAGE_JAR:/probe" TlsProviderProbe 2>&1)" || rc=$?
   echo "$out" | sed 's/^/    /'
   [ "$rc" -eq 0 ] || return 1
-  echo "$out" | grep -q 'OpenSsl.isAvailable=true'
+  grep -q 'OpenSsl.isAvailable=true' <<<"$out"
 }
 
 # ── Assert the native provider actually LOADS in the image's own JVM ────────────
@@ -361,9 +361,9 @@ assert_jvm_memory_allocated_metric() {
   [ -n "$port" ] || fail "could not determine mapped port for metrics — failing closed"
   local body
   body="$(curl -s "http://localhost:${port}/mockserver/metrics" --max-time 15 || true)"
-  if ! printf '%s' "$body" | grep -q 'jvm_memory_allocated_bytes'; then
+  if ! grep -q 'jvm_memory_allocated_bytes' <<<"$body"; then
     echo "    scrape (first 40 lines):" >&2
-    printf '%s\n' "$body" | head -40 | sed 's/^/    /' >&2
+    head -40 <<<"$body" | sed 's/^/    /' >&2
     fail "jvm_memory_allocated_bytes MISSING from the Prometheus scrape — the jlink runtime is likely missing jdk.management (com.sun.management.ThreadMXBean), failing closed"
   fi
   echo "    :white_check_mark: jvm_memory_allocated_bytes present in the Prometheus scrape"

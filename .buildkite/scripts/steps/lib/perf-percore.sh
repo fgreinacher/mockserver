@@ -260,7 +260,7 @@ for C in "${CORES_ARR[@]}"; do
   for _ in $(seq 1 60); do
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X PUT "http://${HOSTPORT}/mockserver/status" 2>/dev/null || echo 000)"
     if [ "$code" = "200" ]; then ready=true; break; fi
-    if ! docker ps --format '{{.Names}}' | grep -q "^${SERVER}$"; then
+    if ! grep -q "^${SERVER}$" <<<"$(docker ps --format '{{.Names}}' || true)"; then
       echo "ERROR: SUT container exited during startup at C=$C" >&2; docker logs "$SERVER" 2>&1 | tail -20 >&2 || true; break
     fi
     sleep 2

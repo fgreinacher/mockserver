@@ -184,7 +184,7 @@ fi
 # OBJECT {\"message\": ...} — classify that as DENIED, distinct from transport.
 if ! printf '%s' "$BODY" | jq -e 'type == "array"' >/dev/null 2>&1; then
   MSG="$(printf '%s' "$BODY" | jq -r '.message // empty' 2>/dev/null || true)"
-  if printf '%s' "$MSG" | grep -qiE 'authenticate|authoriz|authoris|token|forbidden|access denied|invalid'; then
+  if grep -qiE 'authenticate|authoriz|authoris|token|forbidden|access denied|invalid' <<<"$MSG"; then
     fail "DENIED (Buildkite API rejected the token)" \
       "The Buildkite API rejected the request (\"${MSG}\"). The token is invalid, expired, or lacks read access to \`${PRODUCER_PIPELINE}\`. Fails closed."
   fi
@@ -224,7 +224,7 @@ NEWEST_NUMBER="$(printf '%s' "$SCHED" | jq -r '.[0].number')"
 NEWEST_STATE="$(printf '%s' "$SCHED" | jq -r '.[0].state')"
 
 CREATED_EPOCH="$(to_epoch "$NEWEST_CREATED" || true)"
-if ! printf '%s' "$CREATED_EPOCH" | grep -qE '^[0-9]+$'; then
+if ! grep -qE '^[0-9]+$' <<<"$CREATED_EPOCH"; then
   fail "TRANSPORT (unparseable build timestamp)" \
     "The newest scheduled build (#${NEWEST_NUMBER}) has a created_at that could not be parsed: \`${NEWEST_CREATED}\`. Fails closed because its age cannot be determined."
 fi

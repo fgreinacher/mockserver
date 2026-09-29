@@ -19,7 +19,7 @@ need() { command -v "$1" >/dev/null 2>&1 || { echo "ERROR: '$1' is required but 
 need docker; need k3d; need kubectl
 
 echo "==> [1/6] Creating k3d cluster '${CLUSTER}' (if absent)..."
-if ! k3d cluster list 2>/dev/null | awk '{print $1}' | grep -qx "${CLUSTER}"; then
+if ! grep -qx -- "${CLUSTER}" <<<"$(k3d cluster list 2>/dev/null | awk '{print $1}' || true)"; then
   k3d cluster create "${CLUSTER}" --agents 1 --wait
 else
   echo "    cluster '${CLUSTER}' already exists — reusing it"
@@ -57,7 +57,7 @@ done
 
 echo "==> [6/6] Triggering load scenario '${SCENARIO}'..."
 start_resp="$(curl -s -X PUT "http://localhost:1080/mockserver/loadScenario/start" -d "{\"names\":[\"${SCENARIO}\"]}")"
-if echo "${start_resp}" | grep -q '"state" : "RUNNING"'; then
+if grep -q '"state" : "RUNNING"' <<<"${start_resp}"; then
   echo "    scenario RUNNING"
 else
   echo "    WARNING: scenario did not report RUNNING. Response was:"; echo "${start_resp}"

@@ -655,7 +655,7 @@ function assert_manifest_complete() {
     [[ "${group_active}" != "true" ]] && continue
     # Same trailing-delimiter presence test as test(): a name cannot match a
     # longer name that merely starts with it (root vs root-snapshot).
-    if ! printf '%s\n' "${all_results}" | grep -qE -- "- ${name}(:|\$|[^[:alnum:]_-])"; then
+    if ! grep -qE -- "- ${name}(:|\$|[^[:alnum:]_-])" <<<"${all_results}"; then
       printFailureMessage "Manifest-declared test case produced NO result: \"${name}\" (group: ${group}) — a test case was deleted or a skip flag drifted without updating the manifest. Failing closed."
       violations=$((violations + 1))
     fi
@@ -746,7 +746,7 @@ function import_image_into_k3d() {
   # because import registration can lag the CLI returning.
   local attempts=15
   for _ in $(seq 1 "${attempts}"); do
-    if docker exec "${node}" crictl images 2>/dev/null | grep -q -- "${tag}"; then
+    if grep -q -- "${tag}" <<<"$(docker exec "${node}" crictl images 2>/dev/null || true)"; then
       printMessage "Verified image present in ${node}: ${image}"
       return 0
     fi

@@ -220,7 +220,7 @@ for c in "${CLIENTS[@]}"; do
 done
 
 print_summary
-if printf '%s\n' "${RESULTS[@]}" | grep -q '^FAIL'; then
+if grep -q '^FAIL' <<<"$(printf '%s\n' "${RESULTS[@]}")"; then
   echo "❌ one or more clients failed"; exit 1
 fi
 echo "🎉 all selected clients passed"

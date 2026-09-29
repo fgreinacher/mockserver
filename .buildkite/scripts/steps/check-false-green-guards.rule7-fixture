@@ -1,0 +1,120 @@
+# Rule 7 detector fixture, run by check-false-green-guards.sh on every build.
+# Each case is the line after a marker: `#@flag` = the detector MUST report a
+# pipeline starting on that line; `#@pass` = it must NOT. Not a script: never run.
+#@flag
+printf '%s\n' "$x" | grep -q foo
+#@flag
+echo "$x" | grep -Fxq -- "$e"
+#@flag
+curl -s "$u" | grep -E 'a' | grep -qv b
+#@flag
+docker ps --format x \
+  | grep -q "^n$"
+#@flag
+cmd |
+  grep --quiet foo
+#@flag
+cmd | grep -m1 foo
+#@flag
+cmd | egrep -q foo
+#@flag
+cmd |& grep -q foo
+#@flag
+cmd | command grep -q foo
+#@flag
+cmd | \grep -q foo
+#@flag
+cmd | grep -E "a|b" -q
+#@flag
+x="$(printf '%s\n' "$y" | grep -m1 a)"
+#@flag
+x="`printf '%s\n' "$y" | grep -q a`"
+#@flag
+x=`printf '%s\n' "$y" | grep -q a`
+#@flag
+cmd | (grep -q foo)
+#@flag
+cmd | { grep -q foo; }
+#@flag
+cmd | /usr/bin/grep -q foo
+#@flag
+cmd | /bin/grep -q foo
+#@flag
+cmd | timeout 5 grep -q foo
+#@flag
+cmd | timeout -k 2 10s grep -q foo
+#@flag
+cmd | env grep -q foo
+#@flag
+cmd | LC_ALL=C grep -q foo
+#@flag
+cmd |
+  # a comment between the pipe and the grep
+  grep -q ready
+#@flag
+cmd |
+
+  grep -q ready
+#@flag
+cmd | timeout -s KILL 5 grep -q x
+#@flag
+cmd | timeout --signal=KILL 5 grep -q x
+#@flag
+cmd | env -i grep -q x
+#@flag
+eval "cmd | grep -q x"
+#@flag
+cmd | grep -q x # trailing comment
+#@flag
+if ! docker logs c 2>&1| grep -q "ready"; then exit 1; fi
+#@flag
+cmd | grep -iq x
+#@flag
+cmd | grep --max-count 1 x
+#@pass
+echo "$((a|b)) | grep -q x"
+#@pass
+echo "\$(cmd | grep -q x) literal"
+#@pass
+cmd |
+  # a comment, then a non-grep reader
+  wc -l
+#@pass
+curl -sf -X PUT "$u" -d '{
+  "name": "x"
+#@flag
+}' | grep -q '"state" : "LOADED"' || exit 1
+#@pass
+docker run img sh -c '
+#@flag
+  echo "$x" | grep -q y
+#@pass
+'
+#@pass
+grep -q foo <<<"$x"
+#@pass
+grep -q foo < "$file"
+#@pass
+cmd || grep -q foo file
+#@pass
+cmd | grep -c foo
+#@pass
+cmd | grep -E foo
+#@pass
+cmd | grep -l foo
+#@pass
+cmd | grep --line-buffered foo
+#@pass
+x=1 # trailing comment | grep -q foo
+#@pass
+echo "the text 'a | grep -q' in a string" >/dev/null
+#@pass
+echo "use: cmd | grep -q foo instead" >&2
+#@pass
+echo 'single | grep -q foo quoted' >&2
+#@pass
+grep -qE 'a|b' <<<"$x"
+#@pass
+grep -qE "x | grep -q y" file
+#@pass
+sh -c 'a | grep -q b'

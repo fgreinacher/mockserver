@@ -174,7 +174,8 @@ fi
 # Generate the multimodal test image (three colour stripes: red, green, blue) at run
 # time so no binary blob is committed and the input is deterministic.
 SAMPLE_IMAGE=""
-if printf '%s\n' "${PROMPT_ENTRIES[@]}" | cut -d'|' -f3 | grep -q '^1$'; then
+PROMPT_IMAGE_FLAGS="$(printf '%s\n' "${PROMPT_ENTRIES[@]}" | cut -d'|' -f3)"
+if grep -q '^1$' <<<"$PROMPT_IMAGE_FLAGS"; then
   SAMPLE_IMAGE="$work/sample.png"
   if python3 - "$SAMPLE_IMAGE" <<'PY' 2>/dev/null
 import sys, zlib, struct

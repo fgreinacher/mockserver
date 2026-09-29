@@ -60,7 +60,10 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     # fsGroup), so a single grep for it is the sole, sufficient discriminator —
     # drop the block and this line vanishes. (A separate securityContext: grep
     # would be inert: the container securityContext always renders it.)
-    if echo "$rendered_pod_sc" | grep -qE "^[[:space:]]+fsGroup:[[:space:]]+2000[[:space:]]*$"; then
+    # A heredoc, not a here-string: this payload runs under busybox sh, which has no <<<.
+    if grep -qE "^[[:space:]]+fsGroup:[[:space:]]+2000[[:space:]]*$" <<EOF; then
+$rendered_pod_sc
+EOF
       echo "PASS: podSecurityContext.fsGroup: 2000 present in rendered Deployment"
     else
       echo "FAILED: podSecurityContext.fsGroup: 2000 NOT rendered into the Deployment securityContext (issue #2320 regression)"

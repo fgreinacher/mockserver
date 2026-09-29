@@ -161,5 +161,5 @@ echo "  Press Ctrl+C to stop the proxy (or: $0 --stop)."
 # report, unless we already ran a one-shot prompt above.
 if [ -z "$PROMPT" ]; then
   echo "  Proxy is running; waiting… (Ctrl+C to stop)"
-  while docker ps --format '{{.Names}}' | grep -q "^${CONTAINER}$"; do sleep 2; done
+  while grep -q "^${CONTAINER}$" <<<"$(docker ps --format '{{.Names}}' || true)"; do sleep 2; done
 fi

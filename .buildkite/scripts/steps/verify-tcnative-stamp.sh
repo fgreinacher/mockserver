@@ -202,7 +202,7 @@ read_stamp() {
     echo "+++ :bangbang: ${label}: META-INF/mockserver-tcnative.version is EMPTY in '${jar}' — Docker would derive a blank version, failing closed" >&2
     return 1
   fi
-  if ! printf '%s' "$stamp" | grep -qE "$VERSION_RE"; then
+  if ! grep -qE "$VERSION_RE" <<<"$stamp"; then
     echo "+++ :bangbang: ${label}: stamp '${stamp}' in '${jar}' is not a well-formed tcnative version — failing closed" >&2
     return 1
   fi

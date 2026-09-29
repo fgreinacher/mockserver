@@ -48,7 +48,7 @@ exec "$SCRIPT_DIR/../run-in-docker.sh" \
     set -e
     echo "$out"
 
-    if ! echo "$out" | grep -q "NODE_TESTCONTAINERS_STATUS_OK"; then
+    if ! grep -q "NODE_TESTCONTAINERS_STATUS_OK" <<<"$out"; then
       echo "+++ :bangbang: node container-start test did not emit its status marker — no real container was exercised, failing closed" >&2
       exit 1
     fi

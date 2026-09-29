@@ -48,7 +48,7 @@ OLD_API_VERSION="${OLD_MAJOR}.${OLD_MINOR}.x"
 
 escape_sed() { printf '%s' "$1" | sed -e 's/[][\\/.^$*]/\\&/g'; }
 sed_i() {
-  if sed --version 2>/dev/null | grep -q GNU; then sed -i "$@"; else sed -i '' "$@"; fi
+  if grep -q GNU <<<"$(sed --version 2>/dev/null || true)"; then sed -i "$@"; else sed -i '' "$@"; fi
 }
 
 if is_dry_run; then

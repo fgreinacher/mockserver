@@ -11,7 +11,7 @@ function start-up-k8s() {
     runCommand "k3d cluster delete ${CLUSTER_NAME}"
   fi
 
-  if k3d cluster list 2>&1 | grep -qw "${CLUSTER_NAME}"; then
+  if grep -qw -- "${CLUSTER_NAME}" <<<"$(k3d cluster list 2>&1 || true)"; then
     printMessage "Found existing cluster"
   else
     # -------------------------------------------------------------------------

@@ -102,7 +102,7 @@ case "$PERF_WORKLOAD" in
   ""|forward) : ;;
   *) echo "ERROR: PERF_WORKLOAD='$PERF_WORKLOAD' is not one of: forward (empty = default run, no extra workload)" >&2; exit 1 ;;
 esac
-if ! printf '%s' "$PERF_UPSTREAM_DELAY_MS" | grep -Eq '^[0-9]+$'; then
+if ! grep -Eq '^[0-9]+$' <<<"$PERF_UPSTREAM_DELAY_MS"; then
   echo "ERROR: PERF_UPSTREAM_DELAY_MS='$PERF_UPSTREAM_DELAY_MS' is not a non-negative integer (milliseconds)" >&2; exit 1
 fi
 if [ "$PERF_WORKLOAD" = "forward" ] && [ "$PERF_UPSTREAM_DELAY_MS" -eq 0 ]; then
@@ -114,7 +114,7 @@ fi
 if [ "$PERF_WORKLOAD" = "forward" ]; then
   for _wl_var in PERF_WORKLOAD_FORWARD_RATE PERF_WORKLOAD_FORWARD_VUS; do
     _wl_val="$(eval "printf '%s' \"\${${_wl_var}:-}\"")"
-    if [ -n "$_wl_val" ] && ! printf '%s' "$_wl_val" | grep -Eq '^[1-9][0-9]*$'; then
+    if [ -n "$_wl_val" ] && ! grep -Eq '^[1-9][0-9]*$' <<<"$_wl_val"; then
       echo "ERROR: ${_wl_var}='${_wl_val}' is not a positive integer" >&2; exit 1
     fi
   done
@@ -136,7 +136,7 @@ esac
 # PERF_STEADY_RATE=<rps> runs ONE constant-arrival-rate pass at a single rate (no
 # per-rung ramp), warm-up excluded (PERF_STEADY_WARMUP) from the reported window.
 PERF_STEADY_RATE="${PERF_STEADY_RATE:-}"
-if [ -n "$PERF_STEADY_RATE" ] && ! printf '%s' "$PERF_STEADY_RATE" | grep -Eq '^[1-9][0-9]*$'; then
+if [ -n "$PERF_STEADY_RATE" ] && ! grep -Eq '^[1-9][0-9]*$' <<<"$PERF_STEADY_RATE"; then
   echo "ERROR: PERF_STEADY_RATE='$PERF_STEADY_RATE' is not a positive integer (requests/second)" >&2; exit 1
 fi
 PERF_STEADY_DURATION="${PERF_STEADY_DURATION:-5m}"
@@ -383,7 +383,7 @@ image_java_tool_options() { # image_ref -> its built-in JAVA_TOOL_OPTIONS defaul
 # image default's GC selectors first — two -XX:+Use*GC flags abort the JVM ("Multiple GCs").
 compose_java_tool_options() { # image_default  container_opts
   local base="$1" extra="$2"
-  if printf '%s' "$extra" | grep -Eq -- '-XX:\+Use[A-Za-z0-9]*GC'; then
+  if grep -Eq -- '-XX:\+Use[A-Za-z0-9]*GC' <<<"$extra"; then
     base="$(printf '%s' "$base" | sed -E 's/-XX:\+Use[A-Za-z0-9]*GC//g; s/-XX:\+ZGenerational//g; s/  */ /g; s/^ //; s/ $//')"
   fi
   printf '%s' "${base}${base:+${extra:+ }}${extra}"
@@ -480,7 +480,7 @@ dump_load_window_jfr() {
     err="SUT not running at dump time"
   else
     read -r uid gid <<<"$(sut_jvm_uid_gid "$SERVER")"
-    if ! printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
+    if ! grep -qE '^[0-9]+$' <<<"$uid"; then
       err="could not resolve the SUT JVM uid"
     else
       local deadline="${LOAD_JFR_DUMP_DEADLINE_S:-180}" rc=0 jcmd_out
@@ -1052,7 +1052,7 @@ fi
 CONFIG_METRICS=""
 for _ in $(seq 1 15); do
   CONFIG_METRICS="$(curl -sf --max-time 4 "$SERVER_METRICS_URL" 2>/dev/null || true)"
-  if [ -n "$CONFIG_METRICS" ] && printf '%s' "$CONFIG_METRICS" | grep -q '^mock_server_build_info'; then break; fi
+  if [ -n "$CONFIG_METRICS" ] && grep -q '^mock_server_build_info' <<<"$CONFIG_METRICS"; then break; fi
   sleep 2
 done
 
@@ -1106,7 +1106,7 @@ release_jvm_runtime_via_jcmd() {
   local uid gid jcmd_img="$PERF_HISTO_JDK_IMAGE" props flags tmo=()
   command -v timeout >/dev/null 2>&1 && tmo=(timeout 60)
   read -r uid gid <<<"$(sut_jvm_uid_gid "$SERVER")"
-  printf '%s' "$uid" | grep -qE '^[0-9]+$' || { echo "WARNING: release comparison: could not resolve the SUT JVM uid for jcmd" >&2; return 0; }
+  grep -qE '^[0-9]+$' <<<"$uid" || { echo "WARNING: release comparison: could not resolve the SUT JVM uid for jcmd" >&2; return 0; }
   props="$(${tmo[@]+"${tmo[@]}"} docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$jcmd_img" jcmd 1 VM.system_properties 2>/dev/null || true)"
   flags="$(${tmo[@]+"${tmo[@]}"} docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$jcmd_img" jcmd 1 VM.flags 2>/dev/null || true)"
   jcmd_prop() { printf '%s\n' "$props" | awk -v k="$1" 'index($0, k "=") == 1 { sub("^[^=]*=", ""); gsub(/\\/, ""); print; exit }' || true; }
@@ -1276,7 +1276,7 @@ if [ "$CONFIG_PROFILE" = "default" ]; then
       *SerialGC) _expected_gc="MarkSweepCompact" ;;
       *) _expected_gc="$(printf '%s' "$_img_gc_flag" | sed -E 's/.*Use([A-Za-z0-9]+)GC/\1/')" ;;
     esac
-    if ! printf '%s' "$GC_IN_USE" | grep -qi -- "$_expected_gc"; then
+    if ! grep -qi -- "$_expected_gc" <<<"$GC_IN_USE"; then
       echo "ERROR: default-profile run measured GC '${GC_IN_USE}' but the image default (${_img_gc_flag}) expects '${_expected_gc}' — a default figure on the wrong collector must not be published" >&2
       exit 1
     fi
@@ -1347,7 +1347,7 @@ ATTRIBUTED_COMMIT="$HARNESS_COMMIT"; ATTRIBUTED_SRC="declared"
 # extension must be a well-formed future date.
 PROVENANCE_GRACE_UNTIL="${PERF_PROVENANCE_GRACE_UNTIL:-2026-11-01}"
 GRACE_VALID=true
-if ! printf '%s' "$PROVENANCE_GRACE_UNTIL" | grep -qE '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$'; then
+if ! grep -qE '^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$' <<<"$PROVENANCE_GRACE_UNTIL"; then
   GRACE_VALID=false
   echo "WARNING: PERF_PROVENANCE_GRACE_UNTIL='${PROVENANCE_GRACE_UNTIL}' is not a valid ISO YYYY-MM-DD date — treating the provenance grace window as EXPIRED (fail closed) so a malformed override cannot silently disable the deadline" >&2
 fi
@@ -1399,7 +1399,7 @@ fi
 # direction is to over-exclude, never to contaminate the baseline.
 BASELINE_ELIGIBLE="true"
 if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] \
-   || printf '%s' "$JAVA_TOOL_OPTS_VAL" | grep -q 'StartFlightRecording\|NativeMemoryTracking'; then
+   || grep -q 'StartFlightRecording\|NativeMemoryTracking' <<<"$JAVA_TOOL_OPTS_VAL"; then
   BASELINE_ELIGIBLE="false"
   echo "--- baseline eligibility: NOT eligible (PERF_JVM_DIAGNOSTICS=$PERF_JVM_DIAGNOSTICS) — this run will be recorded but NOT persisted to the baseline"
 fi
@@ -1441,7 +1441,7 @@ IMAGE_STALE="true"; IMAGE_AGE_DAYS="unknown"
 # `null` — a malformed override must fail the freshness check closed (IMAGE_STALE stays
 # "true"), NOT crash the jq assembly with an unparseable --argjson and abort the whole run.
 IMAGE_MAX_AGE_JSON="null"
-if ! printf '%s' "$PERF_MAX_IMAGE_AGE_DAYS" | grep -qE '^[0-9]+$' || [ "$PERF_MAX_IMAGE_AGE_DAYS" -le 0 ] 2>/dev/null; then
+if ! grep -qE '^[0-9]+$' <<<"$PERF_MAX_IMAGE_AGE_DAYS" || [ "$PERF_MAX_IMAGE_AGE_DAYS" -le 0 ] 2>/dev/null; then
   echo "WARNING: PERF_MAX_IMAGE_AGE_DAYS='${PERF_MAX_IMAGE_AGE_DAYS}' is not a positive integer — treating the SUT image as STALE (fail closed) so a malformed override cannot silently disable the freshness check" >&2
 else
   IMAGE_MAX_AGE_JSON="$PERF_MAX_IMAGE_AGE_DAYS"
@@ -1591,13 +1591,13 @@ seed_upstream() {
     -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"upstream"},"times":{"unlimited":true}}]' 2>/dev/null || true
 }
 UPSTREAM_SEED_CODE="$(seed_upstream)"
-if ! printf '%s' "$UPSTREAM_SEED_CODE" | grep -qE '^2[0-9][0-9]$'; then
+if ! grep -qE '^2[0-9][0-9]$' <<<"$UPSTREAM_SEED_CODE"; then
   echo "WARNING: upstream seed HTTP ${UPSTREAM_SEED_CODE:-000} — retrying once after 3s" >&2
   sleep 3
   UPSTREAM_SEED_CODE="$(seed_upstream)"
 fi
 echo "upstream seed HTTP ${UPSTREAM_SEED_CODE:-000}"
-if ! printf '%s' "$UPSTREAM_SEED_CODE" | grep -qE '^2[0-9][0-9]$'; then
+if ! grep -qE '^2[0-9][0-9]$' <<<"$UPSTREAM_SEED_CODE"; then
   echo "ERROR: upstream seeding failed (HTTP ${UPSTREAM_SEED_CODE:-000}) — capturing upstream post-mortem before aborting" >&2
   if up_state="$(docker inspect --format '{{json .State}}' "$UPSTREAM" 2>/dev/null)"; then
     echo "--- $UPSTREAM .State: $(printf '%s' "$up_state" | jq -rc '{OOMKilled,ExitCode,Status,Error,FinishedAt}' 2>/dev/null || printf '%s' "$up_state")" >&2
@@ -1775,7 +1775,7 @@ diag_sampler & DIAG_SAMPLER_PID=$!
 live_heap_histo_sampler() { # container, diag_subdir
   local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" uid gid t0
   read -r uid gid <<<"$(sut_jvm_uid_gid "$target")"
-  if ! printf '%s' "$uid" | grep -qE '^[0-9]+$'; then
+  if ! grep -qE '^[0-9]+$' <<<"$uid"; then
     echo "WARNING: could not resolve the $target JVM uid from its PID namespace — no live-heap histogram" >&2
     return 0
   fi
@@ -2499,7 +2499,7 @@ if [ "${PERF_PROXY_PROFILE:-true}" = "true" ]; then
       MTLS_NOCERT_CODE="$(docker run --rm --network "$NETWORK" curlimages/curl:8.11.1 \
         -s -k -o /dev/null -w '%{http_code}' --max-time 8 "https://mockserver-mtls:1080/simple" 2>/dev/null)" || MTLS_NOCERT_RC=$?
       MTLS_NOCERT_RC="${MTLS_NOCERT_RC:-0}"
-      if printf '%s' "${MTLS_NOCERT_CODE:-000}" | grep -qE '^2..$'; then
+      if grep -qE '^2..$' <<<"${MTLS_NOCERT_CODE:-000}"; then
         MTLS_ENFORCED=false
         echo "WARNING: mTLS negative control FAILED — https://mockserver-mtls:1080/simple returned ${MTLS_NOCERT_CODE} with NO client cert, so tlsMutualAuthenticationRequired is NOT being enforced; the mtls handshake arm is therefore not a true mTLS measurement this run." >&2
       elif [ "$MTLS_NOCERT_RC" = "35" ] || [ "$MTLS_NOCERT_RC" = "56" ]; then
@@ -2960,7 +2960,7 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
       --delay-ms "$S_DELAY" --streams 3 --max-tokens 60 --label load \
       --out "$OUT_DIR/fidelity-load.json" || echo "WARNING: load fidelity reader failed" >&2
     # Wait for the background k6 to finish writing its result.
-    while docker ps --format '{{.Names}}' | grep -q "^${STREAM_K6}$"; do sleep 2; done
+    while grep -q "^${STREAM_K6}$" <<<"$(docker ps --format '{{.Names}}' || true)"; do sleep 2; done
     K6_STREAM_OUT="$(cat "$OUT_DIR/streaming.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$K6_STREAM_OUT" || K6_STREAM_OUT='{}'
     FID_IDLE="$(cat "$OUT_DIR/fidelity-idle.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$FID_IDLE" || FID_IDLE='{}'
     FID_LOAD="$(cat "$OUT_DIR/fidelity-load.json" 2>/dev/null || echo '{}')"; jq -e . >/dev/null 2>&1 <<<"$FID_LOAD" || FID_LOAD='{}'

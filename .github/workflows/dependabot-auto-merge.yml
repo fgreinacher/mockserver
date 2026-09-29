@@ -221,7 +221,7 @@ jobs:
             htoken_marker="$(printf '%s' "$htoken" | tr -cd '0-9')"
             marker="<!-- dependabot-release-gate:${htoken_marker} -->"
             existing="$(gh api "repos/$REPO/issues/$hpr/comments?per_page=100" --jq '.[].body' 2>/dev/null || true)"
-            if printf '%s' "$existing" | grep -qF "$marker"; then
+            if grep -qF -- "$marker" <<<"$existing"; then
               log "    (release-hold comment already present for this episode — not re-posting)"; return 0
             fi
             body="$(printf '%s\n%s\n\n%s\n\n%s' \
@@ -279,17 +279,17 @@ jobs:
             # changes match none of them (see the regexes/comment above). Paths A and
             # B are branch-structural; path C is decided from the body+title signals
             # because security updates never land on an A/B-shaped branch.
-            if printf '%s' "$head_ref" | grep -Eq "$GROUP_BRANCH_REGEX"; then
+            if grep -Eq -- "$GROUP_BRANCH_REGEX" <<<"$head_ref"; then
               : # (A) accepted — structural major-exclusion via group membership
-            elif printf '%s' "$head_ref" | grep -Eq "$DIGEST_BRANCH_REGEX"; then
+            elif grep -Eq -- "$DIGEST_BRANCH_REGEX" <<<"$head_ref"; then
               # (B) branch looks like a distroless digest bump; require the PR title
               # to ALSO be a digest-bump title. Two independent Dependabot-generated
               # signals must agree — fail closed if the title is anything else (e.g.
               # a version bump that somehow shared the branch shape).
-              if ! printf '%s' "$title" | grep -Eq "$DIGEST_TITLE_REGEX"; then
+              if ! grep -Eq -- "$DIGEST_TITLE_REGEX" <<<"$title"; then
                 refuse "$pr" "branch '$head_ref' looks like a digest bump but title '$title' is not a digest-bump title — fail closed"; return 1
               fi
-            elif printf '%s' "$body" | grep -qF "$SECURITY_BODY_MARKER"; then
+            elif grep -qF -- "$SECURITY_BODY_MARKER" <<<"$body"; then
               # (C) Dependabot SECURITY update (body carries the security-fix footer).
               # Accept ONLY a single within-major version bump, with the major bound
               # computed EXPLICITLY here — grouping cannot supply it (see the big
@@ -454,7 +454,7 @@ jobs:
             log "RELEASE GATE: clear (RELEASE_IN_PROGRESS unset) — proceeding"
           else
             gate_token="$RELEASE_FLAG"
-            if printf '%s' "$RELEASE_FLAG" | grep -Eq '^[0-9]{9,}$'; then
+            if grep -Eq '^[0-9]{9,}$' <<<"$RELEASE_FLAG"; then
               now="$(date -u +%s)"
               age=$(( now - RELEASE_FLAG ))
               max=$(( GATE_MAX_AGE_HOURS * 3600 ))

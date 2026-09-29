@@ -147,7 +147,10 @@ JLINK_ARGS=(--module-path "$JMODS" --add-modules "$MODULES"
             --output "$STAGE/runtime")
 if $DO_COMPRESS; then
   # JDK 17–20 (and Zulu 21) accept --compress=2; Oracle JDK 21+ requires --compress=zip-N.
-  if "$JLINK" --help 2>&1 | grep -q 'compress=<0|1|2>'; then
+  # Capture first: under pipefail `jlink --help | grep -q` fails when grep exits before
+  # jlink finishes writing, which would silently pick the wrong --compress form.
+  JLINK_HELP="$("$JLINK" --help 2>&1 || true)"
+  if grep -q 'compress=<0|1|2>' <<<"$JLINK_HELP"; then
     JLINK_ARGS+=(--compress=2)
   else
     JLINK_ARGS+=(--compress=zip-6)
