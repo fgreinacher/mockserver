@@ -112,6 +112,8 @@ public interface KeyAndCertificateFactory {
      * false for user-supplied fixed certificates — those are validated (and loudly rejected on expiry)
      * by {@link CertificateConfigurationValidator}. Defaults to false for factories that do not
      * self-renew (so third-party/mock implementations keep working unchanged).
+     * <p>
+     * Called on the Netty event loop for every TLS handshake: it must be cheap and must not block.
      */
     default boolean certificateNeedsRenewal() {
         return false;
@@ -202,6 +204,10 @@ public interface KeyAndCertificateFactory {
 
     void buildAndSavePrivateKeyAndX509Certificate();
 
+    /**
+     * @return true when this factory generates certificates and has not generated the leaf yet.
+     * Called on the Netty event loop for every TLS handshake: it must be cheap and must not block.
+     */
     boolean certificateNotYetCreated();
 
     PrivateKey privateKey();

@@ -1,6 +1,7 @@
 package org.mockserver.socket.tls.bouncycastle;
 
 import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509v3CertificateBuilder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -30,17 +31,21 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 import java.util.stream.Collectors;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.hasItem;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.nullValue;
 import static org.hamcrest.Matchers.sameInstance;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockserver.configuration.Configuration.configuration;
+import static org.mockserver.socket.tls.NettySslContextFactoryTestAccess.cachedServerSslContext;
 
 /**
  * Certificate-hardening tests that drive process-global static seams — the renewal clock
@@ -243,6 +248,109 @@ public class CertificateHardeningGlobalStateTest {
             Set<String> dnsNames = dnsNames(sharedFactory.x509Certificate());
             assertThat("iteration " + i, dnsNames, hasItem(hostA));
             assertThat("iteration " + i, dnsNames, hasItem(hostB));
+        }
+    }
+
+    // --- the non-blocking cached-context check SniHandler runs on the event loop ---
+
+    @Test
+    public void shouldOfferTheCachedContextWithoutProvisioningOnlyWhileEveryInputIsUnchanged() {
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        assertThat("nothing is cached before the first build", cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+
+        SslContext first = nettySslContextFactory.createServerSslContext();
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(first)));
+
+        // a setter that re-applies the same value moves the modification count but not the inputs
+        configuration.tlsProtocols(configuration.tlsProtocols());
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(first)));
+        assertThat(nettySslContextFactory.createServerSslContext(), is(sameInstance(first)));
+
+        // a new dynamic SAN
+        configuration.addSubjectAlternativeName("new-host.fast-path.test");
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        SslContext second = nettySslContextFactory.createServerSslContext();
+        assertThat(second, is(not(sameInstance(first))));
+        assertThat(dnsNames(sharedFactory.x509Certificate()), hasItem("new-host.fast-path.test"));
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(second)));
+
+        // replacing the configured SAN set wholesale
+        configuration.sslSubjectAlternativeNameDomains(Set.of("localhost", "replaced.fast-path.test"));
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        SslContext third = nettySslContextFactory.createServerSslContext();
+        assertThat(dnsNames(sharedFactory.x509Certificate()), hasItem("replaced.fast-path.test"));
+
+        // every non-SAN input baked into the context
+        configuration.http2Enabled(!configuration.http2Enabled());
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        SslContext fourth = nettySslContextFactory.createServerSslContext();
+        assertThat(fourth, is(not(sameInstance(third))));
+        configuration.tlsProtocols("TLSv1.2");
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        SslContext fifth = nettySslContextFactory.createServerSslContext();
+        configuration.tlsMutualAuthenticationRequired(!configuration.tlsMutualAuthenticationRequired());
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        SslContext sixth = nettySslContextFactory.createServerSslContext();
+        assertThat(sixth, is(not(sameInstance(fifth))));
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(sixth)));
+    }
+
+    @Test
+    public void shouldNotOfferTheCachedContextOnceTheLeafNeedsRenewal() {
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        SslContext first = nettySslContextFactory.createServerSslContext();
+        X509Certificate firstLeaf = sharedFactory.x509Certificate();
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(first)));
+
+        BCKeyAndCertificateFactory.renewalClock = () -> firstLeaf.getNotAfter().getTime() + TimeUnit.DAYS.toMillis(1);
+
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+        assertThat(nettySslContextFactory.createServerSslContext(), is(not(sameInstance(first))));
+    }
+
+    @Test
+    public void shouldStopRenewingOnceTheRenewedLeafIsFresh() {
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        nettySslContextFactory.createServerSslContext();
+        X509Certificate firstLeaf = sharedFactory.x509Certificate();
+
+        // the renewed leaf gets a far longer life, so the advanced clock is past the first leaf's
+        // threshold but well inside the renewed one's
+        configuration.sslCertificateLeafValidityInDays(3650);
+        BCKeyAndCertificateFactory.renewalClock = () -> firstLeaf.getNotAfter().getTime() + TimeUnit.DAYS.toMillis(1);
+        SslContext renewed = nettySslContextFactory.createServerSslContext();
+
+        assertThat(sharedFactory.x509Certificate(), is(not(sameInstance(firstLeaf))));
+        assertFalse("the renewal decision must follow the current leaf, not the one it replaced", sharedFactory.certificateNeedsRenewal());
+        assertThat(cachedServerSslContext(nettySslContextFactory), is(sameInstance(renewed)));
+        assertThat(nettySslContextFactory.createServerSslContext(), is(sameInstance(renewed)));
+    }
+
+    @Test
+    public void shouldRebuildWhenASubjectAlternativeNameArrivesWhileTheContextIsBeingBuilt() {
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        UnaryOperator<SslContextBuilder> originalCustomizer = NettySslContextFactory.sslServerContextBuilderCustomizer;
+        AtomicBoolean added = new AtomicBoolean();
+        // runs inside the build after the leaf is minted: the window in which a concurrent SNI handshake
+        // for a new host adds its SAN
+        NettySslContextFactory.sslServerContextBuilderCustomizer = builder -> {
+            if (added.compareAndSet(false, true)) {
+                configuration.addSubjectAlternativeName("mid-build.race.test");
+            }
+            return builder;
+        };
+        try {
+            SslContext first = nettySslContextFactory.createServerSslContext();
+            assertTrue(added.get());
+            assertThat(dnsNames(sharedFactory.x509Certificate()), not(hasItem("mid-build.race.test")));
+
+            assertThat(cachedServerSslContext(nettySslContextFactory), is(nullValue()));
+            SslContext second = nettySslContextFactory.createServerSslContext();
+
+            assertThat(second, is(not(sameInstance(first))));
+            assertThat(dnsNames(sharedFactory.x509Certificate()), hasItem("mid-build.race.test"));
+        } finally {
+            NettySslContextFactory.sslServerContextBuilderCustomizer = originalCustomizer;
         }
     }
 

@@ -348,7 +348,7 @@ graph LR
 detects inner protocol"]
 ```
 
-`SniHandler` (in `mockserver-core`) extends Netty's `AbstractSniHandler`. It extracts the hostname from the TLS ClientHello SNI extension, dynamically generates a certificate with that hostname as a Subject Alternative Name, and negotiates ALPN (HTTP/1.1 or HTTP/2).
+`SniHandler` (in `mockserver-core`) extends Netty's `AbstractSniHandler`. It extracts the hostname from the TLS ClientHello SNI extension, dynamically generates a certificate with that hostname as a Subject Alternative Name, and negotiates ALPN (HTTP/1.1 or HTTP/2). When the cached server context is still valid the lookup completes on the event loop; only a context that must be (re)built is provisioned on the `mockserver-ssl-context-*` pool (see [tls-and-security.md](tls-and-security.md#dynamic-certificate-generation)).
 
 #### SOCKS4 Pipeline
 

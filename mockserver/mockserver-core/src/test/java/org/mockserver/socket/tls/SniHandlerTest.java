@@ -127,6 +127,94 @@ public class SniHandlerTest {
     }
 
     @Test
+    public void lookupShouldCompleteOnTheCallingThreadWhenTheCachedContextIsValid() {
+        // given a context already built for this host
+        Configuration configuration = configuration();
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        configuration.addSubjectAlternativeName("cached.sni.test");
+        SslContext cached = nettySslContextFactory.createServerSslContext();
+
+        // repeated: in a cold JVM the calling thread's class loading can let a pool hop finish first
+        for (int i = 0; i < 20; i++) {
+            SniHandler sniHandler = new SniHandler(configuration, nettySslContextFactory);
+            EmbeddedChannel channel = new EmbeddedChannel(sniHandler);
+            ChannelHandlerContext ctx = channel.pipeline().context(sniHandler);
+
+            // when
+            io.netty.util.concurrent.Future<SslContext> result = sniHandler.lookup(ctx, "cached.sni.test");
+
+            // then — already complete, with no hop through the provisioning pool
+            assertThat("lookup " + i, result.isDone(), is(true));
+            assertThat(result.isSuccess(), is(true));
+            assertThat(result.getNow(), is(sameInstance(cached)));
+            channel.close();
+        }
+    }
+
+    @Test
+    public void lookupShouldProvisionANewContextWhenANewHostInvalidatesTheCachedOne() throws Exception {
+        // given
+        Configuration configuration = configuration();
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        SslContext cached = nettySslContextFactory.createServerSslContext();
+        SniHandler sniHandler = new SniHandler(configuration, nettySslContextFactory);
+        EmbeddedChannel channel = new EmbeddedChannel(sniHandler);
+        ChannelHandlerContext ctx = channel.pipeline().context(sniHandler);
+
+        // when
+        io.netty.util.concurrent.Future<SslContext> result = sniHandler.lookup(ctx, "new-host.sni.test");
+
+        // then
+        awaitDone(result);
+        assertThat(result.isSuccess(), is(true));
+        assertThat(result.getNow(), is(not(sameInstance(cached))));
+        assertThat(result.getNow(), is(sameInstance(nettySslContextFactory.cachedServerSslContext())));
+        channel.close();
+    }
+
+    @Test
+    public void concurrentFirstLookupsShouldAllSucceedAndLeaveOneValidCachedContext() throws Exception {
+        Configuration configuration = configuration();
+        NettySslContextFactory nettySslContextFactory = new NettySslContextFactory(configuration, new MockServerLogger(), true);
+        int lookups = 16;
+        java.util.concurrent.CountDownLatch start = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(lookups);
+        try {
+            java.util.List<java.util.concurrent.Future<io.netty.util.concurrent.Future<SslContext>>> submitted = new java.util.ArrayList<>();
+            for (int i = 0; i < lookups; i++) {
+                String host = "concurrent-" + i + ".sni.test";
+                submitted.add(executor.submit(() -> {
+                    SniHandler sniHandler = new SniHandler(configuration, nettySslContextFactory);
+                    EmbeddedChannel channel = new EmbeddedChannel(sniHandler);
+                    start.await();
+                    io.netty.util.concurrent.Future<SslContext> result = sniHandler.lookup(channel.pipeline().context(sniHandler), host);
+                    awaitDone(result);
+                    return result;
+                }));
+            }
+            start.countDown();
+            for (java.util.concurrent.Future<io.netty.util.concurrent.Future<SslContext>> lookup : submitted) {
+                io.netty.util.concurrent.Future<SslContext> result = lookup.get(60, java.util.concurrent.TimeUnit.SECONDS);
+                assertThat(String.valueOf(result.cause()), result.isSuccess(), is(true));
+                assertThat(result.getNow(), is(notNullValue()));
+            }
+            for (int i = 0; i < lookups; i++) {
+                assertThat(configuration.sslSubjectAlternativeNameDomains(), hasItem("concurrent-" + i + ".sni.test"));
+            }
+            assertThat(nettySslContextFactory.cachedServerSslContext(), is(sameInstance(nettySslContextFactory.createServerSslContext())));
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private static void awaitDone(io.netty.util.concurrent.Future<?> future) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + java.util.concurrent.TimeUnit.SECONDS.toMillis(60);
+        while (!future.isDone() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(5);
+        }
+    }
+
+    @Test
     public void lookupShouldAddIpAddressAsSubjectAlternativeNameIp() {
         // given
         Configuration configuration = configuration();

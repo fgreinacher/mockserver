@@ -137,6 +137,33 @@ public class NettySslContextFactoryGlobalStateTest {
     }
 
     @Test
+    public void shouldLeaveTheFixedCertificateDiskCheckToTheProvisioningPathWhenItFallsDue() throws Exception {
+        AtomicLong clock = new AtomicLong(System.currentTimeMillis());
+        NettySslContextFactory.fixedCertificateClock = clock::get;
+
+        String[] keyAndCert = generateKeyAndCert(new Date(System.currentTimeMillis() - 86400000L),
+            new Date(System.currentTimeMillis() + 86400000L * 365));
+        File keyFile = writePem("key.pem", keyAndCert[0]);
+        File certFile = writePem("cert.pem", keyAndCert[1]);
+        NettySslContextFactory factory = new NettySslContextFactory(fixedCertificateConfiguration(keyFile, certFile), new MockServerLogger(), true);
+        SslContext first = factory.createServerSslContext();
+        assertThat(factory.cachedServerSslContext(), sameInstance(first));
+
+        String[] rotated = generateKeyAndCert(new Date(System.currentTimeMillis() - 86400000L),
+            new Date(System.currentTimeMillis() + 86400000L * 365));
+        overwrite(keyFile, rotated[0]);
+        overwrite(certFile, rotated[1]);
+        certFile.setLastModified(System.currentTimeMillis() + 3_600_000L);
+        clock.addAndGet(120_000L);
+
+        // the event-loop check never touches the disk: a due re-check sends the caller to the provisioning pool
+        assertThat(factory.cachedServerSslContext(), nullValue());
+        SslContext second = factory.createServerSslContext();
+        assertThat(second, not(sameInstance(first)));
+        assertThat(factory.cachedServerSslContext(), sameInstance(second));
+    }
+
+    @Test
     public void shouldWarnWhenFixedCertificateExpiresWhileServing() throws Exception {
         long base = System.currentTimeMillis();
         AtomicLong clock = new AtomicLong(base);

@@ -28,6 +28,7 @@ import org.mockserver.serialization.ConfigurationSerializer;
 import org.mockserver.serialization.ObjectMapperFactory;
 import org.mockserver.serialization.PortBindingSerializer;
 import org.mockserver.serialization.model.ConfigurationDTO;
+import org.mockserver.socket.tls.HostSubjectAlternativeNames;
 import org.slf4j.event.Level;
 
 import java.net.BindException;
@@ -231,7 +232,7 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
         }
         ResponseWriter responseWriter = new NettyResponseWriter(configuration, mockServerLogger, ctx, httpState.getScheduler(), inFlightRequest);
         try {
-            configuration.addSubjectAlternativeName(request.getFirstHeader(HOST.toString()));
+            HostSubjectAlternativeNames.record(configuration, ctx.channel(), request.getFirstHeader(HOST.toString()));
 
             if (!httpState.handle(request, responseWriter, false)) {
 

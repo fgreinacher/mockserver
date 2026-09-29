@@ -20,11 +20,19 @@ import java.security.cert.X509Certificate;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.hasItem;
+import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.not;
 import static org.mockserver.stop.Stop.stopQuietly;
 
@@ -87,12 +95,51 @@ public class SniServerCertificateSelectionIntegrationTest {
         assertThat("served certificate SANs must not contain a never-presented host", servedDnsSans, not(hasItem("never-presented-host.example")));
     }
 
+    @Test
+    public void shouldPresentEveryConcurrentFirstHandshakeACertificateContainingItsOwnSniHost() throws Exception {
+        int hostsPerRound = 8;
+        ExecutorService executor = Executors.newFixedThreadPool(hostsPerRound);
+        try {
+            for (int round = 0; round < 4; round++) {
+                CountDownLatch start = new CountDownLatch(1);
+                Map<String, Future<Set<String>>> served = new LinkedHashMap<>();
+                for (int i = 0; i < hostsPerRound; i++) {
+                    String host = "concurrent-" + round + "-" + i + ".sni.example";
+                    served.put(host, executor.submit(() -> {
+                        start.await();
+                        return dnsSubjectAlternativeNamesOfServedCertificate(host);
+                    }));
+                }
+                start.countDown();
+                for (Map.Entry<String, Future<Set<String>>> entry : served.entrySet()) {
+                    assertThat("certificate served to " + entry.getKey(), entry.getValue().get(60, TimeUnit.SECONDS), hasItem(entry.getKey()));
+                }
+            }
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    @Test
+    public void shouldKeepServingTheSameCertificateToRepeatHandshakesForAKnownHost() throws Exception {
+        X509Certificate first = servedLeafCertificate(FIRST_SNI_HOST);
+        for (int i = 0; i < 5; i++) {
+            X509Certificate repeat = servedLeafCertificate(FIRST_SNI_HOST);
+            assertThat(dnsNames(repeat), hasItem(FIRST_SNI_HOST));
+            assertThat("no regeneration for an unchanged SAN set", repeat.getSerialNumber(), is(first.getSerialNumber()));
+        }
+    }
+
     /**
      * Opens a real TLS connection to the running MockServer secure port presenting the given SNI host,
      * completes the handshake, and returns the dNSName Subject Alternative Names of the served peer
      * (leaf) certificate.
      */
     private Set<String> dnsSubjectAlternativeNamesOfServedCertificate(String sniHost) throws Exception {
+        return dnsNames(servedLeafCertificate(sniHost));
+    }
+
+    private X509Certificate servedLeafCertificate(String sniHost) throws Exception {
         SSLSocketFactory socketFactory = trustAllSslContext().getSocketFactory();
         // connect by IP so JSSE adds no implicit SNI, then set the chosen SNI host explicitly
         try (SSLSocket socket = (SSLSocket) socketFactory.createSocket("127.0.0.1", mockServer.getPort())) {
@@ -106,8 +153,7 @@ public class SniServerCertificateSelectionIntegrationTest {
 
             SSLSession session = socket.getSession();
             Certificate[] peerCertificates = session.getPeerCertificates();
-            X509Certificate leafCertificate = (X509Certificate) peerCertificates[0];
-            return dnsNames(leafCertificate);
+            return (X509Certificate) peerCertificates[0];
         }
     }
 

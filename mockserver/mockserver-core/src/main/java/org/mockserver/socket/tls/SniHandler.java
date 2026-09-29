@@ -75,8 +75,8 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
     private final Configuration configuration;
     private final NettySslContextFactory nettySslContextFactory;
     /**
-     * Coalesces concurrent SNI lookups for the SAME host onto a single in-flight generation, so a burst
-     * of parallel handshakes to one host does not each trigger a separate provisioning (defect C5).
+     * Coalesces concurrent SNI lookups for the SAME host onto a single in-flight generation (defect C5).
+     * Only used when the cached context is not valid; a valid one is returned on the event loop.
      */
     private final ConcurrentHashMap<String, CompletableFuture<SslContext>> inFlightByHost = new ConcurrentHashMap<>();
 
@@ -92,6 +92,11 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
             // certificate is guaranteed to contain this host's SAN
             configuration.addSubjectAlternativeName(hostname);
             ctx.channel().attr(SNI_HOSTNAME).set(hostname);
+        }
+        // the steady state: nothing to generate, so skip the hop through the provisioning pool
+        SslContext cached = nettySslContextFactory.cachedServerSslContext();
+        if (cached != null) {
+            return ctx.executor().newSucceededFuture(cached);
         }
         String host = isNotBlank(hostname) ? hostname.toLowerCase(Locale.ROOT) : "";
         CompletableFuture<SslContext> generation = inFlightByHost.computeIfAbsent(host, key -> {

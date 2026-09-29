@@ -24,6 +24,7 @@ import java.security.cert.X509Certificate;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -62,7 +63,7 @@ public class NettySslContextFactory {
     // so an unchanged forward-proxy key/chain is not re-parsed on every TLS context (re)build.
     private final Map<String, PrivateKey> forwardProxyPrivateKeyCache = new ConcurrentHashMap<>();
     private final Map<String, X509Certificate[]> forwardProxyCertificateChainCache = new ConcurrentHashMap<>();
-    private volatile SslContext serverSslContext;
+    private final AtomicReference<ServerContextState> serverContextState = new AtomicReference<>();
     private final Object sslContextLock = new Object();
     private Function<SslContextBuilder, SslContext> instanceClientSslContextBuilderFunction = clientSslContextBuilderFunction;
     private final boolean forServer;
@@ -469,7 +470,7 @@ public class NettySslContextFactory {
     }
 
     /**
-     * The complete set of inputs baked into the cached {@link #serverSslContext}, compared per cached
+     * The complete set of inputs baked into the cached server context, compared per cached
      * entry so the cache self-invalidates when ANY of them change — replacing the single consumable
      * {@code rebuildServerTLSContext} boolean, which suffered a lost-update race: one thread could add a
      * SAN and set the flag while another thread, already inside the lock, cleared it, so the second
@@ -484,11 +485,15 @@ public class NettySslContextFactory {
      * <p>SAN membership is deliberately NOT gated by {@code preventCertificateDynamicUpdate} for the
      * client-authentication inputs — that option suppresses certificate REGENERATION when the domain
      * list changes, and must not be able to suppress a tightening of client-authentication policy.
+     *
+     * <p>It is only recomputed when {@link Configuration#serverTLSContextGeneration()} moves, so every
+     * setter of an input read here must advance that generation.
+     *
+     * @param subjectAlternativeNames {@link #subjectAlternativeNameSignature()}, read before the build so
+     *                                a SAN added while a build is in flight forces another build
      */
-    private volatile String serverSslContextSignature;
-
-    private String serverContextSignature() {
-        StringBuilder signature = new StringBuilder()
+    private String serverContextSignature(String subjectAlternativeNames) {
+        return new StringBuilder()
             .append("mtls=").append(configuration.tlsMutualAuthenticationRequired())
             .append("|mtlsChain=").append(configuration.tlsMutualAuthenticationCertificateChain())
             .append("|protocols=").append(configuration.tlsProtocols())
@@ -499,13 +504,68 @@ public class NettySslContextFactory {
             .append("|dynamicCA=").append(configuration.dynamicallyCreateCertificateAuthorityCertificate())
             .append("|dir=").append(configuration.directoryToSaveDynamicSSLCertificate())
             .append("|keyPath=").append(configuration.privateKeyPath())
-            .append("|certPath=").append(configuration.x509CertificatePath());
-        if (!Boolean.TRUE.equals(configuration.preventCertificateDynamicUpdate())) {
-            signature
-                .append("|sanDomains=").append(new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameDomains())))
-                .append("|sanIps=").append(new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameIps())));
+            .append("|certPath=").append(configuration.x509CertificatePath())
+            .append(subjectAlternativeNames)
+            .toString();
+    }
+
+    private String subjectAlternativeNameSignature() {
+        if (Boolean.TRUE.equals(configuration.preventCertificateDynamicUpdate())) {
+            return "";
         }
-        return signature.toString();
+        return "|sanDomains=" + new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameDomains()))
+            + "|sanIps=" + new TreeSet<>(nullSafeSet(configuration.sslSubjectAlternativeNameIps()));
+    }
+
+    /**
+     * A built server context with the configuration generation and signature it was built for. Invariant:
+     * {@code sslContext} is valid for any configuration whose signature equals {@code signature}, and at
+     * {@code generation} the configuration's signature equalled {@code signature}.
+     */
+    private static final class ServerContextState {
+        private final SslContext sslContext;
+        private final long generation;
+        private final String signature;
+
+        private ServerContextState(SslContext sslContext, long generation, String signature) {
+            this.sslContext = sslContext;
+            this.generation = generation;
+            this.signature = signature;
+        }
+    }
+
+    /**
+     * The cached server context if it is still valid, without blocking: {@code null} when no context has
+     * been built, when it must be rebuilt, or when the throttled on-disk re-check of a fixed certificate
+     * is due (that check does file I/O, so it is left to {@link #createServerSslContext()}). Safe to call
+     * on an event loop; a {@code null} result means the caller must provision off the event loop.
+     */
+    SslContext cachedServerSslContext() {
+        if (fixedServerCertificateRecheckDue()) {
+            return null;
+        }
+        return validCachedServerSslContext(false);
+    }
+
+    private SslContext validCachedServerSslContext(boolean fixedServerCertificateChanged) {
+        ServerContextState state = serverContextState.get();
+        if (state == null
+            || fixedServerCertificateChanged
+            || keyAndCertificateFactory.certificateNotYetCreated()
+            || keyAndCertificateFactory.certificateNeedsRenewal()) {
+            return null;
+        }
+        // read the generation BEFORE the values it guards: writers change a value, then advance the generation
+        long generation = configuration.serverTLSContextGeneration();
+        if (generation == state.generation) {
+            return state.sslContext;
+        }
+        if (serverContextSignature(subjectAlternativeNameSignature()).equals(state.signature)) {
+            // the generation moved but no input changed value (e.g. an unrelated property was set)
+            serverContextState.compareAndSet(state, new ServerContextState(state.sslContext, generation, state.signature));
+            return state.sslContext;
+        }
+        return null;
     }
 
     /**
@@ -549,22 +609,18 @@ public class NettySslContextFactory {
         // path, so the inner throttled re-evaluation cannot return a stale "unchanged" and short-circuit
         // a rebuild the outer check already decided on.
         boolean fixedServerCertificateChanged = fixedServerCertificateChangedOnDisk();
-        if (serverSslContext != null
-            && !keyAndCertificateFactory.certificateNotYetCreated()
-            && !keyAndCertificateFactory.certificateNeedsRenewal()
-            && !fixedServerCertificateChanged
-            && serverContextSignature().equals(serverSslContextSignature)) {
-            return serverSslContext;
+        SslContext cached = validCachedServerSslContext(fixedServerCertificateChanged);
+        if (cached != null) {
+            return cached;
         }
         synchronized (sslContextLock) {
-            if (serverSslContext != null
-                && !keyAndCertificateFactory.certificateNotYetCreated()
-                && !keyAndCertificateFactory.certificateNeedsRenewal()
-                && !fixedServerCertificateChanged
-                && serverContextSignature().equals(serverSslContextSignature)) {
-                return serverSslContext;
+            cached = validCachedServerSslContext(fixedServerCertificateChanged);
+            if (cached != null) {
+                return cached;
             }
             try {
+                long generation = configuration.serverTLSContextGeneration();
+                String subjectAlternativeNames = subjectAlternativeNameSignature();
                 new CertificateConfigurationValidator(configuration, mockServerLogger).validate();
                 keyAndCertificateFactory.buildAndSavePrivateKeyAndX509Certificate();
                 logUsedCertificateData();
@@ -581,13 +637,13 @@ public class NettySslContextFactory {
                 } else {
                     sslContextBuilder.trustManager(InsecureTrustManagerFactory.INSTANCE);
                 }
-                serverSslContext = sslServerContextBuilderCustomizer
+                SslContext built = sslServerContextBuilderCustomizer
                     .apply(sslContextBuilder)
                     .build();
-                // record the FULL set of inputs this context was built from (read AFTER the build, so any
-                // paths the factory derived during the build are captured), so a later change to any of
-                // them forces a rebuild without relying on a consumable flag
-                serverSslContextSignature = serverContextSignature();
+                // record the inputs this context was built from — the non-SAN inputs read AFTER the build,
+                // so paths the factory derived during it are captured, and the SANs read BEFORE it — so a
+                // later change to any of them forces a rebuild without relying on a consumable flag
+                serverContextState.set(new ServerContextState(built, generation, serverContextSignature(subjectAlternativeNames)));
                 recordFixedServerCertificateState();
                 configuration.rebuildServerTLSContext(false);
             } catch (Error error) {
@@ -602,8 +658,14 @@ public class NettySslContextFactory {
                     exception
                 );
             }
+            return serverContextState.get().sslContext;
         }
-        return serverSslContext;
+    }
+
+    private boolean fixedServerCertificateRecheckDue() {
+        return isNotBlank(configuration.x509CertificatePath())
+            && isNotBlank(configuration.privateKeyPath())
+            && fixedCertificateClock.getAsLong() - lastFixedServerCertificateCheckMs >= FIXED_CERTIFICATE_RECHECK_INTERVAL_MS;
     }
 
     /**

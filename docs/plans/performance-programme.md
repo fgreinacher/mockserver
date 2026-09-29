@@ -84,5 +84,4 @@ build 340 held a flat floor). Each item is in progress in its own unit unless no
 
 | # | Candidate | What is known | Next step |
 |---|---|---|---|
-| 19 | Client certificates re-parsed on every request; TLS context lookup hops to a pool and rebuilds a sorted SAN signature per handshake; SAN bookkeeping per request | mTLS is optional by default, so any client presenting a certificate pays the re-parse | Cast and memoise per connection; cached-context fast path; JMH/handshake benchmark first |
 | 24 | Header-value sharing across requests on a connection (retained heap) and a `-XX:+UseStringDeduplication` rig A/B | Estimated ~0.5 KB less retained per bodiless request | Queued: A/B after build 496 |

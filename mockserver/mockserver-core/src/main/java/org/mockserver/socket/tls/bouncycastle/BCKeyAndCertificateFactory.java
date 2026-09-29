@@ -104,6 +104,8 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
     // Latches once the dynamically-generated CA has crossed its renewal threshold so the near-expiry WARN
     // (emitted from certificateNeedsRenewal()) is logged only once rather than on every handshake.
     private volatile boolean certificateAuthorityRenewalWarned;
+    private volatile RenewalInstant leafRenewalInstant;
+    private volatile RenewalInstant certificateAuthorityRenewalInstant;
 
     // In-JVM serialisation of dynamic CA generation, keyed by the CANONICAL
     // directoryToSaveDynamicSSLCertificate. The cross-process FileLock in acquireCertificateAuthorityLock()
@@ -699,7 +701,38 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
         }
         long now = renewalClock.getAsLong();
         warnOnceIfCertificateAuthorityNearExpiry(now);
-        return KeyAndCertificateFactory.isPastRenewalThreshold(x509Certificate, KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now);
+        RenewalInstant leaf = RenewalInstant.of(leafRenewalInstant, x509Certificate);
+        leafRenewalInstant = leaf;
+        return now >= leaf.renewAtMillis;
+    }
+
+    /**
+     * A certificate's renewal instant, memoised per certificate INSTANCE: this check runs on every TLS
+     * handshake, and a BouncyCastle certificate re-parses its validity dates on every
+     * {@code getNotBefore()} / {@code getNotAfter()}. A replaced certificate is a new instance, so it is
+     * recomputed.
+     */
+    private static final class RenewalInstant {
+        private final X509Certificate certificate;
+        private final long renewAtMillis;
+
+        private RenewalInstant(X509Certificate certificate, long renewAtMillis) {
+            this.certificate = certificate;
+            this.renewAtMillis = renewAtMillis;
+        }
+
+        private static RenewalInstant of(RenewalInstant cached, X509Certificate certificate) {
+            if (cached != null && cached.certificate == certificate) {
+                return cached;
+            }
+            if (certificate == null) {
+                return new RenewalInstant(null, Long.MAX_VALUE);
+            }
+            // the instant KeyAndCertificateFactory.isPastRenewalThreshold compares against
+            long notBefore = certificate.getNotBefore().getTime();
+            long notAfter = certificate.getNotAfter().getTime();
+            return new RenewalInstant(certificate, notBefore + (long) ((notAfter - notBefore) * KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION));
+        }
     }
 
     /**
@@ -708,8 +741,12 @@ public class BCKeyAndCertificateFactory implements KeyAndCertificateFactory {
      * {@link #certificateNeedsRenewal()} for why the CA must not drive the leaf-renewal trigger.
      */
     private void warnOnceIfCertificateAuthorityNearExpiry(long now) {
-        if (!certificateAuthorityRenewalWarned
-            && KeyAndCertificateFactory.isPastRenewalThreshold(certificateAuthorityX509Certificate, KeyAndCertificateFactory.RENEWAL_ELAPSED_FRACTION, now)) {
+        if (certificateAuthorityRenewalWarned) {
+            return;
+        }
+        RenewalInstant certificateAuthority = RenewalInstant.of(certificateAuthorityRenewalInstant, certificateAuthorityX509Certificate);
+        certificateAuthorityRenewalInstant = certificateAuthority;
+        if (now >= certificateAuthority.renewAtMillis) {
             certificateAuthorityRenewalWarned = true;
             if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(WARN)) {
                 mockServerLogger.logEvent(

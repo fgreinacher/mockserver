@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
@@ -358,6 +359,8 @@ public class Configuration {
     private Boolean proactivelyInitialiseTLS;
     private volatile boolean rebuildTLSContext;
     private volatile boolean rebuildServerTLSContext;
+    // advanced AFTER each change to an input of the cached server TLS context; see serverTLSContextGeneration()
+    private final AtomicLong serverTLSContextInputChanges = new AtomicLong();
     private String tlsProtocols;
     private Boolean tlsAllowInsecureProtocols;
 
@@ -3023,6 +3026,7 @@ public class Configuration {
      */
     public Configuration http2Enabled(Boolean http2Enabled) {
         this.http2Enabled = http2Enabled;
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5204,7 +5208,26 @@ public class Configuration {
 
     public Configuration rebuildServerTLSContext(boolean rebuildServerTLSContext) {
         this.rebuildServerTLSContext = rebuildServerTLSContext;
+        if (rebuildServerTLSContext) {
+            serverTLSContextInputChanged();
+        }
         return this;
+    }
+
+    private void serverTLSContextInputChanged() {
+        serverTLSContextInputChanges.incrementAndGet();
+    }
+
+    /**
+     * A token that moves whenever an input of the cached server TLS context may have changed: any of this
+     * instance's TLS, certificate, HTTP/2 or Subject Alternative Name settings (including a SAN added from
+     * an SNI or {@code Host} value), or any global {@link ConfigurationProperties} value. Only whether it
+     * differs from a previously read value is meaningful. The SAN sets returned by
+     * {@link #sslSubjectAlternativeNameDomains()} / {@link #sslSubjectAlternativeNameIps()} must be changed
+     * through this class, not mutated directly, for the change to be seen.
+     */
+    public long serverTLSContextGeneration() {
+        return serverTLSContextInputChanges.get() + ConfigurationProperties.modificationCount();
     }
 
     public String tlsProtocols() {
@@ -5222,6 +5245,7 @@ public class Configuration {
      */
     public Configuration tlsProtocols(String tlsProtocols) {
         this.tlsProtocols = tlsProtocols;
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5242,6 +5266,7 @@ public class Configuration {
      */
     public Configuration tlsAllowInsecureProtocols(Boolean tlsAllowInsecureProtocols) {
         this.tlsAllowInsecureProtocols = tlsAllowInsecureProtocols;
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5273,6 +5298,8 @@ public class Configuration {
      */
     public Configuration proxySetup(Boolean proxySetup) {
         this.proxySetup = proxySetup;
+        // proxySetup forces dynamicallyCreateCertificateAuthorityCertificate(), a server TLS context input
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5307,11 +5334,12 @@ public class Configuration {
         // the cached server AND client TLS contexts and the memoised CA, otherwise the rotation is
         // silently ignored for the JVM lifetime (defect C9). Only raise on an actual change so the
         // certificate factory re-deriving the same value on every build does not cause churn.
-        if (!java.util.Objects.equals(this.dynamicallyCreateCertificateAuthorityCertificate, dynamicallyCreateCertificateAuthorityCertificate)) {
+        boolean changed = !java.util.Objects.equals(this.dynamicallyCreateCertificateAuthorityCertificate, dynamicallyCreateCertificateAuthorityCertificate);
+        this.dynamicallyCreateCertificateAuthorityCertificate = dynamicallyCreateCertificateAuthorityCertificate;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.dynamicallyCreateCertificateAuthorityCertificate = dynamicallyCreateCertificateAuthorityCertificate;
         return this;
     }
 
@@ -5328,11 +5356,12 @@ public class Configuration {
      * @param directoryToSaveDynamicSSLCertificate directory to save Certificate Authority X.509 Certificate and Private Key
      */
     public Configuration directoryToSaveDynamicSSLCertificate(String directoryToSaveDynamicSSLCertificate) {
-        if (!java.util.Objects.equals(this.directoryToSaveDynamicSSLCertificate, directoryToSaveDynamicSSLCertificate)) {
+        boolean changed = !java.util.Objects.equals(this.directoryToSaveDynamicSSLCertificate, directoryToSaveDynamicSSLCertificate);
+        this.directoryToSaveDynamicSSLCertificate = directoryToSaveDynamicSSLCertificate;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.directoryToSaveDynamicSSLCertificate = directoryToSaveDynamicSSLCertificate;
         return this;
     }
 
@@ -5350,6 +5379,7 @@ public class Configuration {
      */
     public Configuration preventCertificateDynamicUpdate(Boolean preventCertificateDynamicUpdate) {
         this.preventCertificateDynamicUpdate = preventCertificateDynamicUpdate;
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5416,6 +5446,11 @@ public class Configuration {
         return this;
     }
 
+    /**
+     * The Subject Alternative Names baked into the auto-generated TLS certificate. Change them with
+     * {@link #addSslSubjectAlternativeNameDomains(String...)}, {@link #clearSslSubjectAlternativeNameDomains()} or the setters, not by mutating the returned set: a direct mutation does
+     * not advance {@link #serverTLSContextGeneration()}, so the cached server TLS context is not rebuilt.
+     */
     public Set<String> sslSubjectAlternativeNameDomains() {
         if (sslSubjectAlternativeNameDomains == null) {
             return ConfigurationProperties.sslSubjectAlternativeNameDomains();
@@ -5451,9 +5486,15 @@ public class Configuration {
             ? null
             : Sets.newConcurrentHashSet(sslSubjectAlternativeNameDomains);
         dynamicSanDomainOrder.clear();
+        serverTLSContextInputChanged();
         return this;
     }
 
+    /**
+     * The Subject Alternative Names baked into the auto-generated TLS certificate. Change them with
+     * {@link #addSslSubjectAlternativeNameIps(String...)}, {@link #clearSslSubjectAlternativeNameIps()} or the setters, not by mutating the returned set: a direct mutation does
+     * not advance {@link #serverTLSContextGeneration()}, so the cached server TLS context is not rebuilt.
+     */
     public Set<String> sslSubjectAlternativeNameIps() {
         if (sslSubjectAlternativeNameIps == null) {
             return ConfigurationProperties.sslSubjectAlternativeNameIps();
@@ -5486,6 +5527,7 @@ public class Configuration {
             ? null
             : Sets.newConcurrentHashSet(sslSubjectAlternativeNameIps);
         dynamicSanIpOrder.clear();
+        serverTLSContextInputChanged();
         return this;
     }
 
@@ -5509,11 +5551,12 @@ public class Configuration {
      * @param certificateAuthorityPrivateKey location of the PEM file containing the certificate authority private key
      */
     public Configuration certificateAuthorityPrivateKey(String certificateAuthorityPrivateKey) {
-        if (!java.util.Objects.equals(this.certificateAuthorityPrivateKey, certificateAuthorityPrivateKey)) {
+        boolean changed = !java.util.Objects.equals(this.certificateAuthorityPrivateKey, certificateAuthorityPrivateKey);
+        this.certificateAuthorityPrivateKey = certificateAuthorityPrivateKey;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.certificateAuthorityPrivateKey = certificateAuthorityPrivateKey;
         return this;
     }
 
@@ -5536,11 +5579,12 @@ public class Configuration {
      * @param certificateAuthorityCertificate location of the PEM file containing the certificate authority X509 certificate
      */
     public Configuration certificateAuthorityCertificate(String certificateAuthorityCertificate) {
-        if (!java.util.Objects.equals(this.certificateAuthorityCertificate, certificateAuthorityCertificate)) {
+        boolean changed = !java.util.Objects.equals(this.certificateAuthorityCertificate, certificateAuthorityCertificate);
+        this.certificateAuthorityCertificate = certificateAuthorityCertificate;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.certificateAuthorityCertificate = certificateAuthorityCertificate;
         return this;
     }
 
@@ -5569,11 +5613,12 @@ public class Configuration {
      * @param privateKeyPath location of the PKCS#8 PEM file containing the private key
      */
     public Configuration privateKeyPath(String privateKeyPath) {
-        if (!java.util.Objects.equals(this.privateKeyPath, privateKeyPath)) {
+        boolean changed = !java.util.Objects.equals(this.privateKeyPath, privateKeyPath);
+        this.privateKeyPath = privateKeyPath;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.privateKeyPath = privateKeyPath;
         return this;
     }
 
@@ -5600,11 +5645,12 @@ public class Configuration {
      * @param x509CertificatePath location of the PEM file containing the X509 certificate
      */
     public Configuration x509CertificatePath(String x509CertificatePath) {
-        if (!java.util.Objects.equals(this.x509CertificatePath, x509CertificatePath)) {
+        boolean changed = !java.util.Objects.equals(this.x509CertificatePath, x509CertificatePath);
+        this.x509CertificatePath = x509CertificatePath;
+        if (changed) {
             rebuildServerTLSContext(true);
             rebuildTLSContext(true);
         }
-        this.x509CertificatePath = x509CertificatePath;
         return this;
     }
 
