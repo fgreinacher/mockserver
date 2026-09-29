@@ -56,7 +56,8 @@ public class OpenAPIExpectationSerializer implements Serializer<OpenAPIExpectati
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception while serializing expectation to JSON with value " + expectation)
+                        .setMessageFormat("exception while serializing expectation to JSON with value:{}")
+                        .setArguments(expectation)
                         .setThrowable(e)
                 );
                 throw new RuntimeException("Exception while serializing expectation to JSON with value " + expectation, e);
@@ -86,7 +87,8 @@ public class OpenAPIExpectationSerializer implements Serializer<OpenAPIExpectati
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing expectation to JSON with value " + Arrays.asList(expectations))
+                    .setMessageFormat("exception while serializing expectation to JSON with value:{}")
+                    .setArguments(Arrays.asList(expectations))
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing expectation to JSON with value " + Arrays.asList(expectations), e);

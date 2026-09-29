@@ -115,7 +115,10 @@ public class LogEntry implements EventTranslator<LogEntry> {
     private transient boolean skipRecordedRequestPersistence = false;
 
     private String messageFormat;
-    private String message;
+    // The memoised rendered message: a String when rendered without redaction, else a RedactedMessage
+    // tagged with the redaction settings it was rendered under. One field, read once, so a reader can
+    // never pair one render's text with another's settings and serve an unredacted memo as redacted.
+    private Object renderedMessage;
     private Object[] arguments;
     private String because;
     /**
@@ -351,7 +354,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         deleted = false;
         skipRecordedRequestPersistence = false;
         messageFormat = null;
-        message = null;
+        renderedMessage = null;
         arguments = null;
         because = null;
         estimatedHeapSize = -1;
@@ -563,9 +566,18 @@ public class LogEntry implements EventTranslator<LogEntry> {
         return false;
     }
 
+    /**
+     * {@code requests} without its {@code null} elements, for an entry logging requests that may be incomplete.
+     */
+    public static RequestDefinition[] nonNull(RequestDefinition[] requests) {
+        return requests == null ? null : Arrays.stream(requests).filter(Objects::nonNull).toArray(RequestDefinition[]::new);
+    }
+
     @JsonIgnore
     public LogEntry setHttpRequests(RequestDefinition[] httpRequests) {
         this.httpRequests = httpRequests;
+        // a redacted message memo was scrubbed of the previous requests' credential values
+        this.renderedMessage = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
@@ -580,6 +592,15 @@ public class LogEntry implements EventTranslator<LogEntry> {
         }
     }
 
+    /**
+     * As {@link #setHttpRequest(RequestDefinition)}, but a {@code null} request leaves the entry as it is rather than
+     * attaching an empty default one: for a site that attaches a request only so its credential values are redacted.
+     */
+    @JsonIgnore
+    public LogEntry setHttpRequestIfPresent(RequestDefinition httpRequest) {
+        return httpRequest == null ? this : setHttpRequest(httpRequest);
+    }
+
     @JsonIgnore
     public LogEntry setHttpRequest(RequestDefinition httpRequest) {
         if (httpRequest != null) {
@@ -590,6 +611,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
         } else {
             this.httpRequests = DEFAULT_REQUESTS_DEFINITIONS;
         }
+        this.renderedMessage = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
@@ -622,6 +644,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     @JsonIgnore
     public LogEntry setHttpResponse(HttpResponse httpResponse) {
         this.httpResponse = httpResponse;
+        this.renderedMessage = null;
         this.derivedSyntheticExpectation = null;
         this.hashCode = 0;
         this.estimatedHeapSize = -1;
@@ -655,6 +678,29 @@ public class LogEntry implements EventTranslator<LogEntry> {
             return derived;
         }
         return null;
+    }
+
+    /**
+     * As {@link #getExpectation()}, but a synthetic expectation (the one derived from this entry's own
+     * request and response) is rebuilt from their redacted copies when {@code redactSecretsInLog} is
+     * enabled, keeping its id. A real expectation is returned unchanged: it is a user-authored matcher,
+     * not captured traffic.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public Expectation getRedactedExpectation(org.mockserver.configuration.Configuration configuration) {
+        return expectationFor(redaction(configuration));
+    }
+
+    private Expectation expectationFor(Redaction redaction) {
+        Expectation derived = getExpectation();
+        if (derived == null || expectation != null || redaction == null) {
+            return derived;
+        }
+        return new Expectation(redaction.redactor.redactRequestDefinition(getHttpRequest()), Times.once(), TimeToLive.unlimited(), 0)
+            .withId(derived.getId())
+            .thenRespond(redaction.redactor.redactResponseObject(httpResponse));
     }
 
     @JsonIgnore
@@ -714,12 +760,47 @@ public class LogEntry implements EventTranslator<LogEntry> {
         return throwable;
     }
 
+    /**
+     * As {@link #getThrowable()}, but when {@code redactSecretsInLog} is enabled and the message of the throwable,
+     * or of any cause, quotes one of this entry's credential values, a {@link RedactedThrowable} copy with those
+     * values masked and the same stack trace. The stored throwable is never changed.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public Throwable getThrowable(org.mockserver.configuration.Configuration configuration) {
+        return throwableFor(redaction(configuration));
+    }
+
+    private Throwable throwableFor(Redaction redaction) {
+        if (redaction == null || throwable == null || redaction.matcher().isEmpty() || !quotesAny(throwable, redaction.matcher(), Collections.newSetFromMap(new IdentityHashMap<>()))) {
+            return throwable;
+        }
+        return RedactedThrowable.of(throwable, redaction.matcher());
+    }
+
+    private static boolean quotesAny(Throwable throwable, org.mockserver.fixture.SensitiveValueMatcher values, Set<Throwable> visited) {
+        // visited by identity, as printStackTrace does: a cause / suppressed graph can be cyclic
+        if (throwable == null || !visited.add(throwable)) {
+            return false;
+        }
+        if (values.containsAny(throwable.getMessage())) {
+            return true;
+        }
+        for (Throwable suppressed : throwable.getSuppressed()) {
+            if (quotesAny(suppressed, values, visited)) {
+                return true;
+            }
+        }
+        return quotesAny(throwable.getCause(), values, visited);
+    }
+
     @JsonIgnore
     public LogEntry setThrowable(Throwable throwable) {
         this.throwable = throwable;
         if (isBlank(messageFormat) && throwable != null) {
             messageFormat = throwable.getClass().getSimpleName();
-            this.message = null;
+            this.renderedMessage = null;
             this.hashCode = 0;
         }
         return this;
@@ -760,35 +841,120 @@ public class LogEntry implements EventTranslator<LogEntry> {
         return messageFormat;
     }
 
+    /**
+     * As {@link #getMessageFormat()}, with this entry's own credential values scrubbed when {@code redactSecretsInLog}
+     * is enabled: some formats are built by concatenation and quote a request or an exception message.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public String getMessageFormat(org.mockserver.configuration.Configuration configuration) {
+        return messageFormatFor(redaction(configuration));
+    }
+
+    private String messageFormatFor(Redaction redaction) {
+        return redaction == null ? messageFormat : redaction.scrub(messageFormat);
+    }
+
     public LogEntry setMessageFormat(String messageFormat) {
         if (isBlank(messageFormat) && throwable != null) {
             this.messageFormat = throwable.getClass().getSimpleName();
         } else {
             this.messageFormat = messageFormat;
         }
-        this.message = null;
+        this.renderedMessage = null;
         this.hashCode = 0;
         return this;
     }
 
     @JsonIgnore
     public String getMessage() {
-        if (message == null) {
-            if (arguments != null) {
-                message = formatLogMessage(messageFormat, getArguments());
-            } else {
-                message = messageFormat;
-            }
+        return getMessage(null);
+    }
+
+    /**
+     * The rendered message, with its arguments and its format redacted when {@code redactSecretsInLog} is enabled
+     * on {@code configuration} (or, when it is {@code null}, in the static store). The memo is reused only for a
+     * render under the same redaction settings, so toggling the setting re-renders rather than serving a message
+     * rendered before the change.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public String getMessage(org.mockserver.configuration.Configuration configuration) {
+        return messageFor(redaction(configuration));
+    }
+
+    private String messageFor(Redaction redaction) {
+        if (arguments == null) {
+            return messageFormatFor(redaction);
         }
+        Object memo = renderedMessage;
+        if (redaction == null) {
+            if (memo instanceof String) {
+                return (String) memo;
+            }
+        } else if (memo instanceof RedactedMessage && ((RedactedMessage) memo).redactionKey.equals(redaction.key)) {
+            return ((RedactedMessage) memo).message;
+        }
+        String message;
+        if (redaction == null) {
+            message = formatLogMessage(messageFormat, argumentsFor(null));
+        } else {
+            // the format and each argument are redacted or scrubbed on their own, never the formatted whole:
+            // scrubbing text costs values x length, and a verification failure can quote thousands of requests
+            message = formatLogMessage(redaction.scrub(messageFormat), argumentsFor(redaction));
+        }
+        renderedMessage = redaction == null ? message : new RedactedMessage(redaction.key, message);
         return message;
     }
 
     @JsonIgnore
     public String getCompactMessage() {
-        if (arguments != null) {
-            return formatCompactLogMessage(messageFormat, arguments);
-        } else {
-            return messageFormat;
+        return getCompactMessage(null);
+    }
+
+    /**
+     * @param configuration the effective server configuration, consulted for {@code redactSecretsInLog}
+     *                      (may be {@code null}, in which case the static store is used)
+     */
+    @JsonIgnore
+    public String getCompactMessage(org.mockserver.configuration.Configuration configuration) {
+        return compactMessageFor(redaction(configuration));
+    }
+
+    private String compactMessageFor(Redaction redaction) {
+        if (arguments == null) {
+            return messageFormatFor(redaction);
+        }
+        if (redaction != null) {
+            // each argument is redacted and scrubbed before the compact form shortens it: a credential cut to a
+            // prefix by truncation is no longer recognised by the scrub
+            return formatCompactLogMessage(redaction.scrub(messageFormat), argumentsFor(redaction));
+        }
+        // Only a DeferredLogArgument needs rendering here: the compact form of a request/response is its
+        // method and path or status, but the compact form of a curl command starts with its URL.
+        Object[] compactArguments = arguments;
+        for (int i = 0; i < arguments.length; i++) {
+            if (arguments[i] instanceof DeferredLogArgument || arguments[i] instanceof SensitiveLogValue) {
+                if (compactArguments == arguments) {
+                    compactArguments = arguments.clone();
+                }
+                compactArguments[i] = arguments[i] instanceof DeferredLogArgument
+                    ? ((DeferredLogArgument) arguments[i]).render(null)
+                    : ((SensitiveLogValue) arguments[i]).getValue();
+            }
+        }
+        return formatCompactLogMessage(messageFormat, compactArguments);
+    }
+
+    private static final class RedactedMessage {
+        private final String redactionKey;
+        private final String message;
+
+        private RedactedMessage(String redactionKey, String message) {
+            this.redactionKey = redactionKey;
+            this.message = message;
         }
     }
 
@@ -815,30 +981,277 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * Redaction matters here and not only on {@link #getHttpUpdatedRequests}: these arguments reach
      * output twice — as the {@code arguments} field of a serialized log entry, and formatted into
      * {@code message}. Without it a redacted {@code httpRequest} sat beside an unredacted copy of the
-     * same headers on the same entry. The no-argument form resolves {@code redactSecretsInLog} from
-     * the static store, which is what the log-time {@code message} build has available.
+     * same headers on the same entry. A {@link DeferredLogArgument} is rendered to its String here, from
+     * the redacted request. The no-argument form resolves {@code redactSecretsInLog} from the static store.
      */
     public Object[] getArguments(org.mockserver.configuration.Configuration configuration) {
+        return argumentsFor(redaction(configuration));
+    }
+
+    private Object[] argumentsFor(Redaction redaction) {
         if (arguments == null) {
             return null;
         }
-        org.mockserver.fixture.FixtureRedactor redactor = logRedactor(configuration);
+        if (redaction == null) {
+            return Arrays
+                .stream(arguments)
+                .map(argument -> {
+                    if (argument instanceof HttpRequest) {
+                        return updateBody((HttpRequest) argument);
+                    } else if (argument instanceof HttpResponse) {
+                        return updateBody((HttpResponse) argument);
+                    } else if (argument instanceof DeferredLogArgument) {
+                        return ((DeferredLogArgument) argument).render(null);
+                    } else if (argument instanceof SensitiveLogValue) {
+                        return ((SensitiveLogValue) argument).getValue();
+                    } else {
+                        return argument;
+                    }
+                })
+                .toArray(Object[]::new);
+        }
         return Arrays
             .stream(arguments)
-            .map(argument -> {
-                if (argument instanceof HttpRequest) {
-                    RequestDefinition updated = updateBody((HttpRequest) argument);
-                    return redactor == null ? updated : redactor.redactRequestDefinition(updated);
-                } else if (argument instanceof HttpResponse) {
-                    HttpResponse updated = updateBody((HttpResponse) argument);
-                    return redactor == null ? updated : redactor.redactResponseObject(updated);
-                } else if (argument instanceof DeferredLogArgument) {
-                    return ((DeferredLogArgument) argument).render();
-                } else {
-                    return argument;
-                }
-            })
+            .map(argument -> redactArgument(argument, redaction, 0))
             .toArray(Object[]::new);
+    }
+
+    /**
+     * An argument as it may be shown with redaction on: requests and responses (also inside a collection, an
+     * array or a {@link LogEventRequestAndResponse}) as redacted copies, and free text — a matcher's
+     * "because", a template's output — with this entry's own credential values scrubbed. Any other argument
+     * whose text quotes one of those values is replaced by that text, scrubbed.
+     */
+    private Object redactArgument(Object argument, Redaction redaction, int depth) {
+        org.mockserver.fixture.FixtureRedactor redactor = redaction.redactor;
+        if (depth > Redaction.MAX_ARGUMENT_DEPTH) {
+            // nested deeper than the values were collected from: fail closed
+            return org.mockserver.fixture.FixtureRedactor.REDACTED_PLACEHOLDER;
+        } else if (argument instanceof HttpRequest) {
+            return redactor.redactRequestDefinition(updateBody((HttpRequest) argument));
+        } else if (argument instanceof HttpResponse) {
+            return redactor.redactResponseObject(updateBody((HttpResponse) argument));
+        } else if (argument instanceof DeferredLogArgument) {
+            return redaction.scrub(((DeferredLogArgument) argument).render(redactor));
+        } else if (argument instanceof SensitiveLogValue) {
+            return org.mockserver.fixture.FixtureRedactor.REDACTED_PLACEHOLDER;
+        } else if (argument instanceof String) {
+            return redaction.scrub((String) argument);
+        } else if (argument instanceof LogEventRequestAndResponse) {
+            LogEventRequestAndResponse pair = (LogEventRequestAndResponse) argument;
+            return new LogEventRequestAndResponse()
+                .withTimestamp(pair.getTimestamp())
+                .withHttpRequest(pair.getHttpRequest() == null ? null : (HttpRequest) redactor.redactRequestDefinition(pair.getHttpRequest()))
+                .withHttpResponse(redactor.redactResponseObject(pair.getHttpResponse()));
+        } else if (argument instanceof HttpRequestAndHttpResponse) {
+            HttpRequestAndHttpResponse pair = (HttpRequestAndHttpResponse) argument;
+            return new HttpRequestAndHttpResponse()
+                .withHttpRequest(pair.getHttpRequest() == null ? null : (HttpRequest) redactor.redactRequestDefinition(pair.getHttpRequest()))
+                .withHttpResponse(redactor.redactResponseObject(pair.getHttpResponse()));
+        } else if (argument instanceof Expectation) {
+            Expectation expectation = (Expectation) argument;
+            RequestDefinition request = expectation.getHttpRequest();
+            return expectation.cloneWith(request == null ? null : redactor.redactRequestDefinition(request), redactor.redactResponseObject(expectation.getHttpResponse()));
+        } else if (argument instanceof Map) {
+            Map<Object, Object> redacted = new LinkedHashMap<>();
+            Map<Object, Integer> suffixes = new HashMap<>();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) argument).entrySet()) {
+                Object key = entry.getKey() instanceof String ? redaction.scrub((String) entry.getKey()) : entry.getKey();
+                if (key instanceof String && redacted.containsKey(key)) {
+                    // keys that scrub to the same text stay separate entries
+                    String distinct;
+                    int suffix = suffixes.getOrDefault(key, 1);
+                    do {
+                        distinct = key + " (" + ++suffix + ")";
+                    } while (redacted.containsKey(distinct));
+                    suffixes.put(key, suffix);
+                    key = distinct;
+                }
+                redacted.put(key, redactArgument(entry.getValue(), redaction, depth + 1));
+            }
+            return redacted;
+        } else if (argument instanceof Optional) {
+            // shown as its (redacted) value: an Optional itself does not serialize
+            return ((Optional<?>) argument).map(value -> redactArgument(value, redaction, depth + 1)).orElse(null);
+        } else if (argument instanceof Collection) {
+            List<Object> redacted = new ArrayList<>(((Collection<?>) argument).size());
+            for (Object element : (Collection<?>) argument) {
+                redacted.add(redactArgument(element, redaction, depth + 1));
+            }
+            return redacted;
+        } else if (argument instanceof Object[]) {
+            Object[] elements = (Object[]) argument;
+            Object[] redacted = new Object[elements.length];
+            for (int i = 0; i < elements.length; i++) {
+                redacted[i] = redactArgument(elements[i], redaction, depth + 1);
+            }
+            return redacted;
+        } else if (argument != null && !redaction.matcher().isEmpty()) {
+            String text = String.valueOf(argument);
+            return redaction.matcher().containsAny(text) ? redaction.scrub(text) : argument;
+        } else {
+            return argument;
+        }
+    }
+
+    /**
+     * The redaction {@code redactSecretsInLog} applies to one render of this entry, or {@code null} when it is off
+     * (so an unredacted render allocates nothing for it). The entry's credential values are collected at most once.
+     */
+    private Redaction redaction(org.mockserver.configuration.Configuration configuration) {
+        String redactionKey = redactionKey(configuration);
+        return redactionKey == null ? null : new Redaction(redactionKey, this);
+    }
+
+    private static final class Redaction {
+        private static final int MAX_ARGUMENT_DEPTH = 4;
+        private final String key;
+        private final org.mockserver.fixture.FixtureRedactor redactor;
+        private final LogEntry entry;
+        private List<String> values;
+        private org.mockserver.fixture.SensitiveValueMatcher matcher;
+
+        private Redaction(String key, LogEntry entry) {
+            this.key = key;
+            this.redactor = redactorFor(key);
+            this.entry = entry;
+        }
+
+        /**
+         * The credential values of the entry's own requests and response and of every request, response and
+         * {@link SensitiveLogValue} among its arguments (also inside collections, arrays and request/response pairs),
+         * so a site that passes a request only as an argument is scrubbed as if it had attached it.
+         */
+        private List<String> values() {
+            if (values == null) {
+                List<RequestDefinition> requests = new ArrayList<>(Arrays.asList(entry.getHttpRequests()));
+                List<HttpResponse> responses = new ArrayList<>();
+                if (entry.httpResponse != null) {
+                    responses.add(entry.httpResponse);
+                }
+                Set<String> texts = new LinkedHashSet<>();
+                if (entry.arguments != null) {
+                    collectFromArguments(Arrays.asList(entry.arguments), requests, responses, texts, 0);
+                }
+                // most important first: the matcher keeps values in this order while they fit its bounds
+                Set<String> collected = new LinkedHashSet<>(redactor.sensitiveValues(requests, responses));
+                collected.addAll(texts);
+                collected.removeIf(text -> text.length() < org.mockserver.fixture.FixtureRedactor.MIN_SCRUBBED_VALUE_LENGTH);
+                values = new ArrayList<>(collected);
+            }
+            return values;
+        }
+
+        private static void collectFromArguments(Iterable<?> arguments, List<RequestDefinition> requests, List<HttpResponse> responses, Set<String> texts, int depth) {
+            if (depth > MAX_ARGUMENT_DEPTH) {
+                return;
+            }
+            for (Object argument : arguments) {
+                if (argument instanceof RequestDefinition) {
+                    requests.add((RequestDefinition) argument);
+                } else if (argument instanceof HttpResponse) {
+                    responses.add((HttpResponse) argument);
+                } else if (argument instanceof LogEventRequestAndResponse) {
+                    LogEventRequestAndResponse pair = (LogEventRequestAndResponse) argument;
+                    addPair(pair.getHttpRequest(), pair.getHttpResponse(), requests, responses);
+                } else if (argument instanceof HttpRequestAndHttpResponse) {
+                    HttpRequestAndHttpResponse pair = (HttpRequestAndHttpResponse) argument;
+                    addPair(pair.getHttpRequest(), pair.getHttpResponse(), requests, responses);
+                } else if (argument instanceof Expectation) {
+                    Expectation expectation = (Expectation) argument;
+                    addPair(expectation.getHttpRequest(), expectation.getHttpResponse(), requests, responses);
+                } else if (argument instanceof LogEntry) {
+                    LogEntry logEntry = (LogEntry) argument;
+                    requests.addAll(Arrays.asList(logEntry.getHttpRequests()));
+                    if (logEntry.httpResponse != null) {
+                        responses.add(logEntry.httpResponse);
+                    }
+                } else if (argument instanceof SensitiveLogValue) {
+                    String text = ((SensitiveLogValue) argument).text();
+                    if (text != null) {
+                        texts.add(text);
+                    }
+                } else if (argument instanceof Iterable) {
+                    collectFromArguments((Iterable<?>) argument, requests, responses, texts, depth + 1);
+                } else if (argument instanceof Object[]) {
+                    collectFromArguments(Arrays.asList((Object[]) argument), requests, responses, texts, depth + 1);
+                } else if (argument instanceof Map) {
+                    collectFromArguments(((Map<?, ?>) argument).values(), requests, responses, texts, depth + 1);
+                } else if (argument instanceof Optional) {
+                    collectFromArguments(Collections.singletonList(((Optional<?>) argument).orElse(null)), requests, responses, texts, depth + 1);
+                }
+            }
+        }
+
+        private static void addPair(RequestDefinition request, HttpResponse response, List<RequestDefinition> requests, List<HttpResponse> responses) {
+            if (request != null) {
+                requests.add(request);
+            }
+            if (response != null) {
+                responses.add(response);
+            }
+        }
+
+        /**
+         * The values as one automaton, built at most once per render: scrubbing then costs each text's length, where
+         * checking every value against it cost values x length.
+         */
+        private org.mockserver.fixture.SensitiveValueMatcher matcher() {
+            if (matcher == null) {
+                matcher = org.mockserver.fixture.SensitiveValueMatcher.of(values());
+            }
+            return matcher;
+        }
+
+        private String scrub(String text) {
+            return text == null ? null : matcher().scrub(text);
+        }
+    }
+
+    /**
+     * This entry as it may be shown under {@code configuration}: every part a serializer writes, redacted as the
+     * matching {@code get...(configuration)} method would redact it, but resolving the redaction settings and
+     * collecting this entry's credential values once for all of them.
+     */
+    @JsonIgnore
+    public RedactedView redactedView(org.mockserver.configuration.Configuration configuration) {
+        return new RedactedView(redaction(configuration));
+    }
+
+    public final class RedactedView {
+        private final Redaction redaction;
+
+        private RedactedView(Redaction redaction) {
+            this.redaction = redaction;
+        }
+
+        public String getMessage() {
+            return messageFor(redaction);
+        }
+
+        public String getCompactMessage() {
+            return compactMessageFor(redaction);
+        }
+
+        public String getMessageFormat() {
+            return messageFormatFor(redaction);
+        }
+
+        public Object[] getArguments() {
+            return argumentsFor(redaction);
+        }
+
+        public String getBecause() {
+            return becauseFor(redaction);
+        }
+
+        public Throwable getThrowable() {
+            return throwableFor(redaction);
+        }
+
+        public Expectation getExpectation() {
+            return expectationFor(redaction);
+        }
     }
 
     /**
@@ -864,13 +1277,28 @@ public class LogEntry implements EventTranslator<LogEntry> {
         } else {
             this.arguments = null;
         }
-        this.message = null;
+        this.renderedMessage = null;
         this.hashCode = 0;
         return this;
     }
 
     public String getBecause() {
         return because;
+    }
+
+    /**
+     * As {@link #getBecause()}, with this entry's own credential values scrubbed when {@code redactSecretsInLog}
+     * is enabled: a matcher's "because" quotes the values it compared, header and cookie values included.
+     *
+     * @param configuration the effective server configuration (may be {@code null})
+     */
+    @JsonIgnore
+    public String getBecause(org.mockserver.configuration.Configuration configuration) {
+        return becauseFor(redaction(configuration));
+    }
+
+    private String becauseFor(Redaction redaction) {
+        return redaction == null ? because : redaction.scrub(because);
     }
 
     public LogEntry setBecause(String because) {
@@ -903,22 +1331,56 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * fallback — so the set of masked body fields is settable over the REST config API too.
      */
     private static org.mockserver.fixture.FixtureRedactor logRedactor(org.mockserver.configuration.Configuration configuration) {
+        return redactorFor(redactionKey(configuration));
+    }
+
+    /**
+     * The redaction settings in force, as a value: {@code null} when {@code redactSecretsInLog} is off,
+     * else the {@code fixtureBodyRedactFields} value ({@code ""} for none). Two renders with equal keys
+     * are redacted identically, which is what lets {@link #getMessage(org.mockserver.configuration.Configuration)}
+     * reuse its memo.
+     */
+    private static String redactionKey(org.mockserver.configuration.Configuration configuration) {
         boolean redact = configuration != null
             ? configuration.redactSecretsInLog()
             : org.mockserver.configuration.ConfigurationProperties.redactSecretsInLog();
-        if (!redact) {
-            return null;
-        }
+        return redact ? bodyRedactFields(configuration) : null;
+    }
+
+    private static String bodyRedactFields(org.mockserver.configuration.Configuration configuration) {
         String bodyFields = configuration != null
             ? configuration.fixtureBodyRedactFields()
             : org.mockserver.configuration.ConfigurationProperties.fixtureBodyRedactFields();
-        List<String> bodyFieldList = isBlank(bodyFields)
+        return bodyFields == null ? "" : bodyFields;
+    }
+
+    private static org.mockserver.fixture.FixtureRedactor redactorFor(String redactionKey) {
+        if (redactionKey == null) {
+            return null;
+        }
+        List<String> bodyFieldList = isBlank(redactionKey)
             ? Collections.emptyList()
-            : Arrays.asList(bodyFields.split(","));
+            : Arrays.asList(redactionKey.split(","));
         return new org.mockserver.fixture.FixtureRedactor(
             org.mockserver.fixture.FixtureRedactor.defaultSensitiveHeaders(),
             bodyFieldList
         );
+    }
+
+    /**
+     * The redactor {@code redactSecretsInLog} applies to event-log output under {@code configuration} (the static
+     * store when {@code null}), or {@code null} when redaction is off.
+     */
+    public static org.mockserver.fixture.FixtureRedactor eventLogRedactor(org.mockserver.configuration.Configuration configuration) {
+        return logRedactor(configuration);
+    }
+
+    /**
+     * The log redactor regardless of {@code redactSecretsInLog}, for a text path that cannot see the
+     * effective configuration and so must fail closed (see {@link DeferredLogArgument#toString()}).
+     */
+    static org.mockserver.fixture.FixtureRedactor alwaysOnLogRedactor() {
+        return redactorFor(bodyRedactFields(null));
     }
 
     // Both updateBody forms read without caching: they render retained, released entries on retrieve and
@@ -1107,7 +1569,7 @@ public class LogEntry implements EventTranslator<LogEntry> {
     }
 
     private static Object rendered(Object argument) {
-        return argument instanceof DeferredLogArgument ? ((DeferredLogArgument) argument).render() : argument;
+        return argument instanceof DeferredLogArgument ? ((DeferredLogArgument) argument).renderForEquality() : argument;
     }
 
     @Override

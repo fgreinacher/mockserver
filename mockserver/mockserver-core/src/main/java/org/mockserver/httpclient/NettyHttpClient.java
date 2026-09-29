@@ -16,6 +16,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.filters.HopByHopHeaderFilter;
 import org.mockserver.log.model.LogEntry;
+import org.mockserver.log.model.SensitiveLogValue;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.model.*;
@@ -557,7 +558,7 @@ public class NettyHttpClient {
                                 new LogEntry()
                                     .setLogLevel(Level.DEBUG)
                                     .setMessageFormat("sending bytes hex{}to{}")
-                                    .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()), future.channel().attr(REMOTE_SOCKET).get())
+                                    .setArguments(SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())), future.channel().attr(REMOTE_SOCKET).get())
                             );
                         }
                         // send the binary request

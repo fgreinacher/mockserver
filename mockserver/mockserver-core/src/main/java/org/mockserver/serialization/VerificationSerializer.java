@@ -44,7 +44,8 @@ public class VerificationSerializer implements Serializer<Verification> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing verification to JSON with value " + verification)
+                    .setMessageFormat("exception while serializing verification to JSON with value:{}")
+                    .setArguments(verification)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing verification to JSON with value " + verification, e);

@@ -154,7 +154,8 @@ public class MockServerServlet extends HttpServlet implements ServletContextList
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
                     .setHttpRequest(request)
-                    .setMessageFormat("exception processing " + request)
+                    .setMessageFormat("exception processing request:{}")
+                    .setArguments(request)
                     .setThrowable(e)
             );
             responseWriter.writeResponse(request, response().withStatusCode(BAD_REQUEST.code()).withBody(e.getMessage()), true);

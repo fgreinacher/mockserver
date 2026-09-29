@@ -28,7 +28,8 @@ public class CrudExpectationsDefinitionSerializer implements Serializer<CrudExpe
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception while serializing CrudExpectationsDefinition to JSON with value " + crudDefinition)
+                        .setMessageFormat("exception while serializing CrudExpectationsDefinition to JSON with value:{}")
+                        .setArguments(crudDefinition)
                         .setThrowable(e)
                 );
                 throw new RuntimeException("Exception while serializing CrudExpectationsDefinition to JSON with value " + crudDefinition, e);

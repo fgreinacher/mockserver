@@ -22,14 +22,26 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 
 ### Security
 
-- **`redactSecretsInLog` now also redacts the `message` and `arguments` fields, not just
-  `httpRequest` and `httpResponse`.** With redaction enabled a JSON log entry had its
-  `httpRequest` masked while the `message` and `arguments` fields on the **same entry** still
-  carried the `Authorization`, `Cookie` and any other configured secret in full, so enabling the
-  setting did not actually stop secrets reaching the log. The rendered message shown in the
-  dashboard had the same gap. Both are now redacted, using the effective configuration where the
-  caller supplies one and the configured value otherwise. If you enabled `redactSecretsInLog` and
-  relied on it, treat logs captured before this release as still containing those values.
+- **`redactSecretsInLog` now masks credentials everywhere the event log is shown or retrieved.**
+  With it enabled, each log entry for a proxied or forwarded request still carried the credentials its
+  masked request had hidden: the log message printed to the console, returned by retrieve and shown in
+  the dashboard includes the request as a curl command, with every header, cookie, the query string
+  and the body in full; a JSON log entry's `message`, `arguments` and `expectation` fields repeated
+  them; and cookie values, masked in the `Cookie` and `Set-Cookie` headers, were shown in full in the
+  separate cookie list, in HAR exports and in the `format=CURL` export. The explanation of why a request
+  did not match an expectation quoted the header, cookie and query values it compared (for example
+  `found: Bearer <token>`) in the console, retrieved logs, the dashboard and `explainUnmatched`, and a
+  failed response verification returned and logged the recorded responses unmasked. Error log entries (for
+  example for a forwarded request with a missing or invalid `Host` header) printed the whole request, and
+  the exception logged with them repeated it; a request whose query string could not be decoded (such as
+  `?q=50%`) logged the raw query string, credentials included; a plain-text request with a method MockServer
+  does not recognise (such as `PROPFIND`) was logged as text and hex with its headers; and a proxied
+  response whose delivery to the client failed was logged with its headers. Enabling the setting
+  with `PUT /mockserver/configuration` also left the console and retrieved log messages unmasked. All of
+  these are now masked, including for entries recorded before the setting was switched on, and
+  `redactSecretsInRecordedExpectations` now masks cookie values as well as headers. If you enabled
+  either setting and relied on it, treat logs, exports and recordings captured before this release as
+  still containing those values.
 - **`/mockserver/generateExpectation` now redacts credentials from the prompt sent to an external
   LLM backend.** If you configured an LLM backend for stub generation, the prompt built from the
   unmatched request was sent to that third-party service with `Authorization`, `Proxy-Authorization`,
@@ -96,6 +108,13 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 - **JavaScript templates are substantially faster and no longer degrade unrelated workloads.** Templates previously constructed a throw-away GraalVM engine and re-parsed the script on every request; under concurrent load this monopolised the shared action-dispatch thread pool. The engine is now shared process-wide with the parsed script cached, cutting p50 render latency **~0.9 ms → ~0.16 ms** and raising render throughput ~2.7×. Template rendering (Velocity, Mustache, JavaScript) now runs on a dedicated bounded thread pool — a saturation of renders queues only among themselves and the event loop stays free; time an unrelated request waited behind in-flight template renders fell from ~1 s to effectively zero. Per-request isolation is unchanged. JavaScript templates remain interpreter-only on a stock JVM. Configured response delays are still honoured exactly; WAR/servlet deployments still render inline. Three unnecessary allocations on the hot path are also eliminated: a response body whose bytes were already materialised in the correct charset is no longer encoded a second time on the way to the wire — ~half the allocation and ~half the latency of writing a 256 KB explicit-charset JSON response (a recorded body whose `Content-Type` declared a charset but whose bytes are malformed for it is now replayed verbatim instead of decoded with replacement characters and re-encoded); HTTP/3 requests with a text body no longer allocate the body twice on the way in — the QUIC bridge now decodes straight from the accumulated buffer; and forward-proxy authentication no longer allocates a per-request Netty buffer for the `Proxy-Authorization` value — computed with the JDK Base64 encoder and byte-for-byte identical.
 - **Disk capture (`persistRecordedRequestsToDisk`) is about 3.5× cheaper per exchange, so far fewer log entries are dropped under proxy load.** Each captured exchange was pretty-printed, squeezed onto one line with a regular expression and flushed to disk on its own, all on the thread that records every log entry. Under sustained proxying that thread fell behind and log entries were dropped. Each line is now written compactly and lines are flushed in batches: when recording catches up, before an import reads the file from disk (`PUT /mockserver/import?format=recording&source=disk`), and on shutdown. The cost of capturing one exchange with 2 KB bodies fell from about 71 KB allocated and 12,000 exchanges/s to 36 KB and 45,000 exchanges/s; with 64 KB bodies, from 2.4 MB and about 500 exchanges/s to 0.85 MB and 1,900 exchanges/s. In a 30-second local run with 8 clients proxying through MockServer at `WARN`, dropped log entries fell from about 500,000 to 100,000–130,000, and the share of exchanges captured to disk rose from 18% to 76–79%; with capture off none are dropped, so capture still costs something under this load. A body containing a long run of spaces no longer stalls capture: 80,000 spaces took 6 seconds to write and now take under 1 ms. Archive lines are no longer byte-for-byte the same as before (the formatting spaces around `:`, `,` and braces are gone), but each line parses to the same JSON and re-imports the same way; non-ASCII text, including emoji, is still written as plain UTF-8. A hard kill can now lose up to 8 KB of the most recent lines, where before it lost at most the line being written.
 - **Less per-request and per-handshake work on TLS connections.** Four costs no longer repeat on every request or handshake, measured with JMH: a request on a connection whose client presented a certificate chain (the server accepts one by default) re-parsed each certificate, now read once per connection on HTTP/1.1 and HTTP/2 (**2,918 ns / 19.5 KB → 334 ns / 5.5 KB** per request with a two-certificate chain; 282 ns / 3.4 KB with none); each handshake's cached-certificate validity check rebuilt a description of the whole TLS configuration and re-read both certificates' validity dates, now a counter compare (**1,896 ns / 9.0 KB → 25 ns / 0 B**); the handshake lookup itself no longer hops to the certificate-generation thread pool when nothing needs generating (**7,491 ns → 66 ns**); and every request's `Host` header, TLS or not, re-ran the Subject Alternative Name bookkeeping, now once per connection (**35 ns / 56 B → 3 ns / 0 B**). End-to-end handshakes per second did not move measurably on the test machine (about 3,000/s before and after), because the TLS cryptography dominates. Certificates, matching on client certificates and the `clientCertificateChain` recorded for each request are unchanged. Change the Subject Alternative Name lists through the `Configuration` methods, not by modifying the set returned by `sslSubjectAlternativeNameDomains()` / `sslSubjectAlternativeNameIps()`, or the change is not seen.
+- Error log entries for a failed forward, a request MockServer could not process, a relayed request or
+  response, a request or response that could not be serialized, an undecodable query string and a Netty
+  message that could not be mapped now carry the request or response they describe, whether or not
+  `redactSecretsInLog` is on. A `retrieveLogMessages` / `retrieve?type=LOGS` call filtered by request now
+  also returns these entries, and the request appears in their `LOG_ENTRIES` JSON and the dashboard's request pane.
+- The error for a request with a missing `Host` header, logged and returned as the body of the `400`
+  response, now names only the request's method and path instead of printing the whole request.
 
 ### Fixed
 
@@ -158,6 +177,8 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
     `matchExactCase` was being changed at runtime could be left out of normal matching (with 64 or
     more expectations) until it was updated or re-added, or `matchExactCase` changed again.
 
+- **The log message for a request forwarded by a forward action now shows the request in its "in json"
+  part.** It showed the response a second time.
 - **HTTPS forward proxying over HTTP/2 no longer runs out of local ports under sustained load.**
   When a client negotiated HTTP/2 inside a `CONNECT` tunnel (k6, Go clients and browsers do by
   default), MockServer opened and closed a new upstream connection for every request, because only

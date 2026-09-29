@@ -1502,7 +1502,7 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
             String[] hostHeaderParts = splitHostPort(getFirstHeader(HOST.toString()));
             return new InetSocketAddress(hostHeaderParts[0], hostHeaderParts.length > 1 ? Integer.parseInt(hostHeaderParts[1]) : isSsl ? 443 : 80);
         } else {
-            throw new IllegalArgumentException("Host header must be provided to determine remote socket address, the request does not include the \"Host\" header:" + NEW_LINE + this);
+            throw new IllegalArgumentException("Host header must be provided to determine remote socket address, the request \"" + getMethod("") + " " + getPath() + "\" does not include the \"Host\" header");
         }
     }
 

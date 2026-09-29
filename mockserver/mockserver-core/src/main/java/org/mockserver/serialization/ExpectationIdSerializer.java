@@ -50,7 +50,8 @@ public class ExpectationIdSerializer implements Serializer<ExpectationId> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing ExpectationId to JSON with value " + expectationId)
+                    .setMessageFormat("exception while serializing ExpectationId to JSON with value:{}")
+                    .setArguments(expectationId)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing ExpectationId to JSON with value " + expectationId, e);
@@ -80,7 +81,8 @@ public class ExpectationIdSerializer implements Serializer<ExpectationId> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing ExpectationId to JSON with value " + Arrays.asList(expectationIds))
+                    .setMessageFormat("exception while serializing ExpectationId to JSON with value:{}")
+                    .setArguments(Arrays.asList(expectationIds))
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing ExpectationId to JSON with value " + Arrays.asList(expectationIds), e);

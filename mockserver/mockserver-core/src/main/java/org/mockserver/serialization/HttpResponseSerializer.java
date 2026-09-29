@@ -51,7 +51,9 @@ public class HttpResponseSerializer implements Serializer<HttpResponse> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing httpResponse to JSON with value " + httpResponse)
+                    .setHttpResponse(httpResponse)
+                    .setMessageFormat("exception while serializing httpResponse to JSON with value:{}")
+                    .setArguments(httpResponse)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing httpResponse to JSON with value " + httpResponse, e);
@@ -77,7 +79,9 @@ public class HttpResponseSerializer implements Serializer<HttpResponse> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing HttpResponse to JSON with value " + Arrays.asList(httpResponses))
+                    .setHttpResponse(httpResponses != null && httpResponses.length == 1 ? httpResponses[0] : null)
+                    .setMessageFormat("exception while serializing HttpResponse to JSON with value:{}")
+                    .setArguments(Arrays.asList(httpResponses))
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing HttpResponse to JSON with value " + Arrays.asList(httpResponses), e);

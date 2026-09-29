@@ -296,8 +296,11 @@ public class FixtureRedactor {
             }
             redacted.withHeaders(headers);
         }
+        if (sensitiveHeaders.contains("Cookie") && !redacted.getCookieList().isEmpty()) {
+            redacted.withCookies(redactCookies(redacted.getCookieList()));
+        }
         redactQueryStringIfNeeded(redacted);
-        redactBodyIfNeeded(redacted.getBodyAsString(), redacted::withBody);
+        redactBodyIfNeeded(redacted.getBody(), redacted::withBody);
         return redacted;
     }
 
@@ -338,13 +341,283 @@ public class FixtureRedactor {
             }
             redacted.withHeaders(headers);
         }
-        redactBodyIfNeeded(redacted.getBodyAsString(), redacted::withBody);
+        if (sensitiveHeaders.contains("Set-Cookie") && !redacted.getCookieList().isEmpty()) {
+            redacted.withCookies(redactCookies(redacted.getCookieList()));
+        }
+        redactBodyIfNeeded(redacted.getBody(), redacted::withBody);
         return redacted;
     }
 
     /**
+     * Shortest value {@link SensitiveValueMatcher#scrub} replaces in free text. A shorter value is still masked in its
+     * own field, but searching for it in free text would mostly mask unrelated words and numbers.
+     */
+    public static final int MIN_SCRUBBED_VALUE_LENGTH = 4;
+
+    /**
+     * Shortest bare cookie value {@link SensitiveValueMatcher#scrub} replaces in free text. A {@code Cookie} header routinely
+     * carries short preference values ({@code lang=en}, {@code theme=dark}, {@code consent=yes}) beside the
+     * session identifier, which is a generated token far longer than this; the whole {@code name=value}
+     * pair, and the whole header, are still scrubbed at {@link #MIN_SCRUBBED_VALUE_LENGTH}.
+     */
+    public static final int MIN_SCRUBBED_COOKIE_VALUE_LENGTH = 8;
+
+    /**
+     * The credential values these requests and this response carry in the places this redactor masks, for
+     * {@link SensitiveValueMatcher#scrub}bing free text that quotes them, such as a matcher's "found" text: sensitive
+     * header values (and the credential after a scheme such as {@code Bearer}), cookie values and sensitive
+     * query-string values first, then configured body-field values, each followed by its JSON-escaped form where that
+     * differs. Values shorter than {@link #MIN_SCRUBBED_VALUE_LENGTH} (bare cookie values:
+     * {@link #MIN_SCRUBBED_COOKIE_VALUE_LENGTH}) or longer than {@link SensitiveValueMatcher#MAX_VALUE_LENGTH}, and the
+     * words {@code true}, {@code false} and {@code null}, are left out.
+     */
+    public List<String> sensitiveValues(RequestDefinition[] requests, HttpResponse response) {
+        return sensitiveValues(requests == null ? Collections.emptyList() : Arrays.asList(requests), response == null ? Collections.emptyList() : Collections.singletonList(response));
+    }
+
+    /**
+     * As {@link #sensitiveValues(RequestDefinition[], HttpResponse)}, for several responses: the header, cookie and
+     * query-string values of every request and response come before any body-field value.
+     */
+    public List<String> sensitiveValues(Collection<RequestDefinition> requests, Collection<HttpResponse> responses) {
+        Set<String> values = new LinkedHashSet<>();
+        Set<String> cookieValues = new LinkedHashSet<>();
+        Set<String> bodyValues = new LinkedHashSet<>();
+        if (requests != null) {
+            for (RequestDefinition requestDefinition : requests) {
+                if (requestDefinition instanceof HttpRequest) {
+                    HttpRequest request = (HttpRequest) requestDefinition;
+                    addHeaderValues(values, cookieValues, request.getHeaderList());
+                    if (sensitiveHeaders.contains("Cookie")) {
+                        addCookieValues(cookieValues, request.getCookieList());
+                    }
+                    List<Parameter> parameters = request.getQueryStringParameterList();
+                    if (parameters != null) {
+                        for (Parameter parameter : parameters) {
+                            if (sensitiveQueryParams.contains(parameter.getName().getValue())) {
+                                addAll(values, parameter.getValues());
+                            }
+                        }
+                    }
+                    addBodyFieldValues(bodyValues, request.getBody());
+                }
+            }
+        }
+        for (HttpResponse response : responses == null ? Collections.<HttpResponse>emptyList() : responses) {
+            if (response != null) {
+                addHeaderValues(values, cookieValues, response.getHeaderList());
+                if (sensitiveHeaders.contains("Set-Cookie")) {
+                    addCookieValues(cookieValues, response.getCookieList());
+                }
+                addBodyFieldValues(bodyValues, response.getBody());
+            }
+        }
+        values.removeIf(value -> value.length() < MIN_SCRUBBED_VALUE_LENGTH);
+        cookieValues.removeIf(value -> value.length() < MIN_SCRUBBED_COOKIE_VALUE_LENGTH);
+        bodyValues.removeIf(value -> value.length() < MIN_SCRUBBED_VALUE_LENGTH);
+        values.addAll(cookieValues);
+        values.addAll(bodyValues);
+        List<String> ordered = new ArrayList<>(values.size());
+        for (String value : values) {
+            if (value.length() > SensitiveValueMatcher.MAX_VALUE_LENGTH || value.equals(REDACTED_PLACEHOLDER) || isCommonWord(value)) {
+                continue;
+            }
+            ordered.add(value);
+            // a value quoted inside JSON text (e.g. a serialized header map) appears in its escaped form
+            String escaped = new String(com.fasterxml.jackson.core.io.JsonStringEncoder.getInstance().quoteAsString(value));
+            if (!escaped.equals(value)) {
+                ordered.add(escaped);
+            }
+        }
+        return ordered;
+    }
+
+    private static boolean isCommonWord(String value) {
+        return value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false") || value.equalsIgnoreCase("null");
+    }
+
+    private void addHeaderValues(Set<String> values, Set<String> cookieValues, List<Header> headers) {
+        if (headers == null) {
+            return;
+        }
+        for (Header header : headers) {
+            String name = header.getName().getValue();
+            if (!sensitiveHeaders.contains(name)) {
+                continue;
+            }
+            for (NottableString nottableValue : header.getValues()) {
+                String value = nottableValue.getValue();
+                if (value == null) {
+                    continue;
+                }
+                values.add(value);
+                if (name.equalsIgnoreCase("Cookie")) {
+                    for (String pair : value.split(";")) {
+                        values.add(pair.trim());
+                        addAfterEquals(cookieValues, pair);
+                    }
+                } else if (name.equalsIgnoreCase("Set-Cookie")) {
+                    String pair = value.split(";", 2)[0];
+                    values.add(pair.trim());
+                    addAfterEquals(cookieValues, pair);
+                } else {
+                    // "Bearer <token>", "Basic <credentials>": the credential alone can be quoted too
+                    int space = value.trim().indexOf(' ');
+                    if (space > 0) {
+                        values.add(value.trim().substring(space + 1).trim());
+                    }
+                }
+            }
+        }
+    }
+
+    private static void addAfterEquals(Set<String> values, String pair) {
+        int equals = pair.indexOf('=');
+        if (equals >= 0) {
+            values.add(pair.substring(equals + 1).trim());
+        }
+    }
+
+    private static void addCookieValues(Set<String> values, List<Cookie> cookies) {
+        if (cookies != null) {
+            for (Cookie cookie : cookies) {
+                if (cookie.getValue() != null && cookie.getValue().getValue() != null) {
+                    values.add(cookie.getValue().getValue());
+                }
+            }
+        }
+    }
+
+    private static void addAll(Set<String> values, List<NottableString> nottableStrings) {
+        if (nottableStrings != null) {
+            for (NottableString nottableString : nottableStrings) {
+                if (nottableString.getValue() != null) {
+                    values.add(nottableString.getValue());
+                }
+            }
+        }
+    }
+
+    private void addBodyFieldValues(Set<String> values, Body<?> body) {
+        if (sensitiveBodyFields.isEmpty() || body == null) {
+            return;
+        }
+        String bodyString = body.toStringWithoutCaching();
+        if (bodyString == null || bodyString.isEmpty() || !mentionsSensitiveBodyField(bodyString)) {
+            return;
+        }
+        List<String> documents = new ArrayList<>();
+        if (isServerSentEventStream(bodyString)) {
+            for (String line : bodyString.split("\n")) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("data:")) {
+                    documents.add(trimmed.substring("data:".length()).trim());
+                }
+            }
+        } else {
+            documents.add(bodyString);
+        }
+        for (String document : documents) {
+            try {
+                collectSensitiveFieldValues(OBJECT_MAPPER.readTree(document), false, values);
+            } catch (Exception notJson) {
+                // an unparseable body is replaced whole by redactBodyIfNeeded; there are no field values to find
+            }
+        }
+    }
+
+    private void collectSensitiveFieldValues(JsonNode node, boolean insideSensitiveField, Set<String> values) {
+        if (node == null) {
+            return;
+        }
+        if (node.isObject()) {
+            Iterator<Map.Entry<String, JsonNode>> fields = node.fields();
+            while (fields.hasNext()) {
+                Map.Entry<String, JsonNode> field = fields.next();
+                boolean sensitive = insideSensitiveField || sensitiveBodyFields.contains(field.getKey());
+                if (sensitive && !insideSensitiveField && !field.getValue().isValueNode()) {
+                    // the whole sensitive object or array as text, once: its leaves are collected below, so the text of
+                    // every nested level would only repeat them (depth x size)
+                    String text = compactTextWithin(field.getValue(), SensitiveValueMatcher.MAX_VALUE_LENGTH);
+                    if (text != null) {
+                        values.add(text);
+                    }
+                }
+                collectSensitiveFieldValues(field.getValue(), sensitive, values);
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                collectSensitiveFieldValues(child, insideSensitiveField, values);
+            }
+        } else if (insideSensitiveField && !node.isNull()) {
+            values.add(node.asText());
+        }
+    }
+
+    /**
+     * {@code node} as compact JSON (as {@link JsonNode#toString()} writes it), or {@code null} if that is longer than
+     * {@code limit} characters, found without writing more than that.
+     */
+    private static String compactTextWithin(JsonNode node, int limit) {
+        java.io.StringWriter text = new java.io.StringWriter() {
+            @Override
+            public void write(char[] characters, int offset, int length) {
+                if (getBuffer().length() + length > limit) {
+                    throw TOO_LONG;
+                }
+                super.write(characters, offset, length);
+            }
+
+            @Override
+            public void write(String string, int offset, int length) {
+                if (getBuffer().length() + length > limit) {
+                    throw TOO_LONG;
+                }
+                super.write(string, offset, length);
+            }
+
+            @Override
+            public void write(int character) {
+                if (getBuffer().length() + 1 > limit) {
+                    throw TOO_LONG;
+                }
+                super.write(character);
+            }
+        };
+        try {
+            COMPACT_WRITER.writeValue(text, node);
+            return text.toString();
+        } catch (TooLong | java.io.IOException tooLong) {
+            return null;
+        }
+    }
+
+    private static final com.fasterxml.jackson.databind.ObjectWriter COMPACT_WRITER = new ObjectMapper().writer();
+
+    private static final TooLong TOO_LONG = new TooLong();
+
+    private static final class TooLong extends RuntimeException {
+        private TooLong() {
+            super(null, null, false, false);
+        }
+    }
+
+    /**
+     * Mask the parsed cookie values as well as the Cookie / Set-Cookie headers they came from: the
+     * cookie list is serialized separately ({@code cookies}, HAR) and the cURL form rebuilds a
+     * {@code Cookie} header from it, so masking only the header left every value readable there.
+     */
+    private static Cookies redactCookies(List<Cookie> cookies) {
+        List<Cookie> masked = new ArrayList<>(cookies.size());
+        for (Cookie cookie : cookies) {
+            masked.add(new Cookie(cookie.getName(), REDACTED_PLACEHOLDER));
+        }
+        return new Cookies(masked);
+    }
+
+    /**
      * If body-field redaction is configured, redact matching fields in
-     * {@code bodyString} and apply the result via {@code setter}. No-op when no
+     * {@code body} and apply the result via {@code setter}. No-op when no
      * body fields are configured or the body is absent/empty.
      * <p>
      * Resolution order:
@@ -368,8 +641,14 @@ public class FixtureRedactor {
      * fixtures (captured traffic) bodies are already string bodies, so this does
      * not change match semantics.
      */
-    private void redactBodyIfNeeded(String bodyString, java.util.function.Consumer<String> setter) {
-        if (sensitiveBodyFields.isEmpty() || bodyString == null || bodyString.isEmpty()) {
+    private void redactBodyIfNeeded(Body<?> body, java.util.function.Consumer<String> setter) {
+        if (sensitiveBodyFields.isEmpty() || body == null) {
+            return;
+        }
+        // the clone shares the original's body, which may be retained in the event log: a caching read
+        // would re-attach a decoded copy to it
+        String bodyString = body.toStringWithoutCaching();
+        if (bodyString == null || bodyString.isEmpty()) {
             return;
         }
         try {

@@ -1,42 +1,66 @@
 package org.mockserver.log.model;
 
-import java.util.function.Supplier;
+import org.mockserver.fixture.FixtureRedactor;
+import org.mockserver.model.HttpRequest;
+import org.mockserver.serialization.curl.HttpRequestToCurlSerializer;
+
+import java.net.InetSocketAddress;
 
 /**
- * A log-message argument that is rendered each time its entry is rendered, and never stored as text.
+ * A log-message argument that is rendered each time its entry is rendered, and never stored as text: the
+ * curl form of a logged request.
  * <p>
- * For an argument derived entirely from objects the entry already retains, such as the curl form of a
- * logged request: storing the rendered String would keep a second copy of the request body on every
- * retained entry, which the event-log byte budget does not count. {@link LogEntry} renders it wherever
- * the stored String used to appear, so the output is unchanged. The renderer must depend only on
- * objects that are not mutated after the entry is logged.
+ * Storing the rendered String would keep a second copy of the request body on every retained entry, which
+ * the event-log byte budget does not count, and would carry every header, cookie, the query string and the
+ * body past {@code redactSecretsInLog}, which redacts request objects, not text. So the argument holds the
+ * request and address, and {@link LogEntry} renders it from the redacted request wherever the stored String
+ * used to appear. The request must not be mutated after the entry is logged; the entry already retains it.
  */
 public final class DeferredLogArgument {
 
-    private final Supplier<String> renderer;
+    private final HttpRequestToCurlSerializer serializer;
+    private final HttpRequest request;
+    private final InetSocketAddress remoteAddress;
 
-    private DeferredLogArgument(Supplier<String> renderer) {
-        this.renderer = renderer;
+    private DeferredLogArgument(HttpRequestToCurlSerializer serializer, HttpRequest request, InetSocketAddress remoteAddress) {
+        this.serializer = serializer;
+        this.request = request;
+        this.remoteAddress = remoteAddress;
     }
 
-    public static DeferredLogArgument deferred(Supplier<String> renderer) {
-        return new DeferredLogArgument(renderer);
+    public static DeferredLogArgument curl(HttpRequestToCurlSerializer serializer, HttpRequest request, InetSocketAddress remoteAddress) {
+        return new DeferredLogArgument(serializer, request, remoteAddress);
     }
 
     /**
-     * The rendered text, or a short placeholder if rendering fails, so one bad argument cannot break a
-     * retrieve or dashboard read of the whole log.
+     * The curl command for the request as {@code redactor} masks it ({@code null} renders it unredacted), or a
+     * short placeholder if rendering fails, so one bad argument cannot break a retrieve or dashboard read of
+     * the whole log.
      */
-    public String render() {
+    public String render(FixtureRedactor redactor) {
         try {
-            return renderer.get();
+            HttpRequest toRender = redactor == null || request == null ? request : (HttpRequest) redactor.redactRequestDefinition(request);
+            return serializer.toCurl(toRender, remoteAddress);
         } catch (RuntimeException e) {
             return "<unable to render: " + e.getClass().getSimpleName() + ">";
         }
     }
 
+    /**
+     * For {@link LogEntry#equals(Object)} only, which compares this argument as the String it renders; the
+     * text never leaves that comparison.
+     */
+    String renderForEquality() {
+        return render(null);
+    }
+
+    /**
+     * Always redacted, whatever {@code redactSecretsInLog} says: a caller reaching the text through
+     * {@code toString()} (string concatenation, a formatter, a debugger) cannot see the effective setting, so it
+     * fails closed.
+     */
     @Override
     public String toString() {
-        return render();
+        return render(LogEntry.alwaysOnLogRedactor());
     }
 }

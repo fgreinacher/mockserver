@@ -41,13 +41,7 @@ public class ExpandedParameterDecoder {
                 hasPath = parameterString.startsWith("/") || parameterString.contains("?") || hasPath;
                 parameterMap = new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, hasPath, Integer.MAX_VALUE, !configuration.useSemicolonAsQueryParameterSeparator()).parameters();
             } catch (IllegalArgumentException iae) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception{}while parsing query string{}")
-                        .setArguments(parameterString, iae.getMessage())
-                        .setThrowable(iae)
-                );
+                logUndecodable(parameterString, hasPath, iae);
             }
         }
         return parameters.withEntries(parameterMap);
@@ -61,17 +55,40 @@ public class ExpandedParameterDecoder {
                 hasPath = parameterString.startsWith("/") || parameterString.contains("?") || hasPath;
                 parameterMap = new QueryStringDecoder(parameterString, HttpConstants.DEFAULT_CHARSET, parameterString.contains("/") || hasPath, Integer.MAX_VALUE, true).parameters();
             } catch (IllegalArgumentException iae) {
-                mockServerLogger.logEvent(
-                    new LogEntry()
-                        .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception{}while parsing query string{}")
-                        .setArguments(parameterString, iae.getMessage())
-                        .setThrowable(iae)
-                );
+                logUndecodable(parameterString, hasPath, iae);
             }
             return new Parameters().withEntries(parameterMap).withRawParameterString(rawParameterString);
         }
         return null;
+    }
+
+    /**
+     * The request carries the parameters split without decoding (decoding is what failed), so when
+     * redactSecretsInLog is on the credential values of sensitive parameters are masked in the logged string and in
+     * the decoder's message, which quote them raw.
+     */
+    private void logUndecodable(String parameterString, boolean hasPath, IllegalArgumentException iae) {
+        mockServerLogger.logEvent(
+            new LogEntry()
+                .setLogLevel(Level.ERROR)
+                .setHttpRequest(org.mockserver.model.HttpRequest.request(hasPath || parameterString.contains("?") ? StringUtils.substringBefore(parameterString, "?") : "")
+                    .withQueryStringParameters(undecodedParameters(parameterString, hasPath)))
+                .setMessageFormat("exception{}while parsing query string{}")
+                .setArguments(parameterString, iae.getMessage())
+                .setThrowable(iae)
+        );
+    }
+
+    public static Parameters undecodedParameters(String parameterString, boolean hasPath) {
+        String query = parameterString.contains("?") ? StringUtils.substringAfter(parameterString, "?") : (hasPath || parameterString.startsWith("/") ? "" : parameterString);
+        Parameters parameters = new Parameters();
+        for (String pair : query.split("[&;]")) {
+            if (!pair.isEmpty()) {
+                int equals = pair.indexOf('=');
+                parameters.withEntry(equals < 0 ? pair : pair.substring(0, equals), equals < 0 ? "" : pair.substring(equals + 1));
+            }
+        }
+        return parameters;
     }
 
     public void splitParameters(Parameters matcher, Parameters matched) {

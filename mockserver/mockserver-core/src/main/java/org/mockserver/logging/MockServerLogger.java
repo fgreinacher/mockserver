@@ -209,9 +209,11 @@ public class MockServerLogger {
     public static void writeToSystemOut(Logger logger, LogEntry logEntry, Configuration configuration) {
         if (!configuration.disableLogging()) {
             Level effectiveLevel = resolveEffectiveLevel(logEntry.getType(), configuration.logLevelOverrides(), configuration.logLevel());
-            if ((logEntry.isAlwaysLog() || isEnabled(logEntry.getLogLevel(), effectiveLevel)) &&
-                isNotBlank(logEntry.getMessage())) {
-                writeLogEntry(logger, logEntry, configuration.compactLogFormat());
+            if (logEntry.isAlwaysLog() || isEnabled(logEntry.getLogLevel(), effectiveLevel)) {
+                LogEntry.RedactedView redacted = logEntry.redactedView(configuration);
+                if (isNotBlank(redacted.getMessage())) {
+                    writeLogEntry(logger, logEntry, redacted, configuration.compactLogFormat());
+                }
             }
         }
     }
@@ -219,30 +221,33 @@ public class MockServerLogger {
     public static void writeToSystemOut(Logger logger, LogEntry logEntry) {
         if (!ConfigurationProperties.disableLogging()) {
             Level effectiveLevel = resolveEffectiveLevel(logEntry.getType(), ConfigurationProperties.logLevelOverrides(), ConfigurationProperties.logLevel());
-            if ((logEntry.isAlwaysLog() || isEnabled(logEntry.getLogLevel(), effectiveLevel)) &&
-                isNotBlank(logEntry.getMessage())) {
-                writeLogEntry(logger, logEntry, ConfigurationProperties.compactLogFormat());
+            if (logEntry.isAlwaysLog() || isEnabled(logEntry.getLogLevel(), effectiveLevel)) {
+                LogEntry.RedactedView redacted = logEntry.redactedView(null);
+                if (isNotBlank(redacted.getMessage())) {
+                    writeLogEntry(logger, logEntry, redacted, ConfigurationProperties.compactLogFormat());
+                }
             }
         }
     }
 
-    private static void writeLogEntry(Logger logger, LogEntry logEntry, boolean compact) {
-        String message = compact ? logEntry.getCompactMessage() : logEntry.getMessage();
+    private static void writeLogEntry(Logger logger, LogEntry logEntry, LogEntry.RedactedView redacted, boolean compact) {
+        String message = compact ? redacted.getCompactMessage() : redacted.getMessage();
+        Throwable throwable = redacted.getThrowable();
         switch (logEntry.getLogLevel()) {
             case ERROR:
-                logger.error(portInformation(logEntry) + message, logEntry.getThrowable());
+                logger.error(portInformation(logEntry) + message, throwable);
                 break;
             case WARN:
-                logger.warn(portInformation(logEntry) + message, logEntry.getThrowable());
+                logger.warn(portInformation(logEntry) + message, throwable);
                 break;
             case INFO:
-                logger.info(portInformation(logEntry) + message, logEntry.getThrowable());
+                logger.info(portInformation(logEntry) + message, throwable);
                 break;
             case DEBUG:
-                logger.debug(portInformation(logEntry) + message, logEntry.getThrowable());
+                logger.debug(portInformation(logEntry) + message, throwable);
                 break;
             case TRACE:
-                logger.trace(portInformation(logEntry) + message, logEntry.getThrowable());
+                logger.trace(portInformation(logEntry) + message, throwable);
                 break;
         }
     }

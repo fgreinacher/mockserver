@@ -24,6 +24,8 @@ import java.util.concurrent.CompletableFuture;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
+import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.is;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.doAnswer;
@@ -83,6 +85,7 @@ public class HttpActionHandlerForwardLogOrderingTest {
     private HttpActionHandler actionHandler;
     private ResponseWriter responseWriter;
     private List<String> observedSequence;
+    private volatile LogEntry forwardedEntry;
 
     @Before
     public void setupTestFixture() {
@@ -100,6 +103,7 @@ public class HttpActionHandlerForwardLogOrderingTest {
             LogEntry logEntry = invocation.getArgument(0);
             if (logEntry.getType() == FORWARDED_REQUEST) {
                 observedSequence.add(LOG);
+                forwardedEntry = logEntry.clone();
             }
             eventLog.add(logEntry);
             return null;
@@ -138,6 +142,17 @@ public class HttpActionHandlerForwardLogOrderingTest {
 
     private static HttpForward upstream() {
         return forward().withHost("upstream.example").withPort(8080).withScheme(HttpForward.Scheme.HTTP);
+    }
+
+    @Test
+    public void shouldLogTheForwardedRequestNotTheResponseTwiceOnDirectWritePath() {
+        HttpRequest request = request("/some_path");
+
+        actionHandler.writeForwardActionResponse(response("some_body"), responseWriter, request, upstream());
+
+        // the message reads "returning response:{}for forwarded request in json:{}in curl:{}..."
+        assertThat(forwardedEntry.getArguments()[1], instanceOf(HttpRequest.class));
+        assertThat(((HttpRequest) forwardedEntry.getArguments()[1]).getPath().getValue(), is("/some_path"));
     }
 
     /**

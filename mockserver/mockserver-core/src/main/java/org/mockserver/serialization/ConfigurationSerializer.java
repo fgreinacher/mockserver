@@ -25,7 +25,8 @@ public class ConfigurationSerializer implements Serializer<Configuration> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing configuration to JSON with value " + configuration)
+                    .setMessageFormat("exception while serializing configuration to JSON with value:{}")
+                    .setArguments(configuration)
                     .setThrowable(throwable)
             );
             throw new RuntimeException("Exception while serializing configuration to JSON with value " + configuration, throwable);

@@ -589,7 +589,8 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
                     .setHttpRequest(request)
-                    .setMessageFormat("exception processing " + request)
+                    .setMessageFormat("exception processing request:{}")
+                    .setArguments(request)
                     .setThrowable(ex)
             );
             responseWriter.writeResponse(request, response().withStatusCode(BAD_REQUEST.code()).withBody(ex.getMessage()), true);

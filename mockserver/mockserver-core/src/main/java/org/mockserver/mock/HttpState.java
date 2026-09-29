@@ -1111,6 +1111,9 @@ public class HttpState {
                             continue;
                         }
                         HttpRequest unmatchedRequest = (HttpRequest) requestDef;
+                        // the differences quote the recorded request's values: scrub its credentials when redactSecretsInLog is on
+                        org.mockserver.fixture.FixtureRedactor redactor = LogEntry.eventLogRedactor(configuration);
+                        org.mockserver.fixture.SensitiveValueMatcher sensitiveValues = org.mockserver.fixture.SensitiveValueMatcher.of(redactor == null ? null : redactor.sensitiveValues(new RequestDefinition[]{unmatchedRequest}, null));
                         com.fasterxml.jackson.databind.node.ObjectNode requestNode = objectMapper.createObjectNode();
                         requestNode.put("timestamp", entry.getTimestamp());
                         requestNode.put("method", unmatchedRequest.getMethod() != null ? unmatchedRequest.getMethod().getValue() : "");
@@ -1171,7 +1174,7 @@ public class HttpState {
                                 for (java.util.Map.Entry<MatchDifference.Field, List<String>> diffEntry : allDifferences.entrySet()) {
                                     com.fasterxml.jackson.databind.node.ArrayNode fieldDiffs = differences.putArray(diffEntry.getKey().getName());
                                     for (String diff : diffEntry.getValue()) {
-                                        fieldDiffs.add(diff);
+                                        fieldDiffs.add(sensitiveValues.scrub(diff));
                                     }
                                 }
                                 expResult.set("differences", differences);
@@ -1181,7 +1184,7 @@ public class HttpState {
                                 if (!hints.isEmpty()) {
                                     com.fasterxml.jackson.databind.node.ObjectNode remediationNode = objectMapper.createObjectNode();
                                     for (java.util.Map.Entry<MatchDifference.Field, String> hintEntry : hints.entrySet()) {
-                                        remediationNode.put(hintEntry.getKey().getName(), hintEntry.getValue());
+                                        remediationNode.put(hintEntry.getKey().getName(), sensitiveValues.scrub(hintEntry.getValue()));
                                     }
                                     expResult.set("remediation", remediationNode);
                                 }
@@ -1352,7 +1355,7 @@ public class HttpState {
                                 stringBuffer
                                     .append(messageLogEntry.getTimestamp())
                                     .append(" - ")
-                                    .append(messageLogEntry.getMessage());
+                                    .append(messageLogEntry.getMessage(configuration));
                                 if (i < logEntries.size() - 1) {
                                     stringBuffer.append(LOG_SEPARATOR);
                                 }

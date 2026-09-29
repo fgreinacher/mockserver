@@ -56,6 +56,7 @@ public class MockServerHttpRequestToFullHttpRequest {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
+                    .setHttpRequestIfPresent(httpRequest)
                     .setMessageFormat("exception encoding request{}")
                     .setArguments(httpRequest)
                     .setThrowable(throwable)

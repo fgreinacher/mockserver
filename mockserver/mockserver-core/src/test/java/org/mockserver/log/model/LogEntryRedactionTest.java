@@ -59,23 +59,19 @@ public class LogEntryRedactionTest {
     @ClassRule
     public static final GlobalFixedTime fixedTime = new GlobalFixedTime();
 
-    private boolean originalConfigured;
     private boolean originalValue;
 
     @Before
     public void setUp() {
-        originalConfigured = System.getProperty("mockserver.redactSecretsInLog") != null;
         originalValue = ConfigurationProperties.redactSecretsInLog();
         ConfigurationProperties.redactSecretsInLog(false);
     }
 
     @After
     public void tearDown() {
-        if (originalConfigured) {
-            ConfigurationProperties.redactSecretsInLog(originalValue);
-        } else {
-            System.clearProperty("mockserver.redactSecretsInLog");
-        }
+        // restore through the setter: System.clearProperty leaves ConfigurationProperties' cached value in
+        // place, which kept redaction on for every later test in the same JVM
+        ConfigurationProperties.redactSecretsInLog(originalValue);
     }
 
     @Test

@@ -69,6 +69,7 @@ public class FullHttpRequestToMockServerHttpRequest {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(Level.ERROR)
+                            .setHttpRequestIfPresent(NettyMessageForLog.request(fullHttpRequest))
                             .setMessageFormat("exception decoding request " + fullHttpRequest.decoderResult().cause().getMessage())
                             .setThrowable(fullHttpRequest.decoderResult().cause())
                     );
@@ -80,6 +81,7 @@ public class FullHttpRequestToMockServerHttpRequest {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
+                    .setHttpRequestIfPresent(NettyMessageForLog.request(fullHttpRequest))
                     .setMessageFormat("exception decoding request{}")
                     .setArguments(fullHttpRequest)
                     .setThrowable(throwable)
@@ -100,6 +102,7 @@ public class FullHttpRequestToMockServerHttpRequest {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(Level.ERROR)
+                            .setHttpRequestIfPresent(NettyMessageForLog.request(nettyHttpRequest))
                             .setMessageFormat("exception decoding request " + nettyHttpRequest.decoderResult().cause().getMessage())
                             .setThrowable(nettyHttpRequest.decoderResult().cause())
                     );
@@ -110,6 +113,7 @@ public class FullHttpRequestToMockServerHttpRequest {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
+                    .setHttpRequestIfPresent(NettyMessageForLog.request(nettyHttpRequest))
                     .setMessageFormat("exception decoding request headers{}")
                     .setArguments(nettyHttpRequest)
                     .setThrowable(throwable)

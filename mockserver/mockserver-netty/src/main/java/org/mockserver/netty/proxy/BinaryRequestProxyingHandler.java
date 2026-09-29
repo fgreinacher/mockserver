@@ -9,6 +9,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.httpclient.NettyHttpClient;
 import org.mockserver.log.model.LogEntry;
+import org.mockserver.log.model.SensitiveLogValue;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.mock.Expectation;
 import org.mockserver.mock.HttpState;
@@ -69,7 +70,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                 .setLogLevel(Level.INFO)
                 .setCorrelationId(logCorrelationId)
                 .setMessageFormat("received binary request:{}")
-                .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()))
+                .setArguments(SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())))
         );
         final InetSocketAddress remoteAddress = getRemoteAddress(ctx);
         if (remoteAddress != null) {
@@ -87,7 +88,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setMessageFormat("returning binary mock response:{}for binary request:{}")
-                            .setArguments(formatBytes(binaryResponse.getBinaryData()), formatBytes(binaryRequest.getBytes()))
+                            .setArguments(SensitiveLogValue.of(formatBytes(binaryResponse.getBinaryData())), SensitiveLogValue.of(formatBytes(binaryRequest.getBytes())))
                     );
                 }
                 ctx.writeAndFlush(Unpooled.copiedBuffer(binaryResponse.getBinaryData()));
@@ -98,7 +99,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setMessageFormat("no matching binary expectation for binary request:{}")
-                            .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()))
+                            .setArguments(SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())))
                     );
                 }
                 writeUnknownFormatMessage(ctx, binaryRequest, logCorrelationId);
@@ -117,7 +118,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                     .setMessageFormat(
                         "unknown message format, only HTTP requests are supported for mocking or HTTP & binary requests for proxying, but request is not being proxied and request is not valid HTTP, found request in binary: {} in utf8 text: {}"
                     )
-                    .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()), new String(binaryRequest.getBytes(), StandardCharsets.UTF_8))
+                    .setArguments(SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())), SensitiveLogValue.of(new String(binaryRequest.getBytes(), StandardCharsets.UTF_8)))
             );
         }
         ctx.writeAndFlush(Unpooled.copiedBuffer(
@@ -156,7 +157,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                             .setLogLevel(Level.INFO)
                             .setCorrelationId(logCorrelationId)
                             .setMessageFormat("returning binary response:{}from:{}for forwarded binary request:{}")
-                            .setArguments(formatBytes(binaryResponse.getBytes()), remoteAddress, formatBytes(binaryRequest.getBytes()))
+                            .setArguments(SensitiveLogValue.of(formatBytes(binaryResponse.getBytes())), remoteAddress, SensitiveLogValue.of(formatBytes(binaryRequest.getBytes())))
                     );
                     ctx.writeAndFlush(Unpooled.copiedBuffer(binaryResponse.getBytes()));
                 }
@@ -166,8 +167,8 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                         new LogEntry()
                             .setLogLevel(Level.WARN)
                             .setCorrelationId(logCorrelationId)
-                            .setMessageFormat("exception " + throwable.getMessage() + " sending hex{}to{}closing connection")
-                            .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()), remoteAddress)
+                            .setMessageFormat("exception{}sending hex{}to{}closing connection")
+                            .setArguments(throwable.getMessage(), SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())), remoteAddress)
                             .setThrowable(throwable)
                     );
                 }
@@ -186,7 +187,7 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                         .setLogLevel(Level.INFO)
                         .setCorrelationId(logCorrelationId)
                         .setMessageFormat("returning binary response:{}from:{}for forwarded binary request:{}")
-                        .setArguments(formatBytes(binaryResponse.getBytes()), remoteAddress, formatBytes(binaryRequest.getBytes()))
+                        .setArguments(SensitiveLogValue.of(formatBytes(binaryResponse.getBytes())), remoteAddress, SensitiveLogValue.of(formatBytes(binaryRequest.getBytes())))
                 );
                 if (binaryExchangeCallback != null) {
                     binaryExchangeCallback.onProxy(binaryRequest, binaryResponseFuture, remoteAddress, ctx.channel().remoteAddress());
@@ -198,8 +199,8 @@ public class BinaryRequestProxyingHandler extends SimpleChannelInboundHandler<By
                         new LogEntry()
                             .setLogLevel(Level.WARN)
                             .setCorrelationId(logCorrelationId)
-                            .setMessageFormat("exception " + throwable.getMessage() + " sending hex{}to{}closing connection")
-                            .setArguments(ByteBufUtil.hexDump(binaryRequest.getBytes()), remoteAddress)
+                            .setMessageFormat("exception{}sending hex{}to{}closing connection")
+                            .setArguments(throwable.getMessage(), SensitiveLogValue.of(ByteBufUtil.hexDump(binaryRequest.getBytes())), remoteAddress)
                             .setThrowable(throwable)
                     );
                 }

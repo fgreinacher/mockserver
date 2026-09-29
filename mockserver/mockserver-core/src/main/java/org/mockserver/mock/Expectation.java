@@ -1776,6 +1776,14 @@ public class Expectation extends ObjectWithJsonToString {
 
     @SuppressWarnings("MethodDoesntCallSuperMethod")
     public Expectation clone() {
+        return cloneWith(httpRequest, httpResponse);
+    }
+
+    /**
+     * As {@link #clone()}, with the request matcher and the response replaced (a {@code null} response leaves none):
+     * for a redacted copy that keeps every other part of the expectation.
+     */
+    public Expectation cloneWith(RequestDefinition httpRequest, HttpResponse httpResponse) {
         Expectation clone = new Expectation(httpRequest, times.clone(), timeToLive, priority)
             .withId(id)
             .withCreated(created)
@@ -1787,13 +1795,7 @@ public class Expectation extends ObjectWithJsonToString {
             .withScenarioState(scenarioState)
             .withNewScenarioState(newScenarioState)
             .thenRespond(httpResponse)
-            .thenRespond(httpResponseTemplate)
-            .thenRespond(httpResponseClassCallback)
-            .thenRespond(httpResponseObjectCallback)
             .thenForward(httpForward)
-            .thenForward(httpForwardTemplate)
-            .thenForward(httpForwardClassCallback)
-            .thenForward(httpForwardObjectCallback)
             .thenForward(httpOverrideForwardedRequest)
             .thenForwardValidate(httpForwardValidateAction)
             .thenForwardWithFallback(httpForwardWithFallback)
@@ -1809,6 +1811,14 @@ public class Expectation extends ObjectWithJsonToString {
             .withResponseMode(responseMode)
             .withResponseWeights(responseWeights)
             .withSwitchAfter(switchAfter);
+        // assigned rather than set through thenRespond / thenForward, which stamp the action type on the (shared) action:
+        // these were stamped when they were set on this expectation
+        clone.httpResponseTemplate = httpResponseTemplate;
+        clone.httpResponseClassCallback = httpResponseClassCallback;
+        clone.httpResponseObjectCallback = httpResponseObjectCallback;
+        clone.httpForwardTemplate = httpForwardTemplate;
+        clone.httpForwardClassCallback = httpForwardClassCallback;
+        clone.httpForwardObjectCallback = httpForwardObjectCallback;
         if (beforeActions != null) {
             clone.beforeActions = new ArrayList<>(beforeActions);
         }

@@ -42,25 +42,21 @@ import static org.mockserver.model.XmlBody.xml;
 
 public class RecordedRequestsFileSystemPersistenceTest {
 
-    private boolean originalRedactConfigured;
     private boolean originalRedactValue;
 
     @Before
     public void setUp() {
         // capture and reset the global mockserver.redactSecretsInLog state so each test starts
         // from the default (off) and we can restore it cleanly without leaking into other tests
-        originalRedactConfigured = System.getProperty("mockserver.redactSecretsInLog") != null;
         originalRedactValue = ConfigurationProperties.redactSecretsInLog();
         ConfigurationProperties.redactSecretsInLog(false);
     }
 
     @After
     public void tearDown() {
-        if (originalRedactConfigured) {
-            ConfigurationProperties.redactSecretsInLog(originalRedactValue);
-        } else {
-            System.clearProperty("mockserver.redactSecretsInLog");
-        }
+        // restore through the setter: System.clearProperty leaves ConfigurationProperties' cached value in
+        // place, which kept redaction on for every later test in the same JVM
+        ConfigurationProperties.redactSecretsInLog(originalRedactValue);
     }
 
     @Test

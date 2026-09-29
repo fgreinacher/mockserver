@@ -181,7 +181,8 @@ public class RecordedExpectationFileSystemPersistence implements MockServerLogLi
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.ERROR)
-                        .setMessageFormat("exception while serializing recorded expectation to JSON with value " + Arrays.asList(expectations))
+                        .setMessageFormat("exception while serializing recorded expectation to JSON with value:{}")
+                        .setArguments(Arrays.asList(expectations))
                         .setThrowable(e)
                 );
             }

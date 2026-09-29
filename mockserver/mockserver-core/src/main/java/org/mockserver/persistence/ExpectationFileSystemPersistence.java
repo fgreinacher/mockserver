@@ -357,7 +357,8 @@ public class ExpectationFileSystemPersistence implements MockServerMatcherListen
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing expectation to JSON with value " + Arrays.asList(expectations))
+                    .setMessageFormat("exception while serializing expectation to JSON with value:{}")
+                    .setArguments(Arrays.asList(expectations))
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing expectation to JSON with value " + Arrays.asList(expectations), e);

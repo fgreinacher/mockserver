@@ -56,12 +56,14 @@ public class DashboardLogEntryDTO extends ObjectWithJsonToString {
         setType(logEntry.getType());
         setHttpRequests(logEntry.getHttpUpdatedRequests(configuration));
         setHttpResponse(logEntry.getHttpUpdatedResponse(configuration));
-        setMessageFormat(logEntry.getMessageFormat());
-        setArguments(logEntry.getArguments());
-        if (logEntry.getThrowable() != null) {
-            setThrowable(getStackTrace(logEntry.getThrowable()).split(System.lineSeparator()));
+        LogEntry.RedactedView redacted = logEntry.redactedView(configuration);
+        setMessageFormat(redacted.getMessageFormat());
+        setArguments(redacted.getArguments());
+        Throwable throwable = redacted.getThrowable();
+        if (throwable != null) {
+            setThrowable(getStackTrace(throwable).split(System.lineSeparator()));
         }
-        setBecause(logEntry.getBecause());
+        setBecause(redacted.getBecause());
     }
 
     public String getId() {

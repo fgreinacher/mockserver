@@ -64,6 +64,7 @@ public class FullHttpResponseToMockServerHttpResponse {
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(Level.ERROR)
+                            .setHttpResponse(NettyMessageForLog.response(fullHttpResponse))
                             .setMessageFormat("exception decoding response " + fullHttpResponse.decoderResult().cause().getMessage())
                             .setThrowable(fullHttpResponse.decoderResult().cause())
                     );
@@ -77,6 +78,7 @@ public class FullHttpResponseToMockServerHttpResponse {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
+                    .setHttpResponse(NettyMessageForLog.response(fullHttpResponse))
                     .setMessageFormat("exception decoding response{}")
                     .setArguments(fullHttpResponse)
                     .setThrowable(throwable)

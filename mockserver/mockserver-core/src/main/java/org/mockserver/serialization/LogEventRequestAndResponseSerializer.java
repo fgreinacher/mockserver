@@ -44,7 +44,10 @@ public class LogEventRequestAndResponseSerializer {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing HttpRequestAndHttpResponse to JSON with value " + httpRequestAndHttpResponse)
+                    .setHttpRequestIfPresent(httpRequestAndHttpResponse != null ? httpRequestAndHttpResponse.getHttpRequest() : null)
+                    .setHttpResponse(httpRequestAndHttpResponse != null ? httpRequestAndHttpResponse.getHttpResponse() : null)
+                    .setMessageFormat("exception while serializing HttpRequestAndHttpResponse to JSON with value:{}")
+                    .setArguments(httpRequestAndHttpResponse)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing HttpRequestAndHttpResponse to JSON with value " + httpRequestAndHttpResponse, e);
@@ -72,7 +75,9 @@ public class LogEventRequestAndResponseSerializer {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing HttpRequestAndHttpResponse to JSON with value " + Arrays.asList(httpRequestAndHttpResponses))
+                    .setHttpRequests(LogEntry.nonNull(httpRequestAndHttpResponses == null ? null : Arrays.stream(httpRequestAndHttpResponses).filter(java.util.Objects::nonNull).map(LogEventRequestAndResponse::getHttpRequest).toArray(org.mockserver.model.RequestDefinition[]::new)))
+                    .setMessageFormat("exception while serializing HttpRequestAndHttpResponse to JSON with value:{}")
+                    .setArguments(Arrays.asList(httpRequestAndHttpResponses))
                     .setThrowable(e)
             );
             throw new IllegalArgumentException("Exception while serializing HttpRequestAndHttpResponse to JSON with value " + Arrays.asList(httpRequestAndHttpResponses), e);

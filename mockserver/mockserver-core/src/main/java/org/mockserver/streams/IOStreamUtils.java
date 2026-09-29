@@ -2,6 +2,7 @@ package org.mockserver.streams;
 
 import com.google.common.io.ByteStreams;
 import org.mockserver.log.model.LogEntry;
+import org.mockserver.log.model.SensitiveLogValue;
 import org.mockserver.logging.MockServerLogger;
 import org.slf4j.event.Level;
 import jakarta.servlet.ServletRequest;
@@ -97,7 +98,8 @@ public class IOStreamUtils {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("IOException while writing [" + sanitized + "] to HttpServletResponse output stream")
+                    .setMessageFormat("IOException while writing [{}] to HttpServletResponse output stream")
+                    .setArguments(SensitiveLogValue.of(sanitized))
                     .setThrowable(ioe)
             );
             throw new RuntimeException("IOException while writing " + data.length + " bytes to HttpServletResponse output stream", ioe);

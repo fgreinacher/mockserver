@@ -73,7 +73,8 @@ public class SloCriteriaSerializer {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing sloVerdict to JSON with value " + sloVerdict)
+                    .setMessageFormat("exception while serializing sloVerdict to JSON with value:{}")
+                    .setArguments(sloVerdict)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing sloVerdict to JSON with value " + sloVerdict, e);
@@ -92,7 +93,8 @@ public class SloCriteriaSerializer {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing sloCriteria to JSON with value " + sloCriteria)
+                    .setMessageFormat("exception while serializing sloCriteria to JSON with value:{}")
+                    .setArguments(sloCriteria)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing sloCriteria to JSON with value " + sloCriteria, e);

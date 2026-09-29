@@ -115,10 +115,10 @@ public class EventLogRetainedCopiesIntegrationTest {
                 assertThat(arguments[2], instanceOf(DeferredLogArgument.class));
                 // rendered afresh on every read, so no rendered String is held behind the argument either
                 DeferredLogArgument curl = (DeferredLogArgument) arguments[2];
-                String rendered = curl.render();
+                String rendered = curl.render(null);
                 assertThat(rendered, containsString("curl -v"));
-                assertThat(curl.render(), is(rendered));
-                assertThat(curl.render(), not(sameInstance(rendered)));
+                assertThat(curl.render(null), is(rendered));
+                assertThat(curl.render(null), not(sameInstance(rendered)));
                 for (Object argument : arguments) {
                     // an expectation id may be a String argument; a copy of the body must not be
                     if (argument instanceof String) {

@@ -37,7 +37,8 @@ public class LoadScenarioSerializer implements Serializer<LoadScenario> {
             mockServerLogger.logEvent(
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
-                    .setMessageFormat("exception while serializing loadScenario to JSON with value " + loadScenario)
+                    .setMessageFormat("exception while serializing loadScenario to JSON with value:{}")
+                    .setArguments(loadScenario)
                     .setThrowable(e)
             );
             throw new RuntimeException("Exception while serializing loadScenario to JSON with value " + loadScenario, e);

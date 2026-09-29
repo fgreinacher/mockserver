@@ -6,13 +6,17 @@ import org.mockserver.matchers.Times;
 import org.mockserver.mock.Expectation;
 import org.mockserver.model.*;
 
-import java.util.Arrays;
+import java.util.*;
 
 import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.CoreMatchers.hasItems;
+import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.CoreMatchers.nullValue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.mockserver.fixture.FixtureRedactor.REDACTED_PLACEHOLDER;
 import static org.mockserver.model.HttpRequest.request;
 import static org.mockserver.model.HttpResponse.response;
+import static org.mockserver.model.JsonBody.json;
 import static org.mockserver.model.HttpSseResponse.sseResponse;
 import static org.mockserver.model.SseEvent.sseEvent;
 
@@ -505,5 +509,362 @@ public class FixtureRedactorTest {
         assertThat(redacted[0].getResponseMode(), is(org.mockserver.mock.ResponseMode.SEQUENTIAL));
         assertThat(redacted[0].getHttpResponses().get(0).getFirstHeader("Set-Cookie"), is(REDACTED_PLACEHOLDER));
         assertThat(redacted[0].getHttpResponses().get(1).getFirstHeader("Set-Cookie"), is(REDACTED_PLACEHOLDER));
+    }
+
+    // --- Parsed cookie lists ---
+
+    // The cookie list is serialized apart from the Cookie / Set-Cookie headers (JSON cookies, HAR) and the
+    // cURL form rebuilds a Cookie header from it, so masking only the headers left every value readable.
+    @Test
+    public void shouldRedactParsedRequestAndResponseCookies() {
+        HttpRequest request = (HttpRequest) redactor.redactRequestDefinition(
+            request("/api").withHeader("Cookie", "session=cookie-secret").withCookie("session", "cookie-secret"));
+        HttpResponse response = redactor.redactResponseObject(
+            response().withHeader("Set-Cookie", "sid=set-cookie-secret").withCookie("sid", "set-cookie-secret"));
+
+        assertThat(request.getCookieList().get(0).getName().getValue(), is("session"));
+        assertThat(request.getCookieList().get(0).getValue().getValue(), is(REDACTED_PLACEHOLDER));
+        assertThat(request.toString().contains("cookie-secret"), is(false));
+        assertThat(response.getCookieList().get(0).getValue().getValue(), is(REDACTED_PLACEHOLDER));
+        assertThat(response.toString().contains("set-cookie-secret"), is(false));
+    }
+
+    @Test
+    public void shouldLeaveCookiesWhenCookieIsNotASensitiveHeader() {
+        HttpRequest request = (HttpRequest) new FixtureRedactor(Arrays.asList("Authorization"))
+            .redactRequestDefinition(request("/api").withCookie("session", "not-a-secret-here"));
+
+        assertThat(request.getCookieList().get(0).getValue().getValue(), is("not-a-secret-here"));
+    }
+
+    // --- Free-text scrubbing ---
+
+    @Test
+    public void shouldCollectCredentialValuesBeforeBodyFieldValues() {
+        HttpRequest request = request("/api")
+            .withHeader("Authorization", "Bearer token-value")
+            .withHeader("Cookie", "session=cookie-value; theme=dark")
+            .withHeader("Accept", "not-sensitive")
+            .withQueryStringParameter("key", "query-value")
+            .withBody(json("{\"password\":\"body-value\",\"remember\":true,\"pin\":\"12\"}"));
+        HttpResponse response = response().withHeader("Set-Cookie", "sid=set-cookie-value; Path=/");
+
+        List<String> values = new FixtureRedactor(FixtureRedactor.defaultSensitiveHeaders(), Arrays.asList("password", "remember", "pin"))
+            .sensitiveValues(new RequestDefinition[]{request}, response);
+
+        assertThat(values, hasItems("Bearer token-value", "token-value", "session=cookie-value; theme=dark", "session=cookie-value",
+            "theme=dark", "cookie-value", "query-value", "body-value", "sid=set-cookie-value; Path=/", "sid=set-cookie-value", "set-cookie-value"));
+        // too short to search for in free text (a bare cookie value needs MIN_SCRUBBED_COOKIE_VALUE_LENGTH),
+        // a common word, or not a sensitive place
+        assertThat(values, not(hasItems("12")));
+        assertThat(values, not(hasItems("dark")));
+        assertThat(values, not(hasItems("true")));
+        assertThat(values, not(hasItems("not-sensitive")));
+        // the matcher keeps values in this order while they fit its bounds
+        for (String credential : Arrays.asList("Bearer token-value", "token-value", "cookie-value", "query-value", "set-cookie-value")) {
+            assertThat(credential, values.indexOf(credential) < values.indexOf("body-value"), is(true));
+        }
+    }
+
+    @Test
+    public void shouldCollectEveryRequestAndResponseCredentialBeforeAnyBodyFieldValue() {
+        HttpRequest request = request("/api").withBody(json("{\"password\":\"request-body-value\"}"));
+        HttpResponse first = response().withBody(json("{\"password\":\"response-body-value\"}"));
+        HttpResponse second = response().withHeader("Set-Cookie", "sid=late-set-cookie-value; Path=/");
+
+        List<String> values = new FixtureRedactor(FixtureRedactor.defaultSensitiveHeaders(), Collections.singletonList("password"))
+            .sensitiveValues(Collections.<RequestDefinition>singletonList(request), Arrays.asList(first, second));
+
+        for (String body : Arrays.asList("request-body-value", "response-body-value")) {
+            assertThat(body, values.indexOf("late-set-cookie-value") < values.indexOf(body), is(true));
+        }
+    }
+
+    @Test
+    public void shouldCollectTheTextOfANestedSensitiveObjectOnceNotAtEveryLevel() {
+        StringBuilder body = new StringBuilder("{\"password\":");
+        int depth = 200;
+        for (int i = 0; i < depth; i++) {
+            body.append("{\"a\":");
+        }
+        body.append("\"leaf-secret-value-");
+        for (int i = 0; i < 1_000; i++) {
+            body.append((char) ('a' + i % 26));
+        }
+        body.append("\"");
+        for (int i = 0; i < depth; i++) {
+            body.append('}');
+        }
+        body.append('}');
+
+        List<String> values = new FixtureRedactor(FixtureRedactor.defaultSensitiveHeaders(), Collections.singletonList("password"))
+            .sensitiveValues(new RequestDefinition[]{request("/").withBody(json(body.toString()))}, null);
+
+        long total = values.stream().mapToLong(String::length).sum();
+        // the leaf and the whole object once, each with its JSON-escaped form: the text of each of the 200 levels would
+        // be about 200 x the body
+        assertThat("collected " + total + " characters from a " + body.length() + " character body", total <= 4L * body.length(), is(true));
+        assertThat(values.stream().anyMatch(value -> value.startsWith("leaf-secret-value-")), is(true));
+    }
+
+    @Test
+    public void shouldNotSearchFreeTextForValuesBeyondItsBounds() {
+        StringBuilder huge = new StringBuilder();
+        while (huge.length() <= SensitiveValueMatcher.MAX_VALUE_LENGTH) {
+            huge.append("0123456789");
+        }
+        List<String> values = new ArrayList<>();
+        values.add("first-credential");
+        values.add(huge.toString());
+        Random random = new Random(11L);
+        values.addAll(distinctValues(random, SensitiveValueMatcher.MAX_VALUES + 5_000));
+
+        SensitiveValueMatcher matcher = SensitiveValueMatcher.of(values);
+
+        assertThat(matcher.valueCount() <= SensitiveValueMatcher.MAX_VALUES, is(true));
+        assertThat(matcher.totalLength() <= SensitiveValueMatcher.MAX_TOTAL_LENGTH, is(true));
+        assertThat(SensitiveValueMatcher.TRUNCATION_WARNED.get(), is(true));
+        // the values given first are the ones kept; a value longer than MAX_VALUE_LENGTH is never searched for
+        assertThat(matcher.scrub("a first-credential here"), is("a " + REDACTED_PLACEHOLDER + " here"));
+        assertThat(matcher.scrub(huge.toString()), is(huge.toString()));
+        // the automaton it builds is bounded by the values kept
+        SensitiveValueMatcher.Automaton automaton = matcher.automaton();
+        assertThat(automaton.nodeCount() <= SensitiveValueMatcher.MAX_TOTAL_LENGTH + 1, is(true));
+    }
+
+    @Test
+    public void shouldNotCollectCommonWordsFromAnySensitivePlace() {
+        HttpRequest request = request("/test/true")
+            .withHeader("x-api-key", "TRUE")
+            .withHeader("Cookie", "flag=false; consent=Null")
+            .withCookie("flag", "false")
+            .withQueryStringParameter("token", "null");
+
+        List<String> values = redactor.sensitiveValues(new RequestDefinition[]{request}, null);
+
+        assertThat(values, not(hasItems("TRUE")));
+        assertThat(values, not(hasItems("false")));
+        assertThat(values, not(hasItems("null")));
+        assertThat(values, not(hasItems("Null")));
+        assertThat(values, hasItems("flag=false", "consent=Null"));
+    }
+
+    @Test
+    public void shouldScrubOnlyWhatMatches() {
+        SensitiveValueMatcher matcher = SensitiveValueMatcher.of(Arrays.asList("Bearer token-value", "token-value"));
+
+        assertThat(matcher.scrub("found: Bearer token-value and token-value"),
+            is("found: " + REDACTED_PLACEHOLDER + " and " + REDACTED_PLACEHOLDER));
+        String untouched = "nothing to see";
+        assertThat(matcher.scrub(untouched) == untouched, is(true));
+        assertThat(matcher.scrub(null), is(nullValue()));
+        assertThat(matcher.containsAny("a token-value here"), is(true));
+        assertThat(matcher.containsAny("a token-valu here"), is(false));
+        assertThat(SensitiveValueMatcher.of(Collections.emptyList()).isEmpty(), is(true));
+        assertThat(SensitiveValueMatcher.of(Arrays.asList(null, "")).scrub(untouched) == untouched, is(true));
+    }
+
+    @Test
+    public void shouldMaskEverythingOverlappingOccurrencesCover() {
+        SensitiveValueMatcher.Automaton automaton = SensitiveValueMatcher.Automaton.of(Arrays.asList("abcd", "cdef", "cd", "xyzw"));
+
+        // overlapping and nested occurrences become one placeholder; separate ones, even adjacent, stay separate
+        assertThat(automaton.scrub("<abcdef>"), is("<" + REDACTED_PLACEHOLDER + ">"));
+        assertThat(automaton.scrub("<cd>"), is("<" + REDACTED_PLACEHOLDER + ">"));
+        assertThat(automaton.scrub("xyzwxyzw"), is(REDACTED_PLACEHOLDER + REDACTED_PLACEHOLDER));
+        assertThat(SensitiveValueMatcher.Automaton.of(Collections.singletonList("aa")).scrub("aaa"), is(REDACTED_PLACEHOLDER));
+    }
+
+    /**
+     * Differential: wherever occurrences do not overlap, the one-pass matcher masks exactly what replacing each value
+     * in turn, longest first, did. (Where they overlap the old replace could leave part of a value; see the next test.)
+     */
+    @Test
+    public void shouldScrubExactlyAsReplacingEachValueLongestFirstWhereOccurrencesDoNotOverlap() {
+        Random random = new Random(20260929L);
+        for (int round = 0; round < 300; round++) {
+            List<String> values = distinctValues(random, 1 + random.nextInt(60));
+            StringBuilder text = new StringBuilder();
+            int pieces = random.nextInt(80);
+            for (int i = 0; i < pieces; i++) {
+                text.append(filler(random, random.nextInt(12)));
+                if (random.nextBoolean()) {
+                    text.append(values.get(random.nextInt(values.size())));
+                }
+            }
+
+            String expected = replacingEachValueLongestFirst(text.toString(), values);
+            assertThat("round " + round, SensitiveValueMatcher.Automaton.of(values).scrub(text.toString()), is(expected));
+            assertThat("round " + round, SensitiveValueMatcher.Automaton.of(values).containsAny(text.toString()), is(!expected.equals(text.toString())));
+            assertThat("round " + round, SensitiveValueMatcher.of(values).scrub(text.toString()), is(expected));
+        }
+    }
+
+    /**
+     * Differential over any text, including overlapping occurrences, non-ASCII and surrogate pairs: both the automaton
+     * and the value-by-value path used for short texts mask exactly the union of every value's occurrences.
+     */
+    @Test
+    public void shouldMaskTheUnionOfAllOccurrencesOnEitherPath() {
+        String[] alphabets = {"ab", "abc", "aA\u007f\u0080\u00ff", "x\ud83d\ude00\ud83d\ude01\ud800\udc00", "\u0000\u4e00\u4e01\uffff\u007f", "abcdefghij0123\"\\ ={}:,"};
+        Random random = new Random(20260930L);
+        for (int round = 0; round < 5_000; round++) {
+            String alphabet = alphabets[random.nextInt(alphabets.length)];
+            List<String> values = new ArrayList<>();
+            int count = 1 + random.nextInt(random.nextInt(10) == 0 ? 60 : 8);
+            for (int i = 0; i < count; i++) {
+                values.add(random(random, alphabet, random.nextInt(20) == 0 ? 50 + random.nextInt(300) : 1 + random.nextInt(random.nextBoolean() ? 3 : 9)));
+            }
+            if (random.nextInt(5) == 0 && values.get(0).length() > 1) {
+                values.add(values.get(0).substring(1));
+            }
+            StringBuilder text = new StringBuilder(random(random, alphabet, random.nextInt(random.nextInt(8) == 0 ? 5_000 : 80)));
+            for (int plant = random.nextInt(4); plant > 0; plant--) {
+                text.insert(random.nextInt(text.length() + 1), values.get(random.nextInt(values.size())));
+            }
+            String expected = unionOfOccurrences(text.toString(), values);
+            List<String> longestFirst = new ArrayList<>(values);
+            longestFirst.sort(Comparator.comparingInt(String::length).reversed());
+
+            assertThat("round " + round, SensitiveValueMatcher.Automaton.of(values).scrub(text.toString()), is(expected));
+            assertThat("round " + round, SensitiveValueMatcher.scrubValueByValue(text.toString(), longestFirst), is(expected));
+            SensitiveValueMatcher matcher = SensitiveValueMatcher.of(values);
+            for (int repeat = 0; repeat < 3; repeat++) {
+                assertThat("round " + round, matcher.scrub(text.toString()), is(expected));
+                assertThat("round " + round, matcher.containsAny(text.toString()), is(!expected.equals(text.toString())));
+            }
+        }
+    }
+
+    @Test(timeout = 10_000)
+    public void shouldScrubInTimeLinearInTheTextUpToTheBoundOnValues() {
+        Random random = new Random(7L);
+        List<String> values = distinctValues(random, SensitiveValueMatcher.MAX_VALUES);
+        StringBuilder text = new StringBuilder();
+        while (text.length() < 2_000_000) {
+            text.append(filler(random, 20)).append(values.get(random.nextInt(values.size())));
+        }
+        SensitiveValueMatcher matcher = SensitiveValueMatcher.of(values);
+        matcher.scrub(text.toString());
+
+        long start = System.nanoTime();
+        String scrubbed = matcher.scrub(text.toString());
+        long millis = (System.nanoTime() - start) / 1_000_000;
+
+        // checking each of 10,000 values against 2 MB of text is about 2e10 character comparisons
+        assertThat("scrubbed 2 MB against 10,000 values in " + millis + "ms", millis < 2_000, is(true));
+        assertThat(scrubbed.contains(values.get(0)), is(false));
+    }
+
+    /**
+     * Each character of the text costs at most a binary search over one node's children, even where a node has
+     * thousands of non-ASCII children: at the root (values with distinct CJK first characters) and deeper (values
+     * sharing an ASCII prefix, then distinct CJK characters), against a CJK text that never matches.
+     */
+    @Test(timeout = 20_000)
+    public void shouldScrubNonAsciiTextInLinearTimeHoweverManyChildrenANodeHas() {
+        List<String> distinctFirst = new ArrayList<>();
+        List<String> distinctAfterPrefix = new ArrayList<>();
+        for (int i = 0; i < 20_000; i++) {
+            distinctFirst.add((char) (0x4e00 + i) + "xyz");
+            distinctAfterPrefix.add("tok_" + (char) (0x4e00 + i));
+        }
+        StringBuilder cjk = new StringBuilder();
+        StringBuilder prefixed = new StringBuilder();
+        while (cjk.length() < 1_000_000) {
+            cjk.append('\u9fa0');
+            prefixed.append("tok_\u9fa0");
+        }
+        for (List<String> values : Arrays.asList(distinctFirst, distinctAfterPrefix)) {
+            SensitiveValueMatcher.Automaton automaton = SensitiveValueMatcher.Automaton.of(values);
+            for (String text : Arrays.asList(cjk.toString(), prefixed.toString())) {
+                automaton.scrub(text);
+                long start = System.nanoTime();
+                String scrubbed = automaton.scrub(text);
+                long millis = (System.nanoTime() - start) / 1_000_000;
+
+                // with each node's children in a list, each character would scan up to 20,000 of them
+                assertThat("scrubbed 1M non-ASCII characters against " + values.get(0) + "... in " + millis + "ms", millis < 1_000, is(true));
+                assertThat(scrubbed == text, is(true));
+            }
+        }
+    }
+
+    // the scrubbing this replaced: each value in turn, longest first
+    private static String replacingEachValueLongestFirst(String text, List<String> values) {
+        List<String> longestFirst = new ArrayList<>(values);
+        longestFirst.sort(Comparator.comparingInt(String::length).reversed());
+        String scrubbed = text;
+        for (String value : longestFirst) {
+            scrubbed = scrubbed.replace(value, REDACTED_PLACEHOLDER);
+        }
+        return scrubbed;
+    }
+
+    // every occurrence of every value, overlapping ones merged, each merged stretch replaced once
+    private static String unionOfOccurrences(String text, List<String> values) {
+        List<int[]> occurrences = new ArrayList<>();
+        for (String value : values) {
+            for (int index = text.indexOf(value); index >= 0; index = text.indexOf(value, index + 1)) {
+                occurrences.add(new int[]{index, index + value.length()});
+            }
+        }
+        occurrences.sort((left, right) -> left[0] != right[0] ? Integer.compare(left[0], right[0]) : Integer.compare(right[1], left[1]));
+        StringBuilder scrubbed = new StringBuilder();
+        int copied = 0;
+        int end = -1;
+        for (int[] occurrence : occurrences) {
+            if (occurrence[0] < end) {
+                end = Math.max(end, occurrence[1]);
+            } else {
+                if (end >= 0) {
+                    scrubbed.append(REDACTED_PLACEHOLDER);
+                    copied = end;
+                }
+                scrubbed.append(text, copied, occurrence[0]);
+                end = occurrence[1];
+            }
+        }
+        if (end >= 0) {
+            scrubbed.append(REDACTED_PLACEHOLDER);
+            copied = end;
+        }
+        return scrubbed.append(text, copied, text.length()).toString();
+    }
+
+    private static String random(Random random, String alphabet, int length) {
+        StringBuilder text = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            text.append(alphabet.charAt(random.nextInt(alphabet.length())));
+        }
+        return text.toString();
+    }
+
+    // lowercase letters only, none a substring of another, so the filler (no lowercase) and the placeholder cannot
+    // create or split an occurrence
+    private static List<String> distinctValues(Random random, int count) {
+        List<String> values = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        while (values.size() < count) {
+            StringBuilder value = new StringBuilder();
+            int length = 6 + random.nextInt(15);
+            for (int i = 0; i < length; i++) {
+                value.append((char) ('a' + random.nextInt(26)));
+            }
+            String candidate = value.toString();
+            if (seen.add(candidate) && (count > 1_000 || values.stream().noneMatch(existing -> existing.contains(candidate) || candidate.contains(existing)))) {
+                values.add(candidate);
+            }
+        }
+        return values;
+    }
+
+    private static String filler(Random random, int length) {
+        String alphabet = " ,.:{}[]\"0123456789-=";
+        StringBuilder filler = new StringBuilder();
+        for (int i = 0; i < length; i++) {
+            filler.append(alphabet.charAt(random.nextInt(alphabet.length())));
+        }
+        return filler.toString();
     }
 }

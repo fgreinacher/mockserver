@@ -1525,12 +1525,15 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     .collect(Collectors.toList());
                 int matchedCount = matchingPairs.size();
                 if (!verification.getTimes().matches(matchedCount)) {
+                    // matched above on the raw pairs; the returned failure message is built from redacted copies,
+                    // while the logged entry keeps the raw pairs (redacted when it is rendered, not retained twice)
+                    List<LogEventRequestAndResponse> recordedPairs = redactedForDisplay(allPairs);
                     HttpResponseSerializer httpResponseSerializer = new HttpResponseSerializer(mockServerLogger);
                     String serializedResponseToBeVerified = httpResponseSerializer.serialize(verification.getHttpResponse());
                     Integer maximumNumberOfRequestToReturnInVerificationFailure = verification.getMaximumNumberOfRequestToReturnInVerificationFailure() != null ? verification.getMaximumNumberOfRequestToReturnInVerificationFailure() : configuration.maximumNumberOfRequestToReturnInVerificationFailure();
                     String failureMessage;
-                    if (allPairs.size() < maximumNumberOfRequestToReturnInVerificationFailure) {
-                        List<HttpResponse> allResponses = allPairs.stream()
+                    if (recordedPairs.size() < maximumNumberOfRequestToReturnInVerificationFailure) {
+                        List<HttpResponse> allResponses = recordedPairs.stream()
                             .map(LogEventRequestAndResponse::getHttpResponse)
                             .collect(Collectors.toList());
                         String serializedAllResponsesInLog = allResponses.size() == 1
@@ -1546,8 +1549,8 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     // changes the pass/fail result (already inside the failed branch) and is gated
                     // identically to the request-side closest-match diff (which does NOT gate on INFO, so
                     // the diff reaches the returned failure message regardless of log level).
-                    if (configuration.detailedVerificationFailures() && !allPairs.isEmpty()) {
-                        List<HttpResponse> recordedResponses = allPairs.stream()
+                    if (configuration.detailedVerificationFailures() && !recordedPairs.isEmpty()) {
+                        List<HttpResponse> recordedResponses = recordedPairs.stream()
                             .map(LogEventRequestAndResponse::getHttpResponse)
                             .filter(Objects::nonNull)
                             // bound the work like the request side — a huge recorded log should not blow
@@ -1856,10 +1859,13 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                                 }
                             }
                             if (!foundMatch) {
-                                List<HttpResponse> recordedResponses = allPairs.stream()
+                                List<HttpResponse> recordedResponses = redactedForDisplay(allPairs).stream()
                                     .map(LogEventRequestAndResponse::getHttpResponse)
                                     .collect(Collectors.toList());
-                                failureMessage = verificationResponseSequenceFailureMessage(verificationSequence, logCorrelationId, logResult, recordedResponses, verificationHttpRequest, verificationHttpResponse);
+                                List<HttpResponse> rawRecordedResponses = allPairs.stream()
+                                    .map(LogEventRequestAndResponse::getHttpResponse)
+                                    .collect(Collectors.toList());
+                                failureMessage = verificationResponseSequenceFailureMessage(verificationSequence, logCorrelationId, logResult, recordedResponses, rawRecordedResponses, verificationHttpRequest, verificationHttpResponse);
                                 break;
                             }
                         }
@@ -1898,6 +1904,23 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 });
             }
         }
+    }
+
+    /**
+     * Recorded pairs as a verification failure may show them: redacted copies when {@code redactSecretsInLog}
+     * is on, as the request side shows requests; the same list, unchanged, when it is off.
+     */
+    private List<LogEventRequestAndResponse> redactedForDisplay(List<LogEventRequestAndResponse> pairs) {
+        org.mockserver.fixture.FixtureRedactor redactor = LogEntry.eventLogRedactor(configuration);
+        if (redactor == null) {
+            return pairs;
+        }
+        return pairs.stream()
+            .map(pair -> new LogEventRequestAndResponse()
+                .withTimestamp(pair.getTimestamp())
+                .withHttpRequest(pair.getHttpRequest() == null ? null : (HttpRequest) redactor.redactRequestDefinition(pair.getHttpRequest()))
+                .withHttpResponse(redactor.redactResponseObject(pair.getHttpResponse())))
+            .collect(Collectors.toList());
     }
 
     private String buildClosestMatchDiff(HttpRequest verificationRequest, List<RequestDefinition> allRequests) {
@@ -2050,7 +2073,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         return failureMessage;
     }
 
-    private String verificationResponseSequenceFailureMessage(VerificationSequence verificationSequence, String logCorrelationId, boolean logResult, List<HttpResponse> recordedResponses, RequestDefinition unmatchedStepRequest, HttpResponse unmatchedStepResponse) {
+    /**
+     * @param recordedResponses    the recorded responses as the returned failure message may show them (redacted copies)
+     * @param rawRecordedResponses the same responses as recorded, for the logged entry, which redacts them when rendered
+     */
+    private String verificationResponseSequenceFailureMessage(VerificationSequence verificationSequence, String logCorrelationId, boolean logResult, List<HttpResponse> recordedResponses, List<HttpResponse> rawRecordedResponses, RequestDefinition unmatchedStepRequest, HttpResponse unmatchedStepResponse) {
         // for a response-aware sequence the meaningful "expected" and "actual" are the RESPONSES,
         // not the requests — serialize the expected response sequence and the recorded responses
         HttpResponseSerializer httpResponseSerializer = new HttpResponseSerializer(mockServerLogger);
@@ -2093,7 +2120,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     .setLogLevel(Level.INFO)
                     .setCorrelationId(logCorrelationId)
                     .setMessageFormat("response sequence not found, expected:{}but was:{}")
-                    .setArguments(expectedResponses, recordedResponses)
+                    .setArguments(expectedResponses, rawRecordedResponses)
             );
         }
         return failureMessage;

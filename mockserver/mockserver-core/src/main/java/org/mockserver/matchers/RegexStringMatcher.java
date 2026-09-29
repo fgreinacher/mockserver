@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import org.apache.commons.lang3.StringUtils;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.log.model.LogEntry;
+import org.mockserver.log.model.SensitiveLogValue;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.NottableSchemaString;
 import org.mockserver.model.NottableString;
@@ -150,7 +151,7 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                     // folding can diverge from String.equalsIgnoreCase.
                     if (!isPureAsciiLiteral(matcherValue)) {
                         try {
-                            if (runRegexWithTimeout(mockServerLogger, matcher, matchedValue, caseSensitive)) {
+                            if (runRegexWithTimeout(mockServerLogger, matcher, matchedValue, caseSensitive, false)) {
                                 return true;
                             }
                         } catch (PatternSyntaxException pse) {
@@ -158,7 +159,8 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                                 mockServerLogger.logEvent(
                                     new LogEntry()
                                         .setLogLevel(DEBUG)
-                                        .setMessageFormat("error while matching regex [" + matcher + "] for string [" + matched + "] " + pse.getMessage())
+                                        .setMessageFormat("error while matching regex{}for string{}{}")
+                                        .setArguments(matcher, SensitiveLogValue.of(matched), pse.getMessage())
                                         .setThrowable(pse)
                                 );
                             }
@@ -176,15 +178,15 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                             // single logical check submits a single task to the timeout-protected pool
                             // and cannot observe two divergent results under pool contention.
                             if (controlPlaneMatcher) {
-                                if (runRegexWithTimeout(mockServerLogger, matched, matcherValue, caseSensitive)) {
+                                if (runRegexWithTimeout(mockServerLogger, matched, matcherValue, caseSensitive, true)) {
                                     return true;
                                 }
-                            } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG) && runRegexWithTimeout(mockServerLogger, matched, matcherValue, caseSensitive)) {
+                            } else if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(DEBUG) && runRegexWithTimeout(mockServerLogger, matched, matcherValue, caseSensitive, true)) {
                                 mockServerLogger.logEvent(
                                     new LogEntry()
                                         .setLogLevel(DEBUG)
                                         .setMessageFormat("matcher{}would match{}if matcher was used for control plane")
-                                        .setArguments(matcher, matched)
+                                        .setArguments(matcher, SensitiveLogValue.of(matched))
                                 );
                             }
                         } catch (PatternSyntaxException pse) {
@@ -193,7 +195,8 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                                     mockServerLogger.logEvent(
                                         new LogEntry()
                                             .setLogLevel(DEBUG)
-                                            .setMessageFormat("error while matching regex [" + matched + "] for string [" + matcher + "] " + pse.getMessage())
+                                            .setMessageFormat("error while matching regex{}for string{}{}")
+                                            .setArguments(SensitiveLogValue.of(matched), matcher, pse.getMessage())
                                             .setThrowable(pse)
                                     );
                                 }
@@ -214,7 +217,7 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
         return matcher == null || StringUtils.isBlank(matcher.getValue());
     }
 
-    private static boolean runRegexWithTimeout(MockServerLogger mockServerLogger, NottableString pattern, String input, boolean caseSensitive) {
+    private static boolean runRegexWithTimeout(MockServerLogger mockServerLogger, NottableString pattern, String input, boolean caseSensitive, boolean patternIsMatchedValue) {
         // Prefer the live Configuration carried by the logger (the matcher graph's existing
         // configuration carrier) so a timeout set over PUT /mockserver/configuration takes effect;
         // fall back to the static store when no instance is available.
@@ -239,7 +242,7 @@ public class RegexStringMatcher extends BodyMatcher<NottableString> {
                             new LogEntry()
                                 .setLogLevel(WARN)
                                 .setMessageFormat("regex evaluation timed out after {}ms for pattern:{}— treating as non-match (raise mockserver.regexMatchingTimeoutMillis or simplify the pattern to suppress this)")
-                                .setArguments(fired, pattern)
+                                .setArguments(fired, patternIsMatchedValue ? SensitiveLogValue.of(pattern) : pattern)
                         );
                     }
                 },

@@ -2949,11 +2949,10 @@ public class HttpActionHandler {
 
     /**
      * The curl form of a forwarded request, rendered when its log entry is rendered rather than stored as a
-     * String copy of the request on the retained entry. The request is already retained by the same entry.
+     * String copy of the request on the retained entry, and from the redacted request when redactSecretsInLog is on.
      */
     private DeferredLogArgument deferredCurl(HttpRequest request, InetSocketAddress remoteAddress) {
-        HttpRequestToCurlSerializer serializer = httpRequestToCurlSerializer;
-        return DeferredLogArgument.deferred(() -> serializer.toCurl(request, remoteAddress));
+        return DeferredLogArgument.curl(httpRequestToCurlSerializer, request, remoteAddress);
     }
 
     void writeForwardActionResponse(final HttpResponse response, final ResponseWriter responseWriter, final HttpRequest request, final Action action) {
@@ -2971,7 +2970,7 @@ public class HttpActionHandler {
                     .setExpectation(request, response)
                     .setExpectationId(action.getExpectationId())
                     .setMessageFormat("returning response:{}for forwarded request" + NEW_LINE + NEW_LINE + " in json:{}" + NEW_LINE + NEW_LINE + " in curl:{}for action:{}from expectation:{}")
-                    .setArguments(response, response, deferredCurl(request, null), action, action.getExpectationId())
+                    .setArguments(response, request, deferredCurl(request, null), action, action.getExpectationId())
             );
             responseWriter.writeResponse(request, response, false);
         } catch (Throwable throwable) {

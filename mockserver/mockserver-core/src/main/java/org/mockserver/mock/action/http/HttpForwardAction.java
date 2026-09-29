@@ -156,7 +156,8 @@ public abstract class HttpForwardAction {
                 new LogEntry()
                     .setLogLevel(Level.ERROR)
                     .setHttpRequest(request)
-                    .setMessageFormat("exception forwarding request " + request)
+                    .setMessageFormat("exception forwarding request:{}")
+                    .setArguments(request)
                     .setThrowable(e)
             );
         }

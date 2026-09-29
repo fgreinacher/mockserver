@@ -76,16 +76,21 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
         // StreamingAwareHttpObjectAggregator can report a time-to-first-byte in its DEBUG
         // streaming-decision log when the matching response head arrives. Behaviour-preserving.
         downstreamChannel.attr(StreamingAwareHttpObjectAggregator.REQUEST_FORWARDED_NANOS).set(System.nanoTime());
-        downstreamChannel.attr(StreamingAwareHttpObjectAggregator.REQUEST_LINE).set(request.method() + " " + request.uri());
+        // raw path, query string dropped: this line is logged as plain text, where a query-string credential could
+        // not be masked. Never decode here: a malformed escape would throw before the request is relayed or released.
+        downstreamChannel.attr(StreamingAwareHttpObjectAggregator.REQUEST_LINE).set(request.method() + " " + org.apache.commons.lang3.StringUtils.substringBefore(request.uri(), "?"));
         downstreamChannel.writeAndFlush(request).addListener((ChannelFutureListener) future -> {
             if (future.isSuccess()) {
                 ctx.channel().read();
             } else {
                 if (isNotSocketClosedException(future.cause())) {
+                    org.mockserver.model.HttpRequest loggedRequest = loggedRequest(request);
                     mockServerLogger.logEvent(
                         new LogEntry()
                             .setLogLevel(Level.ERROR)
-                            .setMessageFormat("exception while returning response for request \"" + request.method() + " " + request.uri() + "\"")
+                            .setHttpRequest(loggedRequest)
+                            .setMessageFormat("exception while returning response for request:{}")
+                            .setArguments(loggedRequest)
                             .setThrowable(future.cause())
                     );
                 }
@@ -125,4 +130,19 @@ public class UpstreamProxyRelayHandler extends SimpleChannelInboundHandler<FullH
         closeOnFlush(ctx.channel());
     }
 
+    /**
+     * The relayed request's method, path and query string as a request, so a credential in the query string is
+     * masked like any other logged request's when redactSecretsInLog is on.
+     */
+    static org.mockserver.model.HttpRequest loggedRequest(FullHttpRequest request) {
+        String uri = request.uri();
+        org.mockserver.model.HttpRequest loggedRequest = org.mockserver.model.HttpRequest.request(org.apache.commons.lang3.StringUtils.substringBefore(uri, "?")).withMethod(request.method().name());
+        try {
+            new io.netty.handler.codec.http.QueryStringDecoder(uri).parameters()
+                .forEach((name, values) -> loggedRequest.withQueryStringParameter(name, values.toArray(new String[0])));
+        } catch (RuntimeException undecodableQueryString) {
+            // left out rather than logged raw: it may carry a credential, and this runs on the failure path
+        }
+        return loggedRequest;
+    }
 }

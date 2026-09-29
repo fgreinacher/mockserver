@@ -118,19 +118,30 @@ public class LogEntryDeferredCurlTest {
     }
 
     private static LogEntry deferred(Exchange exchange) {
-        return forwardedEntry(exchange, DeferredLogArgument.deferred(() -> CURL.toCurl(exchange.request, exchange.remoteAddress)));
+        return forwardedEntry(exchange, DeferredLogArgument.curl(CURL, exchange.request, exchange.remoteAddress));
     }
 
+    // With redaction off the deferred curl renders exactly as the eager String did. With it on the two
+    // differ by design (the eager String bypassed redaction), so those renders are only checked for caching.
     private static List<String> renderings(LogEntry entry) {
-        Configuration redacting = configuration().redactSecretsInLog(true);
+        Configuration notRedacting = configuration().redactSecretsInLog(false);
         List<String> out = new ArrayList<>();
         out.add(entry.getMessage());
         out.add(entry.getCompactMessage());
+        out.add(entry.getMessage(notRedacting));
+        out.add(entry.getCompactMessage(notRedacting));
         out.add(new LogEntrySerializer(LOGGER).serialize(entry));
-        out.add(new LogEntrySerializer(LOGGER, redacting).serialize(entry));
+        out.add(new LogEntrySerializer(LOGGER, notRedacting).serialize(entry));
         out.add(String.valueOf(entry.getArguments()[2]));
-        out.add(String.valueOf(entry.getArguments(redacting)[2]));
+        out.add(String.valueOf(entry.getArguments(notRedacting)[2]));
         return out;
+    }
+
+    private static void renderRedacted(LogEntry entry) {
+        Configuration redacting = configuration().redactSecretsInLog(true);
+        entry.getMessage(redacting);
+        entry.getCompactMessage(redacting);
+        new LogEntrySerializer(LOGGER, redacting).serialize(entry);
     }
 
     @Test
@@ -180,6 +191,7 @@ public class LogEntryDeferredCurlTest {
             // the response is written after it is logged, and the entry is read later by retrieve / dashboard
             writer.mapMockServerResponseToNettyResponse(exchange.response).forEach(io.netty.util.ReferenceCountUtil::release);
             List<String> actual = renderings(retained);
+            renderRedacted(retained);
 
             assertThat(exchange.name, actual, is(expected));
             assertThat(exchange.name, derivedBytes(exchange.request.getBody()), is(0L));

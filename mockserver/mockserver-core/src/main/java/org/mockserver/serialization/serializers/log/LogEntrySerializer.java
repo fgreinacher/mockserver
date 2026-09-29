@@ -71,33 +71,38 @@ public class LogEntrySerializer extends StdSerializer<LogEntry> {
         if (logEntry.getHttpError() != null) {
             jgen.writeObjectField("httpError", logEntry.getHttpError());
         }
-        // getExpectation() derives the synthetic expectation on demand (see LogEntry), so read it once
-        // rather than building it twice per serialize.
-        org.mockserver.mock.Expectation expectation = logEntry.getExpectation();
+        // one view per entry: redaction settings and this entry's credential values are resolved once
+        LogEntry.RedactedView redacted = logEntry.redactedView(configuration);
+        // Derived on demand (see LogEntry), so read it once rather than building it twice per serialize.
+        org.mockserver.mock.Expectation expectation = redacted.getExpectation();
         if (expectation != null) {
             jgen.writeObjectField("expectation", expectation);
         }
         if (logEntry.getExpectationId() != null) {
             jgen.writeStringField("expectationId", logEntry.getExpectationId());
         }
-        if (logEntry.getMessageFormat() != null) {
-            jgen.writeStringField("messageFormat", logEntry.getMessageFormat());
+        String messageFormat = redacted.getMessageFormat();
+        if (messageFormat != null) {
+            jgen.writeStringField("messageFormat", messageFormat);
         }
-        if (logEntry.getMessage() != null) {
-            jgen.writeObjectField("message", logEntry.getMessage().replaceAll(" {2}", "   ").split(NEW_LINE));
+        String message = redacted.getMessage();
+        if (message != null) {
+            jgen.writeObjectField("message", message.replaceAll(" {2}", "   ").split(NEW_LINE));
         }
         // Hoisted deliberately: getArguments() converts a JSON body to a node tree on every
         // call now that the conversion is deferred out of the retained entry, so calling it
         // twice re-parsed every body twice per serialize. It was a free getter before.
-        Object[] arguments = logEntry.getArguments(configuration);
+        Object[] arguments = redacted.getArguments();
         if (arguments != null) {
             jgen.writeObjectField("arguments", arguments);
         }
-        if (logEntry.getBecause() != null) {
-            jgen.writeStringField("because", logEntry.getBecause());
+        String because = redacted.getBecause();
+        if (because != null) {
+            jgen.writeStringField("because", because);
         }
-        if (logEntry.getThrowable() != null) {
-            jgen.writeObjectField("throwable", logEntry.getThrowable());
+        Throwable throwable = redacted.getThrowable();
+        if (throwable != null) {
+            jgen.writeObjectField("throwable", throwable);
         }
         jgen.writeEndObject();
     }

@@ -119,6 +119,7 @@ public class JsonSchemaBodyDecoder {
                 mockServerLogger.logEvent(
                     new LogEntry()
                         .setLogLevel(Level.ERROR)
+                        .setHttpRequestIfPresent(requestForLogging)
                         .setMessageFormat("failed to convert:{}to json for json schema matcher:{}")
                         .setArguments(bodyAsString, bodyMatcher, prettyPrint(errorEntry.getKey()) + ": " + errorEntry.getValue())
                 );

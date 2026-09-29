@@ -452,6 +452,22 @@ public class HttpRequestTest {
     }
 
     @Test
+    public void shouldNotQuoteTheRequestWhenTheHostHeaderIsMissing() {
+        // the message reaches logs and error responses, where the whole request would carry its credentials
+        HttpRequest request = request("/some/path")
+            .withMethod("POST")
+            .withHeader("Authorization", "Bearer AUTHZ-SECRET-1")
+            .withQueryStringParameter("key", "QUERY-SECRET-5");
+
+        try {
+            request.socketAddressFromHostHeader();
+            throw new AssertionError("expected IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            assertThat(e.getMessage(), is("Host header must be provided to determine remote socket address, the request \"POST /some/path\" does not include the \"Host\" header"));
+        }
+    }
+
+    @Test
     public void shouldParseIpv6SocketAddressFromHostHeader() {
         // Given
         HttpRequest request = request()
