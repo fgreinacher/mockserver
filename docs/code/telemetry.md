@@ -95,6 +95,7 @@ Netty `ChannelDuplexHandler` that sits in the pipeline between `MockServerHttpSe
 1. Extracts `traceparent` and `tracestate` headers from MockServer `HttpRequest`
 2. Parses into `W3CTraceContext` and stores as a channel attribute
 3. If `otelGenerateTraceId` is enabled and no traceparent header exists, generates a new random trace context
+4. Otherwise (no header and generation off, or an invalid header) clears the attribute — it is overwritten on **every** request, because an HTTP/1.1 keep-alive connection is one channel for many requests and a stale context would otherwise be propagated onto, and parent the spans of, a later request that sent none. HTTP/2 and HTTP/3 requests each get their own stream channel, so they start with no context anyway.
 
 **Outbound (write):**
 1. If `otelPropagateTraceContext` is enabled, copies the stored trace context headers to the MockServer `HttpResponse` before it reaches `MockServerHttpServerCodec` for encoding

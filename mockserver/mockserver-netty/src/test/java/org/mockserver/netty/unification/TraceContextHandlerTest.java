@@ -228,6 +228,43 @@ public class TraceContextHandlerTest {
     }
 
     @Test
+    public void shouldNotCarryTraceContextOverToLaterRequestWithoutTraceparent() {
+        // given — one channel, as for an HTTP/1.1 keep-alive connection
+        Configuration configuration = configuration().otelPropagateTraceContext(true).otelGenerateTraceId(false);
+        channel = new EmbeddedChannel(new TraceContextHandler(configuration));
+        channel.writeInbound(request().withPath("/a")
+            .withHeader("traceparent", VALID_TRACEPARENT)
+            .withHeader("tracestate", VALID_TRACESTATE));
+        channel.writeOutbound(response().withStatusCode(200));
+        HttpResponse responseA = channel.readOutbound();
+        assertThat(responseA.getFirstHeader("traceparent"), is(VALID_TRACEPARENT));
+
+        // when — a second request without traceparent
+        channel.writeInbound(request().withPath("/b"));
+        channel.writeOutbound(response().withStatusCode(200));
+
+        // then
+        HttpResponse responseB = channel.readOutbound();
+        assertThat(channel.attr(TraceContextHandler.TRACE_CONTEXT).get(), is(nullValue()));
+        assertThat(responseB.containsHeader("traceparent"), is(false));
+        assertThat(responseB.containsHeader("tracestate"), is(false));
+    }
+
+    @Test
+    public void shouldNotCarryTraceContextOverToLaterRequestWithInvalidTraceparent() {
+        // given
+        Configuration configuration = configuration().otelPropagateTraceContext(true);
+        channel = new EmbeddedChannel(new TraceContextHandler(configuration));
+        channel.writeInbound(request().withPath("/a").withHeader("traceparent", VALID_TRACEPARENT));
+
+        // when
+        channel.writeInbound(request().withPath("/b").withHeader("traceparent", "00-short-00f067aa0ba902b7-01"));
+
+        // then
+        assertThat(channel.attr(TraceContextHandler.TRACE_CONTEXT).get(), is(nullValue()));
+    }
+
+    @Test
     public void shouldPassThroughNonHttpRequestMessages() {
         // given
         Configuration configuration = configuration();

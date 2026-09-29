@@ -12,7 +12,8 @@ import org.mockserver.uuid.UUIDService;
 /**
  * Netty handler that extracts W3C {@code traceparent} / {@code tracestate}
  * headers from inbound {@link HttpRequest} objects and stores the parsed
- * {@link W3CTraceContext} as a channel attribute. When
+ * {@link W3CTraceContext} as a channel attribute, replacing (or clearing) any
+ * context from an earlier request on the same connection. When
  * {@code otelPropagateTraceContext} is enabled, the same headers are copied
  * to outbound {@link HttpResponse} objects so the caller can correlate a
  * request-response pair within its distributed trace.
@@ -40,21 +41,22 @@ public class TraceContextHandler extends ChannelDuplexHandler {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) throws Exception {
         if (msg instanceof HttpRequest) {
-            HttpRequest request = (HttpRequest) msg;
-            String traceparent = request.getFirstHeader("traceparent");
-            String tracestate = request.getFirstHeader("tracestate");
-
-            if (traceparent != null && !traceparent.isEmpty()) {
-                W3CTraceContext context = W3CTraceContext.parse(traceparent, tracestate);
-                if (context != null && context.isValid()) {
-                    ctx.channel().attr(TRACE_CONTEXT).set(context);
-                }
-            } else if (configuration.otelGenerateTraceId()) {
-                W3CTraceContext generated = generateTraceContext();
-                ctx.channel().attr(TRACE_CONTEXT).set(generated);
-            }
+            // set on every request, including to null: an HTTP/1.1 keep-alive connection is one channel for
+            // many requests, so a context left over from an earlier request must never reach a later one
+            ctx.channel().attr(TRACE_CONTEXT).set(traceContextFor((HttpRequest) msg));
         }
         ctx.fireChannelRead(msg);
+    }
+
+    private W3CTraceContext traceContextFor(HttpRequest request) {
+        String traceparent = request.getFirstHeader("traceparent");
+        if (traceparent != null && !traceparent.isEmpty()) {
+            W3CTraceContext context = W3CTraceContext.parse(traceparent, request.getFirstHeader("tracestate"));
+            return context != null && context.isValid() ? context : null;
+        } else if (configuration.otelGenerateTraceId()) {
+            return generateTraceContext();
+        }
+        return null;
     }
 
     @Override

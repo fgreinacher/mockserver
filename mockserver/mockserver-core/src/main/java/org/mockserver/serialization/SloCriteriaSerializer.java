@@ -34,8 +34,10 @@ public class SloCriteriaSerializer {
     private ObjectWriter objectWriter = ObjectMapperFactory.createObjectMapper(true, false);
     private ObjectMapper objectMapper = ObjectMapperFactory.createObjectMapper();
     // SloVerdict / SloObjectiveResult are plain beans with fluent withX mutators (no setX),
-    // so deserialize via field access rather than setters.
+    // so deserialize via field access rather than setters. copy() because createObjectMapper()
+    // is shared process-wide: widening its visibility breaks serialising any Throwable.
     private ObjectMapper verdictObjectMapper = ObjectMapperFactory.createObjectMapper()
+        .copy()
         .setVisibility(PropertyAccessor.FIELD, JsonAutoDetect.Visibility.ANY);
 
     public SloCriteriaSerializer(MockServerLogger mockServerLogger) {

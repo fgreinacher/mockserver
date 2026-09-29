@@ -90,6 +90,20 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 
 ### Fixed
 
+- **A request without a `traceparent` header no longer gets the trace context of an earlier request on
+  the same connection.** MockServer kept the last valid `traceparent`/`tracestate` it had seen on an
+  HTTP/1.1 keep-alive connection. A later request on that connection that sent none (or an invalid one)
+  had its request span parented to the earlier trace whenever request spans were enabled, and with
+  `mockserver.otelPropagateTraceContext` on it also got the earlier request's trace headers on its
+  response. The trace context is now reset on every request. HTTP/2 and HTTP/3 were not affected.
+- **Serialising an exception no longer fails once SLO verification support has been loaded.** Creating
+  a Java `MockServerClient` (including through `ClientAndServer` and the JUnit and Spring integrations),
+  or the first `PUT /mockserver/verifySLO`, changed the JSON mapper that MockServer shares across the
+  whole JVM so that it read private fields. From then on, serialising a non-JDK exception (for example
+  one attached to a log entry) failed with `Unable to make field private java.lang.String
+  java.lang.Throwable.detailMessage accessible`, which could make retrieving log entries
+  (`PUT /mockserver/retrieve?type=LOG_ENTRIES`) fail. The SLO serialiser now uses its own copy of the
+  mapper.
 - **Matching no longer keeps using an out-of-date expectation list after expectations change while
   requests are being served.** A request that arrived at the same moment as an expectation was added,
   updated, removed or cleared could cache the list of expectations as it was before that change, and
