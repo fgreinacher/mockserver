@@ -56,4 +56,12 @@ public interface BodySource {
     default HttpRequest requestForLogging() {
         return null;
     }
+
+    /**
+     * The body parsed once for the candidate scan in progress on this thread, or {@code null} when no
+     * scan is open (each matcher then parses for itself).
+     */
+    default ParsedBodyCache parsedBodyCache() {
+        return null;
+    }
 }

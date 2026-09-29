@@ -1,11 +1,13 @@
 package org.mockserver.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import org.mockserver.matchers.ParsedBodyCache;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.stream.Collectors;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
@@ -54,6 +56,14 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
     // on a single thread, so this lazy cache is safe without synchronisation.
     @JsonIgnore
     private transient Map<ConvertedBodyType, String> convertedBodyCache;
+    // The body parsed once for the candidate scan in progress (see ParsedBodyCache): null outside a
+    // scan, the owning Thread while a scan is open and nothing is parsed, then that thread's
+    // ParsedBodyCache. Cleared when the scan ends, so it never outlives it — this request may be
+    // retained by the event log.
+    @JsonIgnore
+    private transient volatile Object parsedBodyCache;
+    private static final AtomicReferenceFieldUpdater<HttpRequest, Object> PARSED_BODY_CACHE =
+        AtomicReferenceFieldUpdater.newUpdater(HttpRequest.class, Object.class, "parsedBodyCache");
     // Regex capture groups extracted from the matched expectation's path pattern when this request
     // matched. Populated post-match by HttpRequestPropertiesMatcher so a response/forward template can
     // reference the captured values (e.g. $request.pathGroups[1] in Velocity, {{ request.pathGroups.1 }}
@@ -1116,6 +1126,54 @@ public class HttpRequest extends RequestDefinition implements HttpMessage<HttpRe
         String converted = supplier.get();
         convertedBodyCache.put(type, converted);
         return converted;
+    }
+
+    /**
+     * Opens a {@link ParsedBodyCache} scope owned by the calling thread for one candidate scan; the cache
+     * itself is created only when a matcher first asks for it. Returns {@code false}, opening nothing,
+     * when a scope is already open (an enclosing scan on this thread keeps using its own; any other
+     * thread parses for itself). A {@code true} result MUST be paired with
+     * {@link #closeParsedBodyCache()} in a {@code finally} block.
+     * <p>Internal to request matching; not a supported client API.
+     */
+    @JsonIgnore
+    public boolean openParsedBodyCache() {
+        return PARSED_BODY_CACHE.compareAndSet(this, null, Thread.currentThread());
+    }
+
+    /**
+     * Closes the scope opened by {@link #openParsedBodyCache()} on this thread, emptying its cache.
+     * <p>Internal to request matching; not a supported client API.
+     */
+    @JsonIgnore
+    public void closeParsedBodyCache() {
+        Object scope = parsedBodyCache;
+        if (scope instanceof ParsedBodyCache cache && cache.isOwnedByCurrentThread()) {
+            PARSED_BODY_CACHE.compareAndSet(this, scope, null);
+            cache.clear();
+        } else if (scope == Thread.currentThread()) {
+            PARSED_BODY_CACHE.compareAndSet(this, scope, null);
+        }
+    }
+
+    /**
+     * The cache of the scope the calling thread has open on this request, created on first use, or
+     * {@code null} when this thread has no scope open.
+     * <p>Internal to request matching; not a supported client API.
+     */
+    @JsonIgnore
+    public ParsedBodyCache parsedBodyCacheForCurrentThread() {
+        Object scope = parsedBodyCache;
+        if (scope instanceof ParsedBodyCache cache) {
+            return cache.isOwnedByCurrentThread() ? cache : null;
+        }
+        if (scope == Thread.currentThread()) {
+            // only the owning thread replaces its own scope marker, so no other write can intervene
+            ParsedBodyCache cache = ParsedBodyCache.forCurrentThread();
+            parsedBodyCache = cache;
+            return cache;
+        }
+        return null;
     }
 
     @JsonIgnore

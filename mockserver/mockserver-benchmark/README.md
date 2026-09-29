@@ -51,7 +51,7 @@ Parameters:
 | Param | Values | Meaning |
 |-------|--------|---------|
 | `expectationCount` | 1, 10, 100, 1000 | number of registered expectations (scan length) |
-| `matcherType` | EXACT, REGEX, JSON_BODY | shape of the registered matchers |
+| `matcherType` | EXACT, REGEX, JSON_BODY, HEADERS_MISS, XML_BODY, JSON_DEEP_DEFER, JSON_DEEP_REJECT, JSON_PATH, XPATH, JSON_SCHEMA | shape of the registered matchers (see the `matcherType` javadoc); every CI consumer pins this param, so adding a value never widens their runs |
 | `detailedMatchFailures` | false, true | `false` = the opt-out matcher hot path; `true` (the shipped default) = the `MatchDifference` → `StringFormatter` formatting path (the #1/#2 production allocation sites, made lazy by `a8898b263`) |
 
 Metrics are off and INFO logging is off. The `detailedMatchFailures=false` arm is

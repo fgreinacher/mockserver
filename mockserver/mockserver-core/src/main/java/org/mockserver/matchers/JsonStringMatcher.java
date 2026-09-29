@@ -37,7 +37,6 @@ public class JsonStringMatcher extends BodyMatcher<String> {
     // matchers built from the same JSON are the same matcher whether or not either has matched yet.
     private static final String[] EXCLUDED_FIELDS = {"mockServerLogger", "matcherJsonNode", "baseConfiguration", "baseConfigurationMatchers"};
     private static final ObjectWriter PRETTY_PRINTER = ObjectMapperFactory.createObjectMapper(true, false);
-    private static final ThreadLocal<Object[]> BODY_PARSE_CACHE = ThreadLocal.withInitial(() -> new Object[2]);
     // Parsing both documents here and handing json-unit the resulting Jackson nodes avoids
     // re-parsing on every match, but it makes matching depend on which JSON provider json-unit
     // resolves to: it chooses a NodeFactory by asking each in turn whether it claims the value and
@@ -137,7 +136,15 @@ public class JsonStringMatcher extends BodyMatcher<String> {
     }
 
     public boolean matches(final MatchDifference context, String matched) {
-        return matches(context, matched, JSON_UNIT_ACCEPTS_JACKSON_NODES);
+        return matches(context, matched, JSON_UNIT_ACCEPTS_JACKSON_NODES, ParsedBodyCache.NONE);
+    }
+
+    /**
+     * Match reusing the body tree {@code parsedBodyCache} holds for the scan in progress, so a body
+     * matched against many JSON expectations is parsed once rather than once per expectation.
+     */
+    boolean matches(final MatchDifference context, String matched, ParsedBodyCache parsedBodyCache) {
+        return matches(context, matched, JSON_UNIT_ACCEPTS_JACKSON_NODES, parsedBodyCache);
     }
 
     /**
@@ -147,6 +154,10 @@ public class JsonStringMatcher extends BodyMatcher<String> {
      * without forking a JVM.
      */
     boolean matches(final MatchDifference context, String matched, boolean useJacksonNodes) {
+        return matches(context, matched, useJacksonNodes, ParsedBodyCache.NONE);
+    }
+
+    private boolean matches(final MatchDifference context, String matched, boolean useJacksonNodes, ParsedBodyCache parsedBodyCache) {
         boolean result = false;
 
         try {
@@ -163,17 +174,8 @@ public class JsonStringMatcher extends BodyMatcher<String> {
                         if (matcherJsonNode == null) {
                             matcherJsonNode = ObjectMapperFactory.createObjectMapper().readTree(matcher);
                         }
-                        Object[] cache = BODY_PARSE_CACHE.get();
-                        JsonNode matchedNode;
-                        if (matched.equals(cache[0])) {
-                            matchedNode = (JsonNode) cache[1];
-                        } else {
-                            matchedNode = ObjectMapperFactory.createObjectMapper().readTree(matched);
-                            cache[0] = matched;
-                            cache[1] = matchedNode;
-                        }
                         expected = matcherJsonNode;
-                        actual = matchedNode;
+                        actual = parsedBodyCache.jsonTree(matched);
                     } else {
                         // hand json-unit the raw JSON text and let it parse with its own provider
                         expected = matcher;

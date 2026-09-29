@@ -1,6 +1,7 @@
 package org.mockserver.matchers;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.jayway.jsonpath.Configuration;
 import com.jayway.jsonpath.JsonPath;
 import org.apache.commons.lang3.StringUtils;
 import org.mockserver.log.model.LogEntry;
@@ -17,14 +18,18 @@ import static org.slf4j.event.Level.DEBUG;
  * @author jamesdbloom
  */
 public class JsonPathMatcher extends BodyMatcher<String> {
-    private static final String[] EXCLUDED_FIELDS = {"mockServerLogger", "jsonPath"};
+    private static final String[] EXCLUDED_FIELDS = {"mockServerLogger", "jsonPath", "readsOnly"};
     private final MockServerLogger mockServerLogger;
     private final String matcher;
     private JsonPath jsonPath;
+    // Jayway's append() writes to the document it reads, so a path that may call it must never read a
+    // document shared with other matchers; any mention of the name opts the path out of sharing.
+    private final boolean readsOnly;
 
     JsonPathMatcher(MockServerLogger mockServerLogger, String matcher) {
         this.mockServerLogger = mockServerLogger;
         this.matcher = matcher;
+        this.readsOnly = matcher == null || !matcher.contains("append");
         if (isNotBlank(matcher)) {
             try {
                 jsonPath = JsonPath.compile(matcher);
@@ -42,6 +47,14 @@ public class JsonPathMatcher extends BodyMatcher<String> {
     }
 
     public boolean matches(final MatchDifference context, final String matched) {
+        return matches(context, matched, null);
+    }
+
+    /**
+     * Match reading the document {@code parsedBodyCache} holds for the scan in progress, so a body
+     * matched against many JSONPath expectations is parsed once rather than once per expectation.
+     */
+    boolean matches(final MatchDifference context, final String matched, final ParsedBodyCache parsedBodyCache) {
         boolean result = false;
         boolean alreadyLoggedMatchFailure = false;
 
@@ -54,7 +67,7 @@ public class JsonPathMatcher extends BodyMatcher<String> {
             result = true;
         } else if (matched != null) {
             try {
-                Object jsonPathResult = jsonPath.read(matched);
+                Object jsonPathResult = read(matched, parsedBodyCache);
                 if (jsonPathResult instanceof Collection) {
                     result = !((Collection<?>) jsonPathResult).isEmpty();
                 } else {
@@ -73,6 +86,17 @@ public class JsonPathMatcher extends BodyMatcher<String> {
         }
 
         return not != result;
+    }
+
+    private Object read(String matched, ParsedBodyCache parsedBodyCache) {
+        // JsonPath.read(String) rejects an empty string, parses with the default configuration's
+        // provider, then reads the document with that configuration: the same read, with the parse
+        // shared. An empty body keeps the original call so it keeps its original error.
+        if (parsedBodyCache == null || !readsOnly || matched.isEmpty()) {
+            return jsonPath.read(matched);
+        }
+        Configuration configuration = Configuration.defaultConfiguration();
+        return jsonPath.read(parsedBodyCache.jsonPathDocument(matched, configuration.jsonProvider()), configuration);
     }
 
     public boolean isBlank() {

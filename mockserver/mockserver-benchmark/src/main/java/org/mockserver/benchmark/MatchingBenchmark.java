@@ -9,7 +9,9 @@ import org.mockserver.mock.RequestMatchers;
 import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.JsonBody;
+import org.mockserver.model.JsonPathBody;
 import org.mockserver.model.JsonSchemaBody;
+import org.mockserver.model.XPathBody;
 import org.mockserver.scheduler.Scheduler;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.BenchmarkMode;
@@ -91,9 +93,15 @@ public class MatchingBenchmark {
      *       fast-rejects before the matrix is built — measuring the win. BODY precedes HEADERS in the
      *       field order and the expectations carry blank method/path, so the body matcher is reached
      *       for ALL N.</li>
+     *   <li>{@code JSON_PATH} / {@code JSON_SCHEMA} — every expectation carries a JSONPath (resp.
+     *       JSON-schema) body matcher that the ~1KB JSON request body never satisfies, so the body is
+     *       handed to the matcher once per candidate expectation — measuring what each candidate pays
+     *       to parse the same request body.</li>
+     *   <li>{@code XPATH} — every expectation carries an XPath body matcher that the ~1KB XML request
+     *       body never satisfies; measures the per-candidate DOM parse and XPath evaluation.</li>
      * </ul>
      */
-    @Param({"EXACT", "REGEX", "JSON_BODY", "HEADERS_MISS", "XML_BODY", "JSON_DEEP_DEFER", "JSON_DEEP_REJECT"})
+    @Param({"EXACT", "REGEX", "JSON_BODY", "HEADERS_MISS", "XML_BODY", "JSON_DEEP_DEFER", "JSON_DEEP_REJECT", "JSON_PATH", "XPATH", "JSON_SCHEMA"})
     public String matcherType;
 
     /**
@@ -178,6 +186,7 @@ public class MatchingBenchmark {
                 r.withHeader(new Header("Content-Type", "application/json"));
                 return r;
             }
+            case "XPATH":
             case "XML_BODY": {
                 // an application/xml body matched against JSON-schema body matchers -> bodyMatches
                 // routes through convertToJson's XML branch (DOM parse + ObjectMapper) per expectation
@@ -198,6 +207,10 @@ public class MatchingBenchmark {
                 // missing the nested order.customer.tier key every expectation requires, so the
                 // pre-filter fast-rejects before json-unit builds the ComparisonMatrix. Measures the win.
                 return request().withBody(new JsonBody(JSON_DEEP_REJECT_BODY, JsonBody.DEFAULT_MATCH_TYPE));
+            case "JSON_PATH":
+            case "JSON_SCHEMA":
+                // a ~1KB JSON document that satisfies no expectation's JSONPath / JSON schema
+                return request().withBody(new JsonBody(JSON_ORDER_BODY, JsonBody.DEFAULT_MATCH_TYPE));
             default:
                 // matches none of the registered expectations -> full scan of all N
                 return request()
@@ -240,6 +253,21 @@ public class MatchingBenchmark {
                 return new Expectation(
                     request().withBody(new JsonBody(deepExpectedBody(i), JsonBody.DEFAULT_MATCH_TYPE))
                 ).thenRespond(response().withBody("d" + i));
+            case "JSON_PATH":
+                // blank method/path -> BODY is reached for all N; the filter selects no item
+                return new Expectation(
+                    request().withBody(JsonPathBody.jsonPath("$.order.items[?(@.sku == 'SKU-" + i + "')]"))
+                ).thenRespond(response().withBody("p" + i));
+            case "XPATH":
+                return new Expectation(
+                    request().withBody(XPathBody.xpath("/order/items/item[@sku='SKU-" + i + "']"))
+                ).thenRespond(response().withBody("x" + i));
+            case "JSON_SCHEMA":
+                return new Expectation(
+                    request().withBody(JsonSchemaBody.jsonSchema(
+                        "{\"type\":\"object\",\"properties\":{\"order\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":" + (1000000 + i) + "}},\"required\":[\"id\"]}},\"required\":[\"order\"]}"
+                    ))
+                ).thenRespond(response().withBody("s" + i));
             case "EXACT":
             default:
                 return new Expectation(request().withMethod("GET").withPath("/exact/path-" + i))
@@ -274,6 +302,20 @@ public class MatchingBenchmark {
     private static final String JSON_DEEP_REJECT_BODY =
         "{\"order\":{\"id\":999999,\"customer\":{\"name\":\"Acme\"},"
             + "\"items\":[{\"sku\":\"ZZZ-999\",\"qty\":0,\"price\":0.0}]}}";
+
+    /** The JSON counterpart of {@link #XML_BODY} (~1KB) for the JSON_PATH and JSON_SCHEMA arms. */
+    private static final String JSON_ORDER_BODY =
+        "{\"order\":{\"id\":42,"
+            + "\"customer\":{\"name\":\"Acme Corporation\","
+            + "\"contact\":{\"email\":\"orders@acme.example.com\",\"phone\":\"+1-555-0100\"},"
+            + "\"address\":{\"street\":\"123 Industrial Way\",\"city\":\"Springfield\",\"region\":\"IL\","
+            + "\"postcode\":\"62704\",\"country\":\"US\"}},"
+            + "\"items\":["
+            + "{\"sku\":\"AAA-111\",\"description\":\"Widget, large, blue\",\"quantity\":10,\"unitPrice\":19.99},"
+            + "{\"sku\":\"BBB-222\",\"description\":\"Gadget, small, red\",\"quantity\":5,\"unitPrice\":49.50},"
+            + "{\"sku\":\"CCC-333\",\"description\":\"Sprocket assembly, stainless\",\"quantity\":2,\"unitPrice\":129.00}],"
+            + "\"payment\":{\"method\":\"invoice\",\"terms\":\"net30\",\"currency\":\"USD\"},"
+            + "\"notes\":\"Please deliver to the loading dock at the rear of the building before noon.\"}}";
 
     /** A non-trivial (~1KB), nested XML document so the DOM parse cost is visible per conversion. */
     private static final String XML_BODY =

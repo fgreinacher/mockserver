@@ -81,6 +81,11 @@ public class BodyMatching {
             public HttpRequest requestForLogging() {
                 return request;
             }
+
+            @Override
+            public ParsedBodyCache parsedBodyCache() {
+                return request.parsedBodyCacheForCurrentThread();
+            }
         };
     }
 
@@ -209,7 +214,7 @@ public class BodyMatching {
                 // tolerates an absent body (returns null) so the matcher sees a clean non-match
                 // rather than throwing an internal NPE
                 try {
-                    bodyMatches = matches(context, bodyMatcher, jsonSchemaBodyParser.convertToJson(actual, bodyMatcher));
+                    bodyMatches = matchesJson(context, bodyMatcher, jsonSchemaBodyParser.convertToJson(actual, bodyMatcher), actual.parsedBodyCache());
                 } catch (IllegalArgumentException iae) {
                     if (context != null) {
                         context.addDifference(mockServerLogger, iae, iae.getMessage());
@@ -221,6 +226,26 @@ public class BodyMatching {
             }
         }
         return bodyMatches;
+    }
+
+    /**
+     * Matches a JSON-family matcher, letting the JSON and JSONPath matchers reuse the body parsed for
+     * this scan when one is open.
+     */
+    private static boolean matchesJson(MatchDifference context, BodyMatcher matcher, String json, ParsedBodyCache parsedBodyCache) {
+        if (parsedBodyCache == null) {
+            return matches(context, matcher, json);
+        }
+        if (context != null) {
+            context.currentField(BODY);
+        }
+        if (matcher instanceof JsonStringMatcher jsonStringMatcher) {
+            return jsonStringMatcher.matches(context, json, parsedBodyCache);
+        }
+        if (matcher instanceof JsonPathMatcher jsonPathMatcher) {
+            return jsonPathMatcher.matches(context, json, parsedBodyCache);
+        }
+        return matcher.matches(context, json);
     }
 
     private static <T> boolean matches(MatchDifference context, BodyMatcher matcher, T t) {

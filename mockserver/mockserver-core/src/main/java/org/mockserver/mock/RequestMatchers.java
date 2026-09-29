@@ -11,6 +11,7 @@ import org.mockserver.matchers.HttpRequestMatcher;
 import org.mockserver.matchers.LlmConversationMatcher;
 import org.mockserver.matchers.MatchDifference;
 import org.mockserver.matchers.MatcherBuilder;
+import org.mockserver.matchers.ParsedBodyCache;
 import org.mockserver.metrics.Metrics;
 import org.mockserver.mock.drift.PercentileTracker;
 import org.mockserver.mock.listeners.MockServerMatcherNotifier;
@@ -827,6 +828,30 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     }
 
     public Expectation firstMatchingExpectation(RequestDefinition requestDefinition) {
+        boolean parsedBodyCacheOpened = openParsedBodyCache(requestDefinition);
+        try {
+            return firstMatchingExpectationWithParsedBodyCache(requestDefinition);
+        } finally {
+            closeParsedBodyCache(requestDefinition, parsedBodyCacheOpened);
+        }
+    }
+
+    /**
+     * Opens a {@link ParsedBodyCache} scope on an {@link HttpRequest} for one scan over the
+     * expectations, so the scan's JSON body matchers parse the body once; {@code false} when this call
+     * opened nothing (not an {@code HttpRequest}, or a scope is already open).
+     */
+    private static boolean openParsedBodyCache(RequestDefinition requestDefinition) {
+        return requestDefinition instanceof HttpRequest && ((HttpRequest) requestDefinition).openParsedBodyCache();
+    }
+
+    private static void closeParsedBodyCache(RequestDefinition requestDefinition, boolean opened) {
+        if (opened) {
+            ((HttpRequest) requestDefinition).closeParsedBodyCache();
+        }
+    }
+
+    private Expectation firstMatchingExpectationWithParsedBodyCache(RequestDefinition requestDefinition) {
         Expectation matchedExpectation = null;
         Expectation closestMatchExpectation = null;
         HttpRequestMatcher closestMatchMatcher = null;
@@ -1981,13 +2006,18 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         if (requestDefinition == null) {
             return null;
         }
-        for (HttpRequestMatcher httpRequestMatcher : httpRequestMatchers.toSortedList()) {
-            if ((httpRequestMatcher.isResponseInProgress() || httpRequestMatcher.isActive())
-                && httpRequestMatcher.matches(requestDefinition)) {
-                return httpRequestMatcher.getExpectation();
+        boolean parsedBodyCacheOpened = openParsedBodyCache(requestDefinition);
+        try {
+            for (HttpRequestMatcher httpRequestMatcher : httpRequestMatchers.toSortedList()) {
+                if ((httpRequestMatcher.isResponseInProgress() || httpRequestMatcher.isActive())
+                    && httpRequestMatcher.matches(requestDefinition)) {
+                    return httpRequestMatcher.getExpectation();
+                }
             }
+            return null;
+        } finally {
+            closeParsedBodyCache(requestDefinition, parsedBodyCacheOpened);
         }
-        return null;
     }
 
     public List<Expectation> retrieveExpectationsMatchingRequest(RequestDefinition requestDefinition) {
@@ -1995,12 +2025,17 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         if (requestDefinition == null) {
             return expectations;
         }
-        getHttpRequestMatchersCopy().forEach(httpRequestMatcher -> {
-            if ((httpRequestMatcher.isResponseInProgress() || httpRequestMatcher.isActive())
-                && httpRequestMatcher.matches(requestDefinition)) {
-                expectations.add(httpRequestMatcher.getExpectation());
-            }
-        });
+        boolean parsedBodyCacheOpened = openParsedBodyCache(requestDefinition);
+        try {
+            getHttpRequestMatchersCopy().forEach(httpRequestMatcher -> {
+                if ((httpRequestMatcher.isResponseInProgress() || httpRequestMatcher.isActive())
+                    && httpRequestMatcher.matches(requestDefinition)) {
+                    expectations.add(httpRequestMatcher.getExpectation());
+                }
+            });
+        } finally {
+            closeParsedBodyCache(requestDefinition, parsedBodyCacheOpened);
+        }
         return expectations;
     }
 
@@ -2180,6 +2215,15 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      * when there are no expectations (or none produced a usable diff).
      */
     public ClosestMatchHint findClosestMatchHint(HttpRequest httpRequest) {
+        boolean parsedBodyCacheOpened = openParsedBodyCache(httpRequest);
+        try {
+            return findClosestMatchHintWithParsedBodyCache(httpRequest);
+        } finally {
+            closeParsedBodyCache(httpRequest, parsedBodyCacheOpened);
+        }
+    }
+
+    private ClosestMatchHint findClosestMatchHintWithParsedBodyCache(HttpRequest httpRequest) {
         int closestMatchFailures = Integer.MAX_VALUE;
         Map<MatchDifference.Field, List<String>> closestDifferences = null;
         String closestExpectationId = null;
