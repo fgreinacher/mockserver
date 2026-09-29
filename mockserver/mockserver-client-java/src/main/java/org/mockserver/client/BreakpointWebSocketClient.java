@@ -5,6 +5,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.channel.socket.SocketChannel;
@@ -39,6 +40,7 @@ import org.mockserver.serialization.model.PausedStreamFrameDTO;
 import org.mockserver.serialization.model.StreamFrameDecisionDTO;
 import org.mockserver.serialization.model.WebSocketClientIdDTO;
 import org.mockserver.serialization.model.WebSocketErrorDTO;
+import org.mockserver.socket.NettyAllocator;
 import org.slf4j.event.Level;
 
 import javax.net.ssl.SSLException;
@@ -165,6 +167,7 @@ class BreakpointWebSocketClient {
             new Bootstrap()
                 .group(this.eventLoopGroup)
                 .channel(NioSocketChannel.class)
+                .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
                 .attr(REGISTRATION_FUTURE, registrationFuture)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override

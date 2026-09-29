@@ -22,6 +22,7 @@ import org.mockserver.netty.grpc.GrpcToHttpRequestHandler;
 import org.mockserver.netty.grpc.GrpcToHttpResponseHandler;
 import org.mockserver.netty.mcp.McpStreamableHttpHandler;
 import org.mockserver.netty.websocketregistry.CallbackWebSocketServerHandler;
+import org.mockserver.socket.NettyAllocator;
 
 import java.security.cert.Certificate;
 
@@ -120,6 +121,8 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
 
     @Override
     protected void initChannel(Http2StreamChannel ch) {
+        // stream child channels get Netty's default (adaptive) allocator, not the parent's
+        NettyAllocator.pin(ch);
         ChannelPipeline pipeline = ch.pipeline();
 
         // HTTP/2 child channels do NOT inherit parent-channel attributes (AbstractHttp2StreamChannel

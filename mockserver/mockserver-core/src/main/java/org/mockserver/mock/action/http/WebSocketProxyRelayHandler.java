@@ -14,6 +14,7 @@ import org.mockserver.model.Header;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.model.NottableString;
+import org.mockserver.socket.NettyAllocator;
 import org.mockserver.socket.NettyTransport;
 import org.mockserver.socket.tls.NettySslContextFactory;
 import org.slf4j.event.Level;
@@ -132,6 +133,7 @@ public class WebSocketProxyRelayHandler {
         Bootstrap bootstrap = new Bootstrap()
             .group(clientChannel.eventLoop())
             .channel(NettyTransport.socketChannelClassFor(clientChannel.eventLoop()))
+            .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, configuration.socketConnectionTimeoutInMillis().intValue())
             .handler(new ChannelInitializer<Channel>() {
                 @Override

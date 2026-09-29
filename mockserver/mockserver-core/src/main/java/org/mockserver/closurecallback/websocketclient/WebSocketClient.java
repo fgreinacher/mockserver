@@ -4,6 +4,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
@@ -26,6 +27,7 @@ import org.mockserver.model.HttpResponse;
 import org.mockserver.serialization.WebSocketMessageSerializer;
 import org.mockserver.serialization.model.WebSocketClientIdDTO;
 import org.mockserver.serialization.model.WebSocketErrorDTO;
+import org.mockserver.socket.NettyAllocator;
 import org.slf4j.event.Level;
 
 import javax.net.ssl.SSLException;
@@ -68,6 +70,7 @@ public class WebSocketClient<T extends HttpMessage> {
             new Bootstrap()
                 .group(this.eventLoopGroup)
                 .channel(NioSocketChannel.class)
+                .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
                 .attr(REGISTRATION_FUTURE, registrationFuture)
                 .handler(new ChannelInitializer<SocketChannel>() {
                     @Override

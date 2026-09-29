@@ -63,8 +63,26 @@ Dedicated activation tests in `EpollTransportIntegrationTest` (`mockserver-netty
 | Channel | `EpollServerSocketChannel` or `NioServerSocketChannel` | Server socket (transport-matched) |
 | SO_BACKLOG | 1024 | Connection queue depth |
 | AUTO_READ | true | Automatic read on new channels |
-| ALLOCATOR | `PooledByteBufAllocator.DEFAULT` | Memory-efficient buffer allocation |
+| ALLOCATOR | `NettyAllocator.ALLOCATOR` (`PooledByteBufAllocator.DEFAULT`) | One pooled allocator for every channel — see [ByteBuf Allocator](#bytebuf-allocator) |
 | WRITE_BUFFER_WATER_MARK | 8KB low / 32KB high — server socket only; accepted child channels use Netty's default (32KB low / 64KB high) | Write-buffer backpressure on the acceptor socket. Set via `.option()`, which applies to the `ServerSocketChannel`, not to accepted child channels. `WriteBufferWaterMark.DEFAULT` in Netty 4.2 is 32 KB / 64 KB; `MockServer.java` (line ~205) intentionally sets a narrower mark on the acceptor, but child channels retain the Netty default. |
+
+### ByteBuf Allocator
+
+All request/response traffic uses one allocator, `NettyAllocator.ALLOCATOR` (`org.mockserver.socket`, which is `PooledByteBufAllocator.DEFAULT`), so the buffers that carry it come from one set of pooled arenas. Two small exceptions keep Netty's default: HTTP/3 connection-local control and QPACK encoder/decoder streams (Netty opens them itself, and the codec's `streamOption` does not reach them), and the `ByteBufAllocator.DEFAULT` use inside OpenSSL context creation. Netty 4.2's `ByteBufAllocator.DEFAULT` is the adaptive allocator, and any channel whose allocator is not set explicitly gets it — a bootstrap `option`/`childOption` does not reach channels a codec creates itself.
+
+| Channel | How the allocator is set |
+|---------|--------------------------|
+| Listening socket and accepted connections (`MockServer`) | `option(ALLOCATOR)` / `childOption(ALLOCATOR)` |
+| HTTP/2 stream child channels, server side | `NettyAllocator.pin(ch)` in `Http2MultiplexChildInitializer.initChannel` |
+| Forward/proxy client connections (`NettyHttpClient`, HTTP and binary) | `option(ALLOCATOR)` |
+| HTTP/2 stream child channels, forward side | `NettyAllocator.pin(ch)` in `Http2ForwardStreamChildInitializer.initChannel` (outbound and inbound streams) |
+| CONNECT/SOCKS relay loopback (`RelayConnectHandler`) | `option(ALLOCATOR)` |
+| WebSocket proxy upstream (`WebSocketProxyRelayHandler`), callback WebSocket client (`WebSocketClient`), Java client breakpoint WebSocket (`BreakpointWebSocketClient`) | `option(ALLOCATOR)` |
+| DNS UDP server | `option(ALLOCATOR)` |
+| HTTP/3: UDP socket, QUIC connection and QUIC request streams (`Http3Server`; connection-local control/QPACK streams keep Netty's default); CONNECT-UDP relay socket (`Http3ConnectUdpHandler`) | `option(ALLOCATOR)` on the bootstrap; `option`/`streamOption(ALLOCATOR)` on the QUIC codec builder |
+| `EchoServer` (test upstream) | `childOption(ALLOCATOR)` |
+
+HTTP/2 stream channels are the case that is easy to miss: Netty builds each `Http2StreamChannel` with a fresh `DefaultChannelConfig` and does not copy the parent connection's allocator, so they must be pinned in the child initializer before the stream reads or writes. `Http2StreamChannelAllocatorTest`, `Http2ForwardStreamChannelAllocatorTest` and `RelayConnectAllocatorTest` fail if a pin is removed.
 
 ### Channel Attributes
 
@@ -1040,6 +1058,7 @@ flowchart LR
 | `Main` | `mockserver-netty/.../cli/Main.java` | CLI entry point, argument parsing |
 | `LifeCycle` | `mockserver-netty/.../lifecycle/LifeCycle.java` | Abstract server lifecycle (event loops, port binding, shutdown) |
 | `MockServer` | `mockserver-netty/.../netty/MockServer.java` | Concrete server, configures `ServerBootstrap` |
+| `NettyAllocator` | `mockserver-core/.../socket/NettyAllocator.java` | The single pooled `ByteBufAllocator` every channel uses; `pin(channel)` for channels no bootstrap option reaches |
 | `MockServerUnificationInitializer` | `mockserver-netty/.../netty/MockServerUnificationInitializer.java` | Replaces self with `PortUnificationHandler` |
 | `PortUnificationHandler` | `mockserver-netty/.../netty/unification/PortUnificationHandler.java` | Protocol detection and pipeline assembly |
 | `Http2MultiplexChildInitializer` | `mockserver-netty/.../netty/unification/Http2MultiplexChildInitializer.java` | Per-stream child initializer for the HTTP/2 multiplex pipeline; installs `ConnectionScopeHandler`, optionally `GrpcBidiRouterHandler`, and the re-aggregating chain for every HTTP/2 stream |

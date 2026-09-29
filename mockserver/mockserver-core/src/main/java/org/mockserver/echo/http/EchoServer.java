@@ -18,6 +18,7 @@ import org.mockserver.logging.MockServerLogger;
 import org.mockserver.model.HttpRequest;
 import org.mockserver.model.HttpResponse;
 import org.mockserver.scheduler.Scheduler;
+import org.mockserver.socket.NettyAllocator;
 import org.mockserver.stop.Stoppable;
 import org.slf4j.event.Level;
 
@@ -75,6 +76,7 @@ public class EchoServer implements Stoppable {
             new ServerBootstrap().group(bossGroup, workerGroup)
                 .channel(NioServerSocketChannel.class)
                 .option(ChannelOption.SO_BACKLOG, 100)
+                .childOption(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
                 .handler(new LoggingHandler(EchoServer.class))
                 .childHandler(new EchoServerInitializer(configuration, mockServerLogger, secure, sslContext, error, registeredClients, websocketChannels, textWebSocketFrames))
                 .childAttr(LOG_FILTER, mockServerEventLog)

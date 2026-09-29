@@ -15,6 +15,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.proxyconfiguration.ProxyConfiguration;
+import org.mockserver.socket.NettyAllocator;
 
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -63,6 +64,8 @@ public class Http2ForwardStreamChildInitializer extends ChannelInitializer<Http2
 
     @Override
     protected void initChannel(Http2StreamChannel ch) {
+        // stream child channels get Netty's default (adaptive) allocator, not the parent's
+        NettyAllocator.pin(ch);
         Channel parent = ch.parent();
 
         // HTTP/2 child channels do NOT inherit parent-channel attributes, so propagate the

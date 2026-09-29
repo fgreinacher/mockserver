@@ -3,7 +3,6 @@ package org.mockserver.netty;
 import com.google.common.collect.ImmutableList;
 import io.netty.bootstrap.Bootstrap;
 import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.PooledByteBufAllocator;
 import io.netty.channel.ChannelInitializer;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.WriteBufferWaterMark;
@@ -18,6 +17,7 @@ import org.mockserver.mock.action.http.HttpActionHandler;
 import org.mockserver.netty.dns.DnsRequestHandler;
 import org.mockserver.netty.http3.Http3Server;
 import org.mockserver.proxyconfiguration.ProxyConfiguration;
+import org.mockserver.socket.NettyAllocator;
 import org.mockserver.socket.NettyTransport;
 import org.mockserver.socket.tls.NettySslContextFactory;
 import org.slf4j.event.Level;
@@ -199,9 +199,10 @@ public class MockServer extends LifeCycle {
             // serve, so it can act as backpressure rather than as a ceiling. Raising it also
             // needs net.core.somaxconn raised to match.
             .option(ChannelOption.SO_BACKLOG, configuration.soBacklog())
+            .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .channel(NettyTransport.serverSocketChannelClassFor(bossGroup))
             .childOption(ChannelOption.AUTO_READ, true)
-            .childOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+            .childOption(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .option(ChannelOption.WRITE_BUFFER_WATER_MARK, new WriteBufferWaterMark(8 * 1024, 32 * 1024))
             .childHandler(initializer)
             .childAttr(REMOTE_SOCKET, remoteSocket)
@@ -337,7 +338,7 @@ public class MockServer extends LifeCycle {
         Bootstrap dnsBootstrap = new Bootstrap()
             .group(workerGroup)
             .channel(NettyTransport.datagramChannelClassFor(workerGroup))
-            .option(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT)
+            .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .handler(new ChannelInitializer<DatagramChannel>() {
                 @Override
                 protected void initChannel(DatagramChannel ch) {

@@ -8,6 +8,7 @@ import io.netty.channel.*;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.socksx.v4.Socks4ServerDecoder;
 import io.netty.handler.codec.socksx.v5.Socks5CommandRequestDecoder;
+import org.mockserver.socket.NettyAllocator;
 import org.mockserver.socket.NettyTransport;
 import io.netty.handler.codec.http.HttpClientCodec;
 import io.netty.handler.codec.http.HttpContentDecompressor;
@@ -66,6 +67,7 @@ public abstract class RelayConnectHandler<T> extends SimpleChannelInboundHandler
         Bootstrap bootstrap = new Bootstrap()
             .group(proxyClientCtx.channel().eventLoop())
             .channel(NettyTransport.socketChannelClassFor(proxyClientCtx.channel().eventLoop()))
+            .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .handler(new ChannelInboundHandlerAdapter() {
                 @Override
                 public void channelActive(final ChannelHandlerContext mockServerCtx) {

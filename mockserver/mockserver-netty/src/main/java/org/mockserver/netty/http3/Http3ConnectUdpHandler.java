@@ -7,6 +7,7 @@ import io.netty.channel.Channel;
 import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.socket.DatagramPacket;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.DefaultHttp3DataFrame;
@@ -16,6 +17,7 @@ import io.netty.handler.codec.http3.Http3HeadersFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.proxyconfiguration.InetAddressValidator;
+import org.mockserver.socket.NettyAllocator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -219,6 +221,7 @@ public class Http3ConnectUdpHandler extends ChannelInboundHandlerAdapter {
         Bootstrap udpBootstrap = new Bootstrap()
             .group(ctx.channel().eventLoop())
             .channel(NioDatagramChannel.class)
+            .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
             .handler(new UdpRelayHandler(ctx));
 
         ChannelFuture bindFuture = udpBootstrap.bind(0);

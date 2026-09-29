@@ -4,6 +4,7 @@ import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.handler.codec.http3.DefaultHttp3SettingsFrame;
@@ -24,6 +25,7 @@ import org.mockserver.mock.HttpState;
 import org.mockserver.mock.action.http.HttpActionHandler;
 import org.mockserver.netty.mcp.McpRequestProcessor;
 import org.mockserver.netty.mcp.McpSessionManager;
+import org.mockserver.socket.NettyAllocator;
 import org.mockserver.socket.tls.KeyAndCertificateFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -172,6 +174,9 @@ public class Http3Server {
                 // obtain a valid retry token, mitigating QUIC address-spoofing / amplification.
                 // Replaces Netty's InsecureQuicTokenHandler (plaintext, forgeable token).
                 .tokenHandler(new SourceAddressQuicTokenHandler())
+                // QUIC connection and stream channels do not inherit the datagram channel's allocator
+                .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
+                .streamOption(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
                 .handler(new ChannelInitializer<QuicChannel>() {
                     @Override
                     protected void initChannel(QuicChannel ch) {
@@ -209,6 +214,7 @@ public class Http3Server {
             channel = new Bootstrap()
                 .group(localGroup)
                 .channel(NioDatagramChannel.class)
+                .option(ChannelOption.ALLOCATOR, NettyAllocator.ALLOCATOR)
                 .handler(codec)
                 .bind(new InetSocketAddress(port))
                 .sync()
