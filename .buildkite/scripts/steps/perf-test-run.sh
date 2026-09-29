@@ -3479,22 +3479,24 @@ HEAP_RATIO="$(ratio "$HEAP_MIN_LAST" "$HEAP_MIN_FIRST")"
 
 # --- event-log scaling: resolved bounds vs observed peak, and which bound bound ------------------
 # Both event-log bounds derive from the heap ceiling but scale DIFFERENTLY: maxLogEntries is
-# min(heapKB/8, 250000) and CAPS at 250000 (reached by ~1.9 GiB of heap), while maxEventLogSizeInBytes
-# is (heapKB/divisor)*1024 (divisor 8 at WARN/ERROR/OFF, 12 at INFO/DEBUG/TRACE) and scales with the
+# min(heapAvailableKB/8, 250000) and CAPS at 250000 (reached by ~1.9 GiB of heap), while maxEventLogSizeInBytes
+# is (heapAvailableKB/divisor)*1024 (divisor 7 at WARN/ERROR/OFF, 12 at INFO/DEBUG/TRACE) and scales with the
 # heap without limit. For the perf workload's small bodies the COUNT cap binds above ~1.9 GiB, so a
 # bigger heap buys no extra retention there — this block MEASURES that rather than assuming it. Resolved values come from the
 # server's own gauges (max_retained_entries / max_retained_bytes in diag-samples.csv), the EFFECTIVE
 # figures the JVM applied, not the requested ones. On an older SUT image without those gauges the
 # columns are blank and samples_with_log_data is 0. Reads are safe here: the load phases (regression /
 # sweep / growth) are complete, so the retained peak is settled even though the sampler still runs.
+# An unset level means the server default, INFO.
 case "$LOG_LEVEL_VAL" in
-  INFO|DEBUG|TRACE) ELS_DIVISOR=12 ;;
-  *)                ELS_DIVISOR=8 ;;
+  INFO|DEBUG|TRACE|"") ELS_DIVISOR=12 ;;
+  *)                   ELS_DIVISOR=7 ;;
 esac
-# Default heap-derived byte budget the server WOULD pick with no override: (heapKB/divisor)*1024.
+# Default heap-derived byte budget the server WOULD pick with no override: (heapAvailableKB/divisor)*1024,
+# where heapAvailableKB = heapBytes/1024 - 20480 (ConfigurationProperties.computeHeapAvailableInKB).
 # On a large-heap run the resolved budget must be at least this, i.e. the log budget scaled with the
 # heap at least as fast as the shipped default would have.
-ELS_EXPECTED_DEFAULT_BYTES="$(awk -v h="$HEAP_MAX_BYTES" -v d="$ELS_DIVISOR" 'BEGIN{ hk=int(h/1024); printf "%.0f", int(hk/d)*1024 }')"
+ELS_EXPECTED_DEFAULT_BYTES="$(awk -v h="$HEAP_MAX_BYTES" -v d="$ELS_DIVISOR" 'BEGIN{ hk=int(h/1024)-20480; if (hk<0) hk=0; printf "%.0f", int(hk/d)*1024 }')"
 read -r ELS_MAX_ENTRIES ELS_MAX_BYTES ELS_PEAK_ENTRIES ELS_PEAK_BYTES ELS_PEAK_INFLIGHT ELS_EVICTED ELS_LOG_ROWS <<EOF
 $(awk -F',' '
   NR>1 && $20!="" { if ($20+0>me) me=$20; lr++ }
@@ -3575,9 +3577,9 @@ if [ "$PERF_LARGE_HEAP_PROFILE" = "true" ]; then
     if [ "${HEAP_MAX_BYTES:-0}" -le 0 ]; then
       add_check "event_log_byte_budget_scaled_with_heap" false "heap ceiling unresolved (HEAP_MAX_BYTES=${HEAP_MAX_BYTES:-}), so the heap-derived floor cannot be computed and scaling cannot be verified — a 0 floor would pass trivially"
     elif awk -v b="$ELS_MAX_BYTES" -v e="$ELS_EXPECTED_DEFAULT_BYTES" 'BEGIN{exit !(b+0>=e+0)}'; then
-      add_check "event_log_byte_budget_scaled_with_heap" true "resolved byte budget ${ELS_MAX_BYTES} >= heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B / divisor ${ELS_DIVISOR}) — the log byte budget scaled with the heap"
+      add_check "event_log_byte_budget_scaled_with_heap" true "resolved byte budget ${ELS_MAX_BYTES} >= heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B less 20 MiB, / divisor ${ELS_DIVISOR}) — the log byte budget scaled with the heap"
     else
-      add_check "event_log_byte_budget_scaled_with_heap" false "resolved byte budget ${ELS_MAX_BYTES} is BELOW the heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B / divisor ${ELS_DIVISOR}) — on a large-heap run the log byte budget MUST scale with the heap (raise PERF_MAX_EVENT_LOG_BYTES), else the run measures more headroom rather than a bigger log"
+      add_check "event_log_byte_budget_scaled_with_heap" false "resolved byte budget ${ELS_MAX_BYTES} is BELOW the heap-derived floor ${ELS_EXPECTED_DEFAULT_BYTES} (heap ${HEAP_MAX_BYTES}B less 20 MiB, / divisor ${ELS_DIVISOR}) — on a large-heap run the log byte budget MUST scale with the heap (raise PERF_MAX_EVENT_LOG_BYTES), else the run measures more headroom rather than a bigger log"
     fi
     if [ "$ELS_BOUND_REACHED" = "true" ]; then
       add_check "event_log_bound_exercised" true "binding constraint was '${ELS_BINDING}' (count_util=${ELS_COUNT_UTIL}, bytes_util=${ELS_BYTES_UTIL}, evicted=${ELS_EVICTED}, mean_entry=${ELS_MEAN_ENTRY}B) — a bound was actually reached, so the run exercised event-log retention"

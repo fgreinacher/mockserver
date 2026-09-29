@@ -21,7 +21,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | items 16–17 below |
+| 2 | Tuning candidates | item 16 below |
 
 ## Decided against
 
@@ -69,7 +69,6 @@ candidates 1, 6, 11 and 12 were declined (see [Decided against](#decided-against
 | # | Candidate | What is known | Next step |
 |---|---|---|---|
 | 16 | Graduate the per-merge alloc gate's `HEADERS_MISS` scan arm (four rows: INFO/WARN × `detailedMatchFailures` false/true) from notify-only to gating | Scan arm shipped: it runs on every Java build, notify-only, against provisional floors (`premerge_alloc.MatchingBenchmark_HEADERS_MISS_*`); see [performance-measurement.md](../code/performance-measurement.md#perf-alloc-gatesh--per-merge-allocation-floors) | Once ~10 gate runs exist, set each floor from their `jmh-alloc-gate.json` artifacts (median + 3 × 1.4826 × MAD) and add `gating: true` (control-class budget change, needs approval) |
-| 17 | The level-aware event-log byte-budget divisors (`/8` WARN, `/12` INFO) are conservative | Re-measured after every uncounted copy and both defects were fixed (`docs/code/memory-management.md` → Re-measured multiples): real ÷ counted is 0.50–0.80× at WARN and 1.04–2.03× at INFO under G1 and generational ZGC, so the worst case holds ~10% / ~17% of the heap ceiling | Maintainer decision on loosening to `/4` WARN and `/9`–`/10` INFO (user-visible default; update consumer docs and changelog) |
 
 ### Checked and not worth pursuing
 

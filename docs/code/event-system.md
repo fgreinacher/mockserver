@@ -177,7 +177,7 @@ If the upstream connection closes mid-stream (`channelInactive`), the relay hand
 `CircularConcurrentLinkedDeque<LogEntry>` is a bounded, thread-safe deque. When either bound is reached, the oldest entries are evicted and their `clear()` method is called (releasing references for GC):
 
 - **Count bound** — `maxLogEntries` (default: heap-based formula, up to 250,000).
-- **Byte-budget bound** — `maxEventLogSizeInBytes` (default: 0 = disabled). When set, the deque also tracks a running total of body bytes (`LogEntry.estimatedHeapSize()`) and evicts oldest-first when an incoming entry would push the total over the budget. See [memory-management.md](memory-management.md) for the full byte-budget eviction design.
+- **Byte-budget bound** — `maxEventLogSizeInBytes` (on by default: a seventh of the heap-ceiling budget at `WARN`/`ERROR`/`OFF`, a twelfth at `INFO`/`DEBUG`/`TRACE`; `0` disables it). The deque also tracks a running total of body bytes (`LogEntry.estimatedHeapSize()`) and evicts oldest-first when an incoming entry would push the total over the budget. The same budget separately caps the bytes waiting in the ring, so the divisors are sized for both together. See [memory-management.md](memory-management.md) for the full byte-budget eviction design.
 
 ### Filtering Predicates
 

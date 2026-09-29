@@ -63,7 +63,8 @@ public class HeapAvailableSizingTest {
 
         assertThat(availableKB, is((xmx / 1024L) - BASE_KB));
         assertThat(availableKB, is(1_028_096L));
-        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(availableKB, Level.WARN), is(131_596_288L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(availableKB, Level.WARN), is(150_394_880L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(availableKB, Level.INFO), is(87_730_176L));
         assertThat(ConfigurationProperties.heapBasedDefaultOrFloor(availableKB, 8, 250000, ConfigurationProperties.DEV_MODE_MAX_LOG_ENTRIES), is(128_512));
         // symmetric: whichever source over-reports, the smaller defined ceiling wins
         assertThat(ConfigurationProperties.computeHeapAvailableInKB(xmx, summedZgcPools), is(availableKB));
@@ -233,33 +234,44 @@ public class HeapAvailableSizingTest {
     // ----- defaultMaxEventLogSizeInBytes: byte budget is a log-level-aware fraction of the ceiling -----
 
     @Test
-    public void shouldDeriveDefaultEventLogByteBudgetSoRealRetentionIsAQuarterAtNonRenderingLevel() {
-        // The QUARTER is of REAL retained heap, not of counted bytes, and the two differ by a measured
-        // factor of 2.0 at WARN: BodyDecoderEncoder builds a Json/Xml/StringBody from BOTH the decoded
-        // String AND the raw byte[], so a text body is retained twice and counted once. Hence a divisor
-        // of 8 on counted bytes, which lands real retention at ~a quarter of the ceiling.
-        // 200,000 KB available -> an eighth is 25,000 KB -> 25,600,000 counted bytes -> ~2x that retained.
+    public void shouldDeriveDefaultEventLogByteBudgetAsASeventhOfTheCeilingAtNonRenderingLevel() {
+        // 200,000 KB available -> a seventh is 28,571 KB -> 29,256,704 counted bytes.
         long value = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
 
-        assertThat(value, is((200000L / 8) * 1024L));
-        assertThat(value, is(25_600_000L));
+        assertThat(value, is((200000L / 7) * 1024L));
+        assertThat(value, is(29_256_704L));
     }
 
     @Test
-    public void shouldTightenDefaultEventLogByteBudgetByTheMeasuredAsymmetryAtRenderingLevel() {
-        // INFO renders every entry and memoises the formatted message on it, which embeds the body as
-        // text a THIRD time (String + raw byte[] + message), so real-heap-per-counted-byte is 3.0 at
-        // INFO against 2.0 at WARN. The asymmetry is therefore 1.5x, NOT the 2x an earlier 8-vs-4 pair
-        // encoded, so the rendering divisor is 1.5x the non-rendering one: 12 vs 8. That equalises REAL
-        // retained heap at ~a quarter of the ceiling at BOTH levels, which is the actual invariant.
-        // 200,000 KB -> a twelfth is 16,666 KB -> 17,065,984 bytes.
+    public void shouldTightenDefaultEventLogByteBudgetToATwelfthAtRenderingLevel() {
+        // INFO renders every entry and memoises the formatted message on it, which the weigher does not
+        // count, so real heap per counted byte is larger at INFO. 200,000 KB -> a twelfth is 16,666 KB.
         long info = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.INFO);
         long warn = ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.WARN);
 
         assertThat(info, is((200000L / 12) * 1024L));
-        // the counted budget is tighter at a rendering level, by the measured 1.5x asymmetry
+        assertThat(info, is(17_065_984L));
         assertThat(info, is(lessThan(warn)));
-        assertThat((double) warn / info, is(closeTo(1.5d, 0.01d)));
+        assertThat((double) warn / info, is(closeTo(12d / 7d, 0.01d)));
+    }
+
+    @Test
+    public void shouldKeepWorstMeasuredWholeLogAtAboutAQuarterOfTheCeilingAtEveryLevel() {
+        // The same budget bounds the retained deque AND the in-flight ring backlog, and both fill at once
+        // while the consumer lags, so the whole log holds (k_deque + k_ring) x budget. Composite bound: the
+        // largest measured k_deque plus the largest k_ring at each level, from different runs
+        // (docs/code/memory-management.md, Validation at the current divisors).
+        double worstWarnWholeLogMultiple = 0.974d + 0.704d;
+        double worstInfoWholeLogMultiple = 2.314d + 0.724d;
+        for (long heapAvailableInKB : new long[]{45_056L, 241_664L, 1_028_096L, 4_173_824L}) {
+            double ceilingBytes = heapAvailableInKB * 1024d;
+            for (Level level : new Level[]{Level.TRACE, Level.DEBUG, Level.INFO, Level.WARN, Level.ERROR, null}) {
+                double multiple = ConfigurationProperties.rendersEveryLogEntry(level) ? worstInfoWholeLogMultiple : worstWarnWholeLogMultiple;
+                double wholeLogShare = multiple * ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, level) / ceilingBytes;
+                assertThat("heap " + heapAvailableInKB + " KB at " + level, wholeLogShare, is(lessThanOrEqualTo(0.255d)));
+                assertThat("heap " + heapAvailableInKB + " KB at " + level, wholeLogShare, is(greaterThan(0.20d)));
+            }
+        }
     }
 
     @Test
@@ -273,7 +285,8 @@ public class HeapAvailableSizingTest {
         assertThat(ConfigurationProperties.rendersEveryLogEntry(null), is(false));
 
         assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.DEBUG), is((200000L / 12) * 1024L));
-        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.ERROR), is((200000L / 8) * 1024L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, Level.ERROR), is((200000L / 7) * 1024L));
+        assertThat(ConfigurationProperties.defaultMaxEventLogSizeInBytes(200000L, null), is((200000L / 7) * 1024L));
     }
 
     @Test
@@ -297,7 +310,8 @@ public class HeapAvailableSizingTest {
         assertThat(smallHeapInfo, is((500_000L / 12) * 1024L));
         assertThat(largeHeapInfo, is((4_000_000L / 12) * 1024L));
         assertThat(largeHeapInfo > smallHeapInfo, is(true));
-        assertThat(smallHeapWarn, is((500_000L / 8) * 1024L));
+        assertThat(smallHeapWarn, is((500_000L / 7) * 1024L));
+        assertThat(largeHeapWarn, is((4_000_000L / 7) * 1024L));
         assertThat(largeHeapWarn > smallHeapWarn, is(true));
     }
 }

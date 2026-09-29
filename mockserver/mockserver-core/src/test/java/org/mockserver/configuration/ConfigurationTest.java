@@ -628,10 +628,10 @@ public class ConfigurationTest {
 
     @Test
     public void shouldRecomputeLogLevelAwareDefaultOnEachReadNotFreezeAtFirstLevel() {
-        // The default is log-level-aware (heap/8 at a non-rendering level, heap/12 at a rendering level).
+        // The default is log-level-aware (heap/7 at a non-rendering level, heap/12 at a rendering level).
         // It must be recomputed from the CURRENT log level on every read — NOT resolved through the
         // caching property reader, which would freeze it JVM-wide at whatever level was in force on the
-        // first read. The dangerous direction: a first read at ERROR (heap/8) freezing that larger
+        // first read. The dangerous direction: a first read at ERROR (heap/7) freezing that larger
         // budget for a server later running at INFO (heap/12), silently disabling the OOM protection this
         // default exists to provide. On the pre-fix (caching) tree the INFO read below returns the
         // frozen ERROR budget and the second assertion fails.
@@ -648,6 +648,9 @@ public class ConfigurationTest {
 
             assertThat(errorBudget, equalTo(ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, Level.ERROR)));
             assertThat(infoBudget, equalTo(ConfigurationProperties.defaultMaxEventLogSizeInBytes(heapAvailableInKB, Level.INFO)));
+            // the live static path, not just the helper, applies a seventh at ERROR and a twelfth at INFO
+            assertThat(errorBudget, equalTo((heapAvailableInKB / 7) * 1024L));
+            assertThat(infoBudget, equalTo((heapAvailableInKB / 12) * 1024L));
 
             // and a per-instance server derives the default from ITS OWN log level, not the static one:
             // static level ERROR, instance level INFO -> the instance must get the INFO (heap/12) budget

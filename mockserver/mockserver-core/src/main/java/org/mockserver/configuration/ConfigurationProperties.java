@@ -1980,10 +1980,11 @@ public class ConfigurationProperties {
     // log retains, at a NON-rendering log level (WARN/ERROR/OFF).
     //
     // Sizing rule: the budget bounds COUNTED bytes (LogEntry.estimatedHeapSize), and the heap holds k
-    // times that, where k is the measured real retained heap per counted byte. The target is a quarter of
-    // the ceiling, so divisor = k / 0.25. k depends on the workload as well as the log level; the measured
-    // values and the method are in docs/code/memory-management.md. Both divisors were set against a larger
-    // k than is now measured, so real retention sits below the quarter target.
+    // times that, where k is the measured real heap per counted byte. The same budget bounds both the
+    // retained deque and the in-flight ring backlog, and both fill when the consumer lags, so the log can
+    // hold (k_deque + k_ring) x budget. The target is a quarter of the ceiling, so divisor =
+    // (k_deque + k_ring) / 0.25. k depends on the workload as well as the log level; the measured values
+    // and the method are in docs/code/memory-management.md (Validation at the current divisors).
     //
     // A quarter leaves room for the expectation store, in-flight Netty buffers and JVM overhead while
     // still bounding the body memory that the maxLogEntries count cap cannot see (a count cap treats a
@@ -1993,7 +1994,7 @@ public class ConfigurationProperties {
     // that happened - recoverable, self-announced (eviction is logged), and fixed by raising
     // maxEventLogSizeInBytes. Over-budgeting ends in the OutOfMemoryError this bound exists to prevent -
     // fatal, unrecoverable, and on a shared instance it takes every consumer with it.
-    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 8;
+    static final int DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR = 7;
     // Tighter divisor at a RENDERING log level (INFO/DEBUG/TRACE), where the consumer renders every
     // entry and memoises the formatted message ON the retained entry for its whole life in the deque.
     // The weigher deliberately does NOT count that message (it is level-dependent and materialises only
@@ -2016,11 +2017,12 @@ public class ConfigurationProperties {
      * Derive the default {@code maxEventLogSizeInBytes} — the byte budget bounding the event log's
      * retained request/response bodies — from the deterministic heap <em>ceiling</em>
      * ({@link #heapAvailableInKB()}), so it is a constant for the JVM's life and does not depend on
-     * allocation ordering. The divisor is log-level-aware: the counted budget is an EIGHTH of the
+     * allocation ordering. The divisor is log-level-aware: the counted budget is a SEVENTH of the
      * ceiling budget at a non-rendering level (WARN/ERROR/OFF) and a TWELFTH at a rendering level
      * (INFO/DEBUG/TRACE), where every retained entry also holds its rendered message, which the weigher
-     * does not count. Real retained heap is a workload-dependent multiple of the counted bytes, larger at
-     * a rendering level; the divisors keep it at or below about a quarter of the ceiling at either level
+     * does not count. Real heap is a workload-dependent multiple of the counted bytes, larger at a
+     * rendering level; the divisors keep the whole log, retained entries plus the in-flight backlog, at
+     * or below about a quarter of the ceiling at either level
      * (see {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR} and
      * {@link #DEFAULT_EVENT_LOG_BYTES_HEAP_DIVISOR_RENDERING}). The same value also bounds the in-flight
      * ring backlog in {@code MockServerEventLog}, so tightening it at rendering levels bounds both the
@@ -2092,7 +2094,7 @@ public class ConfigurationProperties {
         // resolved value INCLUDING the injected default under the property key and never invalidates it,
         // freezing it JVM-wide at whatever logLevel() was in force on the first read. Now that the
         // default is log-level-aware, a first read at WARN/ERROR (e.g. a CI perf run started with
-        // MOCKSERVER_LOG_LEVEL=ERROR) would pin the larger heap/8 budget for a server later running at
+        // MOCKSERVER_LOG_LEVEL=ERROR) would pin the larger heap/7 budget for a server later running at
         // INFO — silently disabling the OOM protection this default exists to provide, in the dangerous
         // direction. So honour only an EXPLICIT override and recompute the (uncached) default from the
         // current log level on every call — the same pattern, and for the same reason, as
@@ -2139,13 +2141,13 @@ public class ConfigurationProperties {
      * </p>
      * <p>
      * The default is derived from the JVM heap <em>ceiling</em>, so it is on by default and constant for
-     * the JVM's life: an eighth of the same ceiling-based budget that sizes {@code maxLogEntries} at a
-     * non-rendering level (WARN/ERROR), and a twelfth at a rendering level (INFO/DEBUG/TRACE). The
+     * the JVM's life: a seventh of the same ceiling-based budget that sizes {@code maxLogEntries} at a
+     * non-rendering level (WARN/ERROR/OFF), and a twelfth at a rendering level (INFO/DEBUG/TRACE). The
      * budget counts an estimate of each entry's size; the real heap the log holds is a multiple of it
      * that depends on the traffic, and is larger at a rendering level, where every retained entry also
-     * keeps its formatted log message. The defaults keep real retained heap at or below about a quarter
-     * of the ceiling at either level. The same budget also bounds the bytes held by entries still
-     * waiting to be processed, so it caps both the retained log and the processing backlog. Set it to {@code 0} to
+     * keeps its formatted log message. The same budget also bounds the bytes held by entries still
+     * waiting to be processed, so it caps both the retained log and the processing backlog; the defaults
+     * keep the two together at or below about a quarter of the ceiling at either level. Set it to {@code 0} to
      * disable the size-based limit and bound the log only by {@code maxLogEntries}. Whichever of the two
      * bounds is reached first evicts; eviction is announced once per server in the log and (with the
      * default {@code failVerificationOnEvictedLog=true}) makes upper-bound verifications fail rather than

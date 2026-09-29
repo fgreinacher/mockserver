@@ -197,8 +197,8 @@ public class LogEntry implements EventTranslator<LogEntry> {
      * weight equals the evict-time weight exactly. The residual message cost is instead handled at the
      * budget-sizing layer, whose default divisor is already log-level-aware (tighter at rendering levels)
      * precisely to cover it — see {@code ConfigurationProperties.defaultMaxEventLogSizeInBytes}. So the
-     * estimate is at or above real retention at {@code WARN} (a request body shared by an exchange's
-     * entries is charged to each of them) and below it at {@code INFO}.
+     * estimate has measured at or above real retention at {@code WARN} (a request body shared by an
+     * exchange's entries is charged to each of them) and below it at {@code INFO}.
      * <p>
      * Reads the {@code httpRequests} field directly (not {@link #getHttpRequests()}, which substitutes a
      * default request when unset), and all counted terms are stable once the entry is built, so the value
