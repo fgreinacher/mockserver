@@ -6,6 +6,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.cookie.Cookie;
 import io.netty.handler.codec.http.cookie.ServerCookieDecoder;
 import io.netty.handler.codec.http2.HttpConversionUtil;
+import io.netty.util.AsciiString;
 import org.apache.commons.lang3.Strings;
 import org.mockserver.codec.BodyDecoderEncoder;
 import org.mockserver.codec.ExpandedParameterDecoder;
@@ -35,6 +36,7 @@ import static org.mockserver.model.NottableString.headerName;
  */
 public class FullHttpRequestToMockServerHttpRequest {
 
+    private static final int MAX_SHARED_HEADERS = 64;
     private final MockServerLogger mockServerLogger;
     private final BodyDecoderEncoder bodyDecoderEncoder;
     private final ExpandedParameterDecoder formParameterParser;
@@ -46,6 +48,8 @@ public class FullHttpRequestToMockServerHttpRequest {
     private String cachedRemoteAddressString;
     private SocketAddress cachedLocalAddress;
     private String cachedLocalAddressString;
+    private final HeaderMemo headerNames = new HeaderMemo(true);
+    private final HeaderMemo headerValues = new HeaderMemo(false);
 
     public FullHttpRequestToMockServerHttpRequest(Configuration configuration, MockServerLogger mockServerLogger, boolean isSecure, Certificate[] clientCertificates, Integer port) {
         this.mockServerLogger = mockServerLogger;
@@ -158,14 +162,23 @@ public class FullHttpRequestToMockServerHttpRequest {
             // key through getEntries(), so nothing observable changes.
             headers.reserve(httpHeaders.size());
             Iterator<Map.Entry<CharSequence, CharSequence>> headerIterator = httpHeaders.iteratorCharSequence();
+            headerNames.ensureCapacity(httpHeaders.size());
+            headerValues.ensureCapacity(httpHeaders.size());
+            // over HTTP/1.1 the only repeated AsciiString instances are decoder constants, already shared
+            boolean findReordered = Protocol.HTTP_2.equals(httpRequest.getProtocol());
+            int position = 0;
             while (headerIterator.hasNext()) {
                 Map.Entry<CharSequence, CharSequence> header = headerIterator.next();
-                String name = header.getKey().toString();
-                if (hasPreservedTransferEncoding && name.equalsIgnoreCase(CONTENT_LENGTH.toString())) {
+                NottableString name = headerNames.share(position, header.getKey(), findReordered);
+                NottableString value = headerValues.share(position, header.getValue(), findReordered);
+                position++;
+                if (hasPreservedTransferEncoding && name.getValue().equalsIgnoreCase(CONTENT_LENGTH.toString())) {
                     continue;
                 }
-                headers.appendLiteral(headerName(name), string(header.getValue().toString(), false));
+                headers.appendLiteral(name, value);
             }
+            headerNames.finishRequest(position);
+            headerValues.finishRequest(position);
             httpRequest.withHeaders(headers);
         }
         if (preservedHeaders != null && !preservedHeaders.isEmpty()) {
@@ -190,6 +203,96 @@ public class FullHttpRequestToMockServerHttpRequest {
             Integer streamId = nettyHttpRequest.headers().getInt(HttpConversionUtil.ExtensionHeaderNames.STREAM_ID.text());
             if (streamId != null) {
                 httpRequest.withStreamId(streamId);
+            }
+        }
+    }
+
+    /**
+     * The previous request's header name (or value) wrappers on this connection, by position: an equal
+     * (case-sensitive) name or value reuses the earlier immutable wrapper, so the event log retains one copy
+     * per connection instead of one per request. Double-buffered ({@code previous*} is read while
+     * {@code current*} is filled, then they swap), holding one request's first {@link #MAX_SHARED_HEADERS}
+     * headers at most. Arrays are allocated on first use: a mapper that maps one request allocates half.
+     */
+    private static final class HeaderMemo {
+        private static final NottableString[] NO_WRAPPERS = new NottableString[0];
+        private static final AsciiString[] NO_RECEIVED = new AsciiString[0];
+        private final boolean names;
+        private NottableString[] previous = NO_WRAPPERS;
+        private AsciiString[] previousReceived = NO_RECEIVED;
+        private NottableString[] current = NO_WRAPPERS;
+        private AsciiString[] currentReceived = NO_RECEIVED;
+
+        private HeaderMemo(boolean names) {
+            this.names = names;
+        }
+
+        private void ensureCapacity(int headerCount) {
+            int length = Math.min(headerCount, MAX_SHARED_HEADERS);
+            if (current.length < length) {
+                // finishRequest emptied current, so it is replaced rather than copied
+                current = new NottableString[length];
+                currentReceived = new AsciiString[length];
+            }
+        }
+
+        private NottableString share(int position, CharSequence text, boolean findReordered) {
+            if (position >= current.length) {
+                return wrap(text);
+            }
+            AsciiString asciiText = text instanceof AsciiString ? (AsciiString) text : null;
+            NottableString wrapped = position < previous.length ? previous[position] : null;
+            // HTTP/2 names and values are AsciiString, usually the same HPACK table instance on every
+            // request; AsciiString.equals short-circuits on identity and compares bytes in bulk, not chars.
+            if (wrapped != null) {
+                AsciiString received = previousReceived[position];
+                if (!(received != null && asciiText != null ? received.equals(asciiText) : wrapped.getValue().contentEquals(text))) {
+                    wrapped = null;
+                }
+            }
+            if (wrapped == null) {
+                wrapped = findReordered && asciiText != null ? sameInstanceAtAnyPosition(asciiText) : null;
+                if (wrapped == null) {
+                    wrapped = wrap(text);
+                }
+            }
+            current[position] = wrapped;
+            currentReceived[position] = asciiText;
+            return wrapped;
+        }
+
+        // Some HTTP/2 clients (Go's, and so gRPC-Go and k6) order their headers differently on every
+        // request, but an HPACK-indexed header is still the same instance, so it is found by identity.
+        // previous is filled contiguously, so its first null ends the previous request's headers.
+        private NottableString sameInstanceAtAnyPosition(AsciiString text) {
+            for (int i = 0; i < previous.length && previous[i] != null; i++) {
+                if (previousReceived[i] == text) {
+                    return previous[i];
+                }
+            }
+            return null;
+        }
+
+        private NottableString wrap(CharSequence text) {
+            return names ? headerName(text.toString()) : string(text.toString(), false);
+        }
+
+        private void finishRequest(int headerCount) {
+            clearFrom(current, currentReceived, headerCount);
+            NottableString[] wrappers = previous;
+            previous = current;
+            current = wrappers;
+            AsciiString[] received = previousReceived;
+            previousReceived = currentReceived;
+            currentReceived = received;
+            // the buffer swapped out still holds the request before last; drop it so only one is retained
+            clearFrom(current, currentReceived, 0);
+        }
+
+        private static void clearFrom(NottableString[] wrappers, AsciiString[] received, int position) {
+            for (int i = position; i < wrappers.length && wrappers[i] != null; i++) {
+                wrappers[i] = null;
+                received[i] = null;
             }
         }
     }

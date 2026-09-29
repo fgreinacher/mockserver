@@ -298,9 +298,10 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
 
     /**
      * MockServerHttpServerCodec is NOT @Sharable, so every stream gets its own; but its request and response
-     * mappers are stateless apart from the request mapper's memoised connection addresses, so one pair is
+     * mappers are stateless apart from the request mapper's memos (the connection's address strings, the fields
+     * extracted from its client certificate chain, and the previous request's header wrappers), so one pair is
      * built per HTTP/2 connection and reused by all its streams. Stream child channels always run on their
-     * connection's event loop, which is what makes the unsynchronised address cache safe to share.
+     * connection's event loop, which is what makes those unsynchronised memos safe to share.
      */
     private static MockServerHttpServerCodec serverCodec(Channel channel, Configuration configuration, MockServerLogger mockServerLogger, boolean sslEnabled, Certificate[] clientCertificates) {
         if (!(channel instanceof Http2StreamChannel)) {

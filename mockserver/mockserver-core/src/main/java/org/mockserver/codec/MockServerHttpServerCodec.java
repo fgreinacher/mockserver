@@ -26,7 +26,8 @@ public class MockServerHttpServerCodec extends CombinedChannelDuplexHandler<Nett
     /**
      * Builds the codec around mappers the caller already holds, so pipelines that serve the same connection
      * (the stream child channels of one HTTP/2 connection) can share them. The mappers must only be used from
-     * one event loop: the request mapper memoises the connection's addresses without synchronisation.
+     * one event loop: the request mapper memoises the connection's address strings, the fields extracted from
+     * its client certificate chain, and the previous request's header wrappers, without synchronisation.
      */
     public MockServerHttpServerCodec(MockServerLogger mockServerLogger, FullHttpRequestToMockServerHttpRequest requestMapper, MockServerHttpResponseToFullHttpResponse responseMapper) {
         init(new NettyHttpToMockServerHttpRequestDecoder(mockServerLogger, requestMapper), new MockServerHttpToNettyHttpResponseEncoder(responseMapper));

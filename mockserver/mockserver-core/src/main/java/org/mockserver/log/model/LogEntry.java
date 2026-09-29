@@ -144,11 +144,12 @@ public class LogEntry implements EventTranslator<LogEntry> {
     // The same for an HttpResponse. Smaller than a request because it has no path/method/parameters, only
     // a status code and its containers.
     private static final long PER_RESPONSE_MESSAGE_OVERHEAD_BYTES = 128;
-    // Per-header-value overhead beyond the name and value characters themselves. Covers the VALUE side's
-    // freshly-retained structure: the value NottableString, its backing String and byte[] headers, and the
-    // two flat-store array slots. The header NAME's NottableString is deliberately NOT charged here: for
-    // real recorded traffic the name is a shared well-known instance (see NottableString.headerName), so
-    // retaining an entry does not retain a new one. Added to the summed name+value character counts.
+    // Per-header-value overhead beyond the name and value characters: the value NottableString, its String
+    // and byte[] headers, and two flat-store array slots. The name's NottableString is NOT charged: recorded
+    // names are usually a shared well-known instance (NottableString.headerName). Added to the summed
+    // name+value character counts. A name or value equal to the previous request's on the same connection
+    // is shared too (FullHttpRequestToMockServerHttpRequest), so repeated headers are over-counted, the safe
+    // direction: see memory-management.md, "Header sharing across a connection's requests".
     private static final long HEADER_ENTRY_OVERHEAD_BYTES = 128;
 
     public LogEntry() {

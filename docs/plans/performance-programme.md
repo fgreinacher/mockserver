@@ -54,6 +54,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
   nothing measurable and still reports leaks in production.
 - **`-XX:InitialRAMPercentage=60` as an image default** — commits 60% of the container up front,
   raising idle memory for the many short-lived test containers; users with sustained load can set it.
+- **`-XX:+UseStringDeduplication` as an image default** — per-connection header sharing saves 2–3 times as much retained heap per request over HTTP/1.1, and deduplication adds almost nothing on top of it or over HTTP/2 (see [memory-management.md](../code/memory-management.md#header-sharing-across-a-connections-requests)).
 
 ---
 
@@ -75,18 +76,6 @@ candidates 1, 6, 11 and 12 were declined (see [Decided against](#decided-against
 ### Checked and not worth pursuing
 
 io_uring (blocked by Docker's default seccomp, would silently fall back); `FlushConsolidationHandler` (HTTP/1.1 flushes once per response — already consolidated); explicit `TCP_NODELAY`/`SO_RCVBUF`/`SO_SNDBUF`; `AlwaysPreTouch` (slower start); THP by default (needs host `shmem_enabled`); `SoftMaxHeapSize`; two non-secure UUIDs per request (externally visible ids).
-
----
-
-## §3 — Coverage-gap candidates (found 2026-09-28)
-
-Source: a read-only review for paths the rig never exercises, and a leak audit (12 identical
-mixed-workload cycles under ZGC and G1 at `-Xmx512m` held a flat live heap; the 2 h soak in
-build 340 held a flat floor). Each item is in progress in its own unit unless noted.
-
-| # | Candidate | What is known | Next step |
-|---|---|---|---|
-| 24 | Header-value sharing across requests on a connection (retained heap) and a `-XX:+UseStringDeduplication` rig A/B | Estimated ~0.5 KB less retained per bodiless request | Queued: A/B after build 496 |
 
 ---
 
