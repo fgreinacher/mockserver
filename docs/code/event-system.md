@@ -583,7 +583,7 @@ through the config-driven `redactSecretsInRecordedExpectations` step on the retr
 
 ### Disk Capture for Recorded Requests (NDJSON)
 
-When `persistRecordedRequestsToDisk` is `true`, every recorded exchange — both `FORWARDED_REQUEST` (proxied) and `EXPECTATION_RESPONSE` (mocked) log entries — is appended to an NDJSON file (one compact JSON object per line) by `RecordedRequestsFileSystemPersistence`, wired in as a per-entry hook on the Disruptor consumer thread.
+When `persistRecordedRequestsToDisk` is `true`, every recorded exchange — both `FORWARDED_REQUEST` (proxied) and `EXPECTATION_RESPONSE` (mocked) log entries — is appended to an NDJSON file (one compact JSON object per line) by `RecordedRequestsFileSystemPersistence`, wired in as a per-entry hook on the Disruptor consumer thread plus a flush hook the consumer runs at the end of each batch.
 
 ```mermaid
 sequenceDiagram
@@ -596,25 +596,27 @@ sequenceDiagram
     Note over CT: 1. disk capture runs FIRST (full bodies)
     CT->>FP: recordedRequestConsumer.accept(logEntry)
     FP->>FP: serialize to compact NDJSON line
-    FP->>FS: writer.write(line + "\n")
-    FP->>FS: writer.flush()
+    FP->>FS: buffered write(line + "\n")
     Note over CT: 2. optional in-memory truncation
     CT->>CT: truncateBodiesForLog(logEntry) [if maxLoggedBodyBytes > 0]
     Note over CT: 3. add to bounded in-memory log
     CT->>EL: eventLog.add(logEntry)
+    Note over CT: 4. at end of batch
+    CT->>FP: flush()
+    FP->>FS: buffered lines to the OS
 ```
 
 **Key design points:**
 
 - **Disk-before-truncation ordering.** The disk write runs in `processLogEntry` before `truncateBodiesForLog()`, so the NDJSON archive always receives full-fidelity bodies even when `maxLoggedBodyBytes` clips the in-memory copy.
-- **Append-only, flush-per-line.** The file is opened with `StandardOpenOption.CREATE | APPEND`. Each line is flushed immediately after writing, so a crash or OOM-kill loses at most the in-flight entry, not the whole session — and re-import backs that guarantee up: because the write is `line + "\n" + flush`, a hard kill can leave a **truncated mid-JSON final line**, and `RecordedTrafficImporter` **skips (and counts) that malformed line rather than aborting**, so `?format=recording&source=disk` recovers every intact exchange.
+- **Append-only, flushed per batch.** The file is opened with `StandardOpenOption.CREATE | APPEND` behind an 8 KB `BufferedOutputStream`. Lines are flushed when the Disruptor consumer reaches the end of a batch (the ring is momentarily drained), when `stop()` closes the file, and before a `?source=disk` import reads it; with synchronous event processing every recorded entry is flushed as it is written. A line of 8 KB or more bypasses the buffer and reaches the OS as it is written; the buffer otherwise spills whenever it fills. So a crash or OOM-kill loses at most the unflushed buffer (under 8 KB of complete lines) plus a line being written, not the whole session. A hard kill can therefore leave a **truncated mid-JSON final line**, and `RecordedTrafficImporter` **skips (and counts) that malformed line rather than aborting**, so `?format=recording&source=disk` recovers every intact exchange.
 - **Write path is a side-channel; reload it explicitly.** Live reads (retrieve, verify, dashboard) query the in-memory `CircularConcurrentLinkedDeque` only, so entries evicted from memory under the byte budget are on disk but not visible until the archive is reloaded. **Re-import** the archive with `PUT /mockserver/import?format=recording` — supply the NDJSON in the request body, or add `?source=disk` (or send an empty body) to read the configured `persistedRecordedRequestsPath`. `RecordedTrafficImporter` parses each line and `MockServerEventLog.importRecordedRequestResponse(...)` re-injects each pair as a `FORWARDED_REQUEST` entry, so it becomes retrievable exactly like an in-memory recording. (A reloaded originally-mocked exchange therefore counts as forwarded under verify-by-disposition — an accepted v1 boundary.)
-- **Malformed/truncated lines are skipped, not fatal.** A single unparseable line (the classic crash-truncated last line, or any corruption) is skipped and counted; the skipped count is returned in the `x-mockserver-recorded-requests-skipped` response header and logged at WARN. The importer only fails (`400`) when the body has non-blank lines but **none** parse (i.e. it is not a recorded-traffic archive at all). An empty/whitespace archive imports **0** exchanges (`201`), not an error.
+- **Malformed/truncated lines are skipped, not fatal.** A single unparseable line (the classic crash-truncated last line, or any corruption) is skipped and counted. A disk-full episode can leave malformed lines too — a buffer spill or flush that fails part-way writes part of a line — and these are skipped and counted the same way; the skipped count is returned in the `x-mockserver-recorded-requests-skipped` response header and logged at WARN. The importer only fails (`400`) when the body has non-blank lines but **none** parse (i.e. it is not a recorded-traffic archive at all). An empty/whitespace archive imports **0** exchanges (`201`), not an error.
 - **Re-import is idempotent.** Re-injected entries carry `LogEntry.skipRecordedRequestPersistence = true`, so `processLogEntry` does not hand them back to the disk consumer — reloading an archive never appends the reloaded exchanges back to the (possibly same) file.
-- **Inert when disabled.** When `persistRecordedRequestsToDisk` is `false`, the `RecordedRequestsFileSystemPersistence` instance has all fields `null` and `append()` / `stop()` are no-ops. The hook (`recordedRequestConsumer`) is not set on `MockServerEventLog`. (Re-import via `PUT /mockserver/import?format=recording` still works with an archive supplied in the request body.)
+- **Inert when disabled.** When `persistRecordedRequestsToDisk` is `false`, the `RecordedRequestsFileSystemPersistence` instance has all fields `null` and `append()` / `flush()` / `stop()` are no-ops. The hook (`recordedRequestConsumer`) is not set on `MockServerEventLog`. (Re-import via `PUT /mockserver/import?format=recording` still works with an archive supplied in the request body.)
 - **Both mocked and forwarded entries.** The hook is guarded by `logEntry.getType() == FORWARDED_REQUEST || logEntry.getType() == EXPECTATION_RESPONSE` in `processLogEntry`, so the archive is a complete record of served traffic (proxied and mocked). Other event types (RECEIVED_REQUEST, NO_MATCH_RESPONSE, etc.) are not written.
 
-**Format.** Each line is a serialized `HttpRequestAndHttpResponse` (via `HttpRequestAndHttpResponseSerializer`) with formatting whitespace collapsed so the entire object is one line. The format is identical to what `PUT /mockserver/retrieve?type=REQUEST_RESPONSES` returns for a single entry, and is exactly what `RecordedTrafficImporter` reads back on re-import.
+**Format.** Each line is a serialized `HttpRequestAndHttpResponse`, written by the compact (non-pretty) writer of the same `ObjectMapperFactory` configuration `HttpRequestAndHttpResponseSerializer` uses, so a line parses to the same JSON that `PUT /mockserver/retrieve?type=REQUEST_RESPONSES` returns for a single entry, and is exactly what `RecordedTrafficImporter` reads back on re-import. The one place compact output can contain a raw newline is a scalar JSON body written verbatim (`JsonBodyDTOSerializer` uses `writeRawValue`); any whitespace run containing a newline is collapsed to a single space in a linear pass, so every exchange stays one line.
 
 **Redaction.** The persisted archive honours `mockserver.redactSecretsInLog` exactly like the in-memory retrieval/export path — `append()` uses the redaction-aware `LogEntry.getRedactedHttpRequest()` / `getRedactedHttpResponse()` accessors, so secrets are masked on disk by default when redaction is on. Re-import re-masks via `ImportRedaction` (on by default) as a defence-in-depth step, consistent with HAR/Postman import.
 
@@ -628,7 +630,7 @@ maxLoggedBodyBytes=0                    # keep in-memory bodies untruncated (bud
 
 The launcher `mockserver-ui/scripts/launch-with-llm-capture.sh` uses exactly this combination by default.
 
-**Throughput trade-off.** With `persistRecordedRequestsToDisk` enabled, every recorded exchange — now including each mocked `EXPECTATION_RESPONSE`, of which a single streaming LLM/SSE/gRPC request can emit several — triggers a synchronous serialize + write + `flush()` on the single Disruptor consumer thread. This is opt-in and off by default, but under sustained high-volume mocking it can become the consumer-thread bottleneck. If that matters, a buffered/periodic-flush writer (trading a slightly larger crash-loss window for throughput) is possible future work; today the design favours the per-line durability guarantee above.
+**Throughput trade-off.** With `persistRecordedRequestsToDisk` enabled, every recorded exchange — including each mocked `EXPECTATION_RESPONSE`, of which a single streaming LLM/SSE/gRPC request can emit several — is serialised on the single Disruptor consumer thread, the same thread that retains every log entry, so capture cost is paid in ring-drain rate (and, once the ring fills, in dropped log entries, `mock_server_dropped_log_events`). The line is serialised compactly straight into a reused byte buffer (no pretty-printing, no regex, no `String`), and the flush — one syscall — is paid once per batch rather than per line; under load a batch holds many entries. The price is the durability window above: up to 8 KB of recent complete lines rather than none. `RecordedRequestsPersistenceBenchmark` (in `mockserver-benchmark`) measures the per-exchange cost.
 
 ### File Persistence for Expectations
 

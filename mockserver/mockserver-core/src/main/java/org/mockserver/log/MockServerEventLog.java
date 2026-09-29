@@ -221,6 +221,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // (FORWARDED_REQUEST or EXPECTATION_RESPONSE) log entry, used to persist recorded requests to
     // disk. Null when disk persistence is disabled.
     private Consumer<LogEntry> recordedRequestConsumer;
+    private volatile Runnable recordedRequestFlush;
 
     public MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing) {
         super(scheduler);
@@ -306,7 +307,11 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 inFlightBytes.addAndGet(inFlightWeight);
             }
         } else {
-            processLogEntry(logEntry);
+            try {
+                processLogEntry(logEntry);
+            } finally {
+                flushRecordedRequests();
+            }
         }
     }
 
@@ -508,11 +513,17 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         disruptor.setDefaultExceptionHandler(errorHandler);
 
         disruptor.handleEventsWith((logEntry, sequence, endOfBatch) -> {
-            if (logEntry.getType() != RUNNABLE) {
-                processLogEntry(logEntry);
-            } else {
-                logEntry.getConsumer().run();
-                logEntry.clear();
+            try {
+                if (logEntry.getType() != RUNNABLE) {
+                    processLogEntry(logEntry);
+                } else {
+                    logEntry.getConsumer().run();
+                    logEntry.clear();
+                }
+            } finally {
+                if (endOfBatch) {
+                    flushRecordedRequests();
+                }
             }
         });
 
@@ -587,7 +598,28 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
      * applying {@code maxLoggedBodyBytes} truncation.
      */
     public void setRecordedRequestConsumer(Consumer<LogEntry> recordedRequestConsumer) {
+        setRecordedRequestConsumer(recordedRequestConsumer, null);
+    }
+
+    /**
+     * As {@link #setRecordedRequestConsumer(Consumer)}, plus a {@code flush} run once the consumer thread
+     * reaches the end of a batch (the ring is momentarily drained) — or after each entry when event
+     * processing is synchronous — so the hook can buffer writes and hand them to the OS once per batch.
+     */
+    public void setRecordedRequestConsumer(Consumer<LogEntry> recordedRequestConsumer, Runnable flush) {
+        this.recordedRequestFlush = flush;
         this.recordedRequestConsumer = recordedRequestConsumer;
+    }
+
+    private void flushRecordedRequests() {
+        Runnable flush = recordedRequestFlush;
+        if (flush != null) {
+            try {
+                flush.run();
+            } catch (Throwable throwable) {
+                logger.error("exception flushing recorded requests", throwable);
+            }
+        }
     }
 
     /**

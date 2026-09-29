@@ -21,7 +21,7 @@ import java.util.List;
  * into the event log as recorded exchanges and become retrievable exactly like in-memory recordings.
  *
  * <p><strong>Crash-tolerant.</strong> A malformed line is <em>skipped and counted</em>, not fatal —
- * the write path flushes {@code line + "\n"} per exchange, so a hard kill can leave a truncated
+ * the write path buffers lines and flushes them in batches, so a hard kill can leave a truncated
  * mid-JSON final line. Aborting the whole import on that one artefact would defeat the crash-recovery
  * guarantee, so this importer returns every intact exchange and reports how many lines it skipped. It
  * only throws when the input contains non-blank lines but <em>none</em> parse (i.e. the body is not a

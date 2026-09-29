@@ -448,7 +448,7 @@ public class HttpState {
         }
         if (configuration.persistRecordedRequestsToDisk()) {
             this.recordedRequestsFileSystemPersistence = new org.mockserver.persistence.RecordedRequestsFileSystemPersistence(configuration, mockServerLogger);
-            mockServerLog.setRecordedRequestConsumer(recordedRequestsFileSystemPersistence::append);
+            mockServerLog.setRecordedRequestConsumer(recordedRequestsFileSystemPersistence::append, recordedRequestsFileSystemPersistence::flush);
         }
         if (isNotBlank(configuration.initializationJsonPath()) || isNotBlank(configuration.initializationOpenAPIPath()) || isNotBlank(configuration.initializationClass())) {
             ExpectationInitializerLoader expectationInitializerLoader = new ExpectationInitializerLoader(configuration, mockServerLogger, requestMatchers);
@@ -2481,6 +2481,11 @@ public class HttpState {
                             String ndjson = request.getBodyAsJsonOrXmlString();
                             boolean fromDisk = "disk".equalsIgnoreCase(sourceParam) || ndjson == null || ndjson.trim().isEmpty();
                             if (fromDisk) {
+                                // capture buffers lines until the event-log consumer ends a batch; flush so
+                                // this read sees every exchange the consumer has already recorded
+                                if (recordedRequestsFileSystemPersistence != null) {
+                                    recordedRequestsFileSystemPersistence.flush();
+                                }
                                 java.nio.file.Path archivePath = java.nio.file.Paths.get(configuration.persistedRecordedRequestsPath());
                                 if (!java.nio.file.Files.exists(archivePath)) {
                                     throw new IllegalArgumentException("no persisted recorded requests archive found at " + archivePath.toAbsolutePath() + " (set mockserver.persistedRecordedRequestsPath or supply the archive in the request body)");

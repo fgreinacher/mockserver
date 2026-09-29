@@ -294,7 +294,7 @@
     </tr>
     <tr>
         <td><a href="/mock_server/configuration_properties.html#button_configuration_persist_recorded_requests_to_disk"><span class="inline_code">persistRecordedRequestsToDisk</span></a></td>
-        <td>Appends every proxied exchange — full request and response — as a single NDJSON line to a file, flushed immediately. The file is the durable record: entries evicted from the in-memory window are never lost from disk.</td>
+        <td>Appends every proxied exchange — full request and response — as a single NDJSON line to a file, written to disk in small batches as soon as MockServer catches up with its log. The file is the durable record: entries evicted from the in-memory window are never lost from disk (a hard kill can lose only the last few KB of recent lines).</td>
         <td>Always paired with <span class="inline_code">maxEventLogSizeInBytes</span>. The disk write happens before any in-memory truncation, so the archive is always full-fidelity.</td>
     </tr>
 </table>
