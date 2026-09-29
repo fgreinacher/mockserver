@@ -2199,6 +2199,7 @@ mockserver.llmRequestTimeoutMillis=30000</code></pre>
 <div class="panel title">
     <p>Controls for mock drift detection and semantic drift analysis. See <a href="/mock_server/drift_detection.html">Drift Detection</a> for full details.</p>
     <p><strong>Drift detection enabled</strong> &mdash; the master switch for mock drift detection. When <code>true</code> (the default), MockServer compares each forwarded upstream response against any matching mock so it can detect when the real service has drifted away from your mocks. When <code>false</code>, this comparison is skipped entirely, which removes the small per-request overhead it adds &mdash; useful if you are proxying at high volume and do not need drift reporting.</p>
+    <p>Drift analysis runs in the background and is best-effort: if forwarded responses arrive faster than they can be analysed, the excess responses are skipped rather than queued, so a traffic burst cannot build up memory. Skipped responses are counted by the <span class="inline_code">mock_server_dropped_drift_analyses</span> metric.</p>
     <p>Type: <span class="keyword">boolean</span> Default: <span class="this_value">true</span></p>
     <p>Java Code:</p>
     <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.driftDetectionEnabled(boolean enabled)</code></pre>

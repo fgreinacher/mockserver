@@ -21,7 +21,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
 import static org.mockserver.log.model.LogEntry.LogMessageType.EXCEPTION;
@@ -55,10 +57,16 @@ public class Metrics {
     // Null until metrics are enabled. Makes silent loss of retained evidence observable, which
     // matters because an evicted log can no longer prove the absence of a request.
     private static volatile Counter evictedLogEntriesTotal;
+    // Counter for drift analyses shed because too many were already queued (best-effort work).
+    private static volatile Counter droppedDriftAnalysesTotal;
+    // Live queue depths of the shared scheduler pool and the template-action pool, set by HttpState.
+    private static final AtomicReference<IntSupplier> schedulerQueueDepthSupplier = new AtomicReference<>();
+    private static final AtomicReference<IntSupplier> templateActionQueueDepthSupplier = new AtomicReference<>();
     // Per-upstream forwarded-request observability. Histogram of forward/proxy
     // latency labeled by upstream host, plus a count labeled by host + status
     // class. Both null until metrics are enabled. Cardinality is bounded by the
-    // number of distinct upstream hosts forwarded to (NOT the full URL/path).
+    // number of distinct upstream hosts forwarded to (NOT the full URL/path), capped
+    // at MAX_FORWARD_HOST_LABELS.
     private static volatile Histogram forwardRequestDurationSeconds;
     private static volatile Counter forwardRequestsTotal;
     // Protocol actually negotiated to the upstream on each forward/proxy connection (http2 via ALPN vs
@@ -66,6 +74,12 @@ public class Metrics {
     // taking effect, since a forward stuck on http1_1 to a backend that withholds its streaming SSE head
     // over HTTP/1.1 is the classic cause of a high forward time-to-first-byte.
     private static volatile Counter forwardUpstreamProtocolTotal;
+    // Distinct upstream_host label values issued so far; once MAX_FORWARD_HOST_LABELS is reached further
+    // hosts are recorded as OTHER_FORWARD_HOST so an open proxy cannot grow the series set without bound.
+    static final int MAX_FORWARD_HOST_LABELS = 500;
+    static final String OTHER_FORWARD_HOST = "_other";
+    private static final Set<String> forwardHostLabels = ConcurrentHashMap.newKeySet();
+    private static final AtomicInteger forwardHostLabelCount = new AtomicInteger();
     // Counter for HTTP chaos faults injected (error or latency). Null until metrics are enabled.
     private static volatile Counter httpChaosInjectedTotal;
     /**
@@ -237,6 +251,20 @@ public class Metrics {
                     evictedLogEntriesTotal = Counter.builder()
                         .name("mock_server_evicted_log_entries")
                         .help("Number of event log entries evicted because the event log reached its maximum size")
+                        .register();
+                    droppedDriftAnalysesTotal = Counter.builder()
+                        .name("mock_server_dropped_drift_analyses")
+                        .help("Number of forwarded responses not analysed for mock drift because the drift-analysis backlog was full")
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_scheduler_queued_tasks")
+                        .help("Tasks queued on the shared action scheduler pool (response delays, forward continuations, drift analysis)")
+                        .callback(callback -> callback.call(readQueueDepth(schedulerQueueDepthSupplier)))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_template_action_queued_tasks")
+                        .help("Response/forward template renders queued waiting for a template-action thread")
+                        .callback(callback -> callback.call(readQueueDepth(templateActionQueueDepthSupplier)))
                         .register();
                     forwardRequestDurationSeconds = Histogram.builder()
                         .name("mock_server_forward_request_duration_seconds")
@@ -608,6 +636,9 @@ public class Metrics {
             slowRequestTotal = null;
             droppedLogEventsTotal = null;
             evictedLogEntriesTotal = null;
+            droppedDriftAnalysesTotal = null;
+            forwardHostLabels.clear();
+            forwardHostLabelCount.set(0);
             forwardRequestDurationSeconds = null;
             forwardRequestsTotal = null;
             forwardUpstreamProtocolTotal = null;
@@ -753,14 +784,54 @@ public class Metrics {
     }
 
     /**
-     * Increment the evicted-log-entries counter (event log reached its maximum
-     * size). No-op unless metrics are enabled (the counter is null otherwise).
+     * Add {@code evictedEntries} to the evicted-log-entries counter (entries evicted because the event
+     * log reached its maximum size). No-op unless metrics are enabled (the counter is null otherwise).
      */
-    public static void incrementEvictedLogEntries() {
+    public static void incrementEvictedLogEntries(long evictedEntries) {
         Counter counter = evictedLogEntriesTotal;
+        if (counter != null && evictedEntries > 0) {
+            counter.inc(evictedEntries);
+        }
+    }
+
+    /**
+     * Count a forwarded response whose drift analysis was shed because the drift-analysis backlog was
+     * full. No-op unless metrics are enabled.
+     */
+    public static void incrementDroppedDriftAnalyses() {
+        Counter counter = droppedDriftAnalysesTotal;
         if (counter != null) {
             counter.inc();
         }
+    }
+
+    /**
+     * Return the current dropped-drift-analyses count, or 0 if metrics are disabled.
+     */
+    public static long getDroppedDriftAnalysesCount() {
+        Counter counter = droppedDriftAnalysesTotal;
+        return counter != null ? (long) counter.get() : 0L;
+    }
+
+    /**
+     * Set the live queue-depth readers behind {@code mock_server_scheduler_queued_tasks} and
+     * {@code mock_server_template_action_queued_tasks}. Called by HttpState at startup.
+     */
+    public static void setSchedulerQueueDepthSuppliers(IntSupplier schedulerQueueDepth, IntSupplier templateActionQueueDepth) {
+        schedulerQueueDepthSupplier.set(schedulerQueueDepth);
+        templateActionQueueDepthSupplier.set(templateActionQueueDepth);
+    }
+
+    private static int readQueueDepth(AtomicReference<IntSupplier> reference) {
+        IntSupplier supplier = reference.get();
+        if (supplier != null) {
+            try {
+                return supplier.getAsInt();
+            } catch (Exception ignored) {
+                // fail-soft: a scrape must never break
+            }
+        }
+        return 0;
     }
 
     /**
@@ -778,21 +849,26 @@ public class Metrics {
      * are null until then), so the forward path pays nothing when metrics are off.
      * <p>
      * Cardinality is bounded by the number of distinct upstream hosts (the
-     * {@code upstream_host} label is the host only — never the full URL/path) and
-     * the five status classes ({@code 1xx}..{@code 5xx}). A null/blank host is
-     * recorded as {@code "unknown"}.
+     * {@code upstream_host} label is the host only — never the full URL/path), capped at
+     * {@link #MAX_FORWARD_HOST_LABELS} hosts after which further hosts are recorded as
+     * {@code "_other"}, and the five status classes ({@code 1xx}..{@code 5xx}). A null/blank
+     * host is recorded as {@code "unknown"}.
      *
      * @param upstreamHost the resolved upstream host (no port, no path)
      * @param statusCode   the upstream response status code, or null if unknown
      * @param latencySeconds the forward latency in seconds (negative values are clamped to 0)
      */
     public static void observeForwardRequest(String upstreamHost, Integer statusCode, double latencySeconds) {
-        String hostLabel = upstreamHost != null && !upstreamHost.isEmpty() ? upstreamHost : "unknown";
         Histogram histogram = forwardRequestDurationSeconds;
+        Counter counter = forwardRequestsTotal;
+        if (histogram == null && counter == null) {
+            // metrics off: must not spend the upstream_host label cap on unrecorded hosts
+            return;
+        }
+        String hostLabel = forwardHostLabel(upstreamHost);
         if (histogram != null) {
             histogram.labelValues(hostLabel).observe(latencySeconds > 0 ? latencySeconds : 0);
         }
-        Counter counter = forwardRequestsTotal;
         if (counter != null) {
             counter.labelValues(hostLabel, statusClass(statusCode)).inc();
         }
@@ -809,8 +885,7 @@ public class Metrics {
     public static void incrementForwardUpstreamProtocol(String upstreamHost, String protocol) {
         Counter counter = forwardUpstreamProtocolTotal;
         if (counter != null) {
-            String hostLabel = upstreamHost != null && !upstreamHost.isEmpty() ? upstreamHost : "unknown";
-            counter.labelValues(hostLabel, protocol).inc();
+            counter.labelValues(forwardHostLabel(upstreamHost), protocol).inc();
         }
     }
 
@@ -824,6 +899,26 @@ public class Metrics {
             return 0;
         }
         return (long) counter.labelValues(upstreamHost, protocol).get();
+    }
+
+    static String forwardHostLabel(String upstreamHost) {
+        String host = upstreamHost != null && !upstreamHost.isEmpty() ? upstreamHost : "unknown";
+        if (forwardHostLabels.contains(host)) {
+            return host;
+        }
+        // reserve a slot by CAS so concurrent first-sightings cannot overshoot the cap
+        int admitted;
+        do {
+            admitted = forwardHostLabelCount.get();
+            if (admitted >= MAX_FORWARD_HOST_LABELS) {
+                return forwardHostLabels.contains(host) ? host : OTHER_FORWARD_HOST;
+            }
+        } while (!forwardHostLabelCount.compareAndSet(admitted, admitted + 1));
+        if (!forwardHostLabels.add(host)) {
+            // another thread admitted the same host concurrently; give the slot back
+            forwardHostLabelCount.decrementAndGet();
+        }
+        return host;
     }
 
     /**

@@ -274,7 +274,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
     // construction. Both checks are plain reads of state the data plane already maintains, so the
     // cache adds NOTHING to the request path (it maintains no per-mutation structure of its own). The
     // signal can only ever be conservative: any reference swap or Times change forces a re-serialise,
-    // so the dashboard can never show a stale expectation. Bounded like expectationRequestDefinitions
+    // so the dashboard can never show a stale expectation. Bounded by maxExpectations
     // (one entry per live expectation); a removed expectation is simply never looked up again and its
     // stale entry ages out of the bounded map. Guarded by its own lock — the heavyweight serialise
     // runs OUTSIDE the lock, only the get/put touch it. This is a per-connection instance field, not
@@ -1183,7 +1183,7 @@ public class DashboardWebSocketHandler extends ChannelInboundHandlerAdapter impl
             });
     }
 
-    // Lazily created, bounded like expectationRequestDefinitions (one entry per live expectation).
+    // Lazily created, bounded by maxExpectations (one entry per live expectation).
     // CircularHashMap is not thread-safe, so every access is under activeExpectationJsonCacheLock.
     private Map<String, ActiveExpectationJson> activeExpectationJsonCache() {
         if (activeExpectationJsonCache == null) {

@@ -92,4 +92,53 @@ public class PercentileTrackerTest {
         assertThat(tracker.p50("fast"), is(5L));
         assertThat(tracker.p50("slow"), is(95L));
     }
+
+    @Test
+    public void removeDropsOnlyThatExpectationsWindow() {
+        PercentileTracker tracker = new PercentileTracker(100);
+        tracker.record("removed", 42);
+        tracker.record("kept", 7);
+
+        tracker.remove("removed");
+
+        assertThat(tracker.count("removed"), is(0));
+        assertThat(tracker.p95("removed"), is(0L));
+        assertThat(tracker.count("kept"), is(1));
+        assertThat(tracker.trackedExpectations(), is(1));
+    }
+
+    @Test
+    public void countSaturatesAtTheWindowAndKeepsTheLatestSamplesAcrossManyWraps() {
+        PercentileTracker tracker = new PercentileTracker(5);
+        for (int i = 1; i <= 1_000_003; i++) {
+            tracker.record("exp1", i);
+        }
+
+        // the window holds the 5 most recent samples: 999_999..1_000_003
+        assertThat(tracker.count("exp1"), is(5));
+        assertThat(tracker.p50("exp1"), is(1_000_001L));
+        assertThat(tracker.p95("exp1"), is(1_000_003L));
+    }
+
+    @Test
+    public void trackedExpectationsAreCappedSoOrphanedWindowsCannotGrowWithoutBound() {
+        PercentileTracker tracker = new PercentileTracker(10, 3);
+        for (int i = 0; i < 50; i++) {
+            tracker.record("exp" + i, i);
+        }
+
+        assertThat(tracker.trackedExpectations(), is(3));
+        // the newest id is always recorded
+        assertThat(tracker.count("exp49"), is(1));
+    }
+
+    @Test
+    public void nullExpectationIdIsIgnored() {
+        PercentileTracker tracker = new PercentileTracker(10);
+        tracker.record(null, 5);
+        tracker.remove(null);
+
+        assertThat(tracker.trackedExpectations(), is(0));
+        assertThat(tracker.count(null), is(0));
+    }
 }

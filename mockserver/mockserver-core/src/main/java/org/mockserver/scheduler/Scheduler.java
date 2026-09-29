@@ -151,6 +151,22 @@ public class Scheduler {
         return scheduler;
     }
 
+    /**
+     * Tasks waiting in the shared scheduler pool's queue (0 in synchronous mode). The queue is
+     * unbounded because its tasks (response delays, forward continuations, callbacks) must not be
+     * dropped; best-effort work bounds its own submissions (see drift analysis in HttpActionHandler).
+     */
+    public int getQueuedTaskCount() {
+        return scheduler instanceof ThreadPoolExecutor ? ((ThreadPoolExecutor) scheduler).getQueue().size() : 0;
+    }
+
+    /**
+     * Template renders waiting for a template-action thread (0 in synchronous mode).
+     */
+    public int getQueuedTemplateActionCount() {
+        return templateActionExecutor instanceof ThreadPoolExecutor ? ((ThreadPoolExecutor) templateActionExecutor).getQueue().size() : 0;
+    }
+
     public synchronized void shutdown() {
         // Both executors are null in synchronous mode (WAR/servlet) — guard both so shutdown() is a
         // safe no-op there, matching the localCallbackExecutor guard below.

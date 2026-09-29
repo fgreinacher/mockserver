@@ -177,7 +177,7 @@ Recording happens in `HttpActionHandler` on every forward/proxy completion: matc
 
 The protocol counter is incremented in `HttpClientInitializer` at the ALPN-resolution point of each forward client connection (`configureHttp1Pipeline` → `http1_1`, `configureHttp2Pipeline` → `http2`), with a matching DEBUG log (`forward upstream connection to {host} negotiated {protocol}`). It is the authoritative way to confirm whether `forwardProxyHttp2Upgrade` is taking effect, since the *recorded* request only carries the inbound protocol, not the upstream-negotiated one — a forward shown as `http1_1` to a backend that withholds its streaming SSE head over HTTP/1.1 explains a high forward time-to-first-byte.
 
-The `upstream_host` label is resolved from the matched forward action's host (the real upstream even behind an HTTP forward-proxy), falling back to the resolved socket address host; a null/blank host is recorded as `unknown`. **Cardinality is deliberately bounded to the host** (never the full URL or path) plus the five status classes, so the series count scales with the number of distinct upstreams, not with request volume or path variety. `Metrics.observeForwardRequest(host, statusCode, latencySeconds)` is a static no-op when metrics are disabled (the histogram/counter are `null`), so the forward hot path pays nothing when metrics are off.
+The `upstream_host` label is resolved from the matched forward action's host (the real upstream even behind an HTTP forward-proxy), falling back to the resolved socket address host; a null/blank host is recorded as `unknown`. **Cardinality is deliberately bounded to the host** (never the full URL or path) plus the five status classes, so the series count scales with the number of distinct upstreams, not with request volume or path variety. The number of distinct `upstream_host` values is additionally capped at `Metrics.MAX_FORWARD_HOST_LABELS` (500) per JVM: once that many hosts have been labelled, any further host is recorded as `_other`, so an open proxy forwarding to arbitrary hosts cannot grow the series set without bound. Hosts labelled before the cap keep their own series; the set is cleared only by `resetAdditionalMetricsForTesting()`. `Metrics.observeForwardRequest(host, statusCode, latencySeconds)` is a static no-op when metrics are disabled (the histogram/counter are `null`), so the forward hot path pays nothing when metrics are off.
 
 Example PromQL (p95 forward latency per upstream):
 ```promql
@@ -347,6 +347,24 @@ A single Prometheus `Counter` makes the event-log ring-buffer saturation cliff o
 | `mock_server_dropped_log_events` | A log event cannot be published because the `MockServerEventLog` disruptor ring buffer is full (`tryPublishEvent` returns `false`) |
 
 Under sustained load the event-log ring buffer can saturate and drop events. Previously only WARN/ERROR drops were logged, so INFO/DEBUG drops were silent and the cliff was undetectable. `MockServerEventLog.add(...)` now counts every drop on an always-available `AtomicLong` (readable via `getDroppedLogEventCount()` regardless of whether metrics are enabled), mirrors it to this Prometheus counter via the null-safe static `Metrics.incrementDroppedLogEvents()` (a no-op when metrics are off), and logs a single WARN on the first drop pointing at `ringBufferSize` / log verbosity as the remedy. A non-zero, growing value means the event log cannot keep up — raise `ringBufferSize` (derived from `maxLogEntries`) or reduce log verbosity.
+
+### Evicted Log Entries Counter
+
+| Metric Name | Incremented When |
+|-------------|------------------|
+| `mock_server_evicted_log_entries` | By the number of event-log entries evicted to stay within `maxLogEntries` / `maxEventLogSizeInBytes` |
+
+The counter advances by **entries**, not eviction episodes: after each processed entry `MockServerEventLog` adds the growth of the deque's own eviction count (`getEvictedCount()`) since the last report. The deque's count is zeroed by `reset()` and a clear-everything `clear()`; the reported baseline is zeroed with it, so the Prometheus counter stays monotonic across resets (a reset never subtracts). Before this was fixed the counter incremented once per server (and once again after each reset) when eviction *began*, so it read `1` however many entries were lost. `perf-test-run.sh` reads it as the `evicted_log_entries` column and only tests it for `> 0`, which is unaffected.
+
+### Drift-Analysis Shedding and Executor Queue Gauges
+
+| Metric Name | Type | Meaning |
+|-------------|------|---------|
+| `mock_server_dropped_drift_analyses` | Counter | Forwarded responses **not** analysed for mock drift because the drift-analysis backlog was full |
+| `mock_server_scheduler_queued_tasks` | Gauge (callback) | Tasks waiting in the shared action scheduler pool's queue |
+| `mock_server_template_action_queued_tasks` | Gauge (callback) | Response/forward template renders waiting for a template-action thread |
+
+Both executor queues are **unbounded by design**: the scheduler queue carries must-run work (response delays, forward continuations, lazy expectation removal) and the template-action queue carries renders whose responses would otherwise never be written — bounding either would drop or stall responses, so neither is bounded. The gauges make a backlog visible instead. Drift analysis is the exception: it is best-effort, so `HttpActionHandler.analyseDrift` bounds its own submissions to `max(16, 4 x actionHandlerThreadCount)` in flight (queued or running) and counts the excess as dropped rather than queueing one closure — holding the request and the upstream response — per forward. The gauges read `0` before `HttpState` registers the scheduler and in synchronous (WAR/servlet) mode.
 
 ### Event-Log Ring-Buffer Internals Gauges
 

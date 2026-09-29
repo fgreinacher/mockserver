@@ -209,6 +209,10 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     // The authoritative count lives on the deque (eventLog.getEvictedCount()); this is only the
     // "have we told the user yet" latch, and it is reset alongside the deque's counter on clear.
     private final AtomicBoolean evictedLogEntryWarned = new AtomicBoolean(false);
+    // The deque's eviction count already added to mock_server_evicted_log_entries, so the counter
+    // advances by the entries evicted since, stays monotonic across reset/clear (which zero the deque's
+    // count), and costs the non-evicting hot path one volatile read.
+    private final AtomicLong evictedCountReportedToMetrics = new AtomicLong(0);
     // Header name added to the in-memory (and, if it ran before disk-write, persisted) copy of a
     // request/response body that was truncated by maxLoggedBodyBytes; its value is the original
     // (pre-truncation) body length in bytes.
@@ -655,14 +659,15 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         // add() weighs the (possibly truncated) entry via LogEntry::estimatedHeapSize for the byte
         // budget — truncation has already run, and the estimate is computed lazily inside add().
         eventLog.add(logEntry);
-        // Make eviction observable. The guard is ordered so the non-evicting hot path pays only a
-        // single volatile read: getEvictedCount() > 0 is false until the first eviction and
-        // short-circuits before the compareAndSet, so on the overwhelming majority of writes nothing
-        // else runs. The whole warning-building branch executes at most ONCE per log instance (the
-        // AtomicBoolean latch), on the single disruptor consumer thread, so the string work below is
-        // off the steady-state path even under sustained eviction.
-        if (eventLog.getEvictedCount() > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {
-            Metrics.incrementEvictedLogEntries();
+        // Make eviction observable: the counter advances by the entries evicted since the last write
+        // (two volatile reads when nothing was evicted), and the WARN is built at most ONCE per log
+        // instance (the AtomicBoolean latch), so its string work stays off the steady-state path.
+        long evicted = eventLog.getEvictedCount();
+        long reported = evictedCountReportedToMetrics.get();
+        if (evicted != reported && evictedCountReportedToMetrics.compareAndSet(reported, evicted) && evicted > reported) {
+            Metrics.incrementEvictedLogEntries(evicted - reported);
+        }
+        if (evicted > 0 && evictedLogEntryWarned.compareAndSet(false, true)) {
             logger.warn(buildEvictionWarning(
                 eventLog.getByteEvictedCount() > 0,
                 configuration.maxLogEntries(),
@@ -840,6 +845,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 // permanently unable to prove absence (or silent) after one round of drops.
                 eventLog.clear();
                 evictedLogEntryWarned.set(false);
+                evictedCountReportedToMetrics.set(0);
                 droppedLogEventsSinceLogReset.set(0);
                 inFlightBytesDropWarned.set(false);
                 droppedLogEventWarned.set(false);
@@ -917,6 +923,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                     // nothing about the other evidence eviction already destroyed.
                     eventLog.resetEvictedCount();
                     evictedLogEntryWarned.set(false);
+                    evictedCountReportedToMetrics.set(0);
                     droppedLogEventsSinceLogReset.set(0);
                     inFlightBytesDropWarned.set(false);
                     droppedLogEventWarned.set(false);

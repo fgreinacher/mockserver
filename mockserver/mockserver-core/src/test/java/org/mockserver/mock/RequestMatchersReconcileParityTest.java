@@ -213,14 +213,22 @@ public class RequestMatchersReconcileParityTest {
             .thenRespond(response().withBody("b")), API);
 
         assertThat("A tracked before eviction",
-            matchers.expectationRequestDefinitions.containsKey("a"), is(true));
+            resolvable(matchers, "a"), is(true));
 
         matchers.add(new Expectation(request().withPath("/c")).withId("c")
             .thenRespond(response().withBody("c")), API);
 
         assertThat("evicted A's request-definition entry is cleaned up",
-            matchers.expectationRequestDefinitions.containsKey("a"), is(false));
-        assertThat("B still tracked", matchers.expectationRequestDefinitions.containsKey("b"), is(true));
-        assertThat("C tracked", matchers.expectationRequestDefinitions.containsKey("c"), is(true));
+            resolvable(matchers, "a"), is(false));
+        assertThat("B still tracked", resolvable(matchers, "b"), is(true));
+        assertThat("C tracked", resolvable(matchers, "c"), is(true));
+    }
+
+    private static boolean resolvable(RequestMatchers requestMatchers, String id) {
+        try {
+            return requestMatchers.retrieveRequestDefinitions(java.util.Collections.singletonList(new org.mockserver.model.ExpectationId().withId(id))).findFirst().isPresent();
+        } catch (IllegalArgumentException notFound) {
+            return false;
+        }
     }
 }

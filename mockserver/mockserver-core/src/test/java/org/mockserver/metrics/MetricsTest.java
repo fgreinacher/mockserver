@@ -282,6 +282,94 @@ public class MetricsTest {
         return 0.0;
     }
 
+    @Test
+    public void forwardHostLabelsAreCappedWithTheOverflowRecordedAsOther() {
+        new Metrics(configuration().metricsEnabled(true));
+        for (int i = 0; i < Metrics.MAX_FORWARD_HOST_LABELS + 20; i++) {
+            Metrics.observeForwardRequest("host" + i + ".example.com", 200, 0.01);
+        }
+        // a host already seen keeps its own label after the cap is reached
+        Metrics.observeForwardRequest("host0.example.com", 200, 0.01);
+
+        assertThat(Metrics.getForwardRequestCount("host0.example.com", "2xx"), is(2L));
+        assertThat(Metrics.getForwardRequestCount("host" + (Metrics.MAX_FORWARD_HOST_LABELS - 1) + ".example.com", "2xx"), is(1L));
+        assertThat(Metrics.getForwardRequestCount("host" + Metrics.MAX_FORWARD_HOST_LABELS + ".example.com", "2xx"), is(0L));
+        assertThat(Metrics.getForwardRequestCount(Metrics.OTHER_FORWARD_HOST, "2xx"), is(20L));
+        assertThat(scrapeForwardDurationCount(Metrics.OTHER_FORWARD_HOST), is(20.0));
+    }
+
+    @Test
+    public void forwardsObservedWhileMetricsAreDisabledDoNotUseUpTheHostLabelCap() {
+        // metrics disabled (reset in @Before): these hosts are not recorded anywhere
+        for (int i = 0; i < Metrics.MAX_FORWARD_HOST_LABELS + 10; i++) {
+            Metrics.observeForwardRequest("unrecorded" + i + ".example.com", 200, 0.01);
+        }
+
+        new Metrics(configuration().metricsEnabled(true));
+        Metrics.observeForwardRequest("late.example.com", 200, 0.01);
+
+        assertThat(Metrics.getForwardRequestCount("late.example.com", "2xx"), is(1L));
+        assertThat(Metrics.getForwardRequestCount(Metrics.OTHER_FORWARD_HOST, "2xx"), is(0L));
+    }
+
+    @Test
+    public void countsDroppedDriftAnalyses() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        Metrics.incrementDroppedDriftAnalyses();
+        Metrics.incrementDroppedDriftAnalyses();
+
+        assertThat(Metrics.getDroppedDriftAnalysesCount(), is(2L));
+        assertThat(scrapeCounterTotal("mock_server_dropped_drift_analyses"), is(2.0));
+    }
+
+    @Test
+    public void evictedLogEntriesCounterAdvancesByTheNumberOfEntries() {
+        new Metrics(configuration().metricsEnabled(true));
+
+        Metrics.incrementEvictedLogEntries(7);
+        Metrics.incrementEvictedLogEntries(0);
+        Metrics.incrementEvictedLogEntries(3);
+
+        assertThat(Metrics.getEvictedLogEntryCount(), is(10L));
+    }
+
+    @Test
+    public void exposesSchedulerAndTemplateActionQueueDepths() {
+        new Metrics(configuration().metricsEnabled(true));
+        Metrics.setSchedulerQueueDepthSuppliers(() -> 12, () -> 3);
+        try {
+            assertThat(scrapeGauge("mock_server_scheduler_queued_tasks"), is(12.0));
+            assertThat(scrapeGauge("mock_server_template_action_queued_tasks"), is(3.0));
+
+            Metrics.setSchedulerQueueDepthSuppliers(() -> {
+                throw new IllegalStateException("scrape must not break");
+            }, null);
+            assertThat(scrapeGauge("mock_server_scheduler_queued_tasks"), is(0.0));
+            assertThat(scrapeGauge("mock_server_template_action_queued_tasks"), is(0.0));
+        } finally {
+            Metrics.setSchedulerQueueDepthSuppliers(null, null);
+        }
+    }
+
+    private static double scrapeGauge(String name) {
+        for (MetricSnapshot snapshot : PrometheusRegistry.defaultRegistry.scrape()) {
+            if (snapshot.getMetadata().getName().equals(name) && snapshot instanceof GaugeSnapshot gaugeSnapshot) {
+                return gaugeSnapshot.getDataPoints().get(0).getValue();
+            }
+        }
+        return -1.0;
+    }
+
+    private static double scrapeCounterTotal(String name) {
+        for (MetricSnapshot snapshot : PrometheusRegistry.defaultRegistry.scrape()) {
+            if (snapshot.getMetadata().getName().equals(name) && snapshot instanceof CounterSnapshot counterSnapshot) {
+                return counterSnapshot.getDataPoints().get(0).getValue();
+            }
+        }
+        return -1.0;
+    }
+
     // --- MCP tool call counter tests ---
 
     @Test

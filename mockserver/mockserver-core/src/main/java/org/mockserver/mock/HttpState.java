@@ -433,6 +433,9 @@ public class HttpState {
             mockServerLog.getRetainedBytes(),
             mockServerLog.getMaxRetainedBytes(),
             mockServerLog.getMaxRetainedEntries()));
+        if (scheduler != null) {
+            Metrics.setSchedulerQueueDepthSuppliers(scheduler::getQueuedTaskCount, scheduler::getQueuedTemplateActionCount);
+        }
         Metrics.setExpectationStoreStatsSupplier(() -> new Metrics.ExpectationStoreStats(
             requestMatchers.getExpectationBytes(),
             requestMatchers.getMaxExpectationBytes(),

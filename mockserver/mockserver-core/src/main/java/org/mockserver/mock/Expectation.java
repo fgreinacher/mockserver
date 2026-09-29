@@ -694,25 +694,7 @@ public class Expectation extends ObjectWithJsonToString {
     @JsonIgnore
     public long estimatedHeapSize() {
         if (estimatedHeapSize < 0) {
-            long size = BASE_EXPECTATION_OVERHEAD_BYTES;
-            RequestDefinition request = this.httpRequest;
-            if (request instanceof HttpRequest) {
-                HttpRequest httpRequest = (HttpRequest) request;
-                size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
-                byte[] b = httpRequest.getBodyAsRawBytes();
-                long bodyBytes = b != null ? b.length : 0;
-                size += bodyBytes;
-                if (httpRequest.getBody() instanceof JsonBody) {
-                    size += bodyBytes * JSON_MATCHER_TREE_EXPANSION;
-                }
-                size += headerBytes(httpRequest.getHeaders());
-            } else if (request instanceof OpenAPIDefinition) {
-                size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
-                String spec = ((OpenAPIDefinition) request).getSpecUrlOrPayload();
-                if (spec != null) {
-                    size += spec.length();
-                }
-            }
+            long size = BASE_EXPECTATION_OVERHEAD_BYTES + requestDefinitionBytes(this.httpRequest, true);
             size += responseBytes(httpResponse);
             if (httpResponses != null) {
                 for (HttpResponse response : httpResponses) {
@@ -728,6 +710,45 @@ public class Expectation extends ObjectWithJsonToString {
             estimatedHeapSize = size;
         }
         return estimatedHeapSize;
+    }
+
+    /**
+     * Estimated heap retained by a request definition on its own, once no matcher holds a parsed tree
+     * of its body (the definition of a removed expectation). Same basis as {@link #estimatedHeapSize()}
+     * without the matcher-tree term, plus the body's cached decoded String when it holds one (as the
+     * event-log weigher charges it) — the definition may still be shared, so it is weighed, not released.
+     */
+    public static long estimatedRequestDefinitionHeapSize(RequestDefinition request) {
+        if (request == null) {
+            return 0;
+        }
+        long size = requestDefinitionBytes(request, false);
+        if (request instanceof HttpRequest && ((HttpRequest) request).getBody() != null) {
+            size += ((HttpRequest) request).getBody().retainedDerivedFormBytes();
+        }
+        return Math.max(PER_HTTP_MESSAGE_OVERHEAD_BYTES, size);
+    }
+
+    private static long requestDefinitionBytes(RequestDefinition request, boolean includeMatcherTree) {
+        long size = 0;
+        if (request instanceof HttpRequest) {
+            HttpRequest httpRequest = (HttpRequest) request;
+            size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
+            byte[] b = httpRequest.getBodyAsRawBytes();
+            long bodyBytes = b != null ? b.length : 0;
+            size += bodyBytes;
+            if (includeMatcherTree && httpRequest.getBody() instanceof JsonBody) {
+                size += bodyBytes * JSON_MATCHER_TREE_EXPANSION;
+            }
+            size += headerBytes(httpRequest.getHeaders());
+        } else if (request instanceof OpenAPIDefinition) {
+            size += PER_HTTP_MESSAGE_OVERHEAD_BYTES;
+            String spec = ((OpenAPIDefinition) request).getSpecUrlOrPayload();
+            if (spec != null) {
+                size += spec.length();
+            }
+        }
+        return size;
     }
 
     private static long responseBytes(HttpResponse response) {

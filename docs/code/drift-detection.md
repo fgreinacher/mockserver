@@ -66,7 +66,7 @@ Drift analysis is triggered asynchronously in `HttpActionHandler.writeForwardAct
 2. Filters to those with response-type actions (stubs)
 3. Passes each stub expectation + real response to `DriftAnalyzer.analyse()`
 
-The analysis runs on a scheduler thread and never blocks the response path.
+The analysis runs on a scheduler thread and never blocks the response path. It is best-effort and bounded: at most `max(16, 4 x actionHandlerThreadCount)` analyses may be queued or running at once, and a forward that arrives while the backlog is full is not analysed (counted by `mock_server_dropped_drift_analyses`). The shared scheduler queue is unbounded, so without this bound a forward rate above analysis capacity would queue one closure — retaining the request and the upstream response — per forward. See [metrics.md](metrics.md#drift-analysis-shedding-and-executor-queue-gauges).
 
 ### Master Switch and Sampling
 
@@ -232,9 +232,11 @@ When `mockserver.driftResponseTimeThresholdMs` is set to a positive value, MockS
 
 ### PercentileTracker
 
-- Fixed-size circular buffer per expectation ID (default 100 slots)
-- Thread-safe via `ConcurrentHashMap.compute()`
+- Fixed-size circular buffer per expectation ID (default 100 slots); the write position wraps and the fill count saturates at the window size, so no per-id counter can overflow however long an expectation lives
+- Thread-safe via `ConcurrentHashMap.compute()`; percentile reads copy the window under the same per-key lock
 - Provides `p50()` and `p95()` queries
+- An expectation's window is dropped when the expectation is removed (Times used up, TTL expiry, clear) or evicted (`RequestMatchers` calls `PercentileTracker.remove(id)` on every removal and eviction path)
+- The number of tracked ids is capped at `MAX_TRACKED_EXPECTATIONS` (20,000); a record for a new id at the cap drops arbitrary existing windows first, so a record that races its expectation's removal cannot leave orphaned windows accumulating
 - Cleared when `DriftStore.clear()` is called
 
 ### Configuration

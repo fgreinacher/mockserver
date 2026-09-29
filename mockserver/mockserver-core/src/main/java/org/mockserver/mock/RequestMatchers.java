@@ -1,7 +1,6 @@
 package org.mockserver.mock;
 
 import org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry;
-import org.mockserver.collections.CircularHashMap;
 import org.mockserver.collections.CircularPriorityQueue;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
@@ -13,6 +12,7 @@ import org.mockserver.matchers.LlmConversationMatcher;
 import org.mockserver.matchers.MatchDifference;
 import org.mockserver.matchers.MatcherBuilder;
 import org.mockserver.metrics.Metrics;
+import org.mockserver.mock.drift.PercentileTracker;
 import org.mockserver.mock.listeners.MockServerMatcherNotifier;
 import org.mockserver.model.*;
 import org.mockserver.scheduler.Scheduler;
@@ -52,7 +52,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     // (package-private) so it must remain a functioning CPQ with identical
     // ordering semantics.
     final CircularPriorityQueue<String, HttpRequestMatcher, SortableExpectationId> httpRequestMatchers;
-    final CircularHashMap<String, RequestDefinition> expectationRequestDefinitions;
+    // Definitions of REMOVED expectations only, so verify/retrieve/clear by id still resolve after a
+    // Times-exhausted, expired or cleared expectation is gone; live ids resolve from the store itself.
+    final RetiredRequestDefinitions retiredRequestDefinitions;
     private final MockServerLogger mockServerLogger;
     private final Configuration configuration;
     private final Scheduler scheduler;
@@ -270,7 +272,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 }
             }
         });
-        expectationRequestDefinitions = new CircularHashMap<>(configuration.maxExpectations());
+        // No-backend overflow eviction (with a backend, eviction is applied by the reconcile paths).
+        httpRequestMatchers.setEvictionListener(evicted -> PercentileTracker.getInstance().remove(idOf(evicted)));
+        retiredRequestDefinitions = new RetiredRequestDefinitions(configuration.maxExpectations());
         if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(TRACE)) {
             mockServerLogger.logEvent(
                 new LogEntry()
@@ -303,8 +307,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
      *       monitor.</b> {@link #add}, {@link #update}, {@link #reset},
      *       {@link #removeHttpRequestMatcher}, {@link #trimEvictedFromBackend} and
      *       {@link #reconcileClusteredScan} mutate the non-thread-safe
-     *       {@code httpRequestMatchers} ({@link CircularPriorityQueue}) and
-     *       {@code expectationRequestDefinitions} ({@link CircularHashMap}) only
+     *       {@code httpRequestMatchers} ({@link CircularPriorityQueue}) only
      *       inside a {@code synchronized(this)} critical section. Each such section
      *       is short, purely in-memory, and — this is the load-bearing invariant —
      *       contains NO backend call, NO listener notification and NO blocking I/O.</li>
@@ -391,10 +394,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 httpRequestMatchers.setMaxSize(maxExpectations);
             }
         }
-        // CircularHashMap resize can evict entries — structural, so serialize on the monitor.
-        synchronized (this) {
-            expectationRequestDefinitions.setMaxSize(maxExpectations);
-        }
+        retiredRequestDefinitions.setMaxEntries(maxExpectations);
     }
 
     public Expectation add(Expectation expectation, Cause cause) {
@@ -425,13 +425,13 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 }
 
                 // CONCURRENCY (issue #2579): serialise ONLY the node-local structure mutation
-                // (expectationRequestDefinitions + httpRequestMatchers CPQ + matcherCacheById) on
+                // (httpRequestMatchers CPQ + matcherCacheById) on
                 // the instance monitor. This critical section is purely in-memory and contains NO
                 // backend call, NO listener notification and NO blocking I/O — which is exactly why
                 // it cannot deadlock the way the reverted commit 98ab5d8de did by holding this
                 // monitor across expectationBackend.put.
                 synchronized (this) {
-                    expectationRequestDefinitions.put(expectationId, expectation.getHttpRequest());
+                    retiredRequestDefinitions.forget(expectationId);
                     upsertedExpectation = httpRequestMatchers
                         .getByKey(expectationId)
                         .map(httpRequestMatcher -> {
@@ -550,7 +550,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                         .map(Map.Entry::getKey)
                         .collect(Collectors.toSet());
                     for (Expectation expectation : distinct.values()) {
-                        expectationRequestDefinitions.put(expectation.getId(), expectation.getHttpRequest());
+                        retiredRequestDefinitions.forget(expectation.getId());
                         existingKeysForCause.remove(expectation.getId());
 
                         if (httpRequestMatchersByKey.containsKey(expectation.getId())) {
@@ -804,9 +804,9 @@ public class RequestMatchers extends MockServerMatcherNotifier {
         // Structural clears of the non-thread-safe local maps — serialise on the monitor
         // (no backend call inside); the backend clear runs afterwards, outside the monitor.
         synchronized (this) {
-            expectationRequestDefinitions.clear();
             matcherCacheById.clear();
         }
+        retiredRequestDefinitions.clear();
         lastReconciledVersion.clear();
         if (expectationBackend != null) {
             expectationBackend.clear();
@@ -1573,7 +1573,8 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 if (evictedMatcher != null) {
                     httpRequestMatchers.remove(evictedMatcher);
                 }
-                expectationRequestDefinitions.remove(evictedId);
+                retiredRequestDefinitions.forget(evictedId);
+                PercentileTracker.getInstance().remove(evictedId);
                 lastReconciledVersion.remove(evictedId);
             }
 
@@ -1591,7 +1592,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                     httpRequestMatchers.add(newMatcher);
                     newMatcher.withSource(Cause.API);
                     matcherCacheById.put(id, newMatcher);
-                    expectationRequestDefinitions.put(id, expectation.getHttpRequest());
+                    retiredRequestDefinitions.forget(id);
                     lastReconciledVersion.put(id, backendVersion);
                     if (expectation.getAction() != null) {
                         metrics.increment(expectation.getAction().getType());
@@ -1610,7 +1611,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                         existing.update(expectation);
                         httpRequestMatchers.addPriorityKey(existing);
                         matcherCacheById.put(id, existing);
-                        expectationRequestDefinitions.put(id, expectation.getHttpRequest());
+                        retiredRequestDefinitions.forget(id);
                         lastReconciledVersion.put(id, backendVersion);
                     }
                 }
@@ -1709,7 +1710,8 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 if (evictedMatcher != null) {
                     httpRequestMatchers.remove(evictedMatcher);
                 }
-                expectationRequestDefinitions.remove(evictedId);
+                retiredRequestDefinitions.forget(evictedId);
+                PercentileTracker.getInstance().remove(evictedId);
                 lastReconciledVersion.remove(evictedId);
             }
         }
@@ -1786,12 +1788,17 @@ public class RequestMatchers extends MockServerMatcherNotifier {
     @SuppressWarnings("rawtypes")
     private void removeHttpRequestMatcher(HttpRequestMatcher httpRequestMatcher, Cause cause, boolean notifyAndUpdateMetrics, String logCorrelationId) {
         // CONCURRENCY (issue #2579): the CPQ removal is a structural mutation of a
-        // non-thread-safe queue, so serialise ONLY that call on the monitor. Everything
+        // non-thread-safe queue, so serialise ONLY it (and the in-memory retire) on the monitor. Everything
         // that follows (including expectationBackend.remove and the listener notify) runs
         // OUTSIDE the monitor, so no lock spans a backend call.
         final boolean removed;
         synchronized (this) {
             removed = httpRequestMatchers.remove(httpRequestMatcher);
+            // Retired under the same monitor as add()'s forget, so a concurrent re-add of this id
+            // cannot be overtaken by a stale retire.
+            if (removed && httpRequestMatcher.getExpectation() != null) {
+                retiredRequestDefinitions.retire(httpRequestMatcher.getExpectation().getId(), httpRequestMatcher.getExpectation().getHttpRequest());
+            }
         }
         if (removed) {
             // Invalidate the candidate index — a matcher was removed from the store.
@@ -1801,6 +1808,7 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 String id = httpRequestMatcher.getExpectation().getId();
                 matcherCacheById.remove(id);
                 lastReconciledVersion.remove(id);
+                PercentileTracker.getInstance().remove(id);
                 if (expectationBackend != null) {
                     expectationBackend.remove(id);
                 }
@@ -1857,16 +1865,28 @@ public class RequestMatchers extends MockServerMatcherNotifier {
                 if (isBlank(expectationId.getId())) {
                     throw new IllegalArgumentException("No expectation id specified found \"" + expectationId.getId() + "\"");
                 }
-                if (expectationRequestDefinitions.containsKey(expectationId.getId())) {
-                    return expectationRequestDefinitions.get(expectationId.getId());
-                } else if (expectationBackend != null) {
-                    // Fall back to backend KV as source of truth
-                    return expectationBackend.get(expectationId.getId())
-                        .map(v -> v.getValue().getExpectation().getHttpRequest())
-                        .orElseThrow(() -> new IllegalArgumentException("No expectation found with id " + expectationId.getId()));
-                } else {
-                    throw new IllegalArgumentException("No expectation found with id " + expectationId.getId());
+                String id = expectationId.getId();
+                RequestDefinition live = httpRequestMatchers.getByKey(id)
+                    .map(HttpRequestMatcher::getExpectation)
+                    .map(Expectation::getHttpRequest)
+                    .orElse(null);
+                if (live != null) {
+                    return live;
                 }
+                if (expectationBackend != null) {
+                    // live on another node of a clustered backend
+                    RequestDefinition backendDefinition = expectationBackend.get(id)
+                        .map(v -> v.getValue().getExpectation().getHttpRequest())
+                        .orElse(null);
+                    if (backendDefinition != null) {
+                        return backendDefinition;
+                    }
+                }
+                RequestDefinition retired = retiredRequestDefinitions.get(id);
+                if (retired != null) {
+                    return retired;
+                }
+                throw new IllegalArgumentException("No expectation found with id " + id);
             })
             .filter(Objects::nonNull);
     }

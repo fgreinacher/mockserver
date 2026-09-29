@@ -1,9 +1,12 @@
 package org.mockserver.log;
 
+import org.junit.ClassRule;
 import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.metrics.Metrics;
+import org.mockserver.metrics.MetricsLock;
 import org.mockserver.model.RequestDefinition;
 import org.mockserver.scheduler.Scheduler;
 import org.slf4j.event.Level;
@@ -38,6 +41,9 @@ import static org.mockserver.model.HttpResponse.response;
  * heap-derived default).
  */
 public class MockServerEventLogEvictionSignalTest {
+
+    @ClassRule
+    public static final MetricsLock metricsLock = new MetricsLock();
 
     private MockServerEventLog synchronousEventLog(Configuration configuration) {
         // synchronous (false) so add() runs processLogEntry inline on the calling thread — warnings and
@@ -219,5 +225,42 @@ public class MockServerEventLogEvictionSignalTest {
         assertThat(byteBoundedLog.getEvictedLogEntryCount(), is(greaterThan(1L)));
         // and it is dramatically smaller than the count-only log holding the same traffic
         assertThat(byteBoundedRetained * 5 < countOnlyRetained, is(true));
+    }
+
+    // ---- mock_server_evicted_log_entries counts evicted ENTRIES, not eviction episodes ----
+
+    @Test
+    public void evictedLogEntriesMetricCountsEveryEvictedEntryAndStaysMonotonicAcrossReset() {
+        Metrics.resetAdditionalMetricsForTesting();
+        new Metrics(configuration().metricsEnabled(true));
+        try {
+            Configuration configuration = configuration()
+                .maxLogEntries(10)
+                .maxEventLogSizeInBytes(0L)
+                .maxLoggedBodyBytes(0);
+            MockServerEventLog log = synchronousEventLog(configuration);
+
+            for (int i = 0; i < 100; i++) {
+                log.add(new LogEntry()
+                    .setType(FORWARDED_REQUEST)
+                    .setHttpRequest(request("/p" + i))
+                    .setHttpResponse(response().withStatusCode(200)));
+            }
+            assertThat(log.getEvictedLogEntryCount(), is(90L));
+            assertThat(Metrics.getEvictedLogEntryCount(), is(90L));
+
+            // reset zeroes the log's own count, but the Prometheus counter must never go backwards
+            log.reset();
+            for (int i = 0; i < 15; i++) {
+                log.add(new LogEntry()
+                    .setType(FORWARDED_REQUEST)
+                    .setHttpRequest(request("/q" + i))
+                    .setHttpResponse(response().withStatusCode(200)));
+            }
+            assertThat(log.getEvictedLogEntryCount(), is(5L));
+            assertThat(Metrics.getEvictedLogEntryCount(), is(95L));
+        } finally {
+            Metrics.resetAdditionalMetricsForTesting();
+        }
     }
 }

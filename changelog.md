@@ -58,6 +58,12 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 
 ### Changed
 
+- `mock_server_evicted_log_entries_total` now counts evicted log entries rather than eviction
+  episodes. It used to go up by one when the event log started evicting (and once more after each
+  reset), so it read 1 however many entries were lost; it now goes up by the number of entries evicted.
+  If you alert on this metric, expect much larger values and re-tune thresholds; a rate or increase
+  over it is now a per-entry eviction rate. The `evicted_log_entries` figure in published performance
+  results changes meaning the same way from the next run, so it is not comparable with earlier runs.
 - **BREAKING (experimental feature): HTTP/3 native libraries now ship in a separate artifact, making the standalone jar ~11 MB smaller.** The QUIC native binaries (~11 MB across five platforms) are now in a `jar-with-dependencies-http3` classifier; the default jar is **104 MB → 93 MB**. The QUIC *classes* are still bundled, so if you set `http3Port` without the native present, MockServer refuses to start with a clear message rather than silently ignoring the port. **If you use HTTP/3**: switch to `jar-with-dependencies-http3`, or add `io.netty:netty-codec-native-quic` (with your platform's classifier) to your build, or mount the native jar into `/libs` in a container. **Docker users**: the images previously carried the QUIC native and served HTTP/3 out of the box; a container that sets `http3Port` will now fail to start until `netty-codec-native-quic-<version>-linux-<arch>.jar` (~3 MB) is mounted into `/libs` (already on the classpath in every image variant). **If you do not use HTTP/3 — the default — nothing changes except a smaller download.**
 - **Throughput no longer collapses past saturation.** Offered more than it could serve, MockServer used to serve *less* as load rose (26,020, then 23,463, then 19,517 req/s at 32,000, 48,000 and 64,000 offered in an earlier measurement); it now keeps serving close to the offered rate right up to a 59,146 req/s peak at 64,000 offered, with the median still under a millisecond.
 - **Published per-rate latency percentiles now show steady-state latency.** From the next published benchmark run, the per-rate latency percentiles on the performance page leave out the first 3 seconds of each load step, while the load generator is still starting up at the new rate. Throughput, error and drop figures still count the whole step. At moderate load this start-up had dominated the tail: at 24,000 req/s the ladder showed p99 10.6 ms, while a steady run at the same rate measured 0.343 ms.
@@ -104,6 +110,24 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
   java.lang.Throwable.detailMessage accessible`, which could make retrieving log entries
   (`PUT /mockserver/retrieve?type=LOG_ENTRIES`) fail. The SLO serialiser now uses its own copy of the
   mapper.
+- Removed expectations no longer hold memory without a size limit. MockServer keeps the request
+  matcher of each removed expectation (used up, expired or cleared) so it can still be verified,
+  retrieved or cleared by id, and it kept up to `maxExpectations` of them until a reset however large
+  their bodies were. They are now also limited to about a sixteenth of the JVM heap, dropping the
+  longest-removed first. Verifying a used-up expectation by id works as before; only an id removed
+  long ago, after very many removals without a reset, now returns `No expectation found with id`.
+- Drift detection no longer keeps response-time data for expectations that have been removed, and its
+  per-expectation sample counter can no longer overflow and break the p95 check on a long-running
+  server.
+- A burst of proxied traffic can no longer build an unbounded backlog of drift-analysis work. Drift
+  analysis is best-effort, so responses that arrive while the backlog is full are skipped and counted
+  by the new `mock_server_dropped_drift_analyses` metric. Two new gauges,
+  `mock_server_scheduler_queued_tasks` and `mock_server_template_action_queued_tasks`, show the depth
+  of the action and template-render queues, which are deliberately not limited because their work must
+  not be dropped.
+- The forwarded-request metrics now label at most 500 distinct upstream hosts; further hosts are
+  grouped under `_other`, so proxying to arbitrary hosts cannot grow the number of metric series
+  without limit.
 - **Matching no longer keeps using an out-of-date expectation list after expectations change while
   requests are being served.** A request that arrived at the same moment as an expectation was added,
   updated, removed or cleared could cache the list of expectations as it was before that change, and

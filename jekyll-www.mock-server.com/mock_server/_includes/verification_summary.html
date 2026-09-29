@@ -46,6 +46,8 @@
 
 <p><strong>For expectation ID verification:</strong> MockServer retrieves all events associated with the specified expectation ID (including <code>EXPECTATION_RESPONSE</code> and <code>FORWARDED_REQUEST</code> entries) and verifies the count.</p>
 
+<p>An expectation id keeps working after its expectation has been removed &mdash; for example once an <code>exactly(2)</code> expectation has served both of its responses, or after it was cleared &mdash; so you can verify a used-up expectation by id. MockServer remembers the matchers of removed expectations until the next reset, within a bounded history (up to <code>maxExpectations</code> entries and about a sixteenth of the JVM heap, dropping the longest-removed first). An id that has aged out of that history is rejected with <code>No expectation found with id ...</code>; this only happens after very large numbers of expectations have been removed without a reset.</p>
+
 <p><strong>For sequence verification:</strong> MockServer scans recorded requests in order, checking that each expected request appears after the previous match. This is not a simple count comparison—order matters. When <code>httpResponses</code> are included in a sequence verification, each step checks both the request and the response matcher against the same recorded exchange.</p>
 
 <p><strong>Important notes for parallel testing:</strong></p>

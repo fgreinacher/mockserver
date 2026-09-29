@@ -45,6 +45,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiConsumer;
 
 import static io.netty.handler.codec.http.HttpHeaderNames.*;
@@ -89,6 +90,10 @@ public class HttpActionHandler {
     private final NottableString loopPreventionHeaderName;
     private final NottableString loopPreventionHeaderValue;
     private final Scheduler scheduler;
+    // Drift analyses submitted but not yet finished (queued or running); bounded by maxPendingDriftAnalyses().
+    private final AtomicInteger pendingDriftAnalyses = new AtomicInteger();
+    static final int MIN_PENDING_DRIFT_ANALYSES = 16;
+    static final int PENDING_DRIFT_ANALYSES_PER_THREAD = 4;
     private MockServerLogger mockServerLogger;
     private HttpResponseActionHandler httpResponseActionHandler;
     private FileBodyMaterialiser fileBodyMaterialiser;
@@ -3879,7 +3884,15 @@ public class HttpActionHandler {
         if (realResponse == null) {
             return;
         }
-        scheduler.submit(() -> {
+        // Best-effort: each queued task retains the request and upstream response, and the shared
+        // scheduler queue is unbounded, so shed analyses beyond the bound rather than queue them.
+        int bound = maxPendingDriftAnalyses();
+        if (pendingDriftAnalyses.incrementAndGet() > bound) {
+            pendingDriftAnalyses.decrementAndGet();
+            org.mockserver.metrics.Metrics.incrementDroppedDriftAnalyses();
+            return;
+        }
+        Runnable analysis = () -> {
             try {
                 List<Expectation> matching = httpStateHandler.allMatchingExpectation(request);
                 org.mockserver.mock.drift.DriftAnalyzer analyzer = org.mockserver.mock.drift.DriftAnalyzer.getInstance();
@@ -3903,8 +3916,21 @@ public class HttpActionHandler {
                             .setThrowable(e)
                     );
                 }
+            } finally {
+                pendingDriftAnalyses.decrementAndGet();
             }
-        });
+        };
+        try {
+            scheduler.submit(analysis);
+        } catch (RuntimeException rejected) {
+            // never ran, so its finally never releases the slot; best-effort work must not fail the forward
+            pendingDriftAnalyses.decrementAndGet();
+            org.mockserver.metrics.Metrics.incrementDroppedDriftAnalyses();
+        }
+    }
+
+    private int maxPendingDriftAnalyses() {
+        return Math.max(MIN_PENDING_DRIFT_ANALYSES, PENDING_DRIFT_ANALYSES_PER_THREAD * configuration.actionHandlerThreadCount());
     }
 
     // -------- validation proxy (OpenAPI contract validation on forwarded traffic) --------

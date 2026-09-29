@@ -299,23 +299,23 @@ public class RequestMatchersStateBackendTest {
     @Test
     public void evictionCleansUpExpectationRequestDefinitions() {
         // INC-04: verify that evicted entries are removed from
-        // expectationRequestDefinitions as well
+        // resolution by id as well (an evicted id is not retired, so it no longer resolves)
         backendMatchers.add(new Expectation(request().withPath("/a")).withId("a")
             .thenRespond(response().withBody("a")), API);
         backendMatchers.add(new Expectation(request().withPath("/b")).withId("b")
             .thenRespond(response().withBody("b")), API);
 
-        // A is in expectationRequestDefinitions
-        assertThat(backendMatchers.expectationRequestDefinitions.containsKey("a"), is(true));
+        // A resolves by id
+        assertThat(resolvable(backendMatchers, "a"), is(true));
 
         // Add C -> evicts A
         backendMatchers.add(new Expectation(request().withPath("/c")).withId("c")
             .thenRespond(response().withBody("c")), API);
 
-        // A should be removed from expectationRequestDefinitions too
-        assertThat(backendMatchers.expectationRequestDefinitions.containsKey("a"), is(false));
-        assertThat(backendMatchers.expectationRequestDefinitions.containsKey("b"), is(true));
-        assertThat(backendMatchers.expectationRequestDefinitions.containsKey("c"), is(true));
+        // A no longer resolves by id
+        assertThat(resolvable(backendMatchers, "a"), is(false));
+        assertThat(resolvable(backendMatchers, "b"), is(true));
+        assertThat(resolvable(backendMatchers, "c"), is(true));
     }
 
     // -------------------------------------------------------
@@ -782,5 +782,13 @@ public class RequestMatchersStateBackendTest {
 
         // then - only the count bound (1000) applies, so all are retained
         assertThat(matchers.size(), is(5));
+    }
+
+    private static boolean resolvable(RequestMatchers requestMatchers, String id) {
+        try {
+            return requestMatchers.retrieveRequestDefinitions(java.util.Collections.singletonList(new org.mockserver.model.ExpectationId().withId(id))).findFirst().isPresent();
+        } catch (IllegalArgumentException notFound) {
+            return false;
+        }
     }
 }

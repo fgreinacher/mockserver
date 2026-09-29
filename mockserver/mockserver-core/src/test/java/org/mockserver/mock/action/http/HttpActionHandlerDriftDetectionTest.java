@@ -187,6 +187,70 @@ public class HttpActionHandlerDriftDetectionTest {
         assertThat("a zero sample rate must skip drift analysis", records.size(), is(0));
     }
 
+    @Test
+    public void shedsDriftAnalysesBeyondThePendingBoundAndAdmitsAgainOnceDrained() {
+        // given - drift analyses are queued but not yet run (a saturated scheduler)
+        configuration.driftDetectionEnabled(true).driftSampleRate(1.0d);
+        List<Runnable> queued = new java.util.ArrayList<>();
+        doAnswer(invocation -> {
+            queued.add(invocation.getArgument(0));
+            return null;
+        }).when(scheduler).submit(any(Runnable.class));
+        int bound = Math.max(HttpActionHandler.MIN_PENDING_DRIFT_ANALYSES,
+            HttpActionHandler.PENDING_DRIFT_ANALYSES_PER_THREAD * configuration.actionHandlerThreadCount());
+        HttpRequest request = request("/some_path");
+        Expectation stubExpectation = new Expectation(request).thenRespond(response("stub body").withStatusCode(200));
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(new Expectation(request).thenForward(forward().withHost("localhost").withPort(1090)));
+        when(mockHttpStateHandler.allMatchingExpectation(request)).thenReturn(List.of(stubExpectation));
+        when(mockHttpForwardActionHandler.handle(any(HttpForward.class), any(HttpRequest.class)))
+            .thenAnswer(invocation -> completedForwardResult(response("upstream body").withStatusCode(500)));
+
+        // when - more forwards arrive than the pending bound allows
+        for (int i = 0; i < bound + 10; i++) {
+            actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        }
+
+        // then - only `bound` analyses were queued; the rest were shed rather than queued
+        assertThat(queued.size(), is(bound));
+
+        // when - the backlog drains
+        queued.forEach(Runnable::run);
+        queued.clear();
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - every queued analysis ran, and a new forward is admitted again
+        assertThat(DriftStore.getInstance().getByExpectationId(stubExpectation.getId()).size(), is(bound));
+        assertThat(queued.size(), is(1));
+    }
+
+    @Test
+    public void aRejectedDriftSubmissionReleasesItsSlot() {
+        // given - the scheduler rejects every drift analysis (e.g. shutting down)
+        configuration.driftDetectionEnabled(true).driftSampleRate(1.0d);
+        doThrow(new java.util.concurrent.RejectedExecutionException("rejected")).when(scheduler).submit(any(Runnable.class));
+        int bound = Math.max(HttpActionHandler.MIN_PENDING_DRIFT_ANALYSES,
+            HttpActionHandler.PENDING_DRIFT_ANALYSES_PER_THREAD * configuration.actionHandlerThreadCount());
+        HttpRequest request = request("/some_path");
+        when(mockHttpStateHandler.firstMatchingExpectation(request)).thenReturn(new Expectation(request).thenForward(forward().withHost("localhost").withPort(1090)));
+        when(mockHttpStateHandler.allMatchingExpectation(request)).thenReturn(List.of(new Expectation(request).thenRespond(response("stub body"))));
+        when(mockHttpForwardActionHandler.handle(any(HttpForward.class), any(HttpRequest.class)))
+            .thenAnswer(invocation -> completedForwardResult(response("upstream body").withStatusCode(500)));
+
+        // when - more rejected forwards than the bound, then the scheduler recovers
+        for (int i = 0; i < bound + 5; i++) {
+            actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+        }
+        List<Runnable> queued = new java.util.ArrayList<>();
+        doAnswer(invocation -> {
+            queued.add(invocation.getArgument(0));
+            return null;
+        }).when(scheduler).submit(any(Runnable.class));
+        actionHandler.processAction(request, mockResponseWriter, null, new HashSet<>(), false, true);
+
+        // then - the rejections did not leak slots, so analysis is still admitted
+        assertThat(queued.size(), is(1));
+    }
+
     private HttpForwardActionResult completedForwardResult(HttpResponse upstreamResponse) {
         CompletableFuture<HttpResponse> future = new CompletableFuture<>();
         future.complete(upstreamResponse);
