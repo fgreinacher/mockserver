@@ -22,6 +22,8 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 | # | Item | Blocked on |
 |---|---|---|
 | 2 | Tuning candidates | item 16 below |
+| 27 | Throughput at a range of hardware sizes | §4 |
+| 28 | JFR CPU, lock and GC analysis at the ceiling | §4 |
 
 ## Decided against
 
@@ -85,3 +87,13 @@ build 340 held a flat floor). Each item is in progress in its own unit unless no
 | # | Candidate | What is known | Next step |
 |---|---|---|---|
 | 24 | Header-value sharing across requests on a connection (retained heap) and a `-XX:+UseStringDeduplication` rig A/B | Estimated ~0.5 KB less retained per bodiless request | Queued: A/B after build 496 |
+
+---
+
+## §4 — Hardware scale and JVM profiling (added 2026-09-29)
+
+| # | Item | What is known | Next step |
+|---|---|---|---|
+| 27 | Publish throughput for a range of hardware sizes, from 1 core / 512 MB up to 6 cores / 2 GB and beyond where the rig allows, so users can size a deployment | `lib/perf-percore.sh` already pins one SUT per core count (1, 2, 4, 8, 16) with a disjoint k6, but it is opt-in (`PERF_SERVING_PERCORE=true`), never published, and sets no memory limit, so the JVM sizes its heap and the event-log budget from the whole host | Add a memory limit per point (container `-m`, so heap and event-log defaults follow it), run the matrix after #26 lands (the upper points are client-limited until then), then add a table and chart to `performance.html` |
+| 28 | Use the JFR profile the deep run already records to find where CPU goes at the ceiling, not just where memory is allocated | The daily deep run records `settings=profile` JFR (CPU samples, lock contention, GC and safepoint pauses, socket I/O), but `perf-test-allocprofile.sh` only reports `allocation-by-site` and `allocation-by-class`; at 57k rps the server used 250–410% of its 600% CPU, so the ceiling may be contention or a single-threaded stage rather than raw CPU | Analyse an existing deep-run `load.jfr` (hot methods, contention by site, GC and safepoint pauses, per-thread CPU); add any useful views to the step's annotation; turn findings into §2 candidates |
+
