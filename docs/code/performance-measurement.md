@@ -31,7 +31,7 @@ regressions hide and stale claims get published.
 | `scripts/perf/bench_startup.py` | Launch-to-ready variant matrix | Never runs in CI | Never |
 | `inject` (`run-inject.sh`) | Load-injection ceiling | Opt-in | Never in daily pipeline |
 | Hardware matrix (`lib/perf-percore.sh`, `PERF_SERVING_HW_MATRIX=true`) | Healthy ceiling per cores × container memory, for the public sizing table | Opt-in, manual build only | No — notify-only; only a wholesale producer failure reds (presence gate) |
-| `perf-test-allocprofile.sh` (deep JFR) | Allocation per request, peak direct memory, top allocation sites over the load window, retained-heap histogram | Daily (perf queue), separate step | No — `soft_fail`, never baselined; an under-sized recording is reported INVALID |
+| `perf-test-allocprofile.sh` (deep JFR) | Allocation per request, peak direct memory, top allocation sites over the load window, retained-heap histogram, and the CPU / lock / GC profile of the ceiling rungs alone | Daily (perf queue), separate step | No — `soft_fail`, never baselined; an under-sized recording is reported INVALID |
 
 ## The Daily Pipeline
 
@@ -160,6 +160,30 @@ window holding ~4 samples is effectively the max.
 420 (2026-09-24) the 38,000-rps rung dipped just below the ratio floor (0.949 vs 0.950); without
 finer rungs at 39,000 and 41,000, the reported healthy ceiling would have been ~36,000 rather than
 41,000. When placing rungs near a suspected knee, use gaps of 1,000 rps or smaller.
+
+**Where the tail is (notify-only, every daily run).** k6 counts a request over 5 ms as a stall;
+the server records `mock_server_request_duration_seconds`, scraped into `diag-samples.csv`. Per rung,
+the run sets the two side by side as `sweep_tail.rungs[]` in `perf-result.json`
+(`client_over_5ms_frac` is `stalls_post_settle / measured_sample_count`; `server_over_5ms_frac` is
+the `req_dur_le_5ms` delta between the first and last `diag-samples.csv` rows inside the rung's
+post-settle window, with `server_window_s` and `server_requests` saying how much of the rung that
+covers), and the compare annotation prints them as a table. Rung windows come from each point's
+`start_epoch_ms` (the k6 scenario's own start), not from the host clock before `docker run`, which
+precedes it by k6 start-up and `setup()`. A rung with fewer than two scrapes in its window reads
+`n/a` on the server side. Nothing is budgeted or compared.
+
+The server column covers only MockServer's request handler: the histogram starts when
+`HttpRequestHandler.channelRead0` builds its response writer, after the socket read, HTTP decode and
+aggregation, and stops at the response hand-off, before the flush. Event-loop queueing, decode, the
+flush and any pause outside that span are not in it. So a client tail with no server tail is outside
+the handler — the rig, the network, **or** MockServer's own event-loop queueing, decode or flush — and
+a saturated worker event loop would look exactly the same. To tell them apart, read k6 CPU against
+its pin (the sweep's exclusion reasons) and per-worker event-loop CPU (the deep run's ceiling
+per-thread table). Build 502 is the worked case: from 44,000 rps up k6 saw 19–27% of requests over
+5 ms and the handler at most 0.004% (rung starts reconstructed, since that run predates
+`start_epoch_ms`), and its ceiling JFR showed no thread above ~45% of a core with the server at 275% of
+its 600% CPU. The two together, not the table alone, put that tail outside MockServer. A server-side
+accept-to-flush (or decode-to-flush) timer would close the gap; it is not built.
 
 **Ladder anchor rule.** Always include at least one rung *below* the expected knee. A ladder that
 starts above the cleanly-served region reports `saturation_rps=0` — every rung is already in
@@ -636,20 +660,72 @@ k6 placement but not the pausing; its output shape is unchanged apart from added
 
 ### Allocation profile step
 
-`perf-test-allocprofile.sh` answers *what allocates, and how much per request* on every dispatched
-run. It reruns `perf-test-run.sh` with `PERF_JVM_DIAGNOSTICS=deep` (JFR `settings=profile`, NMT, GC
-file logging, a periodic live-heap histogram) on a short ladder. That instrumentation depresses
-throughput, so the step is `soft_fail`, nothing depends on it, and every artifact carries an
-`allocprofile-` prefix that `perf-test-compare.sh` never downloads.
+`perf-test-allocprofile.sh` answers *what allocates, and how much per request*, and *where the CPU
+goes at the ceiling*, on every dispatched run. It reruns `perf-test-run.sh` with
+`PERF_JVM_DIAGNOSTICS=deep` (JFR `settings=profile` plus `jdk.JavaMonitorEnter#threshold=1ms` and
+`jdk.CPUTimeSample#enabled=true`, NMT, GC file logging, a live-heap histogram during growth) on a
+short ladder. That instrumentation depresses throughput, so the step is `soft_fail`, nothing depends
+on it, and every artifact carries an `allocprofile-` prefix that `perf-test-compare.sh` never
+downloads. The views are read with a digest-pinned JDK 25 `jfr` (`PERF_JFR_JDK_IMAGE`, defaulted once in
+`.buildkite/scripts/steps/lib/perf-jfr-image.sh`), the SUT's own JDK; an older `jfr` lacks views such as `cpu-time-hot-methods`.
 
 Its annotation reports, in order:
 
 | Figure | Source | Notes |
 |---|---|---|
-| Allocation per request | Δ`jvm_allocated_bytes` ÷ Δ`req_dur_count` across the `diag-samples.csv` rows inside the load window (`load-window.json`) | A mixed-workload average over regression, sweep and growth, including JFR and scrape overhead. Indicative only; not comparable with JMH `gc.alloc.rate.norm` |
+| Allocation per request | Δ`jvm_allocated_bytes` ÷ Δ`req_dur_count` across the `diag-samples.csv` rows inside the load window (`load-window.json`) | A mixed-workload average over regression, sweep and growth, including JFR and scrape overhead. Indicative only; not comparable with JMH `gc.alloc.rate.norm`. The mix moves with the ladder, so compare it only between deep runs with the same `K6_SWEEP_RATES` (the default gained three rungs with the ceiling window) |
 | Peak direct memory | `direct_buffer_used_bytes` and `netty_direct_used_bytes` columns over the same window | In the shipped runtime Netty's pooled buffers appear in the Netty column, not the NIO `direct` pool; read both |
-| Live heap, last sample | `sut/live-heap-histogram.txt` (`jcmd GC.class_histogram`) | What the heap *retains*; see the ZGC pitfall below |
+| Live heap, last sample | `sut/live-heap-histogram.txt` (`jcmd GC.class_histogram`) | What the heap *retains*, near the end of growth.js with the event log full; see the ZGC pitfall below |
 | Allocation by site / by class | `jfr view` over `sut/load.jfr` | Only when the recording passes the sanity floor |
+| Live-heap histogram placement | every `GC_HeapInspection` in `sut/load.jfr` against the rung windows in `sweep-rungs.json` | Should read "none inside a sweep rung"; a warning names any rung that caught one |
+| Ceiling window: per-thread CPU, `hot-methods`, `cpu-time-hot-methods`, `cpu-time-statistics`, `contention-by-site`, `latencies-by-type`, `vm-operations`, `gc-pauses`, `native-methods`, `exception-count` | `sut/ceiling.jfr` | Only when the window passes its own floor; the two `cpu-time-*` views only when `jdk.CPUTimeSample` events exist. `cpu-time-hot-methods` also counts time in native socket writes and reads, which `hot-methods` (Java frames only) does not |
+
+**Histogram placement.** `jcmd GC.class_histogram` is a stop-the-world `GC_HeapInspection`, 0.4–0.5 s
+at the ceiling. When it sampled every ~32 s through the whole run it landed in 10 of build 502's 22
+rungs (placing its recorded inspections against the rung schedule; the placement check below counts
+all 10), 9 of them after the 3 s settle window that the published percentiles exclude. Those 9 were
+exactly the rungs whose p99.9 read 90–480 ms; the other 13 read at most 48 ms. The sampler now runs
+only while `growth.js` is running (`open_live_histo_window`, closing 10 s before its scheduled end so
+no sample meets its teardown reset). Growth fills the event log with
+`GET /simple`, so the last sample still shows what a full log retains; no sample falls in a
+regression or sweep phase. Growth's own latency probes in the deep run can still include a pause;
+like every deep-run figure they are never baselined.
+
+**The ceiling window.** Right after the main sweep, `dump_ceiling_jfr` takes the SUT's JFR from the
+start of the knee rung (the first rung at or above `saturation_rps`; the top rung when no rung was
+clean) to the end of the ladder, using `start_epoch_ms` from `sweep.js`. The window always spans at
+least two rungs: when the knee is the top rung (or `saturation_rps` is 0) it starts one rung earlier.
+That is why the step's default ladder is `8000,24000,40000,48000,56000,64000`: the old
+`8000,24000,48000` left a one-rung, 15 s window, below the floor, whenever 48,000 rps was clean or
+nothing was (builds 482, 483, 485 and 486), and even its valid windows sat below the ~50–56k knee. `jcmd JFR.dump begin= end=`
+selects whole chunks, and build 502's 952 s recording had three, so that dump alone still describes
+most of the run. `.buildkite/scripts/lib/JfrWindow.java` (JDK 19+ `RecordingFile.write` with a
+filter) then keeps only the events that started inside the window, plus the configuration events the
+views need, and writes `sut/ceiling.jfr`. `ceiling-window.json` records the rungs, the times, the
+kept and dropped event counts, or the reason there is no recording. The window includes the gaps
+between rungs, so a figure averaged over it (per-thread CPU) reads about three quarters of the
+in-rung load on the default 15 s rung / 5 s gap ladder. A window shorter than
+`PERF_ALLOCPROFILE_MIN_CEILING_S` (default 30) or with fewer than
+`PERF_ALLOCPROFILE_MIN_CEILING_EXEC_SAMPLES` (default 500) `jdk.ExecutionSample` events is reported
+INVALID and not summarised.
+
+**Per-thread CPU.** `jdk.ThreadCPULoad` is a fraction of the JVM's effective CPUs, so a whole-run
+`thread-cpu-load` view reads a fully busy thread as 17% on a 6-CPU container and averages the idle
+rungs in. The annotation instead reports, per thread name, the thread's summed load over the ceiling
+window divided by the window's sampling periods (so a thread that lived for part of the window is
+not averaged over its own samples only), times the effective CPU count
+(`jdk.ContainerConfiguration.effectiveCpuCount`), as "% of one core": top
+`PERF_ALLOCPROFILE_TOP_THREADS` (default 12), the total over Java threads, and a whole-JVM line from
+`jdk.CPULoad` (`jvmUser + jvmSystem`), which adds the GC and other VM-internal threads. `jdk.CPULoad` is a fraction
+of the host's hardware threads, not the container's, so that line multiplies by
+`jdk.CPUInformation.hwThreads`; on build 502's ceiling it reads 211% against 180% for the Java
+threads.
+
+**Recording options.** `jdk.JavaMonitorEnter#threshold=1ms` records monitor waits of 1–10 ms, which
+the `profile` default of 10 ms hides; build 502 showed contention on the event-log disruptor lock
+only where it exceeded 10 ms (12–25 ms).
+`jdk.CPUTimeSample` is JDK 25's experimental Linux CPU-time sampler (JEP 509), off in `profile`;
+JDK 17 and 21 ignore the unknown event name and start normally, so no version guard is needed.
 
 **The recording.** At the end of the run (and on the failure path while the SUT is still alive)
 `dump_load_window_jfr` runs `jcmd 1 JFR.dump begin=<load start>` from a sidecar in the SUT's PID
@@ -830,4 +906,4 @@ Separately: the live set under MockServer tracks the event-log budget, not the w
 
 ### Measurement condition is load-bearing for heap histograms
 
-The histogram sampler runs across all phases, but the phase that fills the event log drives only `GET /simple` mocked responses over plain HTTP/1.1. Under exactly those conditions the HTTP/2 stream id, the forwarded-response status code, `Timing` fields, injected delays, and streaming chunk timestamps are all inert and `socketAddress` is null. Any allocation or retention finding attributed to a histogram must state which phase produced it — a finding valid on the mocked-HTTP/1.1 phase may not exist on the forward phase, and vice versa.
+The histogram sampler runs only during growth.js, and that phase drives only `GET /simple` mocked responses over plain HTTP/1.1. Under exactly those conditions the HTTP/2 stream id, the forwarded-response status code, `Timing` fields, injected delays, and streaming chunk timestamps are all inert and `socketAddress` is null. A retention finding from the histogram therefore holds for mocked HTTP/1.1 responses and may not exist on the forward phase or over HTTP/2; state that when quoting one.

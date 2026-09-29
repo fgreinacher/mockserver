@@ -302,9 +302,11 @@ SAMPLE_LOG="$OUT_DIR/samples.csv"
 #     -XX:NativeMemoryTracking=summary + -XX:+PrintNMTStatistics  precise native breakdown printed to
 #                                   stdout at JVM exit (captured by the docker-logs follower), ~5-10%
 #     live-heap class histogram     periodic jcmd GC.class_histogram from a JDK sidecar sharing the
-#                                   SUT PID namespace -> /diag/<sut>/live-heap-histogram.txt. This is
-#                                   the ONLY live-set attribution available here: JFR's retention
-#                                   views are empty under ZGC (see live_heap_histo_sampler below).
+#                                   SUT PID namespace -> /diag/<sut>/live-heap-histogram.txt, taken
+#                                   only during growth.js, never inside a latency-measuring phase.
+#                                   This is the ONLY live-set attribution available here: JFR's
+#                                   retention views are empty under ZGC (see live_heap_histo_sampler).
+#     ceiling JFR window            the sweep rungs from the knee to the top, cut to /diag/sut/ceiling.jfr
 PERF_JVM_DIAGNOSTICS="${PERF_JVM_DIAGNOSTICS:-standard}"   # standard = tier 1 only; deep = tier 1 + tier 2
 PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to see the cliff APPROACH, not just its aftermath
 # Heap dumps are large (a 1.2 GiB heap dumps ~1 GiB); upload only when gzipped size is within this
@@ -321,9 +323,11 @@ PERF_HEAPDUMP_MAX_UPLOAD_MB="${PERF_HEAPDUMP_MAX_UPLOAD_MB:-512}"
 PERF_HISTO_ENABLED="${PERF_HISTO_ENABLED:-true}"
 PERF_HISTO_JDK_IMAGE="${PERF_HISTO_JDK_IMAGE:-eclipse-temurin:21-jdk}"
 PERF_HISTO_TOPN="${PERF_HISTO_TOPN:-40}"
+# shellcheck source=lib/perf-jfr-image.sh
+. "$SCRIPT_DIR/lib/perf-jfr-image.sh"
 PERF_HISTO_DEADLINE_S="${PERF_HISTO_DEADLINE_S:-90}" # linear read of a 2.4 GB dump is ~1-2s locally; 90s is huge headroom, and a timeout yields a TRUNCATED top-N rather than nothing
-# Live-heap class histogram (deep runs only) — see live_heap_histo_sampler(). Each sample forces a
-# full GC, so the interval is a throughput/resolution trade-off on an already-degraded run.
+# Live-heap class histogram (deep runs only) — see live_heap_histo_sampler(). Each sample is a
+# stop-the-world heap inspection, so it runs only inside LIVE_HISTO_WINDOW.
 PERF_LIVE_HISTO_INTERVAL_S="${PERF_LIVE_HISTO_INTERVAL_S:-45}"
 PERF_LIVE_HISTO_TOPN="${PERF_LIVE_HISTO_TOPN:-25}"
 DIAG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/perf-diag.XXXXXX")"
@@ -362,8 +366,9 @@ tier1_jvm_opts() {
 tier2_jvm_opts() {
   local sub="$1"
   # -XX:+UnlockDiagnosticVMOptions MUST precede PrintNMTStatistics (it is a diagnostic flag; the JVM
-  # refuses to start otherwise — caught by the local OOM proof).
-  printf -- '-Xlog:gc*,gc+heap=info:file=/diag/%s/gc-%%p.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics -XX:StartFlightRecording=name=perfdiag,settings=profile,maxsize=256m -XX:FlightRecorderOptions=repository=/diag/%s/jfr-repo,stackdepth=128' "$sub" "$sub"
+  # refuses to start otherwise — caught by the local OOM proof). jdk.CPUTimeSample is JDK 25+ on
+  # Linux; JDK 17 and 21 ignore an unknown event name here and start normally.
+  printf -- '-Xlog:gc*,gc+heap=info:file=/diag/%s/gc-%%p.log:time,uptime,level,tags:filecount=5,filesize=20m -XX:NativeMemoryTracking=summary -XX:+UnlockDiagnosticVMOptions -XX:+PrintNMTStatistics -XX:StartFlightRecording=name=perfdiag,settings=profile,maxsize=256m,jdk.JavaMonitorEnter#threshold=1ms,jdk.CPUTimeSample#enabled=true -XX:FlightRecorderOptions=repository=/diag/%s/jfr-repo,stackdepth=128' "$sub" "$sub"
 }
 # Combined diagnostics JVM opts for a diag SUT ($1 = /diag subdir), honouring the tier flag.
 diag_jvm_opts() {
@@ -1674,6 +1679,8 @@ run_regression() {
 #   direct_buffer_used_bytes / _count, netty_direct_used_bytes  OFF-HEAP buffer memory (the NIO "direct"
 #                                 pool, and Netty's own counter where Netty keeps one), so an allocator
 #                                 change can be judged on native memory, not just heap
+#   scrape_ts                     when the metrics scrape started; `ts` precedes it by the docker-stats
+#                                 call (1-2 s), which matters when a row is placed inside a sweep rung
 # A BLANK JVM-metric column has THREE distinct meanings, all preserved and NOT conflated: (1) the
 # metric is absent on an older image; (2) the scrape TIMED OUT (--max-time 4) because the SUT was
 # thrashing in GC near death — common in the final rows, and itself a death signal; (3) a genuine
@@ -1688,10 +1695,10 @@ to_bytes() { awk -v s="$1" 'BEGIN{
   printf "%d", n*m }'; }
 diag_sampler() {
   local t0; t0="$(date -u +%s)"
-  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries,evicted_log_entries,req_dur_count,req_dur_sum,req_dur_le_5ms,req_dur_le_10ms,req_dur_le_25ms,req_dur_le_50ms,req_dur_le_100ms,jvm_allocated_bytes,direct_buffer_used_bytes,direct_buffer_count,netty_direct_used_bytes" > "$DIAG_SAMPLE_LOG"
+  echo "ts,elapsed_s,container_mem_bytes,container_mem_limit_bytes,cpu_pct,heap_used_bytes,heap_max_bytes,nonheap_used_bytes,gc_seconds,gc_count,threads,dropped_log_events,ring_occupancy,ring_capacity,in_flight_bytes,max_in_flight_bytes,retained_entries,retained_bytes,max_retained_bytes,max_retained_entries,evicted_log_entries,req_dur_count,req_dur_sum,req_dur_le_5ms,req_dur_le_10ms,req_dur_le_25ms,req_dur_le_50ms,req_dur_le_100ms,jvm_allocated_bytes,direct_buffer_used_bytes,direct_buffer_count,netty_direct_used_bytes,scrape_ts" > "$DIAG_SAMPLE_LOG"
   while true; do
     local ts stats cpu memu meml metrics heap heapmax nonheap gc gcc threads dropped occ cap inflt maxinflt retent retbytes maxretbytes maxretent
-    local evicted hist rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 allocd dbuf_used dbuf_count netty_direct
+    local evicted hist rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 allocd dbuf_used dbuf_count netty_direct scrape_ts
     ts="$(date -u +%s)"
     # Authoritative liveness: docker inspect .State, NOT the metrics scrape (which
     # also fails when the JVM thrashes in GC while alive). Only a readable state with
@@ -1722,6 +1729,7 @@ diag_sampler() {
     cpu="$(printf '%s' "$stats" | sed -n 's/^\([0-9.]*\)%.*/\1/p')"
     memu="$(printf '%s' "$stats" | sed -E 's/^[^;]*;([^ ]+) \/ .*/\1/')"
     meml="$(printf '%s' "$stats" | sed -E 's/^[^;]*;[^ ]+ \/ (.+)$/\1/')"
+    scrape_ts="$(date -u +%s)"
     metrics="$(curl -s --max-time 4 "$SERVER_METRICS_URL" 2>/dev/null || echo '')"
     heap="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_used_bytes\{area="heap"\}/{print $2}')"
     heapmax="$(printf '%s' "$metrics" | awk -F' ' '/^jvm_memory_max_bytes\{area="heap"\}/{print $2}')"
@@ -1757,7 +1765,7 @@ diag_sampler() {
       /^mock_server_request_duration_seconds_bucket\{le="0\.1"\}/{b100=$2}
       END{print c"|"s"|"b5"|"b10"|"b25"|"b50"|"b100}')"
     IFS='|' read -r rq_count rq_sum rq_le5 rq_le10 rq_le25 rq_le50 rq_le100 <<<"$hist"
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$ts" "$((ts - t0))" \
       "$([ -n "$memu" ] && to_bytes "$memu" || echo '')" \
       "$([ -n "$meml" ] && to_bytes "$meml" || echo '')" \
@@ -1766,7 +1774,7 @@ diag_sampler() {
       "${retent:-}" "${retbytes:-}" "${maxretbytes:-}" "${maxretent:-}" \
       "${evicted:-}" "${rq_count:-}" "${rq_sum:-}" \
       "${rq_le5:-}" "${rq_le10:-}" "${rq_le25:-}" "${rq_le50:-}" "${rq_le100:-}" \
-      "${allocd:-}" "${dbuf_used:-}" "${dbuf_count:-}" "${netty_direct:-}" >> "$DIAG_SAMPLE_LOG"
+      "${allocd:-}" "${dbuf_used:-}" "${dbuf_count:-}" "${netty_direct:-}" "$scrape_ts" >> "$DIAG_SAMPLE_LOG"
     sleep "$PERF_DIAG_SAMPLE_INTERVAL"
   done
 }
@@ -1780,8 +1788,22 @@ diag_sampler & DIAG_SAMPLER_PID=$!
 # collector — so jcmd GC.class_histogram is the only instrument left. The distroless SUT ships no
 # jcmd, hence a JDK sidecar in its PID namespace; the attach handshake demands an exact uid match
 # (root is rejected), so the uid is read from the target's own /proc entry rather than assumed.
+# Each sample is a stop-the-world GC_HeapInspection, hundreds of ms under load, that becomes the
+# p99.9 of any rung it lands in. So it samples only while LIVE_HISTO_WINDOW holds a future epoch
+# second: open_live_histo_window opens it for growth.js, which fills the event log and is not a
+# regression or sweep phase.
+LIVE_HISTO_WINDOW="$DIAG_DIR/live-histo-window"
+open_live_histo_window() { # seconds
+  [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] && [ "$1" -gt 0 ] || return 0
+  echo "$(( $(date -u +%s) + $1 ))" > "$LIVE_HISTO_WINDOW"
+}
+close_live_histo_window() {
+  [ -e "$LIVE_HISTO_WINDOW" ] || return 0
+  rm -f "$LIVE_HISTO_WINDOW"
+  echo "--- live-heap histogram: $(awk '/^===== /{n++} END{print n+0}' "$DIAG_DIR/sut/live-heap-histogram.txt" 2>/dev/null || echo 0) sample(s) taken during growth.js"
+}
 live_heap_histo_sampler() { # container, diag_subdir
-  local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" uid gid t0
+  local target="$1" out="$DIAG_DIR/$2/live-heap-histogram.txt" uid gid t0 now open_until
   read -r uid gid <<<"$(sut_jvm_uid_gid "$target")"
   if ! grep -qE '^[0-9]+$' <<<"$uid"; then
     echo "WARNING: could not resolve the $target JVM uid from its PID namespace — no live-heap histogram" >&2
@@ -1796,12 +1818,15 @@ live_heap_histo_sampler() { # container, diag_subdir
   fi
   mkdir -p "$(dirname "$out")"; : > "$out"
   t0="$(date -u +%s)"
-  echo "--- live-heap histogram sampler attached to $target as uid $uid (every ${PERF_LIVE_HISTO_INTERVAL_S}s -> live-heap-histogram.txt)"
+  echo "--- live-heap histogram sampler attached to $target as uid $uid (every ${PERF_LIVE_HISTO_INTERVAL_S}s during growth.js -> live-heap-histogram.txt)"
   while true; do
     sleep "$PERF_LIVE_HISTO_INTERVAL_S"
     [ "$(docker inspect --format '{{.State.Running}}' "$target" 2>/dev/null || echo false)" = "true" ] || return 0
+    open_until="$(cat "$LIVE_HISTO_WINDOW" 2>/dev/null || true)"; now="$(date -u +%s)"
+    case "$open_until" in ''|*[!0-9]*) continue ;; esac
+    [ "$now" -lt "$open_until" ] || continue
     {
-      echo "===== elapsed_s=$(( $(date -u +%s) - t0 ))"
+      echo "===== elapsed_s=$(( now - t0 )) epoch_s=$now"
       timeout 90 docker run --rm --pid="container:$target" --user "${uid}:${gid}" \
         "$PERF_HISTO_JDK_IMAGE" jcmd 1 GC.class_histogram 2>&1 \
         | head -n "$(( PERF_LIVE_HISTO_TOPN + 3 ))"
@@ -1811,6 +1836,7 @@ live_heap_histo_sampler() { # container, diag_subdir
 }
 if [ "$PERF_JVM_DIAGNOSTICS" = "deep" ]; then
   live_heap_histo_sampler "$SERVER" "sut" & LIVE_HISTO_PID=$!
+  docker pull -q "$PERF_JFR_JDK_IMAGE" >/dev/null 2>&1 || echo "WARNING: could not pre-pull $PERF_JFR_JDK_IMAGE — the ceiling JFR cut will try again" >&2
 fi
 
 LOAD_WINDOW_START_EPOCH="$(date -u +%s)"
@@ -2126,6 +2152,101 @@ else
   add_check "sweep_latency_window_accounts_every_request" false "sweep.js settle/steady windows are inconsistent, so the published percentiles cannot be trusted to cover each rung's post-settle window — ${SWEEP_WINDOW_MISMATCH}"
 fi
 
+# --- per-rung wall-clock windows, tail localisation, ceiling JFR ---------------
+# Rung windows come from sweep.js's start_epoch_ms (the k6 scenario's own start). The host-side
+# LAST_SWEEP_T0 precedes it by k6 start-up and setup(), several seconds on a large ladder.
+sweep_rung_windows() { # sweep_json -> [{offered_rps, start_epoch_ms, end_epoch_ms}]
+  jq -c --argjson step "$STEP_S" '[(.points // [])[] | select(.start_epoch_ms != null)
+    | {offered_rps, start_epoch_ms, end_epoch_ms: (.start_epoch_ms + $step * 1000)}]' "$1" 2>/dev/null || echo '[]'
+}
+
+# Notify-only. Per rung, the share of requests over 5 ms as k6 saw it (post-settle stalls) beside
+# the server's share from the req_dur histogram delta between the diag-samples.csv rows inside the
+# rung's post-settle window. req_dur times only the request handler (decoded request to response
+# hand-off), so a client-only tail may still be MockServer's event-loop queueing, decode or flush.
+sweep_tail_localisation() { # sweep_json diag_csv -> JSON
+  local rungs
+  rungs="$(jq -r --argjson step "$STEP_S" '(.points // [])[] | select(.start_epoch_ms != null)
+    | [.offered_rps, .start_epoch_ms, (.start_epoch_ms + $step * 1000),
+       (if (.stall_ms_threshold // 5) != 5 then ""
+        elif (.measured_sample_count // 0) > 0 then ((.stalls_post_settle // 0) / .measured_sample_count)
+        elif (.sample_count // 0) > 0 then ((.stalls // 0) / .sample_count)
+        else "" end)] | @tsv' "$1" 2>/dev/null || true)"
+  if [ -z "$rungs" ] || [ ! -s "$2" ]; then echo '{}'; return 0; fi
+  awk -v settle="$SETTLE_S" '
+    FNR == NR { split($0, a, "\t"); nr++; off[nr] = a[1]; lo[nr] = a[2] / 1000 + settle; hi[nr] = a[3] / 1000 - 1; cl[nr] = a[4]; next }
+    FNR == 1 { n = split($0, h, ","); for (i = 1; i <= n; i++) col[h[i]] = i
+               tc = ("scrape_ts" in col) ? col["scrape_ts"] : col["ts"]
+               ok = ("req_dur_count" in col) && ("req_dur_le_5ms" in col); next }
+    ok { split($0, f, ","); t = f[tc]; c = f[col["req_dur_count"]]; b = f[col["req_dur_le_5ms"]]
+         if (t != "" && c != "" && b != "") { m++; T[m] = t + 0; C[m] = c + 0; B[m] = b + 0 } }
+    END { for (i = 1; i <= nr; i++) {
+            first = 0; last = 0
+            for (j = 1; j <= m; j++) if (T[j] >= lo[i] && T[j] <= hi[i]) { if (!first) first = j; last = j }
+            srv = ""; req = 0; win = 0
+            if (first && last > first && C[last] > C[first]) {
+              req = C[last] - C[first]; srv = 1 - (B[last] - B[first]) / req; win = T[last] - T[first] }
+            printf "%s\t%s\t%s\t%d\t%d\n", off[i], cl[i], srv, req, win } }
+  ' <(printf '%s\n' "$rungs") "$2" | jq -Rsc '
+    def frac: if . == "" then null else (tonumber | . * 100000 | round / 100000) end;
+    split("\n") | map(select(length > 0) | split("\t")
+      | {offered_rps: (.[0] | tonumber), client_over_5ms_frac: (.[1] | frac), server_over_5ms_frac: (.[2] | frac),
+         server_requests: (.[3] | tonumber), server_window_s: (.[4] | tonumber)})
+    | {threshold_ms: 5, rungs: .}' 2>/dev/null || echo '{}'
+}
+
+# Deep runs only: the SUT's JFR from the knee rung (the first at or above saturation_rps; the top
+# rung when nothing was clean) to the end of the ladder, starting one rung earlier when that would
+# leave only the top rung. JFR.dump bounds by chunk, and a chunk spans minutes, so JfrWindow.java
+# then keeps only the events that started inside the window.
+dump_ceiling_jfr() { # rung_windows_json saturation_rps
+  [ "$PERF_JVM_DIAGNOSTICS" = "deep" ] || return 0
+  local win err="" uid gid rc=0 out="$DIAG_DIR/sut/ceiling.jfr" chunks="$DIAG_DIR/sut/ceiling.chunks.jfr" begin_ms end_ms cut=""
+  win="$(jq -c --argjson sat "${2:-0}" 'if length == 0 then empty else
+      . as $r | (length - 1) as $top
+      | ([range(0; length) | select($sat > 0 and $r[.].offered_rps >= $sat)] | .[0] // $top) as $k
+      | (if $k == $top and $top > 0 then $top - 1 else $k end) as $i | .[$i] as $first
+      | {first_rung_rps: $first.offered_rps, last_rung_rps: .[-1].offered_rps, saturation_rps: $sat,
+         begin_epoch_ms: $first.start_epoch_ms, end_epoch_ms: .[-1].end_epoch_ms,
+         begin_iso: ($first.start_epoch_ms / 1000 | floor | todate), end_iso: (.[-1].end_epoch_ms / 1000 | ceil | todate)} end' <<<"$1" 2>/dev/null || true)"
+  if [ -z "$win" ]; then
+    err="sweep.json carries no rung start times"
+  elif [ "$(docker inspect --format '{{.State.Running}}' "$SERVER" 2>/dev/null || echo false)" != "true" ]; then
+    err="SUT not running at dump time"
+  else
+    read -r uid gid <<<"$(sut_jvm_uid_gid "$SERVER")"
+    begin_ms="$(jq -r '.begin_epoch_ms' <<<"$win")"; end_ms="$(jq -r '.end_epoch_ms' <<<"$win")"
+    if ! grep -qE '^[0-9]+$' <<<"$uid"; then
+      err="could not resolve the SUT JVM uid"
+    elif ! timeout 120 docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$PERF_JFR_JDK_IMAGE" \
+           jcmd 1 JFR.dump name=perfdiag filename=/diag/sut/ceiling.chunks.jfr \
+           begin="$(jq -r '.begin_iso' <<<"$win")" end="$(jq -r '.end_iso' <<<"$win")" >/dev/null 2>&1 || [ ! -s "$chunks" ]; then
+      err="jcmd JFR.dump of the ceiling window failed or wrote nothing"
+    else
+      cut="$(timeout 180 docker run --rm --user "${uid}:${gid}" -v "$DIAG_DIR:/diag" \
+               -v "$REPO_ROOT/.buildkite/scripts/lib/JfrWindow.java:/JfrWindow.java:ro" "$PERF_JFR_JDK_IMAGE" \
+               java /JfrWindow.java /diag/sut/ceiling.chunks.jfr /diag/sut/ceiling.jfr "$begin_ms" "$end_ms" 2>&1)" || rc=$?
+      [ "$rc" -eq 0 ] && [ -s "$out" ] || { err="cutting the ceiling window failed (exit $rc): $(tail -1 <<<"$cut")"; rm -f "$out"; }
+    fi
+    rm -f "$chunks"
+  fi
+  jq -n --argjson win "${win:-null}" --arg err "$err" --arg cut "$cut" \
+    '($win // {}) + {jfr: (if $err == "" then "sut/ceiling.jfr" else null end), cut: (if $err == "" then $cut else null end),
+                     error: (if $err == "" then null else $err end)}' > "$DIAG_DIR/ceiling-window.json" 2>/dev/null || true
+  if [ -n "$err" ]; then echo "WARNING: no ceiling JFR window — $err" >&2
+  else echo "--- ceiling JFR window: sut/ceiling.jfr, $(jq -r '"\(.first_rung_rps)-\(.last_rung_rps) rps, \(.begin_iso) to \(.end_iso)"' <<<"$win") ($cut)" >&2; fi
+  return 0
+}
+
+SWEEP_RUNGS_JSON="$(sweep_rung_windows "$OUT_DIR/sweep.json")"
+printf '%s\n' "$SWEEP_RUNGS_JSON" > "$DIAG_DIR/sweep-rungs.json" 2>/dev/null || true
+SWEEP_TAIL_JSON="$(sweep_tail_localisation "$OUT_DIR/sweep.json" "$DIAG_SAMPLE_LOG" || true)"
+# Exactly one JSON object, or '{}': a partial pipeline can emit two documents, which --argjson rejects.
+jq -se 'length == 1 and (.[0] | type) == "object"' >/dev/null 2>&1 <<<"$SWEEP_TAIL_JSON" || SWEEP_TAIL_JSON='{}'
+echo "--- tail localisation (share of requests over 5 ms; client = k6 post-settle, server = MockServer histogram; notify-only):"
+jq -r '(.rungs // [])[] | "    \(.offered_rps) rps: client \(.client_over_5ms_frac // "n/a") server \(.server_over_5ms_frac // "n/a") (n=\(.server_requests) over \(.server_window_s)s)"' <<<"$SWEEP_TAIL_JSON" || true
+dump_ceiling_jfr "$SWEEP_RUNGS_JSON" "$SATURATION_RPS"
+
 # --- OPT-IN steady-state latency-tail experiment (performance-programme.md §1) --
 # One constant-arrival-rate pass at PERF_STEADY_RATE on the main SUT, before growth.
 # The server histogram delta approximates the client's measured window: it starts
@@ -2356,6 +2477,8 @@ sampler() {
 abort_if_sut_died
 echo "--- growth.js (sustained load + resource sampling)"
 sampler & SAMPLER_PID=$!
+# Closes 10 s before the load's scheduled end, so no sample meets growth.js's teardown reset.
+open_live_histo_window "$(( $(to_secs "${K6_GROWTH_DURATION:-6m}") - 10 ))"
 # shellcheck disable=SC2046
 docker run --rm "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
   -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
@@ -2366,6 +2489,7 @@ docker run --rm "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
   ${K6_GROWTH_RATE:+-e K6_GROWTH_RATE="$K6_GROWTH_RATE"} \
   ${K6_GROWTH_PROBE:+-e K6_GROWTH_PROBE="$K6_GROWTH_PROBE"} \
   "$K6_IMAGE" run /k6/growth.js
+close_live_histo_window
 kill "$SAMPLER_PID" >/dev/null 2>&1 || true; SAMPLER_PID=""
 
 # --- forward.js (forward connection-pool regression guard) --------------------
@@ -3887,6 +4011,7 @@ jq -n \
   --argjson growth "$GROWTH_JSON" \
   --argjson sweep "$SWEEP_JSON" \
   --argjson saturation "$SATURATION_JSON" \
+  --argjson sweep_tail "$SWEEP_TAIL_JSON" \
   --arg saturation_rps "$SATURATION_RPS" \
   --arg rig_valid_peak_achieved_rps "$PEAK_ACHIEVED_RPS" \
   --argjson forward "$FORWARD_JSON" \
@@ -4018,6 +4143,8 @@ jq -n \
     rig_valid_peak_achieved_rps: (try ($rig_valid_peak_achieved_rps|tonumber) catch null),
     saturation_rps: (try ($saturation_rps|tonumber) catch null),
     saturation: $saturation,
+    # Notify-only: per rung, the share of requests over 5 ms at k6 beside the server histogram.
+    sweep_tail: $sweep_tail,
     # forward_guard.status distinguishes an INFRA failure (k6 exited non-zero but
     # produced no error_rate — upstream/container error, the guard did not actually
     # run) from a real BREACH (non-zero exit WITH a high error_rate — the pool

@@ -72,7 +72,7 @@
 // (expect vus_pool_grew=false always, and vus_active_max < the rung's own pool on
 // every sub-knee rung).
 // ---------------------------------------------------------------------------
-import { Trend, Counter } from 'k6/metrics';
+import { Trend, Counter, Gauge } from 'k6/metrics';
 import exec from 'k6/execution';
 import { CONFIG, SWEEP } from './lib/config.js';
 import { seedExpectations, resetMockServer, getSimple } from './lib/expectations.js';
@@ -191,6 +191,9 @@ const vusActiveTrend = new Trend('sweep_vus_active'); // active VUs at iteration
 const stallCounter = new Counter('sweep_stalls'); // requests slower than STALL_MS
 const stallConcurrencyTrend = new Trend('sweep_stall_concurrency'); // active VUs at a stall
 const stallBucketCounter = new Counter('sweep_stalls_bucketed'); // stalls by time-in-rung bucket
+// Wall-clock start (epoch ms) of each rung, so the harness can line server-side samples and
+// JFR windows up with a rung. Written once per VU per rung, never per request.
+const rungStartGauge = new Gauge('sweep_rung_start_epoch_ms');
 
 // Build one constant-arrival-rate scenario per ladder rung, staggered so they run
 // back-to-back (step + gap) rather than concurrently. The rate-tagged submetrics
@@ -234,6 +237,7 @@ function sweepThresholds() {
     t[`http_reqs{win:${rate}_steady}`] = ['count>=0'];
     t[`http_reqs{win:${rate}_settle}`] = ['count>=0'];
     t[`sweep_stalls{win:${rate}_steady}`] = ['count>=0'];
+    t[`sweep_rung_start_epoch_ms{rate:${rate}}`] = ['value>=0'];
     // Per-phase breakdown submetrics (see PHASES). p95 + p99 ONLY: the question
     // is which phase owns the TAIL, so only the high percentiles carry it (a mean
     // or median cannot locate a tail); p99.9 is omitted because a per-phase p99.9
@@ -293,6 +297,7 @@ let inSteady = false;
 function enterWindow(rate) {
   if (rate !== winRate) {
     winRate = rate;
+    rungStartGauge.add(exec.scenario.startTime, { rate });
     steadyAtMs = exec.scenario.startTime + SETTLE_MS;
     inSteady = Date.now() >= steadyAtMs;
     exec.vu.metrics.tags.win = `${rate}_${inSteady ? 'steady' : 'settle'}`;
@@ -370,6 +375,7 @@ export function handleSummary(data) {
     const failed = data.metrics[`http_req_failed{rate:${rate}}`];
     const reqs = data.metrics[`http_reqs{rate:${rate}}`];
     const dropped = data.metrics[`dropped_iterations{scenario:rate_${rate}}`];
+    const rungStart = data.metrics[`sweep_rung_start_epoch_ms{rate:${rate}}`];
     const count = reqs && reqs.values ? reqs.values.count : 0;
     const v = dur && dur.values ? dur.values : {};
 
@@ -464,6 +470,8 @@ export function handleSummary(data) {
       stall_concurrency_max: round(scV.max, 1),
       stall_concurrency_avg: round(scV.avg, 1),
       stall_time_buckets: stallBuckets,
+      // Wall-clock start of this rung's k6 scenario (epoch ms); null if the rung never ran.
+      start_epoch_ms: rungStart && rungStart.values ? round(rungStart.values.min, 0) : null,
     });
   }
   // Whole-run VU gauges straight from k6's built-ins. vus_max = k6's own max

@@ -29,10 +29,12 @@ set -euo pipefail
 # bodies / event-log), which regression.js + growth.js + a 4-rung sweep already cover.
 #
 # After the run it emits a compact annotation: allocation per request over the load
-# window, peak direct-buffer memory, the last live-heap histogram, and the top allocation
-# sites/classes from the SUT's load-window JFR dump (sut/load.jfr, a JDK `jfr view`
-# sidecar). A recording below the duration/sample floors is reported INVALID instead of
-# being summarised. Best-effort: it never changes the step's exit code.
+# window, peak direct-buffer memory, the last live-heap histogram (and whether any heap
+# inspection landed inside a sweep rung), the top allocation sites/classes from the SUT's
+# load-window JFR dump (sut/load.jfr), and a CPU / lock / GC / VM-operation profile of the
+# ceiling window alone (sut/ceiling.jfr: the knee rung to the top of the ladder), read with a
+# JDK 25 `jfr` sidecar. A recording below its floors is reported INVALID instead of being
+# summarised. Best-effort: it never changes the step's exit code.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
@@ -40,12 +42,17 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RUN_NAME="allocprofile"
 ARTIFACT_PREFIX="${RUN_NAME}-"
 ANNOTATE_CONTEXT="perf-${RUN_NAME}"
-JDK_IMAGE="${PERF_HISTO_JDK_IMAGE:-eclipse-temurin:21-jdk}"
+# shellcheck source=lib/perf-jfr-image.sh
+. "$SCRIPT_DIR/lib/perf-jfr-image.sh"
+JDK_IMAGE="$PERF_JFR_JDK_IMAGE"
 JFR_VIEW_DEADLINE_S="${PERF_ALLOCPROFILE_JFR_DEADLINE_S:-120}"
 # Sanity floor for the recording the views are read from: a recording shorter than this, or
 # with fewer allocation samples, cannot describe the load and is reported INVALID.
 MIN_JFR_DURATION_S="${PERF_ALLOCPROFILE_MIN_JFR_DURATION_S:-60}"
 MIN_ALLOC_SAMPLES="${PERF_ALLOCPROFILE_MIN_ALLOC_SAMPLES:-1000}"
+MIN_CEILING_S="${PERF_ALLOCPROFILE_MIN_CEILING_S:-30}"
+MIN_CEILING_EXEC_SAMPLES="${PERF_ALLOCPROFILE_MIN_CEILING_EXEC_SAMPLES:-500}"
+CEILING_TOP_THREADS="${PERF_ALLOCPROFILE_TOP_THREADS:-12}"
 
 annotate() { # style, body
   if command -v buildkite-agent >/dev/null 2>&1; then
@@ -114,6 +121,99 @@ load_window_figures() { # work_dir
     }' "$w/diag-samples.csv"
 }
 
+# Every GC_HeapInspection (the live-heap histogram's stop-the-world pause) in the load recording,
+# and how many overlapped a sweep rung (sweep-rungs.json). Expected: none since histograms moved
+# to growth.js. Prints one markdown line; returns 1 when an inspection overlapped a rung.
+heap_inspection_placement() { # work_dir jfr_rel
+  local w="$1" line rc=0
+  [ -s "$w/sweep-rungs.json" ] || { echo "- heap inspections vs sweep rungs: unavailable (no sweep-rungs.json in the bundle)"; return 0; }
+  line="$(jfr_tool "$w" print --json --events jdk.ExecuteVMOperation "/w/$2" | jq -r --slurpfile rungs "$w/sweep-rungs.json" '
+    def ms: capture("^(?<s>[^.Z]+)(\\.(?<f>[0-9]+))?Z$") | ((.s + "Z") | fromdate) * 1000 + (("0." + (.f // "0")) | tonumber) * 1000;
+    def dur_ms: (capture("^PT(?<d>[0-9.]+)S$").d | tonumber * 1000) // 0;
+    [.recording.events[] | select(.values.operation == "GC_HeapInspection")
+     | (.values.startTime | ms) as $s | ($s + (.values.duration | dur_ms)) as $e
+     | {s: $s, e: $e, rung: ([$rungs[0][] | select(.start_epoch_ms < $e and .end_epoch_ms > $s) | .offered_rps] | first)}]
+    | "\(length) \([.[] | select(.rung != null)] | length) \([.[] | select(.rung != null) | .rung] | unique | join(","))"' 2>/dev/null || true)"
+  if [ -z "$line" ]; then echo "- heap inspections vs sweep rungs: unavailable (could not read jdk.ExecuteVMOperation)"; return 0; fi
+  read -r total inside rungs <<<"$line"
+  if [ "${inside:-0}" -gt 0 ]; then
+    echo "- :warning: **${inside} of ${total} heap inspections landed inside a sweep rung** (${rungs} rps) — each is a ~0.5 s stop-the-world pause in that rung's p99.9"; rc=1
+  else
+    echo "- heap inspections (live-heap histogram samples): ${total}, none inside a sweep rung"
+  fi
+  return "$rc"
+}
+
+# Per-thread CPU over the ceiling window as "% of one core": a thread's summed jdk.ThreadCPULoad (a
+# fraction of the JVM's effective CPUs) over the window's sampling periods, times that CPU count, so a
+# thread alive for part of the window is not averaged over its own samples only. Grouped by name.
+# jdk.CPULoad's jvmUser/jvmSystem are fractions of the HOST's hardware threads, not the container's.
+thread_cpu_table() { # work_dir jfr_rel
+  jfr_tool "$1" print --json --events jdk.ThreadCPULoad,jdk.CPULoad,jdk.ContainerConfiguration,jdk.CPUInformation "/w/$2" \
+    | jq -r --argjson top "$CEILING_TOP_THREADS" '
+      def secs: capture("^(?<s>[^.Z]+)") | .s + "Z" | fromdate;
+      [.recording.events[]] as $ev
+      | ([$ev[] | select(.type == "jdk.ContainerConfiguration") | .values.effectiveCpuCount] | max) as $cc
+      | ([$ev[] | select(.type == "jdk.CPUInformation") | .values.hwThreads] | max) as $hw
+      | ($cc // $hw) as $cpus
+      | [$ev[] | select(.type == "jdk.ThreadCPULoad")] as $tl
+      # One period per emission batch; assumes the ThreadCPULoad period is over 1 s (profile: 10 s).
+      | ([$tl[] | .values.startTime | secs] | unique | . as $u
+         | [range(0; length) | select(. == 0 or $u[.] - $u[. - 1] > 1)] | length) as $periods
+      | ([$ev[] | select(.type == "jdk.CPULoad") | ((.values.jvmUser // 0) + (.values.jvmSystem // 0))]
+         | if length == 0 then null else add / length end) as $jvm
+      | if $cpus == null or ($tl | length) == 0 then "(no jdk.ThreadCPULoad events or no CPU count in the window)"
+        else ([$tl[] | {t: (.values.eventThread.javaName // .values.eventThread.osName // "?"), l: ((.values.user // 0) + (.values.system // 0))}]
+              | group_by(.t) | map({t: .[0].t, n: length, pct: ((map(.l) | add) / $periods * $cpus * 100)}) | sort_by(-.pct)) as $rows
+        | "Java threads (\($rows | length)): **\($rows | map(.pct) | add | round)% of one core**; whole JVM incl. GC threads (jdk.CPULoad): **\(if $jvm == null or $hw == null then "n/a" else ($jvm * $hw * 100 | round | tostring) + "%" end) of one core**; \($cpus) effective CPUs (\($cc | if . == null then "host hardware threads" else "as the container sees them" end)), \($periods) sampling periods.\n",
+          "| Thread | % of one core | Samples |", "|---|---:|---:|",
+          ($rows[:$top][] | "| \(.t) | \(.pct * 10 | round / 10) | \(.n) |")
+        end' 2>/dev/null || echo "(per-thread CPU unavailable: jfr print failed)"
+}
+
+# The CPU / lock / GC / VM-operation profile of the ceiling window alone (sut/ceiling.jfr, cut to
+# the knee rung .. top rung by perf-test-run.sh), which the whole-load recording dilutes with the
+# idle and low rungs. Returns 1 when the window is missing or below its floor.
+ceiling_profile() { # work_dir
+  local w="$1" meta secs summary execs cpu_samples view rows
+  echo "### ceiling window (CPU, locks, GC, VM operations)"
+  meta="$(jq -c '.' "$w/ceiling-window.json" 2>/dev/null || true)"
+  if [ -z "$meta" ] || [ "$(jq -r '.jfr // empty' <<<"$meta")" != "sut/ceiling.jfr" ] || [ ! -s "$w/sut/ceiling.jfr" ]; then
+    echo "No ceiling recording in the bundle$(jq -r '(.error // empty) | " (" + . + ")"' <<<"${meta:-null}" 2>/dev/null)."
+    return 1
+  fi
+  secs="$(jq -r '((.end_epoch_ms - .begin_epoch_ms) / 1000 | floor)' <<<"$meta")"
+  summary="$(jfr_tool "$w" summary /w/sut/ceiling.jfr || true)"
+  execs="$(printf '%s\n' "$summary" | awk '$1=="jdk.ExecutionSample"{print $2; exit}')"
+  cpu_samples="$(printf '%s\n' "$summary" | awk '$1=="jdk.CPUTimeSample"{print $2; exit}')"
+  case "$execs" in ''|*[!0-9]*) execs=0 ;; esac
+  case "$cpu_samples" in ''|*[!0-9]*) cpu_samples=0 ;; esac
+  jq -r '"Rungs \(.first_rung_rps)–\(.last_rung_rps) rps (knee: saturation_rps \(.saturation_rps)), \(.begin_iso) to \(.end_iso)"' <<<"$meta"
+  echo "— ${secs} s including the gaps between rungs, ${execs} execution samples, ${cpu_samples} CPU-time samples."
+  if [ "${secs:-0}" -lt "$MIN_CEILING_S" ] || [ "$execs" -lt "$MIN_CEILING_EXEC_SAMPLES" ]; then
+    echo
+    echo "**Ceiling recording INVALID — not summarised** (floor: ${MIN_CEILING_S} s and ${MIN_CEILING_EXEC_SAMPLES} execution samples)."
+    return 1
+  fi
+  echo
+  echo "#### per-thread CPU"
+  thread_cpu_table "$w" sut/ceiling.jfr
+  echo
+  for view in hot-methods cpu-time-hot-methods cpu-time-statistics contention-by-site latencies-by-type vm-operations gc-pauses native-methods exception-count; do
+    case "$view" in cpu-time-*) [ "$cpu_samples" -gt 0 ] || continue ;; esac
+    case "$view" in
+      hot-methods|cpu-time-hot-methods) rows=22 ;;
+      native-methods) rows=12 ;;
+      *) rows=16 ;;
+    esac
+    echo "#### ${view}"
+    echo '```'
+    jfr_tool "$w" view --width 120 "$view" /w/sut/ceiling.jfr | awk -v n="$rows" 'NF && ++k <= n' || true
+    echo '```'
+  done
+  return 0
+}
+
 # Post the load-window figures, the retained-heap histogram, and the top allocation sites/classes
 # from the SUT's load-window JFR dump inside the diagnostics bundle. Never fails the step.
 emit_allocation_annotation() {
@@ -137,11 +237,12 @@ emit_allocation_annotation() {
     if [ -s "$work/sut/live-heap-histogram.txt" ]; then
       awk '/^===== elapsed_s=/{buf=""} {buf = buf $0 "\n"} END{printf "%s", buf}' "$work/sut/live-heap-histogram.txt"
     else
-      echo "(no live-heap histogram — the jcmd sidecar could not attach; see the step log)"
+      echo "(no live-heap histogram — no sample landed in the growth.js window, or the jcmd sidecar could not attach; see the step log)"
     fi
     echo '```'
     echo
   } > "$out"
+  [ -s "$work/sut/live-heap-histogram.txt" ] || style="warning"
 
   # The load-window dump is the only recording that describes the load. Without it (e.g. the SUT
   # died first) the repository chunks are assembled instead; the floor below judges either.
@@ -180,6 +281,14 @@ emit_allocation_annotation() {
         } >> "$out"
       done
     fi
+    if [ "$jfr" = "sut/load.jfr" ]; then
+      { echo "### live-heap histogram placement"; heap_inspection_placement "$work" "$jfr"; } >> "$out" || style="warning"
+      echo >> "$out"
+    fi
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    ceiling_profile "$work" >> "$out" || style="warning"
   fi
 
   annotate "$style" ":microscope: **Allocation profile — deep JFR run (NOT baselined).** Throughput this run is deliberately depressed by JFR/NMT/GC-logging, so its figures are excluded from the baseline. ${verdict} Bundle: \`${ARTIFACT_PREFIX}perf-jvm-diagnostics.tgz\`.
@@ -192,9 +301,8 @@ echo "--- :microscope: allocation profile — deep JFR run (PERF_RUN_NAME=${RUN_
 # Short + modest: a small sweep ladder and trimmed durations, deep diagnostics on, and
 # the throughput-only auxiliary profiles off. Everything is overridable so a deeper
 # investigation can widen the ladder without editing this file.
-# The ladder's TOP rung must reach the load where the heap is genuinely full — a histogram
-# of an idle heap attributes nothing. It brackets the measured healthy ceiling rather than
-# sitting below it; this run's own throughput is irrelevant, only the heap composition is.
+# The ladder climbs past the healthy ceiling in 8k steps so the ceiling profile (knee rung to the
+# top, at least two rungs) covers the knee region rather than one rung at the top.
 rc=0
 PERF_RUN_NAME="$RUN_NAME" \
 PERF_JVM_DIAGNOSTICS=deep \
@@ -205,7 +313,7 @@ PERF_LAPTOP_PROFILE="${PERF_LAPTOP_PROFILE:-false}" \
 PERF_STREAMING="${PERF_STREAMING:-false}" \
 PERF_PROXY_PROFILE="${PERF_PROXY_PROFILE:-false}" \
 PERF_COVERAGE="${PERF_COVERAGE:-false}" \
-K6_SWEEP_RATES="${K6_SWEEP_RATES:-8000,24000,48000}" \
+K6_SWEEP_RATES="${K6_SWEEP_RATES:-8000,24000,40000,48000,56000,64000}" \
 PERF_LIVE_HISTO_INTERVAL_S="${PERF_LIVE_HISTO_INTERVAL_S:-30}" \
 K6_REG_DURATION="${K6_REG_DURATION:-45s}" \
 K6_GROWTH_DURATION="${K6_GROWTH_DURATION:-2m}" \
