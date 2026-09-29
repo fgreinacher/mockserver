@@ -25,6 +25,7 @@ sequenceDiagram
     MS->>LC: bindServerPorts(ports)
     LC->>NIO: serverBootstrap.bind(port) [per port, on dedicated thread]
     NIO-->>LC: ChannelFuture completes
+    LC->>LC: check localhost reaches this port (rebind or fail if shadowed)
     LC->>MS: startedServer(boundPorts)
 ```
 
@@ -65,6 +66,48 @@ Dedicated activation tests in `EpollTransportIntegrationTest` (`mockserver-netty
 | AUTO_READ | true | Automatic read on new channels |
 | ALLOCATOR | `NettyAllocator.ALLOCATOR` (`PooledByteBufAllocator.DEFAULT`) | One pooled allocator for every channel — see [ByteBuf Allocator](#bytebuf-allocator) |
 | WRITE_BUFFER_WATER_MARK | 8KB low / 32KB high — server socket only; accepted child channels use Netty's default (32KB low / 64KB high) | Write-buffer backpressure on the acceptor socket. Set via `.option()`, which applies to the `ServerSocketChannel`, not to accepted child channels. `WriteBufferWaterMark.DEFAULT` in Netty 4.2 is 32 KB / 64 KB; `MockServer.java` (line ~205) intentionally sets a narrower mark on the acceptor, but child channels retain the Netty default. |
+
+### Port Binding and Loopback Reachability
+
+**Outcome:** after binding each port, `LifeCycle.bindPort` checks that a localhost connection to that port actually reaches the new listener. A port chosen by the operating system (port `0`) that fails the check is closed and replaced (up to 10 attempts, each retry on a port the IPv4 wildcard allocator reports free, since that allocator does avoid ports held on `127.0.0.1`); an explicit port that fails it throws a `BindException` naming the conflict and suggesting `lsof -nP -iTCP:<port> -sTCP:LISTEN`, which surfaces like any other "port already in use" error (including the `400` from `PUT /mockserver/bind`, whose body carries the conflict detail and the `lsof` hint).
+
+**Why:** MockServer binds the wildcard address, which the JDK opens as a dual-stack IPv6 socket (`[::]`) with `SO_REUSEADDR`. On macOS that bind succeeds even when another process holds the same port on `127.0.0.1` specifically, and the IPv6 ephemeral allocator does not avoid such ports either. The kernel then delivers `127.0.0.1:<port>` (and so `localhost`) connections to the more specific listener, so MockServer reports a successful start but receives none of its localhost traffic. With 2,000 `127.0.0.1` listeners held on ports spread across the ephemeral range, 61 of 500 wildcard `bind(0)` calls landed on a held port on macOS; Linux refuses the bind, so no port there is ever shadowed this way.
+
+```mermaid
+sequenceDiagram
+    participant LC as LifeCycle.bindPort
+    participant SC as Server channel pipeline
+    participant P as Probe socket
+    LC->>SC: bind(port), then addFirst(probe handler) on its event loop
+    LC->>P: bind 127.0.0.1:0 (then ::1:0), connect to bound port
+    alt accepted by this server
+        SC->>SC: handler recognises child by remote address, closes it
+        SC-->>LC: probe seen
+    else no accept within timeout
+        LC->>SC: run a no-op task on its event loop
+        alt task runs, then probe accepted within 100 ms
+            LC->>LC: loop had stalled, so not shadowed
+        else task runs and still no accept
+            LC->>LC: port is shadowed
+        else task does not run within 1 s
+            LC->>LC: loop stalled, inconclusive, so not shadowed
+        end
+    end
+    LC->>SC: remove probe handler
+```
+
+| Aspect | Behaviour |
+|--------|-----------|
+| Addresses probed | Wildcard IPv6 bind: `127.0.0.1` and `::1`. Wildcard IPv4 bind: `127.0.0.1`. Loopback `localBoundIP`: that address. Any other `localBoundIP`: none. |
+| Recognising the probe | The probe socket binds its source address before connecting, and a handler added **first** on the server channel's pipeline (ahead of `ServerBootstrapAcceptor`) matches the accepted child by that exact remote address. The probe socket bypasses any JVM-wide `ProxySelector` or `socksProxyHost` (`Proxy.NO_PROXY`), since a relayed probe would arrive from the proxy's address and look shadowed |
+| Effect on real traffic | None: the probe child is closed before registration, so it never reaches `MockServerUnificationInitializer`, the event log or metrics; the handler is removed as soon as the check ends. One exception: a probe that this channel accepts only after the check ends (a stalled accept loop) is no longer intercepted, so it reaches the normal pipeline as a connection that opens and is immediately reset. If the event loop is too busy to install the handler within 1 s, the check is skipped (reported as not shadowed) and the queued install is cancelled, or removed if it already ran |
+| Verdict | Shadowed only if the probe **connects**, is not accepted by this channel in time (5 s for an explicit port, where a false positive would fail startup; for an OS-chosen port 250 ms doubling per attempt up to 5 s, where it only costs a rebind), and the channel's event loop is then shown to be running: a no-op task submitted to it completes within 1 s and the probe is still not accepted 100 ms later. If the task does not run in time the loop is stalled, so nothing could have been accepted and the check is inconclusive, reported as not shadowed. A failed connect (family unavailable, nothing listening) is not a conflict |
+| Retry port choice | macOS allocates ephemeral ports sequentially, so a plain `bind(0)` retry tends to land on the next held port. Retries instead use a port from the IPv4 wildcard allocator, which is still probed after binding |
+| Cost | Two loopback connects per bound port when not shadowed. Measured on macOS over 20 fresh JVMs each, against the same build without the check: the first start's median rose by 3–4 ms in each of two runs (within the run-to-run spread), and each later start in the same JVM by about 1 ms |
+
+**Rejected alternatives** (measured on macOS): `SO_REUSEADDR=false` makes the explicit-port bind throw but still lets the ephemeral allocator pick held ports, and it breaks restarting on the same port while server-side connections are in `TIME_WAIT` (on macOS and Linux). An IPv4-only wildcard socket avoids the ephemeral collisions but still shadows an explicit port. Binding `127.0.0.1` avoids both but makes MockServer unreachable from other hosts and containers, so it stays opt-in via `localBoundIP`.
+
+`PortFactory.findFreePort()` / `findFreePorts()` (`mockserver-core`) avoids the same trap for ports chosen before binding. It takes candidates from the IPv4 wildcard allocator and skips any candidate already in use on `[::1]`. That check runs only if `[::1]:0` can be bound at the start of the batch, and only "address in use" counts as taken: the JDK also reports "Cannot assign requested address" as a `BindException`, which would otherwise make every port look taken on a host with IPv6 loopback disabled. At most 32 candidates are skipped per batch; after that the `[::1]` check is dropped for the rest of the batch, and a skipped port is never returned. With 2,000 listeners held on ports spread across the ephemeral range, the old dual-stack `bind(0)` returned a held port 61 times in 500 on macOS when they were held on `127.0.0.1` and 80 times in 500 when held on `[::1]`; the new allocator returned none in 500 either way. On Linux (JDK 17 in Docker) neither the old nor the new allocator returned a held port in 500. Its opt-in `testPortRange` band still uses explicit dual-stack binds, which do not detect a `127.0.0.1` holder.
 
 ### ByteBuf Allocator
 
@@ -1059,6 +1102,7 @@ flowchart LR
 |-------|------|------|
 | `Main` | `mockserver-netty/.../cli/Main.java` | CLI entry point, argument parsing |
 | `LifeCycle` | `mockserver-netty/.../lifecycle/LifeCycle.java` | Abstract server lifecycle (event loops, port binding, shutdown) |
+| `LoopbackShadowProbe` | `mockserver-netty/.../lifecycle/LoopbackShadowProbe.java` | Post-bind check that localhost connections reach the new listener — see [Port Binding and Loopback Reachability](#port-binding-and-loopback-reachability) |
 | `MockServer` | `mockserver-netty/.../netty/MockServer.java` | Concrete server, configures `ServerBootstrap` |
 | `NettyAllocator` | `mockserver-core/.../socket/NettyAllocator.java` | The single pooled `ByteBufAllocator` every channel uses; `pin(channel)` for channels no bootstrap option reaches |
 | `MockServerUnificationInitializer` | `mockserver-netty/.../netty/MockServerUnificationInitializer.java` | Replaces self with `PortUnificationHandler` |

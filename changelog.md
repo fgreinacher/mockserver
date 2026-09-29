@@ -120,6 +120,19 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
 
 ### Fixed
 
+- **MockServer could start on a port another application was already using on 127.0.0.1, so requests
+  to localhost reached that application instead of MockServer.** Some operating systems, macOS among
+  them, let MockServer's listener share a port with another application's 127.0.0.1-only listener and
+  send localhost traffic to the other application. This happened with an explicit port (for example
+  1080) and with a free port picked by the operating system (the JUnit rule and extension, and
+  `ClientAndServer.startClientAndServer()` with no port), typically on a machine with IDEs or other
+  developer tools running. MockServer now checks after binding, on every operating system, that a
+  localhost connection reaches it. A free port that fails the check is released and another one picked;
+  an explicit port fails to start with a message naming the conflict and how to find the other
+  application (`lsof -nP -iTCP:<port> -sTCP:LISTEN`), which `PUT /mockserver/bind` now includes in its
+  `400` response. Linux refuses such a bind, so MockServer's behaviour on a conflict is unchanged there.
+  `PortFactory.findFreePort()` and `findFreePorts()` likewise no longer return a port another
+  application is listening on at 127.0.0.1 or ::1.
 - **A request without a `traceparent` header no longer gets the trace context of an earlier request on
   the same connection.** MockServer kept the last valid `traceparent`/`tracestate` it had seen on an
   HTTP/1.1 keep-alive connection. A later request on that connection that sent none (or an invalid one)

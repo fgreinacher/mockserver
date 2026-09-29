@@ -281,7 +281,8 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
                             responseWriter.writeResponse(request, OK, portBindingSerializer.serialize(portBinding(actualPortBindings)), "application/json");
                         } catch (RuntimeException e) {
                             if (e.getCause() instanceof BindException) {
-                                responseWriter.writeResponse(request, BAD_REQUEST, e.getMessage() + " port already in use", MediaType.create("text", "plain").toString());
+                                String detail = e.getCause().getMessage() != null ? ": " + e.getCause().getMessage() : "";
+                                responseWriter.writeResponse(request, BAD_REQUEST, e.getMessage() + " port already in use" + detail, MediaType.create("text", "plain").toString());
                             } else {
                                 throw e;
                             }

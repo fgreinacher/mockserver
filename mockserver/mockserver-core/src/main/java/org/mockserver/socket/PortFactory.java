@@ -1,9 +1,19 @@
 package org.mockserver.socket;
 
+import java.io.Closeable;
 import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.StandardProtocolFamily;
+import java.net.StandardSocketOptions;
+import java.nio.channels.ServerSocketChannel;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 import java.util.Random;
+import java.util.function.IntPredicate;
 
 /**
  * @author jamesdbloom
@@ -39,6 +49,8 @@ public class PortFactory {
     public static final String PORT_RANGE_END_PROPERTY = "mockserver.testPortRangeEnd";
 
     private static final Random random = new Random();
+    static final int MAX_SKIPPED_CANDIDATES_PER_BATCH = 32;
+    private static final InetAddress IPV6_LOOPBACK = ipv6Loopback();
 
     public static int findFreePort() {
         int[] freePorts = findAvailablePorts(1);
@@ -85,30 +97,108 @@ public class PortFactory {
         // returning them only widens the window in which another process can claim a port, so callers
         // must still handle BindException - binding the real socket directly is the only fully
         // race-free option.
-        int[] port = new int[arraySize];
-        ServerSocket[] serverSockets = new ServerSocket[arraySize];
-        try {
+        try (EphemeralPortBatch batch = new EphemeralPortBatch(inUseOn(IPV6_LOOPBACK))) {
+            int[] port = new int[arraySize];
             for (int i = arraySize - 1; i >= 0; i--) {
-                ServerSocket serverSocket = new ServerSocket();
-                // store immediately so the finally block closes it even if setReuseAddress/bind throws
-                serverSockets[i] = serverSocket;
-                serverSocket.setReuseAddress(true);
-                serverSocket.bind(new InetSocketAddress(0));
-                port[i] = serverSocket.getLocalPort();
+                port[i] = batch.nextPort();
             }
             return port;
         } catch (IOException e) {
             throw new RuntimeException("Exception while trying to find a free port", e);
-        } finally {
-            for (ServerSocket serverSocket : serverSockets) {
-                if (serverSocket != null) {
-                    try {
-                        serverSocket.close();
-                    } catch (IOException ignore) {
-                        // best effort - the port has already been recorded
-                    }
+        }
+    }
+
+    /**
+     * Candidates come from the IPv4 wildcard allocator because, on macOS, the dual-stack allocator behind a
+     * plain {@code bind(0)} hands out ports another process holds on 127.0.0.1, where localhost traffic then
+     * goes. A candidate already in use on [::1] is skipped, at most {@link #MAX_SKIPPED_CANDIDATES_PER_BATCH}
+     * times per batch; after that the [::1] check is dropped rather than holding ever more ports. Every
+     * candidate, used or skipped, stays bound until the batch closes, so none is handed out twice.
+     */
+    static final class EphemeralPortBatch implements Closeable {
+        private final List<ServerSocketChannel> heldSockets = new ArrayList<>();
+        private IntPredicate inUseOnIpv6Loopback;
+        private int skipped;
+
+        /**
+         * @param inUseOnIpv6Loopback reports a port already in use on [::1], or {@code null} to skip that check
+         */
+        EphemeralPortBatch(IntPredicate inUseOnIpv6Loopback) {
+            this.inUseOnIpv6Loopback = inUseOnIpv6Loopback;
+        }
+
+        int nextPort() throws IOException {
+            while (true) {
+                ServerSocketChannel ipv4Wildcard = ServerSocketChannel.open(StandardProtocolFamily.INET);
+                // store immediately so close() releases it even if setOption/bind throws
+                heldSockets.add(ipv4Wildcard);
+                ipv4Wildcard.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+                ipv4Wildcard.bind(new InetSocketAddress(0));
+                int candidate = ipv4Wildcard.socket().getLocalPort();
+                if (inUseOnIpv6Loopback == null || !inUseOnIpv6Loopback.test(candidate)) {
+                    return candidate;
+                }
+                if (++skipped >= MAX_SKIPPED_CANDIDATES_PER_BATCH) {
+                    inUseOnIpv6Loopback = null;
                 }
             }
+        }
+
+        int candidatesBound() {
+            return heldSockets.size();
+        }
+
+        @Override
+        public void close() {
+            for (ServerSocketChannel heldSocket : heldSockets) {
+                try {
+                    heldSocket.close();
+                } catch (IOException ignore) {
+                    // best effort - the port has already been recorded
+                }
+            }
+        }
+    }
+
+    /**
+     * @return a check that reports a port as already in use on {@code address}, or {@code null} when nothing
+     * can be bound on {@code address} at all (IPv6 disabled, or no interface has that address)
+     */
+    static IntPredicate inUseOn(InetAddress address) {
+        if (address == null) {
+            return null;
+        }
+        try (ServerSocketChannel probe = ServerSocketChannel.open(StandardProtocolFamily.INET6)) {
+            probe.bind(new InetSocketAddress(address, 0));
+        } catch (IOException | UnsupportedOperationException unusable) {
+            return null;
+        }
+        return port -> {
+            try (ServerSocketChannel channel = ServerSocketChannel.open(StandardProtocolFamily.INET6)) {
+                channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+                channel.bind(new InetSocketAddress(address, port));
+                return false;
+            } catch (BindException bindFailed) {
+                return isAddressInUse(bindFailed);
+            } catch (IOException | UnsupportedOperationException unusable) {
+                return false;
+            }
+        };
+    }
+
+    /**
+     * The JDK raises {@code BindException} for both EADDRINUSE and EADDRNOTAVAIL ("Cannot assign requested
+     * address"); only the first means another socket holds the port.
+     */
+    static boolean isAddressInUse(BindException bindFailed) {
+        return bindFailed.getMessage() != null && bindFailed.getMessage().toLowerCase(Locale.ROOT).contains("in use");
+    }
+
+    private static InetAddress ipv6Loopback() {
+        try {
+            return InetAddress.getByAddress(new byte[]{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1});
+        } catch (IOException impossible) {
+            return null;
         }
     }
 

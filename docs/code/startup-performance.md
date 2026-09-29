@@ -40,6 +40,8 @@ Port binds at ~560 ms median, but a cold server takes ~350 ms longer before resp
 
 The burst persists (~250 ms) even under the Leyden AOT cache because AOT pre-loads class metadata but not the linkage, initialization, and JIT compilation of that particular path.
 
+Port bind also includes the loopback reachability check ([Port Binding and Loopback Reachability](netty-pipeline.md#port-binding-and-loopback-reachability)): measured on macOS over 20 fresh JVMs, it added 3–4 ms to the median first start (within the run-to-run spread) and about 1 ms to each later start in the same JVM.
+
 ### Class-loading breakdown (JFR + -verbose:class, 7.3.1-SNAPSHOT)
 
 | Package group | Classes loaded to readiness |

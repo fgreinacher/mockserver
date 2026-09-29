@@ -34,6 +34,7 @@ import org.mockserver.serialization.HttpRequestSerializer;
 import org.mockserver.serialization.PortBindingSerializer;
 import org.slf4j.event.Level;
 
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.util.Arrays;
 import java.util.Collections;
@@ -321,6 +322,25 @@ public class HttpRequestHandlerTest {
         assertThat(httpResponse.getBodyAsString(), is(portBindingSerializer.serialize(
             portBinding(1090, 1090)
         )));
+    }
+
+    @Test
+    public void shouldReturnBindConflictDetailWhenPortIsInUse() {
+        // given
+        BindException conflict = LifeCycle.explicitPortConflict(1090, new InetSocketAddress("127.0.0.1", 1090));
+        when(server.bindServerPorts(anyList())).thenThrow(new RuntimeException("Exception while binding MockServer to port 1090", conflict));
+        HttpRequest bindRequest = request("/mockserver/bind")
+            .withMethod("PUT")
+            .withBody(portBindingSerializer.serialize(portBinding(1090)));
+
+        // when
+        embeddedChannel.writeInbound(bindRequest);
+
+        // then
+        HttpResponse httpResponse = embeddedChannel.readOutbound();
+        assertThat(httpResponse.getStatusCode(), is(400));
+        assertThat(httpResponse.getBodyAsString(), is("Exception while binding MockServer to port 1090 port already in use: " + conflict.getMessage()));
+        assertThat(httpResponse.getBodyAsString(), containsString("lsof -nP -iTCP:1090 -sTCP:LISTEN"));
     }
 
     @Test

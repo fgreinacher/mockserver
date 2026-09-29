@@ -4,7 +4,17 @@ import org.junit.After;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.net.BindException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
+import java.net.StandardProtocolFamily;
+import java.nio.channels.ServerSocketChannel;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.function.IntPredicate;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.both;
@@ -48,6 +58,89 @@ public class PortFactoryTest {
         }
     }
 
+    @Test
+    public void shouldNotReturnPortsOtherProcessesHoldOnLoopbackAddresses() throws IOException {
+        // macOS hands out ephemeral ports sequentially, so hold every port just ahead of the allocator:
+        // even offsets on 127.0.0.1 and odd offsets on [::1] (where IPv6 is available)
+        List<ServerSocketChannel> otherApplications = new ArrayList<>();
+        Set<Integer> heldPorts = new HashSet<>();
+        try {
+            int allocatorPosition;
+            try (ServerSocketChannel probe = ServerSocketChannel.open(StandardProtocolFamily.INET)) {
+                probe.bind(new InetSocketAddress(0));
+                allocatorPosition = probe.socket().getLocalPort();
+            }
+            for (int offset = 1; offset <= 60 && allocatorPosition + offset <= 65535; offset++) {
+                boolean ipv4 = offset % 2 == 0;
+                int port = allocatorPosition + offset;
+                try {
+                    ServerSocketChannel listener = ServerSocketChannel.open(ipv4 ? StandardProtocolFamily.INET : StandardProtocolFamily.INET6);
+                    otherApplications.add(listener);
+                    listener.bind(new InetSocketAddress(InetAddress.getByName(ipv4 ? "127.0.0.1" : "::1"), port));
+                    heldPorts.add(port);
+                } catch (IOException | UnsupportedOperationException unavailable) {
+                    // port in use or no IPv6: it only matters that most ports ahead of the allocator are held
+                }
+            }
+
+            // when
+            int[] freePorts = PortFactory.findFreePorts(20);
+
+            // then
+            for (int freePort : freePorts) {
+                assertThat("port " + freePort + " is held by another listener on a loopback address", heldPorts.contains(freePort), is(false));
+            }
+        } finally {
+            for (ServerSocketChannel listener : otherApplications) {
+                listener.close();
+            }
+        }
+    }
+
+    @Test
+    public void shouldSkipTheIpv6CheckWhenTheAddressCannotBeBoundRatherThanTreatEveryPortAsTaken() throws IOException {
+        // 2001:db8::/32 is reserved for documentation, so no interface has it: every bind fails with
+        // "Cannot assign requested address", like [::1] on a host whose IPv6 loopback is disabled
+        InetAddress unassignable = InetAddress.getByName("2001:db8::1");
+        IntPredicate inUse = PortFactory.inUseOn(unassignable);
+
+        try (PortFactory.EphemeralPortBatch batch = new PortFactory.EphemeralPortBatch(inUse)) {
+            for (int i = 0; i < 20; i++) {
+                batch.nextPort();
+            }
+
+            // then - no candidate was skipped
+            assertThat(batch.candidatesBound(), is(20));
+        }
+    }
+
+    @Test
+    public void shouldCapSkippedCandidatesPerBatchAndNeverReturnAPortReportedInUse() throws IOException {
+        Set<Integer> reportedInUse = new HashSet<>();
+        Set<Integer> returned = new HashSet<>();
+
+        try (PortFactory.EphemeralPortBatch batch = new PortFactory.EphemeralPortBatch(port -> reportedInUse.add(port))) {
+            for (int i = 0; i < 10; i++) {
+                returned.add(batch.nextPort());
+            }
+
+            // then - the [::1] check is dropped after the cap instead of holding ever more ports
+            assertThat(batch.candidatesBound(), is(10 + PortFactory.MAX_SKIPPED_CANDIDATES_PER_BATCH));
+            assertThat(reportedInUse.size(), is(PortFactory.MAX_SKIPPED_CANDIDATES_PER_BATCH));
+            for (int port : returned) {
+                assertThat("port " + port + " was reported in use but still returned", reportedInUse.contains(port), is(false));
+            }
+        }
+    }
+
+    @Test
+    public void shouldOnlyTreatAddressInUseAsTaken() {
+        assertThat(PortFactory.isAddressInUse(new BindException("Address already in use")), is(true));
+        assertThat(PortFactory.isAddressInUse(new BindException("Address already in use: bind")), is(true));
+        assertThat(PortFactory.isAddressInUse(new BindException("Cannot assign requested address")), is(false));
+        assertThat(PortFactory.isAddressInUse(new BindException()), is(false));
+    }
+
     @Test(expected = IllegalArgumentException.class)
     public void shouldThrowForZeroCount() {
         PortFactory.findFreePorts(0);
@@ -70,7 +163,7 @@ public class PortFactoryTest {
 
         // then
         assertThat(freePorts.length, is(5));
-        java.util.Set<Integer> unique = new java.util.HashSet<>();
+        Set<Integer> unique = new HashSet<>();
         for (int port : freePorts) {
             unique.add(port);
         }
@@ -106,7 +199,7 @@ public class PortFactoryTest {
 
         // then
         assertThat(freePorts.length, is(10));
-        java.util.Set<Integer> unique = new java.util.HashSet<>();
+        Set<Integer> unique = new HashSet<>();
         for (int port : freePorts) {
             assertThat(port, is(both(greaterThanOrEqualTo(23000)).and(lessThanOrEqualTo(24000))));
             unique.add(port);
@@ -121,7 +214,7 @@ public class PortFactoryTest {
         System.setProperty(PortFactory.PORT_RANGE_END_PROPERTY, "24599");
         ServerSocket occupied = new ServerSocket();
         occupied.setReuseAddress(true);
-        occupied.bind(new java.net.InetSocketAddress(24550));
+        occupied.bind(new InetSocketAddress(24550));
         try {
             // when - many draws so the occupied number would surface if it were ever handed out
             for (int i = 0; i < 100; i++) {

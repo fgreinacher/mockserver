@@ -2,6 +2,7 @@ package org.mockserver.lifecycle;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
+import io.netty.util.NetUtil;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.socket.NettyTransport;
 import org.mockserver.log.MockServerEventLog;
@@ -12,10 +13,12 @@ import org.mockserver.mock.listeners.MockServerMatcherNotifier;
 import org.mockserver.scheduler.Scheduler;
 import org.mockserver.stop.Stoppable;
 
+import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -34,6 +37,37 @@ import static org.slf4j.event.Level.*;
  * @author jamesdbloom
  */
 public abstract class LifeCycle implements Stoppable {
+
+    // A shadowed explicit port fails startup, so its verdict waits longer before blaming a slow accept
+    // loop. A false positive for an operating-system-chosen port only costs a rebind, so that verdict
+    // starts short and doubles per attempt, which keeps a stalled accept loop from failing every attempt.
+    private static final long SHADOW_PROBE_ACCEPT_TIMEOUT_EXPLICIT_MILLIS = 5000;
+    private static final long SHADOW_PROBE_ACCEPT_TIMEOUT_EPHEMERAL_INITIAL_MILLIS = 250;
+    static final int SHADOW_PROBE_MAX_EPHEMERAL_ATTEMPTS = 10;
+
+    /**
+     * Seam over {@link LoopbackShadowProbe} so tests in this package can force a shadowed verdict or a
+     * busy retry port on any operating system.
+     */
+    interface BindVerifier {
+        InetSocketAddress findShadowedLoopback(Channel serverChannel, long acceptTimeoutMillis) throws InterruptedException;
+
+        int nextCandidatePort();
+    }
+
+    static final BindVerifier LOOPBACK_SHADOW_PROBE = new BindVerifier() {
+        @Override
+        public InetSocketAddress findShadowedLoopback(Channel serverChannel, long acceptTimeoutMillis) throws InterruptedException {
+            return LoopbackShadowProbe.findShadowedLoopback(serverChannel, acceptTimeoutMillis);
+        }
+
+        @Override
+        public int nextCandidatePort() {
+            return LoopbackShadowProbe.portFreeOnIpv4();
+        }
+    };
+
+    BindVerifier bindVerifier = LOOPBACK_SHADOW_PROBE;
 
     protected final MockServerLogger mockServerLogger;
     protected final EventLoopGroup bossGroup;
@@ -67,7 +101,7 @@ public abstract class LifeCycle implements Stoppable {
     protected final HttpState httpState;
     private final Configuration configuration;
     protected ServerBootstrap serverServerBootstrap;
-    private final List<Future<Channel>> serverChannelFutures = new ArrayList<>();
+    private final List<Future<Channel>> serverChannelFutures = new CopyOnWriteArrayList<>();
     private final CompletableFuture<String> stopFuture = new CompletableFuture<>();
     private final AtomicBoolean stopping = new AtomicBoolean(false);
     // Number of data-plane HTTP requests currently being processed (incremented when a request
@@ -606,38 +640,117 @@ public abstract class LifeCycle implements Stoppable {
         final String localBoundIP = configuration.localBoundIP();
         for (final Integer portToBind : requestedPortBindings) {
             try {
-                final CompletableFuture<Channel> channelOpened = new CompletableFuture<>();
-                channelFutures.add(channelOpened);
-                new Scheduler.SchedulerThreadFactory("MockServer thread for port: " + portToBind, false).newThread(() -> {
-                    try {
-                        InetSocketAddress inetSocketAddress;
-                        if (isBlank(localBoundIP)) {
-                            inetSocketAddress = new InetSocketAddress(portToBind);
-                        } else {
-                            inetSocketAddress = new InetSocketAddress(localBoundIP, portToBind);
-                        }
-                        serverBootstrap
-                            .bind(inetSocketAddress)
-                            .addListener((ChannelFutureListener) future -> {
-                                if (future.isSuccess()) {
-                                    channelOpened.complete(future.channel());
-                                } else {
-                                    channelOpened.completeExceptionally(future.cause());
-                                }
-                            })
-                            .channel().closeFuture().syncUninterruptibly();
-
-                    } catch (Exception e) {
-                        channelOpened.completeExceptionally(new RuntimeException("Exception while binding MockServer to port " + portToBind, e));
-                    }
-                }).start();
-
-                actualPortBindings.add(((InetSocketAddress) channelOpened.get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS).localAddress()).getPort());
+                actualPortBindings.add(bindPort(serverBootstrap, localBoundIP, portToBind, channelFutures));
             } catch (Exception e) {
                 throw new RuntimeException("Exception while binding MockServer to port " + portToBind, e instanceof ExecutionException ? e.getCause() : e);
             }
         }
         return actualPortBindings;
+    }
+
+    /**
+     * Binds one port and checks that connections to localhost on that port reach this server rather than
+     * another application listening on the loopback address (see {@link LoopbackShadowProbe}). An
+     * operating-system-chosen port that turns out to be shadowed is released and another one chosen; a
+     * shadowed explicit port fails like any other port conflict.
+     */
+    private int bindPort(final ServerBootstrap serverBootstrap, final String localBoundIP, final Integer portToBind, List<Future<Channel>> channelFutures) throws Exception {
+        final boolean operatingSystemChoosesPort = portToBind == null || portToBind == 0;
+        Integer nextPort = portToBind;
+        for (int attempt = 1; ; attempt++) {
+            final Integer port = nextPort;
+            final CompletableFuture<Channel> channelOpened = new CompletableFuture<>();
+            channelFutures.add(channelOpened);
+            new Scheduler.SchedulerThreadFactory("MockServer thread for port: " + portToBind, false).newThread(() -> {
+                try {
+                    InetSocketAddress inetSocketAddress;
+                    if (isBlank(localBoundIP)) {
+                        inetSocketAddress = new InetSocketAddress(port);
+                    } else {
+                        inetSocketAddress = new InetSocketAddress(localBoundIP, port);
+                    }
+                    serverBootstrap
+                        .bind(inetSocketAddress)
+                        .addListener((ChannelFutureListener) future -> {
+                            if (future.isSuccess()) {
+                                channelOpened.complete(future.channel());
+                            } else {
+                                channelOpened.completeExceptionally(future.cause());
+                            }
+                        })
+                        .channel().closeFuture().syncUninterruptibly();
+
+                } catch (Exception e) {
+                    channelOpened.completeExceptionally(new RuntimeException("Exception while binding MockServer to port " + port, e));
+                }
+            }).start();
+
+            Channel channel;
+            try {
+                channel = channelOpened.get(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
+            } catch (ExecutionException bindFailed) {
+                // a retry's candidate port can be taken between choosing and binding it
+                if (!operatingSystemChoosesPort || attempt == 1 || attempt >= SHADOW_PROBE_MAX_EPHEMERAL_ATTEMPTS) {
+                    throw bindFailed;
+                }
+                channelFutures.remove(channelOpened);
+                nextPort = bindVerifier.nextCandidatePort();
+                continue;
+            }
+            int boundPort = ((InetSocketAddress) channel.localAddress()).getPort();
+            long acceptTimeoutMillis = operatingSystemChoosesPort
+                ? Math.min(SHADOW_PROBE_ACCEPT_TIMEOUT_EXPLICIT_MILLIS, SHADOW_PROBE_ACCEPT_TIMEOUT_EPHEMERAL_INITIAL_MILLIS << (attempt - 1))
+                : SHADOW_PROBE_ACCEPT_TIMEOUT_EXPLICIT_MILLIS;
+            InetSocketAddress shadowed;
+            try {
+                shadowed = bindVerifier.findShadowedLoopback(channel, acceptTimeoutMillis);
+            } catch (InterruptedException interrupted) {
+                channelFutures.remove(channelOpened);
+                channel.close();
+                Thread.currentThread().interrupt();
+                throw interrupted;
+            } catch (RuntimeException checkFailed) {
+                channelFutures.remove(channelOpened);
+                channel.close().awaitUninterruptibly(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
+                throw checkFailed;
+            }
+            if (shadowed == null) {
+                return boundPort;
+            }
+            channelFutures.remove(channelOpened);
+            channel.close().awaitUninterruptibly(configuration.maxFutureTimeoutInMillis(), MILLISECONDS);
+            String conflict = loopbackConflict(boundPort, shadowed);
+            if (!operatingSystemChoosesPort) {
+                throw explicitPortConflict(boundPort, shadowed);
+            }
+            if (attempt >= SHADOW_PROBE_MAX_EPHEMERAL_ATTEMPTS) {
+                throw new BindException("no usable free port found after " + attempt + " attempts, the last one because " + conflict);
+            }
+            if (mockServerLogger != null && mockServerLogger.isEnabledForInstance(INFO)) {
+                final String message = conflict + "; binding a different port";
+                mockServerLogger.logEvent(
+                    new LogEntry()
+                        .setType(SERVER_CONFIGURATION)
+                        .setLogLevel(INFO)
+                        .setMessageFormat(message)
+                );
+            }
+            nextPort = bindVerifier.nextCandidatePort();
+        }
+    }
+
+    /**
+     * The exception thrown when an explicitly requested port is shadowed by another application's loopback
+     * listener; public so callers that surface it (such as {@code PUT /mockserver/bind}) can be tested
+     * against the real wording.
+     */
+    public static BindException explicitPortConflict(int port, InetSocketAddress shadowed) {
+        return new BindException(loopbackConflict(port, shadowed) + "; stop that application or choose a different port (to find it run: lsof -nP -iTCP:" + port + " -sTCP:LISTEN)");
+    }
+
+    private static String loopbackConflict(int port, InetSocketAddress shadowed) {
+        return "port " + port + " is already in use by another application listening on " + NetUtil.toSocketAddressString(new InetSocketAddress(shadowed.getAddress(), port))
+            + ", so requests to localhost:" + port + " would reach that application instead of MockServer";
     }
 
     protected void startedServer(List<Integer> ports) {
