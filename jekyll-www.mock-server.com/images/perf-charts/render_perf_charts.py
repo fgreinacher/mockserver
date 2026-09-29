@@ -19,6 +19,8 @@ mockserver/mockserver-benchmark/run-scaling.sh):
                        candidate_index:[{mode,expectations,time_per_op,time_unit}]}}
   perf-result.json   (optional, CI) {behaviours:{<op>_<proto>:{p50_ms,p95_ms,
                        p99_ms,throughput_rps,error_rate}}, ...}
+  perf-hw-matrix.json (optional) the published hw_matrix block of
+                       _data/perf_figures.json, written by perf-website-publish.sh
 
 Usage:
   python3 render_perf_charts.py                 # data/ -> images/ (parent dir)
@@ -419,6 +421,49 @@ def chart_inject_percore(percore, out_dir):
     save(fig, out_dir, "perf_inject_percore")
 
 
+def chart_hw_matrix(hw, out_dir):
+    """Healthy ceiling per hardware size: one bar per cores x memory point, in the
+    published order. Lower-bound points are hatched and labelled with >=, the
+    control point is drawn in a second colour, and a point that ran out of memory
+    is marked rather than dropped."""
+    pts = hw.get("points") or []
+    if not pts:
+        print("  (hardware matrix has no points — skipping hardware chart)")
+        return
+    labels = [f"{p['cores']} core{'s' if p['cores'] != 1 else ''}\n{p.get('memory_display') or p.get('memory_limit')}"
+              + ("\n(control)" if p.get("control") else "") for p in pts]
+    vals = [p.get("healthy_ceiling_rps") or 0 for p in pts]
+    x = np.arange(len(pts))
+
+    fig, ax = plt.subplots(figsize=(max(7.5, 1.35 * len(pts) + 2.5), 5.2))
+    for i, p in enumerate(pts):
+        colour = TEAL if p.get("control") else BLUE
+        lower = p.get("lower_bound")
+        ax.bar(x[i], vals[i], width=0.62, color=colour, alpha=0.55 if lower else 1.0,
+               hatch="//" if lower else None, edgecolor=colour, linewidth=1.2, zorder=3)
+        if p.get("status") in ("oom_killed", "sut_died", "java_out_of_memory"):
+            text = "out of memory" if p.get("status") != "sut_died" else "stopped"
+            if p.get("healthy_ceiling_rps"):
+                text = f"{vals[i] / 1000:.0f}k, then {text}"
+            ax.annotate(text, xy=(x[i], vals[i]), xytext=(0, 6), textcoords="offset points",
+                        ha="center", fontsize=9, color=RED, fontweight="bold")
+        elif p.get("healthy_ceiling_rps"):
+            ax.annotate(("≥ " if lower else "") + f"{vals[i] / 1000:.0f}k",
+                        xy=(x[i], vals[i]), xytext=(0, 6), textcoords="offset points",
+                        ha="center", fontsize=10, color=GREY)
+    _grid(ax)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, fontsize=10)
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(_fmt_k))
+    ax.set_ylabel("healthy ceiling (requests / sec)")
+    ax.set_title("Throughput by hardware size", fontweight="bold", fontsize=14)
+    ax.set_ylim(bottom=0, top=max(vals + [1]) * 1.18)
+    if any(p.get("lower_bound") for p in pts):
+        ax.text(0.01, 0.97, "hatched = lower bound (the load generator or test range may have been the limit)",
+                transform=ax.transAxes, ha="left", va="top", fontsize=9, color=GREY)
+    save(fig, out_dir, "perf_hw_matrix")
+
+
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser()
@@ -434,6 +479,7 @@ def main():
     inject_ceiling_complex = load(args.data, "inject-ceiling-complex.json")
     inject_percore = load(args.data, "inject-percore.json")
     inject_scale = load(args.data, "inject-scale.json")
+    hw_matrix = load(args.data, "perf-hw-matrix.json")
 
     if sweep:
         chart_knee(sweep, args.out)
@@ -452,8 +498,10 @@ def main():
         chart_inject_percore(inject_percore, args.out)
     if inject_scale:
         chart_inject_scaling(inject_scale, args.out)
+    if hw_matrix:
+        chart_hw_matrix(hw_matrix, args.out)
 
-    if not any([sweep, scaling, result, inject_ceiling, inject_percore, inject_scale]):
+    if not any([sweep, scaling, result, inject_ceiling, inject_percore, inject_scale, hw_matrix]):
         print("ERROR: no data files found in", args.data, file=sys.stderr)
         sys.exit(1)
 

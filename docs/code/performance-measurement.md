@@ -30,6 +30,7 @@ regressions hide and stale claims get published.
 | `soak.js` | Sustained load over hours | Weekly (Sunday 08:00 UTC schedule, perf queue) and on demand in any build whose message contains `[perf-soak]` | Yes, for that build — k6 thresholds and a result-presence check; never compared or baselined |
 | `scripts/perf/bench_startup.py` | Launch-to-ready variant matrix | Never runs in CI | Never |
 | `inject` (`run-inject.sh`) | Load-injection ceiling | Opt-in | Never in daily pipeline |
+| Hardware matrix (`lib/perf-percore.sh`, `PERF_SERVING_HW_MATRIX=true`) | Healthy ceiling per cores × container memory, for the public sizing table | Opt-in, manual build only | No — notify-only; only a wholesale producer failure reds (presence gate) |
 | `perf-test-allocprofile.sh` (deep JFR) | Allocation per request, peak direct memory, top allocation sites over the load window, retained-heap histogram | Daily (perf queue), separate step | No — `soft_fail`, never baselined; an under-sized recording is reported INVALID |
 
 ## The Daily Pipeline
@@ -540,6 +541,99 @@ a load-injection tool?" It says nothing about how fast MockServer serves mocked 
 Envoy sink absorbs far more than the injectors can produce by design; the bottleneck is always
 the injector. This step is opt-in and does not run as part of the daily pipeline.
 
+### Hardware matrix — throughput by cores and memory (item 27)
+
+**Outcome.** One manual build measures the healthy ceiling of a single MockServer container at
+several sizes and publishes it as the "Throughput by hardware size" table on `performance.html`.
+Default matrix: 1 core / 512 MB, 2 / 1 GB, 2 / 2 GB (control), 4 / 2 GB, 6 / 2 GB, 8 / 2 GB. It
+is never part of the daily run.
+
+**Trigger** (the message must contain `[perf-run]`, or the guard does not dispatch an API build):
+
+```bash
+bk build create -p mockserver-performance-test -b master -c HEAD \
+  -m "[perf-run] hardware matrix (item 27)" -e PERF_SERVING_HW_MATRIX=true -y
+```
+
+The build runs the normal regression chain plus the matrix (about 45 extra minutes); the guard
+raises the run step's timeout from 70 to 130 minutes only when `PERF_SERVING_HW_MATRIX=true`.
+Avoid the 04:00 UTC daily slot and the Sunday 08:00 soak (the `perf` queue has one agent).
+`PERF_HW_MATRIX` overrides the points, as comma-separated `cores:memory[:control]` entries.
+
+```mermaid
+flowchart LR
+  run["perf-test-run.sh\nPERF_SERVING_HW_MATRIX=true"] --> pc["lib/perf-percore.sh\nPERF_PERCORE_MODE=hw_matrix"]
+  pc --> res["result.json .serving_hw_matrix\n+ serving-hw-matrix.json artifact"]
+  res --> cmp["perf-test-compare.sh\nnotify-only metrics + presence gate"]
+  cmp --> pub["perf-website-publish.sh\nhw_matrix in perf_figures.json\n+ perf-hw-matrix.json chart data"]
+```
+
+**What each point is.** A fresh SUT on the snapshot image, pinned with `--cpuset-cpus` to C
+logical CPUs on C distinct physical cores, with `--memory` and `--memory-swap` both set to the
+point's limit and no `-Xmx`, so the image's `MaxRAMPercentage=60` sizes the heap and the
+event-log bounds follow the heap exactly as in a user's container. Log level is `ERROR`, as in
+the rest of the rig. k6 takes one thread on each remaining physical core (never the SUT's
+hyperthread siblings), minus one reserved core; where sysfs topology is unreadable (a macOS
+run) it falls back to logical ids and the point records `cpus_physically_verified: false`.
+For the whole matrix `perf-test-run.sh` pauses every other container of the run (the idle main
+SUT on cores 0–5, the upstream on core 6) and stops the samplers that scrape them, then resumes
+them (also from `cleanup()`). `other_containers_paused` is true only when at least one container
+was listed and every listed one paused; a failed pause is logged as a warning. The page claims
+"each on its own physical core, with no other test container on it" only when that and the
+topology proof both hold.
+Each point runs the pin proof, a warm-up, then the sweep up to `20,000 × cores` req/s
+(`PERF_HW_MATRIX_MAX_RPS_PER_CORE`) on a ladder whose rungs are 6–17% apart from 8,000 req/s up
+and 12–100% below that, so every ceiling is resolved only to one rung. The healthy ceiling comes
+from `lib/perf-website-figures.jq`, as for every other ceiling.
+
+**What each point records** (beyond the `serving_percore` per-point fields): `memory_limit`,
+`control`, the SUT's own `resolved` heap ceiling and event-log bounds (`max_heap_bytes`,
+`max_log_entries`, `max_event_log_bytes`, read from `/mockserver/metrics`), peak container
+memory as a fraction of the limit, peak retained log entries and bytes with each bound's
+utilisation (`event_log_filled` is true when EITHER bound reached 95%; with small bodies the byte
+bound binds first), `sut_state` (running, OOM-killed,
+exit code, restarts, `OutOfMemoryError` count), `status` (`measured`, `oom_killed`, `sut_died`,
+`java_out_of_memory`, `no_healthy_ceiling`), `died_at_offered_rps` / `died_before_sweep`, the
+k6 headroom at the ceiling, and `lower_bound` with its reasons:
+
+| Reason | Meaning |
+|---|---|
+| `client_cpu_limited` | k6 was at ≥85% of its CPU pin (or erroring) on the ceiling rung |
+| `ladder_top_reached` | the ceiling is the highest rate offered to this point |
+| `server_cpu_not_saturated` | the SUT never reached 85% of its CPU pin on any rung, so the load path may have been the limit |
+| `cpu_unverified` | the SUT or k6 CPU samples needed to rule out the first two are missing |
+
+`client_cpu_limited` inherits the rig-valid 85%-of-pin rule, which misses a k6 client that
+saturates below 85% (programme item 30), so an unflagged point can still be client-limited;
+`server_cpu_not_saturated` usually catches that case from the server side.
+
+An OOM-killed SUT is kept (the container runs without `--rm`) and reported with its status; a
+SUT killed while starting is a `failure` skip with `oom_killed: true`. Neither is dropped.
+
+**Publishing.** `perf-website-figures.jq` turns `.serving_hw_matrix` into `hw_matrix`, and
+emits null (so the committed table is kept) unless at least one point is `measured` with a
+healthy ceiling; compare likewise reds a matrix whose points all lack a ceiling and none was
+OOM-killed. `hw_matrix` holds:
+
+- display rows with plain-language notes and each point's request-log caps and peak;
+- a per-core figure from points that are neither controls nor lower bounds, with `scaling`:
+  `linear` (per-core rate within 20% across sizes), `falling` or `rising` (moves one way at
+  every step), `mixed`, or `single`; with none, `per_core_unavailable` says why;
+- a `memory_effect` from the control against the same-core point with less memory, compared
+  in ladder rungs: `no_difference` at the same rung, `memory_helps` at 3 or more rungs up,
+  otherwise `inconclusive` with a reason. Each ceiling can move a rung between runs, so a gap
+  of up to two rungs is treated as noise.
+
+The page scopes every statement to "this run" and states only what the data supports. Daily
+runs carry no matrix, so the publish step keeps the committed `hw_matrix` and emits a refresh
+only when a newer matrix run appears. With no data the page shows "Not yet measured".
+
+**Limits.** A single k6 process tops out near the rig-valid peak of the main run (59.6–59.9k
+req/s before item 26's harness regression, fixed in `caf82e7af`, confirmation run pending), so
+the 6- and 8-core points are likely to be labelled lower bounds; run the matrix after that
+confirmation. The per-core profile (`PERF_SERVING_PERCORE=true`) shares this script and the same
+k6 placement but not the pausing; its output shape is unchanged apart from added fields.
+
 ### Allocation profile step
 
 `perf-test-allocprofile.sh` answers *what allocates, and how much per request* on every dispatched
@@ -682,7 +776,9 @@ To publish a run's figures:
    git am website-figures-<UTC-timestamp>.patch
    git push -u origin perf/website-figures-<UTC-timestamp> && gh pr create --fill --base master
    ```
-   The patch rewrites only `_data/perf_figures.json` and the chart data/PNGs. Before merging,
+   The patch rewrites only `_data/perf_figures.json` and the chart data/PNGs (including
+   `perf-hw-matrix.json` when a hardware matrix is published; rerun `render_perf_charts.py` if the
+   patch carries no `perf_hw_matrix.png`, or the page omits the chart). Before merging,
    reconcile the hand-authored numbers it does **not** touch in `mock_server/performance.html`:
    the front-matter `description`, the JSON-LD `schema_faq` answers, and matcher-scaling figures
    (a separate JMH source, expected to differ).
@@ -724,7 +820,7 @@ NMT and JFR start-up cost inside the SUT's CPU allocation.
 
 Widening k6's cpuset (from cores 7–10 to 7–23, to give the client enough headroom at the server's default 6-core config) changed the rig. The hardware-mismatch guard keys on `instance_type`, which did not change, so nothing in the tooling flags it. Stored `saturation_rps` and sweep latencies from before this change are not comparable with those after it. Similarly, adding rungs to the default ladder introduces ladder-position history that has no prior comparable points. When reviewing a stored run's `saturation_rps` against an older run, confirm both used the same k6 cpuset and the same ladder rungs.
 
-The rung-onset exclusion is a second break, in latency only. Sweep percentiles from a run whose `.sweep` has no `latency_window` include each rung's onset, which dominated the tail at moderate load (ladder p99 10.6 ms against a steady-state 0.343 ms at 24,000 rps); never compare the two. `achieved_rps`, drops, errors, `rig_valid_peak_achieved_rps` and `saturation_rps` compare across it freely (their accounting did not change); the healthy ceiling does not, because it is gated on p50. The compare step enforces this for the metrics it budgets from sweep p50s — `serving_percore.*.healthy_ceiling_rps`, `.rps_per_core`, `.healthy_ceiling_p50_ms`, `serving_multiproc_aggregate_healthy_ceiling_rps` and `serving_multiproc_scales_with_procs` (a ratio of two healthy ceilings): each compares only against runs whose block carries the same `sweep.latency_settle_s` and stays `:new:` until `MIN_BASELINE` such runs exist, and while it does the annotation says so ("sweep latency baseline reset"). The same fingerprint resets them again if the settle is ever changed. The website publish step treats a changed `source.sweep_latency_settle_s` as drift, so the first post-change run emits a refresh patch rather than leaving onset-inflated tails on the page.
+The rung-onset exclusion is a second break, in latency only. Sweep percentiles from a run whose `.sweep` has no `latency_window` include each rung's onset, which dominated the tail at moderate load (ladder p99 10.6 ms against a steady-state 0.343 ms at 24,000 rps); never compare the two. `achieved_rps`, drops, errors, `rig_valid_peak_achieved_rps` and `saturation_rps` compare across it freely (their accounting did not change); the healthy ceiling does not, because it is gated on p50. The compare step enforces this for the metrics it budgets from sweep p50s — `serving_percore.*.healthy_ceiling_rps`, `.rps_per_core`, `.healthy_ceiling_p50_ms`, `serving_hw_matrix.*.healthy_ceiling_rps`, `.healthy_ceiling_p50_ms`, `serving_multiproc_aggregate_healthy_ceiling_rps` and `serving_multiproc_scales_with_procs` (a ratio of two healthy ceilings): each compares only against runs whose block carries the same `sweep.latency_settle_s` and stays `:new:` until `MIN_BASELINE` such runs exist, and while it does the annotation says so ("sweep latency baseline reset"). The same fingerprint resets them again if the settle is ever changed. The website publish step treats a changed `source.sweep_latency_settle_s` as drift, so the first post-change run emits a refresh patch rather than leaving onset-inflated tails on the page.
 
 ### GC log cycle times are not stop-the-world pause times
 

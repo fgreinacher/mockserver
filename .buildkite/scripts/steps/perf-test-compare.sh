@@ -509,6 +509,47 @@ The run set \`serving_multiproc_attempted: true\` but its \`.serving_multiproc\`
   fi
 fi
 
+# --- 2e. hardware matrix PRESENCE assertion (item 27) --------------------------
+# Mirror of 2c for .serving_hw_matrix: VALUES are notify-only, PRESENCE is loud. An
+# attempted matrix with no measured point and no infeasible-only skip failed
+# wholesale; so did one whose points ALL lack a healthy ceiling with none OOM-killed (the
+# page would publish nothing). An out-of-memory point (container or Java) is a MEASUREMENT.
+HWM_NOTE=""
+if [ "$(jq -r '.serving_hw_matrix_attempted // false' "$RESULT")" = "true" ]; then
+  HWM_POINTS="$(jq -r '(.serving_hw_matrix.points // []) | length' "$RESULT")"
+  HWM_SKIPPED="$(jq -r '(.serving_hw_matrix.skipped // []) | length' "$RESULT")"
+  HWM_FAIL_SKIPS="$(jq -r '[(.serving_hw_matrix.skipped // [])[] | select((.type // "") == "failure")] | length' "$RESULT")"
+  HWM_USABLE="$(jq -r '[(.serving_hw_matrix.points // [])[] | select(.healthy_ceiling_rps != null or .oom_killed == true or .java_out_of_memory == true
+             or (.status // "") == "java_out_of_memory"
+             or ((.status // "") == "sut_died" and ((.sut_state.java_oom_errors // 0) > 0)))] | length' "$RESULT")"
+  if [ "$HWM_POINTS" != "0" ] && [ "$HWM_USABLE" = "0" ]; then
+    annotate "error" ":no_entry: **Hardware matrix measured NOTHING usable — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The run set \`serving_hw_matrix_attempted: true\` and produced ${HWM_POINTS} point(s), but none has a healthy ceiling and none was OOM-killed ($(jq -r '[(.serving_hw_matrix.points // [])[] | .key + "=" + (.status // "?")] | join(", ")' "$RESULT")). Every rung failed the ceiling rule, which points at the rig, not at MockServer, and the website would publish no table. The run was still persisted to the baseline history above."
+    exit 1
+  fi
+  if [ "$HWM_POINTS" = "0" ] && { [ "$HWM_SKIPPED" = "0" ] || [ "$HWM_FAIL_SKIPS" != "0" ]; }; then
+    HWM_FAIL_DETAIL="$(jq -r '[(.serving_hw_matrix.skipped // [])[] | select((.type // "") == "failure") | (.key // ((.cores|tostring)+"c"))+" ("+.reason+")"] | join("; ")' "$RESULT")"
+    annotate "error" ":no_entry: **Hardware matrix profile FAILED to produce — build FAILED** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+
+The run set \`serving_hw_matrix_attempted: true\` but its \`.serving_hw_matrix\` block measured NO point and its only skips (if any) are RIG FAILURES${HWM_FAIL_DETAIL:+: **${HWM_FAIL_DETAIL}**}. The matrix (\`lib/perf-percore.sh\` in hw_matrix mode, item 27) failed wholesale, so it would otherwise pass GREEN with no figures. The run was still persisted to the baseline history above. Notify-only serving_hw_matrix VALUES are unaffected — this gate is about PRESENCE, not regression."
+    exit 1
+  fi
+  HWM_SUMMARY="$(jq -r '[(.serving_hw_matrix.points // [])[]
+      | "\(.key): \(if .healthy_ceiling_rps == null then "no healthy ceiling" else "\(.healthy_ceiling_rps) rps" end) [\(.status)\(if .lower_bound then ", lower bound: " + (.lower_bound_reasons | join("+")) else "" end)\(if .control then ", control" else "" end)]"]
+    | join("; ")' "$RESULT")"
+  HWM_NOTE="
+
+:information_source: **Hardware matrix** (item 27, notify-only) — ${HWM_SUMMARY:-no point measured}."
+  if [ "$HWM_SKIPPED" != "0" ]; then
+    HWM_SKIP_LIST="$(jq -r '[.serving_hw_matrix.skipped[] | (.key // ((.cores|tostring)+"c"))+" ["+(.type // "?")+"] ("+.reason+")"] | join("; ")' "$RESULT")"
+    HWM_NOTE="${HWM_NOTE} Skipped: ${HWM_SKIP_LIST}."
+  fi
+  if [ "$(jq -r '[(.serving_hw_matrix.points // [])[] | select(.sut_survived == false)] | length' "$RESULT")" != "0" ]; then
+    HWM_NOTE="${HWM_NOTE} :warning: at least one point's SUT did not survive its sweep (OOM or crash) — see its status."
+  fi
+fi
+
 # --- 3. pull the last N PRIOR runs --------------------------------------------
 BASE_DIR="$WORK/baseline"; mkdir -p "$BASE_DIR"
 if [ -n "${PERF_BASELINE_DIR:-}" ]; then
@@ -852,6 +893,13 @@ def metrics:
       {name:($pc+".rps_per_core"),          value:.rps_per_core,          bkey:"serving_percore.*.rps_per_core"},
       {name:($pc+".rig_valid_peak_achieved_rps"), value:.rig_valid_peak_achieved_rps, bkey:"serving_percore.*.rig_valid_peak_achieved_rps"},
       {name:($pc+".healthy_ceiling_p50_ms"),value:.healthy_ceiling_p50_ms,bkey:"serving_percore.*.healthy_ceiling_p50_ms"} ) ),
+  # item 27 — hardware matrix, one point per cores x memory limit, keyed
+  # serving_hw_matrix.<key>.<metric> (key e.g. 2c-1g). Notify-only; the p50-gated two
+  # are keyed on the sweep latency-window fingerprint (latfam), like serving_percore.
+  ((.serving_hw_matrix.points // []) | .[] | ("serving_hw_matrix." + (.key // ((.cores|tostring) + "c"))) as $hk |
+    ( {name:($hk+".healthy_ceiling_rps"),   value:.healthy_ceiling_rps,   bkey:"serving_hw_matrix.*.healthy_ceiling_rps"},
+      {name:($hk+".rig_valid_peak_achieved_rps"), value:.rig_valid_peak_achieved_rps, bkey:"serving_hw_matrix.*.rig_valid_peak_achieved_rps"},
+      {name:($hk+".healthy_ceiling_p50_ms"),value:.healthy_ceiling_p50_ms,bkey:"serving_hw_matrix.*.healthy_ceiling_p50_ms"} ) ),
   # item 18 (client rig) — multi-process aggregate throughput vs process count. Unlike
   # serving_percore (one point per pinned core-count), this emits TWO FLAT scalars with
   # EXACT bkeys (like rig_valid_peak_achieved_rps / forward.error_rate, not a wildcard
@@ -923,6 +971,8 @@ def latfam: if IN("serving_percore.*.healthy_ceiling_rps", "serving_percore.*.rp
                   "serving_percore.*.healthy_ceiling_p50_ms") then "serving_percore"
             elif IN("serving_multiproc_aggregate_healthy_ceiling_rps",
                     "serving_multiproc_scales_with_procs") then "serving_multiproc"
+            elif IN("serving_hw_matrix.*.healthy_ceiling_rps",
+                    "serving_hw_matrix.*.healthy_ceiling_p50_ms") then "serving_hw_matrix"
             else null end;
 def latfp($f): (.[$f].sweep.latency_settle_s // null);
 def latpresent($f): (((.[$f] // {}).points // []) | length) > 0;
@@ -1005,7 +1055,8 @@ def latpresent($f): (((.[$f] // {}).points // []) | length) > 0;
 | bmapof($bhwruns) as $bmapAllHw
 | bmapof($bmicrohwruns) as $bmapMicroHw
 | bmapof($bk6hwruns) as $bmapK6Hw
-| ({serving_percore: latfp("serving_percore"), serving_multiproc: latfp("serving_multiproc")}) as $headlat
+| ({serving_percore: latfp("serving_percore"), serving_multiproc: latfp("serving_multiproc"),
+    serving_hw_matrix: latfp("serving_hw_matrix")}) as $headlat
 | ($headlat | with_entries(.key as $f | .value as $v | .value = {
     all: bmapof([ $ballruns[] | select(latfp($f) == $v) ]),
     hw: bmapof([ $bhwruns[] | select(latfp($f) == $v) ]),
@@ -1264,7 +1315,7 @@ fi
 # carries them.
 EXTRA="${EXTRA}
 
-${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${SWEEPLAT_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}${MP_NOTE}"
+${PROVENANCE}${HW_NOTE}${PRECFG_NOTE}${MB_NOTE}${K6_NOTE}${SWEEPLAT_NOTE}${LAPTOP_INJVM_NOTE}${STREAM_NOTE}${CLU_NOTE}${PC_NOTE}${HWM_NOTE}${MP_NOTE}"
 
 HEADER="Perf regression — \`${COMMIT:0:10}\` on \`${BRANCH}\` (baseline: ${BASE_COUNT} runs, median+MAD; budgets @ \`${BUDGETS_COMMIT:0:10}\`)"
 # Legend folded into every flagged annotation so a reader knows why the build did

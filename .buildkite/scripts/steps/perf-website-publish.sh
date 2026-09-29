@@ -250,10 +250,21 @@ if ! jq -e '.headline != null and (.headline.healthy_ceiling_rps != null)' "$WOR
   fail "NO HEALTHY CEILING" \
     "No sweep rung qualified as a healthy ceiling (achieved within $(awk -v k="$KEEP_FRAC" 'BEGIN{printf "%.0f", (1-k)*100}')% of offered, zero errors, p50 within ${LAT_MULT}x the flat-region p50). The run may have been overloaded at every rung. Refusing to publish a headline that does not exist."
 fi
+# The hardware-size table (item 27) comes only from a manual matrix run, so a daily
+# run carries none: keep the committed table rather than blanking it. It has its own
+# source block, so the page still says which run measured it.
+HW_ORIGIN="none"
+if jq -e '.hw_matrix != null' "$WORK/candidate.json" >/dev/null 2>&1; then
+  HW_ORIGIN="this run"
+elif [ -f "$DATA_FILE" ] && jq -e '.hw_matrix != null' "$DATA_FILE" >/dev/null 2>&1; then
+  jq --slurpfile old "$DATA_FILE" '.hw_matrix = $old[0].hw_matrix' "$WORK/candidate.json" > "$WORK/candidate.hw.json" \
+    && mv "$WORK/candidate.hw.json" "$WORK/candidate.json"
+  HW_ORIGIN="carried forward from $(jq -r '.hw_matrix.source.run_timestamp_utc // "?"' "$DATA_FILE")"
+fi
 HC="$(jq -r '.headline.healthy_ceiling_rps' "$WORK/candidate.json")"
 PK="$(jq -r '.headline.peak_achieved_rps' "$WORK/candidate.json")"
 BEH="$(jq -r 'if .behaviours == null then "withheld (run carries none / pre-fix)" else "\(.behaviours | length) arms" end' "$WORK/candidate.json")"
-echo "--- candidate: healthy_ceiling_rps=${HC} peak_achieved_rps=${PK} behaviours=${BEH}"
+echo "--- candidate: healthy_ceiling_rps=${HC} peak_achieved_rps=${PK} behaviours=${BEH} hw_matrix=${HW_ORIGIN}"
 
 if [ "$DRY_RUN" = "true" ] && [ -n "${PERF_PUBLISH_OUT:-}" ]; then
   cp "$WORK/candidate.json" "$PERF_PUBLISH_OUT"
@@ -296,6 +307,11 @@ else
   NEW_SETTLE="$(jq -c '.source.sweep_latency_settle_s // null' "$WORK/candidate.json")"
   if [ "$OLD_SETTLE" != "$NEW_SETTLE" ]; then
     TRIGGER="yes"; REASONS+=("sweep latency window changed (settle ${OLD_SETTLE} -> ${NEW_SETTLE} s)")
+  fi
+  OLD_HW="$(jq -c '.hw_matrix.source.run_timestamp_utc // null' "$DATA_FILE")"
+  NEW_HW="$(jq -c '.hw_matrix.source.run_timestamp_utc // null' "$WORK/candidate.json")"
+  if [ "$OLD_HW" != "$NEW_HW" ]; then
+    TRIGGER="yes"; REASONS+=("hardware-size figures measured by a new matrix run (${OLD_HW} -> ${NEW_HW})")
   fi
 fi
 
@@ -343,6 +359,10 @@ jq '((.saturation.ladder // []) | map(select(.rig_valid == true) | .offered_rps)
 # The full run record is copied verbatim - it carries its own rig_valid flags and
 # exclusion reasons, so it stays complete rather than filtered.
 cp "$WORK/run.json" "$CHART_DATA_DIR/perf-result.json"
+# The hardware-size chart plots exactly the published table (fresh or carried forward).
+if jq -e '.hw_matrix != null' "$WORK/candidate.json" >/dev/null 2>&1; then
+  jq '.hw_matrix' "$WORK/candidate.json" > "$CHART_DATA_DIR/perf-hw-matrix.json"
+fi
 # Regenerate the PNGs if the renderer's toolchain is present (best-effort: whoever
 # applies the patch / CI can rerun it; a missing matplotlib must not fail the step).
 if command -v python3 >/dev/null 2>&1 && python3 -c "import matplotlib" >/dev/null 2>&1; then
@@ -383,6 +403,7 @@ upload_patch_or_fail "$PATCH_FILE"
 upload_artifact "$DATA_FILE"
 upload_artifact "$CHART_DATA_DIR/perf-sweep.json"
 upload_artifact "$CHART_DATA_DIR/perf-result.json"
+upload_artifact "$CHART_DATA_DIR/perf-hw-matrix.json"
 for _png in "$IMAGES_DIR"/*.png; do
   upload_artifact "$_png"
 done
@@ -393,6 +414,7 @@ annotate "success" ":memo: **Website perf figures refreshed — patch emitted as
 - **Trigger:** ${REASON_STR%; } (largest headline move ${MAX_MOVE}%, window ${MOVE_PCT}%)
 - **Healthy ceiling:** ${HC} req/s (headline) · **peak achieved:** ${PK} req/s (labelled degraded)
 - **Per-behaviour percentiles:** ${BEH}
+- **Throughput by hardware size:** ${HW_ORIGIN}
 
 **Nothing was pushed and no PR was opened** — the \`perf\` queue holds only the S3 perf-results grant, no git/gh credentials. The refresh is attached to this build as \`${PATCH_NAME}\` (a \`git format-patch\` patch) plus the regenerated \`perf_figures.json\`, chart data, and PNGs.
 
@@ -412,7 +434,7 @@ update them to match before merging:
   - the JSON-LD \`schema_faq\` answers (front matter) — Google surfaces these;
   - matcher-scaling figures are a separate JMH source and are expected to differ.
 The page body prose (itemprop headline, at-a-glance bullet, per-instance paragraph),
-the provenance block, and both result tables are rendered from the data file and are
+the provenance block, and the result tables (including throughput by hardware size) are rendered from the data file and are
 already updated by the patch."
 echo "OK: patch emitted (${PATCH_NAME}); nothing pushed, no PR opened"
 exit 0

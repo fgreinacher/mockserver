@@ -95,7 +95,14 @@ if ! command -v buildkite-agent >/dev/null 2>&1; then
   exit 0
 fi
 
-buildkite-agent pipeline upload <<'YAML'
+# PERF_SERVING_HW_MATRIX=true (a manual-build opt-in) adds ~45 min to the run step.
+PERF_RUN_TIMEOUT=70
+if [ "${PERF_SERVING_HW_MATRIX:-false}" = "true" ]; then
+  PERF_RUN_TIMEOUT=130
+  echo "--- :straight_ruler: PERF_SERVING_HW_MATRIX=true — run step timeout ${PERF_RUN_TIMEOUT}m"
+fi
+
+sed "s/@PERF_RUN_TIMEOUT@/${PERF_RUN_TIMEOUT}/" <<'YAML' | buildkite-agent pipeline upload
 steps:
   # --- DEPENDENCY GRAPH — read before touching the ordering below --------------
   # The measurement steps run in parallel; `persist + compare` (the gating step)
@@ -153,8 +160,8 @@ steps:
     # trim it back once a few runs show the real duration, or set PERF_INFO_ARM=false
     # to drop the arm entirely.
     # Bumped 60 -> 70 for the path-coverage phase (~8 min estimated; PERF_COVERAGE=false
-    # or a PERF_COVERAGE_ARMS subset removes it).
-    timeout_in_minutes: 70
+    # or a PERF_COVERAGE_ARMS subset removes it). 130 on a hardware-matrix build.
+    timeout_in_minutes: @PERF_RUN_TIMEOUT@
     agents:
       queue: "perf"
   - label: ":microscope: perf regression — micro-benchmark + scaling sweep"

@@ -94,6 +94,154 @@ def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
    or (((.timestamp_utc // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}"))
        and ((.timestamp_utc // "") >= $fix_date))) as $postfix
 | ((.behaviours // {}) | to_entries | map(select(.value.p95_ms != null))) as $beh_present
+# ---- hardware matrix (item 27): throughput by cores x container memory ------
+# Published from .serving_hw_matrix only when at least one point was measured with a
+# healthy ceiling; null otherwise, and perf-website-publish.sh keeps the committed block.
+# Ceilings are ladder rungs, so comparisons below are made in rungs, not percentages.
+| ((.serving_hw_matrix.points // []) | sort_by(.cores, .memory_limit_bytes)) as $hwp
+| (.serving_hw_matrix.other_containers_paused == true) as $hw_paused
+| ((.serving_hw_matrix.sweep.rates // "") | tostring) as $hw_all_rates
+| def memdisp: if . == null then null
+    elif test("^[0-9]+[gG]$") then (sub("[gG]$"; "") + " GB")
+    elif test("^[0-9]+[mM]$") then (sub("[mM]$"; "") + " MB")
+    else . end;
+  def mib: if . == null then null else (. / 1048576 | round) end;
+  # the rungs this point was offered: its ladder, else its rate list, else the matrix ladder.
+  def rates: . as $p
+    | ([ ($p.ladder // [])[] | .offered_rps ]
+       | if length > 0 then . else (($p.sweep_rates // $hw_all_rates) | split(",") | map(select(. != "") | tonumber)) end
+       | sort);
+  def rungidx($r): if $r == null then null else (rates | index([$r])) end;
+  def reason($r): ((.lower_bound_reasons // []) | index($r)) != null;
+  def hwnote: [
+      (if .control == true then "control: same cores, more memory" else empty end),
+      (if .status == "oom_killed" then "ran out of memory (container killed)\(if .died_at_offered_rps != null then " at about \(.died_at_offered_rps | commafy) req/s" elif .died_before_sweep == true then " before the test load started" else "" end)"
+       elif .status == "sut_died" then "server stopped during the test"
+       elif .status == "java_out_of_memory" then "Java heap ran out during the test"
+       elif .status == "no_healthy_ceiling" then "no stable rate found"
+       else empty end),
+      (if reason("client_cpu_limited") then "may have been limited by the load generator — lower bound"
+       elif reason("ladder_top_reached") then "above the highest rate tested — lower bound"
+       elif reason("server_cpu_not_saturated") then "server CPU not saturated, may have been limited by the load generator — lower bound"
+       elif reason("cpu_unverified") then "CPU use not measured, so the limit is unconfirmed — lower bound"
+       else empty end) ] | join("; ");
+  def history: {
+      entry_cap: (.resolved.max_log_entries // null),
+      entry_cap_display: (if (.resolved.max_log_entries // null) == null then null else (.resolved.max_log_entries | commafy) end),
+      log_cap_mb: (.resolved.max_event_log_bytes | mib),
+      entries_peak: (.event_log_retained_entries_peak // null),
+      entries_peak_display: (if (.event_log_retained_entries_peak // null) == null then null else (.event_log_retained_entries_peak | commafy) end),
+      filled: (.event_log_filled == true),
+      binding_bound: (.event_log_binding_bound // null),
+      body_bytes: (.retention.body_bytes // null) };
+  ([ $hwp[] | select(.status == "measured" and .healthy_ceiling_rps != null) ]) as $hwok
+| ([ $hwok[] | select((.lower_bound | not) and (.control | not)) | {cores, rpc: (.healthy_ceiling_rps / .cores)} ]
+   | sort_by(.cores)) as $pcpts
+| ([ $pcpts[] | .rpc ]) as $percore
+| ([ $hwp[] | select(.control == true) ] | first) as $ctl
+| (if $ctl == null then null
+   else ([ $hwp[] | select((.control | not) and .cores == $ctl.cores
+                           and (.memory_limit_bytes // 0) < ($ctl.memory_limit_bytes // 0)) ] | last) end) as $base
+| (if ($hwok | length) == 0 then null else {
+    source: {
+      run_timestamp_utc: .timestamp_utc,
+      build_number: (.build_number // null),
+      build_url: (.build_url // null),
+      commit: ((.commit // "") | .[0:10]),
+      mockserver_version: ($c.mockserver_version // null),
+      instance_type: ($a.instance_type // null),
+      gc: ($c.gc // null),
+      jdk: ($c.jdk // null),
+      log_level: (.serving_hw_matrix.log_level // null),
+      sweep_latency_settle_s: (.serving_hw_matrix.sweep.latency_settle_s // null),
+      cpus_physically_verified: ([ $hwp[] | .cpus_physically_verified == true ] | all),
+      other_containers_paused: $hw_paused,
+      note: ("Each row is a fresh MockServer container pinned to that many CPU cores"
+             + (if ([ $hwp[] | .cpus_physically_verified == true ] | all) and $hw_paused
+                then " (each on its own physical core, with no other test container on it)" else "" end)
+             + " and limited to that much memory, with the image default heap sizing (no -Xmx). The load generator runs on other cores. Logging is reduced below the shipped INFO default for measurement.")
+    },
+    points: [ $hwp[] | {
+        key: (.key // ((.cores | tostring) + "c")),
+        cores: .cores,
+        memory_limit: .memory_limit,
+        memory_display: (.memory_limit | memdisp),
+        control: (.control == true),
+        status: .status,
+        max_heap_mib: (.resolved.max_heap_bytes // null | if . == null then null else (. / 1048576 | floor) end),
+        history: history,
+        memory_peak_pct: (if .container_memory_peak_frac_of_limit == null then null else (.container_memory_peak_frac_of_limit * 100 | round) end),
+        healthy_ceiling_rps: .healthy_ceiling_rps,
+        healthy_ceiling_rps_display: (if .healthy_ceiling_rps == null then null else (.healthy_ceiling_rps | commafy) end),
+        healthy_ceiling_p50_ms: (if .healthy_ceiling_p50_ms == null then null else (.healthy_ceiling_p50_ms | round3) end),
+        healthy_ceiling_p95_ms: (if .healthy_ceiling_p95_ms == null then null else (.healthy_ceiling_p95_ms | round3) end),
+        rps_per_core: .rps_per_core,
+        lower_bound: (.lower_bound == true),
+        lower_bound_reasons: (.lower_bound_reasons // []),
+        oom_killed: (.oom_killed == true),
+        died_at_offered_rps: (.died_at_offered_rps // null),
+        note: hwnote
+      } ],
+    skipped: [ (.serving_hw_matrix.skipped // []) | sort_by(.cores, (.memory_limit_bytes // 0)) | .[] | {
+        key: (.key // ((.cores | tostring) + "c")), cores: .cores,
+        memory_display: (.memory_limit | memdisp), type: .type, reason: .reason,
+        oom_killed: (.oom_killed == true) } ],
+    # From points that are neither controls nor lower bounds. scaling: "linear" when the
+    # per-core rate stays within 20%; otherwise "falling"/"rising" only when it moves one
+    # way across every size, else "mixed"; "single" with one core count.
+    per_core: (if ($percore | length) == 0 then null else
+      ($percore | length) as $n
+      | ([ range(1; $n) | $percore[.] <= $percore[. - 1] ] | all) as $down
+      | ([ range(1; $n) | $percore[.] >= $percore[. - 1] ] | all) as $up
+      | {
+        points_used: $n,
+        min_display: ($percore | min | commafy), max_display: ($percore | max | commafy),
+        smallest_cores: $pcpts[0].cores, largest_cores: $pcpts[-1].cores,
+        smallest_display: ($pcpts[0].rpc | commafy), largest_display: ($pcpts[-1].rpc | commafy),
+        scaling: (if ([ $pcpts[] | .cores ] | unique | length) < 2 then "single"
+                  elif (($percore | min) / ($percore | max)) >= 0.8 then "linear"
+                  elif $down and ($percore[-1] < $percore[0]) then "falling"
+                  elif $up and ($percore[-1] > $percore[0]) then "rising"
+                  else "mixed" end) } end),
+    per_core_unavailable: (if ($percore | length) > 0 then null
+                           elif ([ $hwok[] | select(.control | not) ] | length) > 0 then "lower_bound"
+                           else "only_control" end),
+    # The control against the same-core point with less memory, compared in ladder rungs.
+    # Each ceiling can land one rung either way between runs, so a gap of up to two rungs
+    # is within noise: only 0 rungs ("no_difference") or >= 3 up ("memory_helps") are stated.
+    memory_effect: (if $ctl == null or $base == null then null else
+      ($base | rungidx($base.healthy_ceiling_rps)) as $ib
+      | ($base | rungidx($ctl.healthy_ceiling_rps)) as $ic
+      | (if $ib == null or $ic == null then null else $ic - $ib end) as $drung
+      | ($base | rates) as $lad
+      | (if $ib == null or ($ib + 1) >= ($lad | length) then null
+         else ((($lad[$ib + 1] - $lad[$ib]) / $lad[$ib]) * 100 | round) end) as $step
+      | ([$base, $ctl] | map(.status == "measured" and .healthy_ceiling_rps != null) | all) as $both_measured
+      | ([$base, $ctl] | map(.lower_bound == true) | any) as $any_lb
+      | ($base | history) as $bh | ($ctl | history) as $ch
+      | {
+          cores: $ctl.cores,
+          base_memory_display: ($base.memory_limit | memdisp),
+          control_memory_display: ($ctl.memory_limit | memdisp),
+          base_rps_display: (if $base.healthy_ceiling_rps == null then null else ($base.healthy_ceiling_rps | commafy) end),
+          control_rps_display: (if $ctl.healthy_ceiling_rps == null then null else ($ctl.healthy_ceiling_rps | commafy) end),
+          rung_difference: $drung,
+          ladder_step_pct: $step,
+          base_history: $bh, control_history: $ch,
+          history_both_filled: ($bh.filled and $ch.filled),
+          verdict: (if ($both_measured | not) or $any_lb or $drung == null then "inconclusive"
+                    elif $drung == 0 then "no_difference"
+                    elif $drung >= 3 then "memory_helps"
+                    else "inconclusive" end),
+          inconclusive_reason: (if ($both_measured | not) then "not_measured"
+                                elif $any_lb then "lower_bound"
+                                elif $drung == null then "unresolved"
+                                elif $drung == 0 or $drung >= 3 then null
+                                elif ($drung | fabs) <= 2 then "within_ladder_resolution"
+                                elif $drung <= -3 then "slower_with_more_memory"
+                                else null end)
+        } end)
+  } end) as $hw_matrix
 | {
     # ---- provenance: every published figure carries what it was measured on --
     source: {
@@ -164,6 +312,8 @@ def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
               throughput_rps: (.value.throughput_rps | round2)
             }))
       else null end),
+    # ---- throughput by hardware size (null unless the run carries a matrix) ----
+    hw_matrix: $hw_matrix,
     # Documentary keys the page and reviewers rely on — EMITTED here so an
     # auto-refresh never silently drops what the seed data file carries.
     behaviours_status: (if ($postfix | not)

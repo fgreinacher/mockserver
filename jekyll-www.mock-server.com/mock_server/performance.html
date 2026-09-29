@@ -43,7 +43,10 @@ schema_faq:
       per-instance paragraph below (throughput numbers only);
     * the Measurement provenance block;
     * the "Throughput vs latency" table + its caption;
-    * the "Latency by action" table (shown only for a post-fix run).
+    * the "Latency by action" table (shown only for a post-fix run);
+    * the "Throughput by hardware size" table, chart and sizing notes (from a
+      manual hardware-matrix run; "not yet measured" until one exists, and carried
+      forward unchanged by daily refreshes).
   HUMAN-MAINTAINED regions the auto-refresh does NOT touch — reconcile these by
   hand when a refresh PR moves a headline (the PR body lists them): the page
   `description` and the JSON-LD `schema_faq` answers in the front matter (Jekyll
@@ -200,7 +203,80 @@ schema_faq:
 <p><em>Live throughput figures are being refreshed; see the charts above.</em></p>
 {% endif %}
 
-<p><strong>These figures are per instance.</strong> The ~{{ figures.headline.healthy_ceiling_rps_display | default: "60,000" }}&nbsp;req/s healthy ceiling is the reliable throughput of a <em>single</em> six-core instance &mdash; you scale beyond it by adding instances. <strong>Scaling beyond one instance:</strong> for more <em>serving</em> capacity (handling more inbound mock traffic) or high availability, run several instances as a <a href="#clustering_mockserver">cluster behind a load balancer</a> &mdash; see <a href="/mock_server/centralized_deployment.html">Centralised Deployment</a>. To drive more <em>load injection</em> (generating more outbound traffic with <a href="/mock_server/load_injection.html">Load Scenarios</a>), run injector instances in parallel &mdash; see <a href="/mock_server/load_injection_performance.html">Load Injection Performance</a>, which measures how injected throughput scales near-linearly with the number of instances.</p>
+<p><strong>These figures are per instance.</strong> The ~{{ figures.headline.healthy_ceiling_rps_display | default: "60,000" }}&nbsp;req/s healthy ceiling is the reliable throughput of a <em>single</em> six-core instance &mdash; you scale beyond it by adding instances. <strong>Scaling beyond one instance:</strong> for more <em>serving</em> capacity (handling more inbound mock traffic) or high availability, run several instances as a <a href="#clustering_mockserver">cluster behind a load balancer</a> &mdash; see <a href="/mock_server/centralized_deployment.html">Centralised Deployment</a>. To drive more <em>load injection</em> (generating more outbound traffic with <a href="/mock_server/load_injection.html">Load Scenarios</a>), run injector instances in parallel &mdash; see <a href="/mock_server/load_injection_performance.html">Load Injection Performance</a>, which measures how injected throughput scales near-linearly with the number of instances. To choose a container size for one instance, see <a href="#throughput_by_hardware">throughput by hardware size</a>.</p>
+
+<a id="throughput_by_hardware" class="anchor" href="#throughput_by_hardware">&nbsp;</a>
+<h3>Throughput by hardware size</h3>
+{% assign hw = site.data.perf_figures.hw_matrix %}
+{% if hw and hw.points and hw.points.size > 0 %}
+<p>To help you choose a container size, the same test was run against single MockServer containers of different sizes. Each row is a fresh container limited to that many CPU cores and that much memory, using the Docker image's default memory settings (no <span class="inline_code">-Xmx</span>). The <strong>healthy ceiling</strong> is the highest request rate it kept up with while median latency stayed flat; the latency columns are measured at that rate. This is a separate run from the headline figures above, with its own memory limits, so its 6-core row can differ from them. Rates are tested in steps (roughly 6&ndash;17% apart above 8,000 req/s), so each ceiling is accurate to about one step.</p>
+<table class="results">
+    <thead>
+    <tr><td>CPU cores</td><td>memory</td><td>healthy ceiling req/s</td><td>median (p50)</td><td>p95</td><td>notes</td></tr>
+    </thead>
+    <tbody>
+    {% for p in hw.points %}
+    <tr{% if p.lower_bound or p.status != "measured" %} style="opacity:0.75"{% endif %}>
+        <td>{{ p.cores }}</td>
+        <td>{{ p.memory_display }}</td>
+        <td>{% if p.healthy_ceiling_rps_display %}{% if p.lower_bound %}&ge;&nbsp;{% endif %}{{ p.healthy_ceiling_rps_display }}{% else %}&mdash;{% endif %}</td>
+        <td>{% if p.healthy_ceiling_p50_ms %}{{ p.healthy_ceiling_p50_ms }}&nbsp;ms{% else %}&mdash;{% endif %}</td>
+        <td>{% if p.healthy_ceiling_p95_ms %}{{ p.healthy_ceiling_p95_ms }}&nbsp;ms{% else %}&mdash;{% endif %}</td>
+        <td>{{ p.note }}</td>
+    </tr>
+    {% endfor %}
+    {% for s in hw.skipped %}
+    <tr style="opacity:0.6">
+        <td>{{ s.cores }}</td>
+        <td>{{ s.memory_display }}</td>
+        <td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>
+        <td>not measured: {% if s.oom_killed %}ran out of memory while starting{% elsif s.type == "infeasible" %}the test machine cannot fit this size alongside the load generator{% else %}the test did not complete for this size{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% assign hw_chart = site.static_files | where: "path", "/images/perf_hw_matrix.png" | first %}
+{% if hw_chart %}<img class="ui_image" src="/images/perf_hw_matrix.png" alt="Healthy ceiling in requests per second for each container size, from the smallest to the largest number of CPU cores">{% endif %}
+<p><strong>What this run shows:</strong></p>
+<ul>
+    {% if hw.per_core %}{% assign pc = hw.per_core %}
+    {% if pc.scaling == "linear" %}
+    <li>On the sizes where MockServer itself was the limit ({{ pc.smallest_cores }} to {{ pc.largest_cores }} cores), throughput grew roughly in step with cores: about {{ pc.min_display }}{% if pc.max_display != pc.min_display %}&ndash;{{ pc.max_display }}{% endif %} requests/sec per core at the healthy ceiling.</li>
+    {% elsif pc.scaling == "falling" %}
+    <li>On the sizes where MockServer itself was the limit, throughput grew with cores but less than proportionally: about {{ pc.smallest_display }} requests/sec per core at {{ pc.smallest_cores }} core{% if pc.smallest_cores != 1 %}s{% endif %}, falling to about {{ pc.largest_display }} per core at {{ pc.largest_cores }} cores.</li>
+    {% elsif pc.scaling == "rising" %}
+    <li>On the sizes where MockServer itself was the limit, per-core throughput rose with size: about {{ pc.smallest_display }} requests/sec per core at {{ pc.smallest_cores }} core{% if pc.smallest_cores != 1 %}s{% endif %}, rising to about {{ pc.largest_display }} per core at {{ pc.largest_cores }} cores, so the smallest size does proportionally less.</li>
+    {% elsif pc.scaling == "mixed" %}
+    <li>On the sizes where MockServer itself was the limit, throughput per core ranged from about {{ pc.min_display }} to {{ pc.max_display }} requests/sec, without a consistent trend across sizes.</li>
+    {% else %}
+    <li>Only one size ({{ pc.smallest_cores }} core{% if pc.smallest_cores != 1 %}s{% endif %}) was limited by MockServer itself; it served about {{ pc.smallest_display }} requests/sec per core at the healthy ceiling.</li>
+    {% endif %}
+    {% elsif hw.per_core_unavailable == "only_control" %}
+    <li>Only the control size produced a healthy ceiling in this run, so a per-core rate cannot be stated yet.</li>
+    {% else %}
+    <li>Every size with a healthy ceiling may have been limited by the load generator or the top of the tested range rather than MockServer, so each ceiling is a minimum and a per-core rate cannot be stated yet.</li>
+    {% endif %}
+    {% if hw.memory_effect %}{% assign me = hw.memory_effect %}
+    {% if me.verdict == "no_difference" %}
+    <li>In this run, at {{ me.cores }} cores, going from {{ me.base_memory_display }} to {{ me.control_memory_display }} did not change the healthy ceiling ({{ me.base_rps_display }} req/s both times, to within one test step{% if me.ladder_step_pct %} of about {{ me.ladder_step_pct }}%{% endif %}).</li>
+    {% elsif me.verdict == "memory_helps" %}
+    <li>In this run, at {{ me.cores }} cores, going from {{ me.base_memory_display }} to {{ me.control_memory_display }} raised the healthy ceiling from {{ me.base_rps_display }} to {{ me.control_rps_display }} req/s.</li>
+    {% else %}
+    <li>In this run, at {{ me.cores }} cores, the memory comparison ({{ me.base_memory_display }}: {% if me.base_rps_display %}{{ me.base_rps_display }} req/s{% else %}no healthy ceiling{% endif %}, {{ me.control_memory_display }}: {% if me.control_rps_display %}{{ me.control_rps_display }} req/s{% else %}no healthy ceiling{% endif %}) is inconclusive{% if me.inconclusive_reason == "within_ladder_resolution" %}: the two ceilings are within the run-to-run variation of the test steps{% elsif me.inconclusive_reason == "lower_bound" %}: the load generator or the tested range, not MockServer, may have limited at least one of them{% elsif me.inconclusive_reason == "not_measured" %}: at least one of them did not complete{% endif %}.</li>
+    {% endif %}
+    {% if me.base_history.log_cap_mb and me.control_history.log_cap_mb and me.control_history.log_cap_mb > me.base_history.log_cap_mb %}
+    <li>What the extra memory did change in this run is how much request history MockServer keeps for verification and the dashboard: the request log's cap grew from about {{ me.base_history.log_cap_mb }}&nbsp;MB (at most {{ me.base_history.entry_cap_display }} entries) to about {{ me.control_history.log_cap_mb }}&nbsp;MB (at most {{ me.control_history.entry_cap_display }}).{% if me.history_both_filled %} With this test's {{ me.base_history.body_bytes }}-byte responses the log held about {{ me.base_history.entries_peak_display }} versus {{ me.control_history.entries_peak_display }} entries when full; larger requests and responses mean fewer.{% else %} How many requests fit depends on their size: larger requests and responses mean fewer.{% endif %}</li>
+    {% endif %}
+    {% endif %}
+    {% assign hw_lb = hw.points | where: "lower_bound", true %}{% if hw_lb.size > 0 %}
+    <li>Rows marked <strong>lower bound</strong> (shown with &ge;) may have been limited by the load generator or the highest rate tested rather than by MockServer, so that size can handle at least that much.</li>
+    {% endif %}
+    <li>Leave headroom. These are the highest rates at which latency was still flat, measured with logging reduced below the default, so plan to run below them &mdash; and see <a href="#troubleshooting_performance">memory &amp; troubleshooting</a> if you keep a large request history.</li>
+</ul>
+<p style="font-size:0.9em">{{ hw.source.note }} Measured {{ hw.source.run_timestamp_utc }}{% if hw.source.build_number %} &middot; build&nbsp;#{{ hw.source.build_number }}{% endif %}{% if hw.source.mockserver_version %} &middot; MockServer {{ hw.source.mockserver_version }}{% endif %}{% if hw.source.instance_type %} &middot; {{ hw.source.instance_type }}{% endif %}.</p>
+{% else %}
+<p><em>Not yet measured.</em> A table of throughput for different container sizes &mdash; from 1 CPU core with 512&nbsp;MB of memory up to 8 cores with 2&nbsp;GB &mdash; will appear here once it has been measured on the performance test machine. Until then, size against the single-instance figures above and benchmark your own workload.</p>
+{% endif %}
 
 <h3>Matcher scaling (time per request match)</h3>
 <p>Microbenchmark of a single request match against a growing set of literal expectations, worst case (no match, so every candidate is examined): MockServer's candidate index versus a naive linear scan.</p>

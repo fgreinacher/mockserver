@@ -536,6 +536,19 @@
     "serving_percore.*.rps_per_core":           { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
     "serving_percore.*.rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
     "serving_percore.*.healthy_ceiling_p50_ms": { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
+    "_comment_serving_hw_matrix": [
+      "Item 27 (throughput by hardware size). lib/perf-percore.sh in hw_matrix mode runs",
+      "one SUT per PERF_HW_MATRIX point (cores x container memory limit) when",
+      "PERF_SERVING_HW_MATRIX=true (opt-in, manual builds only). Keyed",
+      "serving_hw_matrix.<key>.<metric> with key e.g. 2c-1g. Same semantics as the",
+      "serving_percore.* entries above; the p50-gated healthy_ceiling_rps and",
+      "healthy_ceiling_p50_ms are keyed on the sweep latency-window fingerprint.",
+      "NON-GATING: runs are rare and the upper points are client-limited on this rig.",
+      "PRESENCE when attempted is enforced by perf-test-compare.sh (2e), not a budget."
+    ],
+    "serving_hw_matrix.*.healthy_ceiling_rps":    { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
+    "serving_hw_matrix.*.rig_valid_peak_achieved_rps": { "dir": "down", "min_pct": 0.25, "floor": null, "hw": true },
+    "serving_hw_matrix.*.healthy_ceiling_p50_ms": { "dir": "up",   "min_pct": 0.25, "floor": null, "hw": true },
     "_comment_serving_multiproc": [
       "Item 18 (client rig). mockserver-performance-test/scripts/multi-process-sweep.sh",
       "drives the offered-rate ladder from N INDEPENDENT k6 processes on DISJOINT cores",

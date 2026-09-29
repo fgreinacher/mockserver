@@ -67,6 +67,11 @@ set -euo pipefail
 # NON-GATING. Every serving_percore.* metric is notify-only (see perf-budgets.json
 # and perf-test-compare.sh). This harness only measures; it never fails a build on
 # a throughput number.
+#
+# HARDWARE MATRIX MODE (item 27): PERF_PERCORE_MODE=hw_matrix runs the same procedure
+# over PERF_HW_MATRIX ("cores:memory[:control]") and emits `serving_hw_matrix`. Each point
+# also sets a container memory limit (no swap, no -Xmx, as in a user's container) and
+# records resolved heap/log bounds, peak memory, OOM state and any lower-bound reasons.
 # ---------------------------------------------------------------------------
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -79,8 +84,16 @@ else
   echo ":x: sweep latency-window check lib not found at $SCRIPT_DIR/perf-sweep-window.sh" >&2
   exit 1
 fi
+# shellcheck source=perf-cpu-topology.sh
+. "$SCRIPT_DIR/perf-cpu-topology.sh"
 
 OUT_FILE="${1:-/dev/stdout}"
+
+MODE="${PERF_PERCORE_MODE:-percore}"
+case "$MODE" in
+  percore|hw_matrix) ;;
+  *) echo "ERROR: PERF_PERCORE_MODE='$MODE' (expected percore or hw_matrix)" >&2; exit 2 ;;
+esac
 
 # --- inputs (all overridable) --------------------------------------------------
 MOCKSERVER_IMAGE="${PERF_PERCORE_IMAGE:-${MOCKSERVER_IMAGE:-mockserver/mockserver:mockserver-snapshot-graaljs}}"
@@ -97,9 +110,9 @@ CORE_LADDER="${PERF_PERCORE_CORES:-1,2,4,8,16}"
 # MORE capacity than the server — otherwise the ladder measures the client, not the
 # serving path (proven the hard way: an earlier 6-core client cap made k6 itself the
 # bottleneck at C=1, drove k6 to 85% of its pin with dropped iterations, and produced
-# a non-monotonic curve). So the client gets ALL spare cores by default: every core
-# not pinned to the SUT, minus a small reserve for the kernel/docker/sampler. It is
-# still disjoint from the SUT's cpuset. K6_MIN_CORES is the floor below which a rung
+# a non-monotonic curve). So the client gets ALL spare cores by default: one thread on
+# every physical core the SUT does not use, minus a small reserve for the
+# kernel/docker/sampler (see select_cpusets). K6_MIN_CORES is the floor below which a rung
 # is skipped (the client would be too weak to be trusted); K6_MAX_CORES defaults to
 # the host count (no artificial cap).
 K6_MIN_CORES="${PERF_PERCORE_K6_MIN_CORES:-2}"
@@ -126,10 +139,22 @@ K6_RESERVE="${PERF_PERCORE_RESERVE_CORES:-1}"
 # feasible core counts - cheap for the first curve this item can actually interpret. The extra
 # resolution is concentrated in the 2k-8k region where the ceilings actually cluster.
 SWEEP_RATES="${PERF_PERCORE_SWEEP_RATES:-500,1000,1500,2000,3000,4000,5000,6000,7000,8000,10000,12000,16000,32000}"
+# The matrix ladder spaces rungs 6-17% apart from 8,000 req/s up and 12-100% below
+# that, so a ceiling is only resolved to one rung (the memory verdict allows for it).
+# Each point offers only rates up to MAX_RPS_PER_CORE x cores (0 = no cap); a ceiling
+# on a point's top rung is flagged ladder_top_reached (a lower bound).
+if [ "$MODE" = hw_matrix ]; then
+  SWEEP_RATES="${PERF_HW_MATRIX_SWEEP_RATES:-1000,2000,3000,4000,5000,6000,7000,8000,9000,10000,11000,12000,14000,16000,18000,20000,22000,24000,26000,28000,32000,36000,40000,44000,48000,52000,56000,60000,64000,68000,72000}"
+fi
+HW_MAX_RPS_PER_CORE="${PERF_HW_MATRIX_MAX_RPS_PER_CORE:-20000}"
+HW_MATRIX_SPEC="${PERF_HW_MATRIX:-1:512m,2:1g,2:2g:control,4:2g,6:2g,8:2g}"
+HW_WARMUP_RPS_PER_CORE="${PERF_HW_MATRIX_WARMUP_RPS_PER_CORE:-1000}"
 SWEEP_STEP="${PERF_PERCORE_SWEEP_STEP:-12s}"
 SWEEP_GAP="${PERF_PERCORE_SWEEP_GAP:-4s}"
-SWEEP_PRE_VUS="${PERF_PERCORE_SWEEP_PRE_VUS:-200}"
-SWEEP_MAX_VUS="${PERF_PERCORE_SWEEP_MAX_VUS:-4000}"
+# Empty by default: sweep.js then sizes a fixed pool per rung. If set, both must be
+# set and equal (sweep.js refuses a pre/max VU ramp — the Finding-3 invariant).
+SWEEP_PRE_VUS="${PERF_PERCORE_SWEEP_PRE_VUS:-}"
+SWEEP_MAX_VUS="${PERF_PERCORE_SWEEP_MAX_VUS:-}"
 WARMUP_RATE="${PERF_PERCORE_WARMUP_RATE:-500}"
 WARMUP_DURATION="${PERF_PERCORE_WARMUP_DURATION:-8s}"
 
@@ -148,7 +173,42 @@ percore_default_max_log_entries() {
   [ "$entries" -lt 1000 ] && entries=1000
   echo "$entries"
 }
-ASSUMED_MAX_LOG_ENTRIES="${PERF_PERCORE_MAX_LOG_ENTRIES:-$(percore_default_max_log_entries "$SERVER_MEMORY")}"
+# "512m" / "2g" -> bytes; empty on anything else (validated by the matrix parser).
+mem_to_bytes() {
+  case "$1" in
+    *[gG]) echo $(( ${1%[gG]} * 1024 * 1024 * 1024 )) ;;
+    *[mM]) echo $(( ${1%[mM]} * 1024 * 1024 )) ;;
+    *) echo "" ;;
+  esac
+}
+
+# The point list: parallel arrays of cores / memory limit / control flag. percore
+# mode is the core ladder at one memory; hw_matrix mode is PERF_HW_MATRIX. A malformed
+# entry fails the step loudly (exit 2) rather than measuring a matrix nobody asked for.
+P_CORES=(); P_MEM=(); P_CONTROL=()
+if [ "$MODE" = hw_matrix ]; then
+  IFS=',' read -ra _hw_entries <<< "$HW_MATRIX_SPEC"
+  for _e in "${_hw_entries[@]}"; do
+    IFS=':' read -r _c _m _f _extra <<< "$_e"
+    if ! [[ "$_c" =~ ^[1-9][0-9]*$ ]] || ! [[ "$_m" =~ ^[1-9][0-9]*[mMgG]$ ]] \
+       || { [ -n "${_f:-}" ] && [ "$_f" != control ]; } || [ -n "${_extra:-}" ]; then
+      echo "ERROR: PERF_HW_MATRIX entry '$_e' is not cores:memory[:control] (e.g. 2:1g or 2:2g:control)" >&2
+      exit 2
+    fi
+    _m="$(printf '%s' "$_m" | tr 'MG' 'mg')"
+    for _i in "${!P_CORES[@]}"; do
+      if [ "${P_CORES[$_i]}" = "$_c" ] && [ "$(mem_to_bytes "${P_MEM[$_i]}")" = "$(mem_to_bytes "$_m")" ]; then
+        echo "ERROR: PERF_HW_MATRIX lists ${_c}:${_m} twice — each point needs a distinct cores:memory pair" >&2
+        exit 2
+      fi
+    done
+    P_CORES+=("$_c"); P_MEM+=("$_m")
+    if [ "${_f:-}" = control ]; then P_CONTROL+=(true); else P_CONTROL+=(false); fi
+  done
+else
+  IFS=',' read -ra _pc_cores <<< "$CORE_LADDER"
+  for _c in "${_pc_cores[@]}"; do P_CORES+=("$_c"); P_MEM+=("$SERVER_MEMORY"); P_CONTROL+=(false); done
+fi
 
 SWEEP_SETTLE_S="${PERF_PERCORE_SETTLE_S:-3}"
 SWEEP_ERR_EPS="${PERF_PERCORE_ERROR_EPS:-0.01}"
@@ -184,7 +244,11 @@ to_secs() {
 STEP_S="$(to_secs "$SWEEP_STEP")"
 GAP_S="$(to_secs "$SWEEP_GAP")"
 
-echo "--- item 18 serving per-core: host_cores=$HOST_CORES ladder=$CORE_LADDER k6=[${K6_MIN_CORES}..${K6_MAX_CORES}] image=$MOCKSERVER_IMAGE" >&2
+if [ "$MODE" = hw_matrix ]; then
+  echo "--- item 27 hardware matrix: host_cores=$HOST_CORES matrix=$HW_MATRIX_SPEC k6=[${K6_MIN_CORES}..${K6_MAX_CORES}] image=$MOCKSERVER_IMAGE" >&2
+else
+  echo "--- item 18 serving per-core: host_cores=$HOST_CORES ladder=$CORE_LADDER k6=[${K6_MIN_CORES}..${K6_MAX_CORES}] image=$MOCKSERVER_IMAGE" >&2
+fi
 
 # --- compile the availableProcessors probe ONCE (JDK image; the SUT image is a
 # JRE and cannot run the single-file source launcher, so we ship a .class and run
@@ -211,54 +275,152 @@ probe_processors() { # cpuset
     | sed -n 's/^availableProcessors=//p' | head -1
 }
 
-# Build the "0-(C-1)" server cpuset and the disjoint k6 cpuset for a core count.
-server_cpuset() { local c="$1"; if [ "$c" -eq 1 ]; then echo "0"; else echo "0-$((c-1))"; fi; }
-k6_cpuset() {     local c="$1" w="$2"; if [ "$w" -eq 1 ]; then echo "$c"; else echo "$c-$((c+w-1))"; fi; }
+# Where sysfs topology is readable (the Linux perf host), the SUT takes C logical cpus
+# on C DISTINCT physical cores and k6 takes one thread on each remaining physical core
+# (minus the reserve), so the client never runs on the SUT's hyperthread siblings; on
+# the c5.12xlarge (siblings N / N+24) that is SUT 0..C-1 and k6 C..22. Where it is not
+# readable (a macOS Docker Desktop run) it falls back to logical ids, labelled unverified.
+TOPO_KNOWN=false
+HOST_PHYS_CORES=null
+if phys_core_key 0 >/dev/null 2>&1; then
+  TOPO_KNOWN=true
+  HOST_PHYS_CORES="$(phys_core_count "0-$((HOST_CORES-1))")"
+fi
+# echoes "<server cpuset> <k6 cpuset> <k6 core count>"; k6 cpuset "-" when none fit.
+select_cpusets() {
+  local c="$1" cpu key s="" k="" skeys="" kkeys="" sn=0 kn=0 klist=() i
+  if [ "$TOPO_KNOWN" != true ]; then
+    local w=$(( HOST_CORES - c - K6_RESERVE ))
+    [ "$w" -gt "$K6_MAX_CORES" ] && w="$K6_MAX_CORES"
+    if [ "$c" -eq 1 ]; then s="0"; else s="0-$((c-1))"; fi
+    if [ "$w" -lt 1 ]; then echo "$s - $w"; return; fi
+    if [ "$w" -eq 1 ]; then k="$c"; else k="$c-$((c+w-1))"; fi
+    echo "$s $k $w"; return
+  fi
+  for ((cpu=0; cpu<HOST_CORES; cpu++)); do
+    key="$(phys_core_key "$cpu")" || continue
+    if [ "$sn" -lt "$c" ]; then
+      grep -qxF "$key" <<<"$skeys" && continue
+      skeys="$skeys$key"$'\n'; s="${s:+$s,}$cpu"; sn=$((sn+1))
+    else
+      grep -qxF "$key" <<<"$skeys" && continue
+      grep -qxF "$key" <<<"$kkeys" && continue
+      kkeys="$kkeys$key"$'\n'; klist+=("$cpu"); kn=$((kn+1))
+    fi
+  done
+  kn=$(( kn - K6_RESERVE )); [ "$kn" -gt "$K6_MAX_CORES" ] && kn="$K6_MAX_CORES"
+  [ "$sn" -lt "$c" ] && kn=0
+  for ((i=0; i<kn; i++)); do k="${k:+$k,}${klist[$i]}"; done
+  echo "${s:--} ${k:--} $kn"
+}
 
-POINTS=()     # per-C aggregate JSON objects
-SKIPPED=()    # {cores, reason} for every requested-but-infeasible C
+# The SUT container's end state: still running, OOM-killed, exit code, restarts, when it
+# stopped (epoch, null while running) and how many OutOfMemoryError lines it logged.
+sut_state_json() {
+  local st fa fa_epoch oome
+  st="$(docker inspect --format '{{.State.Running}};{{.State.OOMKilled}};{{.State.ExitCode}};{{.RestartCount}};{{.State.FinishedAt}}' "$SERVER" 2>/dev/null || echo 'unknown;unknown;;;')"
+  fa="$(cut -d';' -f5 <<<"$st")"; fa_epoch=""
+  case "$fa" in ""|0001-*) ;; *)
+    fa_epoch="$(date -u -d "$fa" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%S' "${fa%%.*}" +%s 2>/dev/null || echo '')" ;;
+  esac
+  oome="$(docker logs "$SERVER" 2>&1 | grep -c 'OutOfMemoryError' || true)"
+  jq -nc --arg run "$(cut -d';' -f1 <<<"$st")" --arg oom "$(cut -d';' -f2 <<<"$st")" \
+    --arg ec "$(cut -d';' -f3 <<<"$st")" --arg rc "$(cut -d';' -f4 <<<"$st")" \
+    --arg fae "$fa_epoch" --arg oome "${oome:-0}" '
+    {running:(if $run == "unknown" then null else ($run == "true") end),
+     oom_killed:(if $oom == "unknown" then null else ($oom == "true") end),
+     exit_code:($ec | tonumber? // null), restart_count:($rc | tonumber? // null),
+     finished_at_epoch:($fae | tonumber? // null), java_oom_errors:($oome | tonumber? // 0)}'
+}
+
+# Heap ceiling and event-log bounds as the running SUT reports them (null when a gauge
+# is absent, e.g. an image that predates it).
+resolved_bounds_json() {
+  local m
+  m="$(curl -s --max-time 5 "$METRICS_URL" 2>/dev/null || true)"
+  awk '
+    /^jvm_memory_max_bytes\{area="heap"\} /                 { h=$2 }
+    /^mock_server_event_log_max_retained_entries /           { e=$2 }
+    /^mock_server_event_log_max_retained_bytes /             { b=$2 }
+    /^mock_server_event_log_max_in_flight_bytes /            { f=$2 }
+    /^mock_server_event_log_ring_capacity /                  { r=$2 }
+    function num(v) { return (v == "" || v + 0 <= 0) ? "null" : sprintf("%.0f", v) }
+    END { printf "{\"max_heap_bytes\":%s,\"max_log_entries\":%s,\"max_event_log_bytes\":%s,\"max_in_flight_bytes\":%s,\"ring_capacity\":%s,\"source\":\"sut-metrics\"}\n",
+            num(h), num(e), num(b), num(f), num(r) }' <<<"$m"
+}
+
+POINTS=()     # per-point aggregate JSON objects
+SKIPPED=()    # {cores, reason, type, ...} for every requested-but-unmeasured point
 MAX_MEASURED=0
 
-IFS=',' read -ra CORES_ARR <<< "$CORE_LADDER"
-for C in "${CORES_ARR[@]}"; do
-  # Feasibility: the SUT needs C cores AND k6 needs >= K6_MIN_CORES on DISJOINT
-  # cores (with K6_RESERVE held back for the box), so C + K6_MIN_CORES + K6_RESERVE
-  # must fit on the host. The whole point of item 18's prerequisite: at C=16 on a
-  # <18-core box this is false and the rung is skipped with a reason rather than
-  # measured wrong (shared cores) or silently omitted. The client gets ALL remaining
-  # cores (minus the reserve) so it is not itself the bottleneck.
-  k6w=$(( HOST_CORES - C - K6_RESERVE ))
-  [ "$k6w" -gt "$K6_MAX_CORES" ] && k6w="$K6_MAX_CORES"
-  if [ "$C" -gt "$HOST_CORES" ] || [ "$k6w" -lt "$K6_MIN_CORES" ]; then
-    reason="needs ${C} SUT cores + >=${K6_MIN_CORES} disjoint client cores + ${K6_RESERVE} reserved; host has ${HOST_CORES}"
-    echo "--- C=$C SKIPPED: $reason" >&2
-    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "$reason" '{cores:$c, reason:$r, type:"infeasible"}')")
-    continue
+for PI in "${!P_CORES[@]}"; do
+  C="${P_CORES[$PI]}"; MEM="${P_MEM[$PI]}"; IS_CONTROL="${P_CONTROL[$PI]}"
+  MEM_BYTES="$(mem_to_bytes "$MEM")"
+  if [ "$MODE" = hw_matrix ]; then
+    PKEY="${C}c-${MEM}"; LBL="C=$C mem=$MEM"; [ "$IS_CONTROL" = true ] && LBL="$LBL (control)"
+  else
+    PKEY="${C}c"; LBL="C=$C"
+  fi
+  POINT_META="$(jq -nc --argjson c "$C" --arg mem "$MEM" --argjson memb "${MEM_BYTES:-null}" \
+    --argjson ctl "$IS_CONTROL" --arg key "$PKEY" --arg mode "$MODE" '
+    if $mode == "hw_matrix" then {cores:$c, key:$key, memory_limit:$mem, memory_limit_bytes:$memb, control:$ctl}
+    else {cores:$c, memory_limit:$mem, memory_limit_bytes:$memb} end')"
+  ASSUMED_MAX_LOG_ENTRIES="${PERF_PERCORE_MAX_LOG_ENTRIES:-$(percore_default_max_log_entries "$MEM")}"
+
+  # Only offer rates up to MAX_RPS_PER_CORE x C in hw_matrix mode (see SWEEP_RATES).
+  POINT_RATES="$SWEEP_RATES"
+  if [ "$MODE" = hw_matrix ] && [ "$HW_MAX_RPS_PER_CORE" -gt 0 ]; then
+    POINT_RATES="$(tr ',' '\n' <<<"$SWEEP_RATES" | awk -v cap="$(( HW_MAX_RPS_PER_CORE * C ))" '$1+0 <= cap' | paste -sd, -)"
+    [ -n "$POINT_RATES" ] || POINT_RATES="$SWEEP_RATES"
+  fi
+  POINT_WARMUP_RATE="$WARMUP_RATE"
+  if [ "$MODE" = hw_matrix ] && [ -z "${PERF_PERCORE_WARMUP_RATE:-}" ]; then
+    POINT_WARMUP_RATE=$(( HW_WARMUP_RPS_PER_CORE * C ))
   fi
 
-  SCPU="$(server_cpuset "$C")"
-  KCPU="$(k6_cpuset "$C" "$k6w")"
-  echo "+++ C=$C  server_cpus=$SCPU  k6_cpus=$KCPU (${k6w} client cores)" >&2
+  # Feasibility: the SUT needs C cores AND k6 needs >= K6_MIN_CORES on DISJOINT
+  # cores (with K6_RESERVE held back for the box). The whole point of item 18's
+  # prerequisite: at C=16 on a <18-core box this is false and the point is skipped
+  # with a reason rather than measured wrong (shared cores) or silently omitted.
+  read -r SCPU KCPU k6w <<<"$(select_cpusets "$C")"
+  if [ "$C" -gt "$HOST_CORES" ] || [ "$SCPU" = "-" ] || [ "$KCPU" = "-" ] || [ "$k6w" -lt "$K6_MIN_CORES" ]; then
+    reason="needs ${C} SUT cores + >=${K6_MIN_CORES} disjoint client cores + ${K6_RESERVE} reserved; host has ${HOST_CORES} logical / ${HOST_PHYS_CORES} physical"
+    echo "--- $LBL SKIPPED: $reason" >&2
+    SKIPPED+=("$(jq -c --arg r "$reason" '. + {reason:$r, type:"infeasible"}' <<<"$POINT_META")")
+    continue
+  fi
+  if ! cpusets_physically_disjoint server "$SCPU" k6 "$KCPU" >&2; then
+    SKIPPED+=("$(jq -c '. + {reason:"server and k6 cpusets share a physical core", type:"failure"}' <<<"$POINT_META")")
+    continue
+  fi
+  SPHYS="$(phys_core_count "$SCPU")"
+
+  echo "+++ $LBL  server_cpus=$SCPU  k6_cpus=$KCPU (${k6w} client cores)  rates=$POINT_RATES" >&2
 
   # --- pinning proof: the SUT image's JVM, on the server cpuset -----------------
-  AVAIL="$(probe_processors "$SCPU")"
+  AVAIL="$(probe_processors "$SCPU" || true)"
   echo "    availableProcessors (SUT image JVM @ cpuset $SCPU) = ${AVAIL:-unknown}" >&2
   if [ "${AVAIL:-0}" != "$C" ]; then
-    echo "ERROR: pin proof FAILED at C=$C — JVM reported '${AVAIL:-unknown}' processors, expected $C. --cpuset-cpus did not take; refusing to record a mislabelled point." >&2
-    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "pin proof failed: JVM saw ${AVAIL:-unknown} processors, expected ${C}" '{cores:$c, reason:$r, type:"failure"}')")
+    echo "ERROR: pin proof FAILED at $LBL — JVM reported '${AVAIL:-unknown}' processors, expected $C. --cpuset-cpus did not take; refusing to record a mislabelled point." >&2
+    SKIPPED+=("$(jq -c --arg r "pin proof failed: JVM saw ${AVAIL:-unknown} processors, expected ${C}" '. + {reason:$r, type:"failure"}' <<<"$POINT_META")")
     continue
   fi
 
-  # --- start the SUT pinned to C cores -----------------------------------------
+  # --- start the SUT pinned to C cores, memory-limited ---------------------------
+  # No --rm: an OOM-killed or crashed SUT must stay inspectable so the point records
+  # it rather than vanishing. --memory-swap equal to --memory means no swap, so the
+  # limit is the whole budget (as on a Kubernetes pod); no -Xmx, so the image's
+  # MaxRAMPercentage sizes the heap from the limit exactly as a user's container.
   docker rm -f "$SERVER" >/dev/null 2>&1 || true
-  docker run -d --rm --name "$SERVER" --network "$NETWORK" --network-alias mockserver \
-    --cpuset-cpus="$SCPU" --memory="$SERVER_MEMORY" -p 127.0.0.1::1080 \
+  docker run -d --name "$SERVER" --network "$NETWORK" --network-alias mockserver \
+    --cpuset-cpus="$SCPU" --memory="$MEM" --memory-swap="$MEM" -p 127.0.0.1::1080 \
     -e MOCKSERVER_LOG_LEVEL=ERROR -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
     "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null
 
   HOSTPORT="$(docker port "$SERVER" 1080/tcp 2>/dev/null | head -1)"
   HOSTPORT="${HOSTPORT:-127.0.0.1:1080}"
+  METRICS_URL="http://${HOSTPORT}/mockserver/metrics"
 
   # --- readiness: a listening port is NOT readiness. MockServer accepts then
   # RESETS during init, so poll PUT /mockserver/status (unauthenticated, present
@@ -268,16 +430,23 @@ for C in "${CORES_ARR[@]}"; do
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -X PUT "http://${HOSTPORT}/mockserver/status" 2>/dev/null || echo 000)"
     if [ "$code" = "200" ]; then ready=true; break; fi
     if ! grep -q "^${SERVER}$" <<<"$(docker ps --format '{{.Names}}' || true)"; then
-      echo "ERROR: SUT container exited during startup at C=$C" >&2; docker logs "$SERVER" 2>&1 | tail -20 >&2 || true; break
+      echo "ERROR: SUT container exited during startup at $LBL" >&2; docker logs "$SERVER" 2>&1 | tail -20 >&2 || true; break
     fi
     sleep 2
   done
   if [ "$ready" != true ]; then
-    echo "ERROR: SUT not ready at C=$C — skipping this rung" >&2
-    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "SUT did not become ready (PUT /mockserver/status != 200)" '{cores:$c, reason:$r, type:"failure"}')")
+    STATE_JSON="$(sut_state_json)"
+    echo "ERROR: SUT not ready at $LBL — skipping this point (state: $STATE_JSON)" >&2
+    SKIPPED+=("$(jq -c --argjson st "$STATE_JSON" '. + {reason:(if $st.oom_killed == true then "SUT was OOM-killed during startup" else "SUT did not become ready (PUT /mockserver/status != 200)" end), type:"failure", oom_killed:$st.oom_killed, sut_state:$st}' <<<"$POINT_META")")
     docker rm -f "$SERVER" >/dev/null 2>&1 || true
     continue
   fi
+
+  # --- resolved heap and event-log bounds, from the SUT's own gauges -------------
+  # These are what the JVM and MockServer actually applied under this memory limit,
+  # not a formula: the heap ceiling the JVM reports and the event log's count/byte bounds.
+  RESOLVED_JSON="$(resolved_bounds_json)"
+  echo "    resolved: $RESOLVED_JSON" >&2
 
   # Measure the served body size once (for the retention arithmetic) — seed /simple
   # and GET it. sweep.js re-seeds/reset in setup()/teardown(), so this is only for
@@ -286,18 +455,20 @@ for C in "${CORES_ARR[@]}"; do
     -H 'Content-Type: application/json' \
     -d '[{"httpRequest":{"path":"/simple"},"httpResponse":{"statusCode":200,"body":"simple"},"times":{"unlimited":true}}]' \
     -o /dev/null 2>/dev/null || true
-  BODY_BYTES="$(curl -s --max-time 5 "http://${HOSTPORT}/simple" 2>/dev/null | wc -c | tr -d ' ')"
+  # `|| true` throughout: a SUT that dies here (e.g. OOM-killed right after start) must
+  # be recorded as a point, not abort the whole matrix under set -e / pipefail.
+  BODY_BYTES="$(curl -s --max-time 5 "http://${HOSTPORT}/simple" 2>/dev/null | wc -c | tr -d ' ' || true)"
   BODY_BYTES="${BODY_BYTES:-6}"
 
   # --- warm-up drive (NEVER measured): remove the JIT/first-touch transient so
   # the sweep's first rung is not systematically slow. ------------------------
-  WARMUP_JSON="$WORK/warmup-C${C}.json"
+  WARMUP_JSON="$WORK/warmup-${PKEY}.json"
   docker run --rm --network "$NETWORK" --cpuset-cpus="$KCPU" \
     -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
     -e "BASE_URL=http://mockserver:1080" -e "PROTO=http" \
-    -e "K6_SWEEP_RATES=$WARMUP_RATE" -e "K6_SWEEP_STEP=$WARMUP_DURATION" -e "K6_SWEEP_GAP=1s" \
-    -e "K6_SWEEP_SETTLE=0s" -e "K6_SWEEP_RESULT_PATH=/out/warmup-C${C}.json" \
-    -e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS" -e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS" \
+    -e "K6_SWEEP_RATES=$POINT_WARMUP_RATE" -e "K6_SWEEP_STEP=$WARMUP_DURATION" -e "K6_SWEEP_GAP=1s" \
+    -e "K6_SWEEP_SETTLE=0s" -e "K6_SWEEP_RESULT_PATH=/out/warmup-${PKEY}.json" \
+    ${SWEEP_PRE_VUS:+-e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS"} ${SWEEP_MAX_VUS:+-e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS"} \
     "$K6_IMAGE" run /k6/sweep.js >/dev/null 2>&1 || true
   WARMUP_P50="$(jq -r '(.points[0].p50_ms) // null' "$WARMUP_JSON" 2>/dev/null || echo null)"
   WARMUP_ACH="$(jq -r '(.points[0].achieved_rps) // null' "$WARMUP_JSON" 2>/dev/null || echo null)"
@@ -310,38 +481,57 @@ for C in "${CORES_ARR[@]}"; do
   # from ONE `docker stats --no-stream` call (two container names) so the sampler
   # adds one probe per interval, not two, and the k6 and SUT samples share a
   # timestamp. A name not yet running just yields no line (handled by the awk).
-  CPU_LOG="$WORK/cpu-C${C}.csv"
-  echo "ts,k6_cpu_pct,sut_cpu_pct" > "$CPU_LOG"
+  # The SUT's memory use and retained log entries ride the same interval, so a point
+  # records how close it ran to its memory limit and whether the log filled.
+  CPU_LOG="$WORK/cpu-${PKEY}.csv"
+  echo "ts,k6_cpu_pct,sut_cpu_pct,sut_mem_bytes,retained_entries,retained_bytes" > "$CPU_LOG"
   ( while true; do
       ts="$(date -u +%s)"
-      stats="$(docker stats --no-stream --format '{{.Name}} {{.CPUPerc}}' "$K6_NAME" "$SERVER" 2>/dev/null || echo '')"
+      stats="$(docker stats --no-stream --format '{{.Name}} {{.CPUPerc}} {{.MemUsage}}' "$K6_NAME" "$SERVER" 2>/dev/null || echo '')"
       k6c="$(printf '%s\n' "$stats" | awk -v n="$K6_NAME" '$1==n{gsub(/%/,"",$2); print $2}')"
       sutc="$(printf '%s\n' "$stats" | awk -v n="$SERVER" '$1==n{gsub(/%/,"",$2); print $2}')"
-      printf '%s,%s,%s\n' "$ts" "${k6c:-}" "${sutc:-}" >> "$CPU_LOG"
+      sutm="$(printf '%s\n' "$stats" | awk -v n="$SERVER" '
+        function tob(s,  n, u) { n = s; sub(/[A-Za-z]+$/, "", n); u = s; sub(/^[0-9.]+/, "", u)
+          if (u == "KiB" || u == "kB" || u == "KB") return n * 1024
+          if (u == "MiB" || u == "MB") return n * 1048576
+          if (u == "GiB" || u == "GB") return n * 1073741824
+          return n }
+        $1==n { printf "%.0f", tob($3) }')"
+      retl="$(curl -s --max-time 1 "$METRICS_URL" 2>/dev/null | awk '
+        /^mock_server_event_log_retained_entries / { e = sprintf("%.0f", $2) }
+        /^mock_server_event_log_retained_bytes /   { b = sprintf("%.0f", $2) }
+        END { printf "%s,%s", e, b }' || true)"
+      printf '%s,%s,%s,%s,%s\n' "$ts" "${k6c:-}" "${sutc:-}" "${sutm:-}" "${retl:-,}" >> "$CPU_LOG"
       sleep "$SWEEP_SAMPLE_INTERVAL"
     done ) & SAMPLER_PID=$!
 
-  SWEEP_JSON="$WORK/sweep-C${C}.json"
+  SWEEP_JSON="$WORK/sweep-${PKEY}.json"
   T0="$(date -u +%s)"
   docker run --rm --name "$K6_NAME" --network "$NETWORK" --cpuset-cpus="$KCPU" \
     -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
     -e "BASE_URL=http://mockserver:1080" -e "PROTO=http" \
-    -e "K6_SWEEP_RATES=$SWEEP_RATES" -e "K6_SWEEP_STEP=$SWEEP_STEP" -e "K6_SWEEP_GAP=$SWEEP_GAP" \
-    -e "K6_SWEEP_SETTLE=${SWEEP_SETTLE_S}s" -e "K6_SWEEP_RESULT_PATH=/out/sweep-C${C}.json" \
-    -e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS" -e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS" \
+    -e "K6_SWEEP_RATES=$POINT_RATES" -e "K6_SWEEP_STEP=$SWEEP_STEP" -e "K6_SWEEP_GAP=$SWEEP_GAP" \
+    -e "K6_SWEEP_SETTLE=${SWEEP_SETTLE_S}s" -e "K6_SWEEP_RESULT_PATH=/out/sweep-${PKEY}.json" \
+    ${SWEEP_PRE_VUS:+-e "K6_SWEEP_PRE_VUS=$SWEEP_PRE_VUS"} ${SWEEP_MAX_VUS:+-e "K6_SWEEP_MAX_VUS=$SWEEP_MAX_VUS"} \
     "$K6_IMAGE" run --quiet /k6/sweep.js >&2 || true
   kill "$SAMPLER_PID" >/dev/null 2>&1 || true
+  wait "$SAMPLER_PID" 2>/dev/null || true
 
+  # --- did the SUT survive? (OOM kill / crash / JVM OutOfMemoryError) ----------
+  STATE_JSON="$(sut_state_json)"
   docker rm -f "$SERVER" >/dev/null 2>&1 || true
+  if [ "$(jq -r '.running' <<<"$STATE_JSON")" != true ] || [ "$(jq -r '.java_oom_errors' <<<"$STATE_JSON")" != 0 ]; then
+    echo "WARNING: SUT did not survive the sweep cleanly at $LBL: $STATE_JSON" >&2
+  fi
 
   if ! jq -e '.points | length > 0' "$SWEEP_JSON" >/dev/null 2>&1; then
-    echo "ERROR: sweep produced no points at C=$C" >&2
-    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "sweep produced no points" '{cores:$c, reason:$r, type:"failure"}')")
+    echo "ERROR: sweep produced no points at $LBL" >&2
+    SKIPPED+=("$(jq -c --argjson st "$STATE_JSON" '. + {reason:(if $st.oom_killed == true then "SUT was OOM-killed and the sweep produced no points" else "sweep produced no points" end), type:"failure", oom_killed:$st.oom_killed, sut_state:$st}' <<<"$POINT_META")")
     continue
   fi
   if ! WINDOW_MISMATCH="$(sweep_window_mismatches "$SWEEP_JSON")"; then
-    echo "ERROR: sweep latency windows inconsistent at C=$C — $WINDOW_MISMATCH" >&2
-    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "latency windows inconsistent: $WINDOW_MISMATCH" '{cores:$c, reason:$r, type:"failure"}')")
+    echo "ERROR: sweep latency windows inconsistent at $LBL — $WINDOW_MISMATCH" >&2
+    SKIPPED+=("$(jq -c --arg r "latency windows inconsistent: $WINDOW_MISMATCH" '. + {reason:$r, type:"failure"}' <<<"$POINT_META")")
     continue
   fi
 
@@ -357,7 +547,7 @@ for C in "${CORES_ARR[@]}"; do
   K6_PIN_PCT=$(( k6w * 100 ))
   SUT_PIN_PCT=$(( C * 100 ))
   CPU_MAP="{}"; SUT_CPU_MAP="{}"
-  IFS=',' read -ra RATE_ARR <<< "$SWEEP_RATES"
+  IFS=',' read -ra RATE_ARR <<< "$POINT_RATES"
   for i in "${!RATE_ARR[@]}"; do
     r="${RATE_ARR[$i]}"
     ws=$(( T0 + i * (STEP_S + GAP_S) + SWEEP_SETTLE_S ))
@@ -370,6 +560,21 @@ for C in "${CORES_ARR[@]}"; do
     CPU_MAP="$(jq -c --arg k "$r" --argjson v "${maxcpu:-null}" '. + {($k): $v}' <<<"$CPU_MAP")"
     SUT_CPU_MAP="$(jq -c --arg k "$r" --argjson v "${maxsut:-null}" '. + {($k): $v}' <<<"$SUT_CPU_MAP")"
   done
+  MEM_PEAK="$(awk -F',' 'NR>1 && $4!="" { n++; if($4+0>m) m=$4+0 } END{ if(n>0) printf "%.0f", m; }' "$CPU_LOG" 2>/dev/null || echo '')"
+  RETAINED_PEAK="$(awk -F',' 'NR>1 && $5!="" { n++; if($5+0>m) m=$5+0 } END{ if(n>0) printf "%.0f", m; }' "$CPU_LOG" 2>/dev/null || echo '')"
+  RETAINED_BYTES_PEAK="$(awk -F',' 'NR>1 && $6!="" { n++; if($6+0>m) m=$6+0 } END{ if(n>0) printf "%.0f", m; }' "$CPU_LOG" 2>/dev/null || echo '')"
+  # The rung the SUT stopped in, from its FinishedAt against the ladder schedule.
+  DIED_AT_RPS=null; DIED_BEFORE_SWEEP=false
+  _fae="$(jq -r '.finished_at_epoch // empty' <<<"$STATE_JSON")"
+  if [ -n "$_fae" ] && [ "$(jq -r '.running' <<<"$STATE_JSON")" != true ]; then
+    if [ "$_fae" -lt "$T0" ]; then
+      DIED_BEFORE_SWEEP=true
+    else
+      _idx=$(( (_fae - T0) / (STEP_S + GAP_S) ))
+      [ "$_idx" -ge "${#RATE_ARR[@]}" ] && _idx=$(( ${#RATE_ARR[@]} - 1 ))
+      DIED_AT_RPS="${RATE_ARR[$_idx]}"
+    fi
+  fi
 
   # --- healthy_ceiling via the ONE authoritative implementation ----------------
   # Feed this C's sweep as a synthetic run to lib/perf-website-figures.jq and read
@@ -378,7 +583,7 @@ for C in "${CORES_ARR[@]}"; do
   SYN_RUN="$(jq -nc --slurpfile s "$SWEEP_JSON" --arg cpus "$SCPU" --arg ts "$NOW_ISO" \
     '{schema_version:2, timestamp_utc:$ts, config:{}, agent:{server_cpus:$cpus}, sweep:$s[0]}')"
   HEADLINE="$(jq --arg now "$NOW_ISO" --argjson lat_mult 3 --argjson keep 0.95 --arg fix_date "2026-09-16" \
-    -f "$FIGURES_JQ" <<<"$SYN_RUN" 2>/dev/null | jq -c '.headline // {}')"
+    -f "$FIGURES_JQ" <<<"$SYN_RUN" 2>/dev/null | jq -c '.headline // {}' || echo '{}')"
   HC_RPS="$(jq -r '.healthy_ceiling_rps // null' <<<"$HEADLINE")"
   HC_P50="$(jq -r '.healthy_ceiling_p50_ms // null' <<<"$HEADLINE")"
   HC_P95="$(jq -r '.healthy_ceiling_p95_ms // null' <<<"$HEADLINE")"
@@ -395,6 +600,8 @@ for C in "${CORES_ARR[@]}"; do
   # = max achieved over rig-valid rungs. p95/p99 are SUPPRESSED to null on any rung
   # whose post-settle sample count < MIN_TAIL_SAMPLES (the repo rule) so a low-C, low-rate rung
   # never reports a tail that is really just its max.
+  MAXLOG_USED="$(jq -r '.max_log_entries // empty' <<<"$RESOLVED_JSON")"
+  MAXLOG_USED="${MAXLOG_USED:-$ASSUMED_MAX_LOG_ENTRIES}"
   AGG="$(jq -nc \
     --slurpfile sweep "$SWEEP_JSON" \
     --argjson cpu "$CPU_MAP" \
@@ -405,7 +612,7 @@ for C in "${CORES_ARR[@]}"; do
     --argjson k6cores "$k6w" \
     --argjson err_eps "$SWEEP_ERR_EPS" \
     --argjson min_tail "$MIN_TAIL_SAMPLES" \
-    --argjson maxlog "$ASSUMED_MAX_LOG_ENTRIES" \
+    --argjson maxlog "$MAXLOG_USED" \
     --argjson body "$BODY_BYTES" \
     --argjson hc_rps "${HC_RPS:-null}" \
     --argjson hc_p50 "${HC_P50:-null}" \
@@ -549,7 +756,7 @@ for C in "${CORES_ARR[@]}"; do
     | (.ladder[0].p50_ms) as $r1
     | (.ladder[1].p50_ms // null) as $r2
     | .warmup={
-        drive_rate:'"$WARMUP_RATE"', drive_p50_ms:$wup_p50, drive_achieved_rps:$wup_ach,
+        drive_rate:'"$POINT_WARMUP_RATE"', drive_p50_ms:$wup_p50, drive_achieved_rps:$wup_ach,
         # first vs second measured rung p50: if the FIRST rung is systematically
         # slower than the second AFTER the warm-up, the transient was not fully
         # removed — surfaced, not averaged away (item 18 warm-up-is-bias rule).
@@ -557,37 +764,122 @@ for C in "${CORES_ARR[@]}"; do
         first_rung_slower_than_second:(($r1 != null) and ($r2 != null) and ($r1 > $r2))
       }' <<<"$AGG")"
 
+  # Memory, survival and lower-bound labelling. A ceiling is a LOWER BOUND when its rung
+  # was client-limited, the SUT never neared its CPU pin, it is the top rung offered, or
+  # the CPU samples needed to rule the first two out are missing (cpu_unverified).
+  AGG="$(jq -c --argjson meta "$POINT_META" --argjson resolved "$RESOLVED_JSON" --argjson state "$STATE_JSON" \
+    --argjson mempeak "${MEM_PEAK:-null}" --argjson retpeak "${RETAINED_PEAK:-null}" --argjson died_at "$DIED_AT_RPS" \
+    --argjson retbpeak "${RETAINED_BYTES_PEAK:-null}" \
+    --argjson sphys "${SPHYS:-null}" --argjson assumed "$ASSUMED_MAX_LOG_ENTRIES" --argjson used "$MAXLOG_USED" \
+    --arg rates "$POINT_RATES" --argjson topo "$TOPO_KNOWN" --argjson died_early "$DIED_BEFORE_SWEEP" '
+    def frac($a; $b): if $a == null or $b == null or $b <= 0 then null else (($a / $b) * 1000 | round) / 1000 end;
+    . + $meta
+    | ([.ladder[].offered_rps] | max) as $top
+    | .healthy_ceiling_rps as $hc
+    | ($state.running == false) as $died
+    | (($state.java_oom_errors // 0) > 0) as $jvm_oom
+    | .server_physical_cores = $sphys
+    | .cpus_physically_verified = $topo
+    | .sweep_rates = $rates
+    | .resolved = $resolved
+    | .heap_frac_of_memory_limit = frac($resolved.max_heap_bytes; $meta.memory_limit_bytes)
+    | .container_memory_peak_bytes = $mempeak
+    | .container_memory_peak_frac_of_limit = frac($mempeak; $meta.memory_limit_bytes)
+    | .event_log_retained_entries_peak = $retpeak
+    | .event_log_retained_bytes_peak = $retbpeak
+    | frac($retpeak; $resolved.max_log_entries) as $cu
+    | frac($retbpeak; $resolved.max_event_log_bytes) as $bu
+    | .event_log_count_utilisation = $cu
+    | .event_log_bytes_utilisation = $bu
+    # Either bound evicts, so the log is full when EITHER is reached.
+    | .event_log_filled = (if $cu == null and $bu == null then null
+                           else ((($cu // 0) >= 0.95) or (($bu // 0) >= 0.95)) end)
+    | .event_log_binding_bound = (if $cu == null and $bu == null then null
+                                  elif ($bu // 0) >= ($cu // 0) then "bytes" else "entries" end)
+    | .event_log_mean_entry_bytes = (if ($retpeak // 0) > 0 and $retbpeak != null
+                                     then ($retbpeak / $retpeak | round) else null end)
+    | .retention.assumed_max_log_entries = $assumed
+    | .retention.max_log_entries_used = $used
+    | .retention.max_log_entries_source = (if $resolved.max_log_entries != null then "resolved" else "assumed" end)
+    | .retention.retained_bytes_estimate = ($used * .retention.body_bytes)
+    | .sut_state = $state
+    | .oom_killed = ($state.oom_killed == true)
+    | .java_out_of_memory = $jvm_oom
+    | .sut_survived = (($died or $jvm_oom) | not)
+    | .died_at_offered_rps = (if $died then $died_at else null end)
+    | .died_before_sweep = ($died and $died_early)
+    | .client_headroom_frac_at_ceiling = (if .healthy_ceiling_client_cpu_pct == null then null
+                                          else frac(.client_pin_pct - .healthy_ceiling_client_cpu_pct; .client_pin_pct) end)
+    # A SUT that did not survive has no ceiling to bound; its status says what happened.
+    | .lower_bound_reasons = if ($died or $jvm_oom) then [] else [
+        (if .client_limited_at_ceiling == true then "client_cpu_limited" else empty end),
+        (if $hc != null and .peak_limited_by == "load_path_or_virtualization" then "server_cpu_not_saturated" else empty end),
+        (if $hc != null and $hc == $top then "ladder_top_reached" else empty end),
+        (if $hc != null and (.peak_limited_by == null or .healthy_ceiling_client_cpu_pct == null)
+         then "cpu_unverified" else empty end) ] end
+    | .lower_bound = ((.lower_bound_reasons | length) > 0)
+    | .status = (if $state.oom_killed == true then "oom_killed" elif $died then "sut_died"
+                 elif $jvm_oom then "java_out_of_memory" elif $hc == null then "no_healthy_ceiling"
+                 else "measured" end)' <<<"$AGG")"
+
+  echo "    $LBL  status=$(jq -r '.status' <<<"$AGG") heap=$(jq -r '.resolved.max_heap_bytes' <<<"$AGG") mem_peak=$(jq -r '.container_memory_peak_frac_of_limit' <<<"$AGG") lower_bound=$(jq -r '.lower_bound_reasons | join("+")' <<<"$AGG")" >&2
   echo "    C=$C  healthy_ceiling=${HC_RPS} rps_per_core=$(jq -r '.rps_per_core' <<<"$AGG") peak=$(jq -r '.rig_valid_peak_achieved_rps' <<<"$AGG") sut_cpu@peak=$(jq -r '.sut_cpu_at_peak_pct' <<<"$AGG")%/$(jq -r '.sut_pin_pct' <<<"$AGG")% peak_limited_by=$(jq -r '.peak_limited_by' <<<"$AGG")" >&2
   POINTS+=("$AGG")
-  MAX_MEASURED="$C"
+  [ "$C" -gt "$MAX_MEASURED" ] && MAX_MEASURED="$C"
 done
 
-# --- assemble the serving_percore block ---------------------------------------
+# --- assemble the serving_percore / serving_hw_matrix block --------------------
 POINTS_JSON="$(printf '%s\n' "${POINTS[@]:-}" | jq -sc 'map(select(. != null and . != ""))')"
 SKIPPED_JSON="$(printf '%s\n' "${SKIPPED[@]:-}" | jq -sc 'map(select(. != null and . != ""))')"
+REQUESTED_JSON="$(for i in "${!P_CORES[@]}"; do
+  jq -nc --argjson c "${P_CORES[$i]}" --arg m "${P_MEM[$i]}" --argjson ctl "${P_CONTROL[$i]}" \
+    '{cores:$c, memory_limit:$m, control:$ctl}'; done | jq -sc '.')"
 
 jq -nc \
   --argjson points "$POINTS_JSON" \
   --argjson skipped "$SKIPPED_JSON" \
+  --argjson requested "$REQUESTED_JSON" \
   --argjson host_cores "$HOST_CORES" \
+  --argjson host_phys "$HOST_PHYS_CORES" \
   --argjson max_measured "$MAX_MEASURED" \
+  --arg mode "$MODE" \
+  --arg matrix "$HW_MATRIX_SPEC" \
+  --argjson per_core_cap "$HW_MAX_RPS_PER_CORE" \
+  --argjson k6_reserve "$K6_RESERVE" \
+  --argjson rig_paused "$([ "${PERF_HW_MATRIX_RIG_PAUSED:-false}" = true ] && echo true || echo false)" \
   --arg ladder "$CORE_LADDER" \
   --arg rates "$SWEEP_RATES" \
   --arg step "$SWEEP_STEP" --arg gap "$SWEEP_GAP" --argjson settle "$SWEEP_SETTLE_S" '
   {
     attempted:true,
+    mode:$mode,
     proto:"http",
     host_cores:$host_cores,
-    cores_requested:($ladder | split(",") | map(tonumber)),
+    host_physical_cores:$host_phys,
+    cores_requested:($requested | map(.cores)),
     max_cores_measured:$max_measured,
-    # explicit, un-skimmable statement of where the curve ends and why (item 18).
-    curve_complete_to_16:(($points | map(.cores) | max // 0) >= 16),
     # latency_settle_s: the methodology fingerprint perf-test-compare.sh keys the
     # p50-derived healthy-ceiling metrics on.
     sweep:{rates:$rates, step:$step, gap:$gap, latency_settle_s:$settle},
     healthy_ceiling_definition:"lib/perf-website-figures.jq headline (Finding 1: highest rung achieved>=0.95*offered, zero errors, p50<=3x flat-region p50) — reused, not re-implemented",
-    points:($points | sort_by(.cores)),
     skipped:$skipped
-  }' > "$OUT_FILE"
+  }
+  + if $mode == "hw_matrix" then {
+      matrix:$matrix,
+      matrix_requested:$requested,
+      # each point offers only the rates up to this many rps per core (0 = the full ladder).
+      sweep_max_rps_per_core:$per_core_cap,
+      k6_reserve_cores:$k6_reserve,
+      # true only when the caller (perf-test-run.sh) paused every other container on the
+      # rig, so nothing else could run on a point cores during its sweep.
+      other_containers_paused:$rig_paused,
+      server_config:"shipped image defaults (no -Xmx; heap from MaxRAMPercentage of the memory limit) with MOCKSERVER_LOG_LEVEL=ERROR and MOCKSERVER_DISABLE_SYSTEM_OUT=true",
+      log_level:"ERROR",
+      points:($points | sort_by(.cores, .memory_limit_bytes))
+    } else {
+      # explicit, un-skimmable statement of where the curve ends and why (item 18).
+      curve_complete_to_16:(($points | map(.cores) | max // 0) >= 16),
+      points:($points | sort_by(.cores))
+    } end' > "$OUT_FILE"
 
-echo "--- serving_percore points=$(jq -r '.points | length' "$OUT_FILE") skipped=$(jq -r '.skipped | length' "$OUT_FILE") max_cores_measured=$(jq -r '.max_cores_measured' "$OUT_FILE")" >&2
+echo "--- serving_${MODE} points=$(jq -r '.points | length' "$OUT_FILE") skipped=$(jq -r '.skipped | length' "$OUT_FILE") max_cores_measured=$(jq -r '.max_cores_measured' "$OUT_FILE")" >&2

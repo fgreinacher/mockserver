@@ -636,6 +636,7 @@ capture_sut_diagnostics() {
 
 cleanup() {
   local rc=$?
+  declare -F resume_rig >/dev/null && resume_rig
   # On ANY non-zero exit (the mid-load death, an early wait_ready failure, a sampler/sweep abort),
   # grab the SUT post-mortem BEFORE docker rm -f below erases it. This is the whole point: builds
   # 261/264 died here and left nothing because --rm + this rm -f raced the investigator to the body.
@@ -3635,6 +3636,52 @@ if [ "${PERF_SERVING_PERCORE:-false}" = "true" ]; then
   fi
 fi
 
+# --- item 27: throughput by hardware size (cores x container memory) ----------
+# lib/perf-percore.sh in hw_matrix mode; opt-in (~45 min), manual builds only, notify-only.
+# Every other container of this run is paused, and its samplers stopped, for the matrix:
+# the idle main SUT and upstream sit on the cores the points use. cleanup() resumes them.
+SERVING_HW_MATRIX_JSON='{}'
+SERVING_HW_MATRIX_ATTEMPTED=false
+RIG_PAUSED=(); RIG_STOPPED=()
+RIG_PAUSE_COMPLETE=false
+pause_rig() {
+  local c p err listed=0
+  for p in "$SAMPLER_PID" "$DIAG_SAMPLER_PID" "$LIVE_HISTO_PID"; do
+    [ -n "$p" ] && kill -STOP "$p" 2>/dev/null && RIG_STOPPED+=("$p")
+  done
+  for c in $(docker ps --format '{{.Names}}' --filter "name=${RUN_ID}" 2>/dev/null); do
+    listed=$((listed + 1))
+    if err="$(docker pause "$c" 2>&1)"; then RIG_PAUSED+=("$c")
+    else echo "WARNING: could not pause $c for the hardware matrix: $err" >&2; fi
+  done
+  RIG_PAUSE_COMPLETE=false
+  [ "$listed" -gt 0 ] && [ "${#RIG_PAUSED[@]}" -eq "$listed" ] && RIG_PAUSE_COMPLETE=true
+  echo "--- paused ${#RIG_PAUSED[@]} of ${listed} container(s) (${RIG_PAUSED[*]:-none}) and ${#RIG_STOPPED[@]} sampler(s) for the matrix; complete=${RIG_PAUSE_COMPLETE}"
+}
+resume_rig() {
+  local c p err
+  for c in "${RIG_PAUSED[@]:-}"; do
+    [ -n "$c" ] || continue
+    err="$(docker unpause "$c" 2>&1)" || echo "WARNING: could not unpause $c: $err" >&2
+  done
+  for p in "${RIG_STOPPED[@]:-}"; do [ -n "$p" ] && kill -CONT "$p" 2>/dev/null || true; done
+  RIG_PAUSED=(); RIG_STOPPED=()
+}
+if [ "${PERF_SERVING_HW_MATRIX:-false}" = "true" ]; then
+  SERVING_HW_MATRIX_ATTEMPTED=true
+  echo "--- item 27 hardware matrix (opt-in; PERF_SERVING_HW_MATRIX=true, matrix=${PERF_HW_MATRIX:-default})"
+  pause_rig
+  if MOCKSERVER_IMAGE="$MOCKSERVER_IMAGE" PERF_PERCORE_REPO_ROOT="$REPO_ROOT" PERF_PERCORE_MODE=hw_matrix \
+       PERF_HW_MATRIX_RIG_PAUSED="$RIG_PAUSE_COMPLETE" bash "$SCRIPT_DIR/lib/perf-percore.sh" "$OUT_DIR/serving-hw-matrix.json"; then
+    SERVING_HW_MATRIX_JSON="$(cat "$OUT_DIR/serving-hw-matrix.json" 2>/dev/null || echo '{}')"
+    jq -e . >/dev/null 2>&1 <<<"$SERVING_HW_MATRIX_JSON" || SERVING_HW_MATRIX_JSON='{}'
+    echo "--- serving_hw_matrix: points=$(jq -r '(.points|length)//0' <<<"$SERVING_HW_MATRIX_JSON") skipped=$(jq -r '(.skipped|length)//0' <<<"$SERVING_HW_MATRIX_JSON") $(jq -r '[(.points // [])[] | "\(.key)=\(.healthy_ceiling_rps // "none")(\(.status))"] | join(" ")' <<<"$SERVING_HW_MATRIX_JSON")"
+  else
+    echo "WARNING: hardware matrix profile failed — result carries no serving_hw_matrix points this run (notify-only)" >&2
+  fi
+  resume_rig
+fi
+
 # --- item 18 (client rig): multi-process aggregate throughput vs process count -
 # The single-process serving sweep (serving_percore above, and the main .sweep) is
 # CLIENT-LIMITED: one k6 process serialises internally (arrival-rate executor +
@@ -3863,6 +3910,8 @@ jq -n \
   --argjson laptop_parallel "$LAPTOP_PARALLEL_JSON" \
   --argjson serving_percore "$SERVING_PERCORE_JSON" \
   --argjson serving_percore_attempted "$SERVING_PERCORE_ATTEMPTED" \
+  --argjson serving_hw_matrix "$SERVING_HW_MATRIX_JSON" \
+  --argjson serving_hw_matrix_attempted "$SERVING_HW_MATRIX_ATTEMPTED" \
   --argjson serving_multiproc "$SERVING_MULTIPROC_JSON" \
   --argjson serving_multiproc_attempted "$SERVING_MULTIPROC_ATTEMPTED" \
   --argjson info_log_level_arm "$INFO_ARM_JSON" \
@@ -4020,6 +4069,9 @@ jq -n \
     # (attempted but no points) apart from a disabled profile — the laptop split.
     serving_percore: $serving_percore,
     serving_percore_attempted: $serving_percore_attempted,
+    # item 27 — hardware matrix; `{}` when disabled or failed (serving_percore pattern).
+    serving_hw_matrix: $serving_hw_matrix,
+    serving_hw_matrix_attempted: $serving_hw_matrix_attempted,
     # item 18 (client rig) — multi-process aggregate throughput vs process count.
     # `{}` when the profile was disabled or its measurement failed; compare reads
     # .serving_multiproc.points / .scaling head-driven, so an empty object emits zero
@@ -4056,6 +4108,10 @@ cp "$OUT_DIR/sweep.json" "$REPO_ROOT/perf-sweep.json" 2>/dev/null || echo '{}' >
 if [ -f "$OUT_DIR/serving-percore.json" ]; then
   cp "$OUT_DIR/serving-percore.json" "$REPO_ROOT/serving-percore.json" 2>/dev/null || true
 fi
+# Standalone hardware-matrix artifact (also embedded under .serving_hw_matrix).
+if [ -f "$OUT_DIR/serving-hw-matrix.json" ]; then
+  cp "$OUT_DIR/serving-hw-matrix.json" "$REPO_ROOT/serving-hw-matrix.json" 2>/dev/null || true
+fi
 # Standalone multi-process sweep artifact (also embedded under .serving_multiproc).
 # Emitted only when the profile ran; a dated trend / the client-rig chart read this
 # file, mirroring perf-sweep.json / serving-percore.json.
@@ -4079,6 +4135,7 @@ if command -v buildkite-agent >/dev/null 2>&1; then
   bk_upload_artifact "perf-sweep.json"
   upload_diag_bundle
   [ -f "$REPO_ROOT/serving-percore.json" ] && bk_upload_artifact "serving-percore.json" || true
+  [ -f "$REPO_ROOT/serving-hw-matrix.json" ] && bk_upload_artifact "serving-hw-matrix.json" || true
   [ -f "$REPO_ROOT/serving-multiproc.json" ] && bk_upload_artifact "serving-multiproc.json" || true
   # Record the HARNESS commit this run executed against — deliberately NOT the
   # attributed (image-revision) `$COMMIT`. perf-test-guard.sh reads this (via
