@@ -56,6 +56,8 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
   served request, the event log and the returned expectations are unchanged. If you used
   `generateExpectation` or LLM drift analysis with a backend configured, treat any credentials in those
   requests as previously exposed to that LLM service.
+- **The Node Testcontainers module's lockfile now resolves `undici` 7.30.0**, which fixes a denial of service
+  from an unhandled error in WebSocket `permessage-deflate` decompression (Dependabot alert 581).
 
 ### Added
 
