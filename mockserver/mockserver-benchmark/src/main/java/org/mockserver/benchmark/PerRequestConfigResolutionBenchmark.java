@@ -16,6 +16,7 @@ import org.openjdk.jmh.annotations.Scope;
 import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Warmup;
+import org.openjdk.jmh.infra.Blackhole;
 import org.slf4j.event.Level;
 
 import java.util.concurrent.TimeUnit;
@@ -34,7 +35,11 @@ import java.util.concurrent.TimeUnit;
  *       read per request on the log path;</li>
  *   <li>{@link #perRequestWriterConstruction()} — a per-request {@link ResponseWriter}, which resolves
  *       the CORS headers (five configuration lookups plus a String concat) even though CORS headers
- *       are unused for default mock traffic.</li>
+ *       are unused for default mock traffic;</li>
+ *   <li>{@link #perRequestFlagResolution()} — the five flags every mocked request reads once or more
+ *       (metricsEnabled, dataPlaneAuthenticationRequired, otelPropagateTraceContext,
+ *       validateRequestsAgainstOpenApiSpec, defaultResponseHeaders), falling through to the JVM-wide
+ *       defaults as a server started without overrides does.</li>
  * </ul>
  *
  * The {@code gc.alloc.rate.norm} (bytes/op) column from {@code -prof gc} is the relevant signal.
@@ -77,6 +82,15 @@ public class PerRequestConfigResolutionBenchmark {
     @Benchmark
     public int maxLoggedBodyBytesResolution() {
         return ConfigurationProperties.maxLoggedBodyBytes();
+    }
+
+    @Benchmark
+    public void perRequestFlagResolution(Blackhole blackhole) {
+        blackhole.consume(configuration.metricsEnabled());
+        blackhole.consume(configuration.dataPlaneAuthenticationRequired());
+        blackhole.consume(configuration.otelPropagateTraceContext());
+        blackhole.consume(configuration.validateRequestsAgainstOpenApiSpec());
+        blackhole.consume(configuration.defaultResponseHeaders());
     }
 
     @Benchmark

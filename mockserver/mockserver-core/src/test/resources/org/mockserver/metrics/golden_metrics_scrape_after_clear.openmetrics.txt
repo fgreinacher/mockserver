@@ -1,0 +1,97 @@
+# TYPE binary_response_actions_count gauge
+# HELP binary_response_actions_count Action binary response count
+binary_response_actions_count 0.0
+# TYPE dns_response_actions_count gauge
+# HELP dns_response_actions_count Action DNS response count
+dns_response_actions_count 0.0
+# TYPE error_actions_count gauge
+# HELP error_actions_count Action error count
+error_actions_count 0.0
+# TYPE expectations_not_matched_count gauge
+# HELP expectations_not_matched_count Expectation not matched count
+expectations_not_matched_count 0.0
+# TYPE forward_actions_count gauge
+# HELP forward_actions_count Action forward count
+forward_actions_count 0.0
+# TYPE forward_class_callback_actions_count gauge
+# HELP forward_class_callback_actions_count Action forward class callback count
+forward_class_callback_actions_count 0.0
+# TYPE forward_expectations_matched_count gauge
+# HELP forward_expectations_matched_count Forward expectation matched count
+forward_expectations_matched_count 0.0
+# TYPE forward_object_callback_actions_count gauge
+# HELP forward_object_callback_actions_count Action forward object callback count
+forward_object_callback_actions_count 0.0
+# TYPE forward_replace_actions_count gauge
+# HELP forward_replace_actions_count Action forward replace count
+forward_replace_actions_count 0.0
+# TYPE forward_template_actions_count gauge
+# HELP forward_template_actions_count Action forward template count
+forward_template_actions_count 0.0
+# TYPE forward_validate_actions_count gauge
+# HELP forward_validate_actions_count Action forward validate count
+forward_validate_actions_count 0.0
+# TYPE forward_with_fallback_actions_count gauge
+# HELP forward_with_fallback_actions_count Action forward with fallback count
+forward_with_fallback_actions_count 0.0
+# TYPE grpc_bidi_response_actions_count gauge
+# HELP grpc_bidi_response_actions_count Action gRPC bidi response count
+grpc_bidi_response_actions_count 0.0
+# TYPE grpc_stream_response_actions_count gauge
+# HELP grpc_stream_response_actions_count Action gRPC stream response count
+grpc_stream_response_actions_count 0.0
+# TYPE llm_chaos_injected_count gauge
+# HELP llm_chaos_injected_count Action LLM chaos injected count
+llm_chaos_injected_count 0.0
+# TYPE llm_response_actions_count gauge
+# HELP llm_response_actions_count Action LLM response count
+llm_response_actions_count 0.0
+# TYPE mock_server_expectations_not_matched counter
+# HELP mock_server_expectations_not_matched Expectation not matched count (monotonic counter; use rate()/increase() on this _total series)
+mock_server_expectations_not_matched_total 2.0
+# TYPE mock_server_forward_expectations_matched counter
+# HELP mock_server_forward_expectations_matched Forward expectation matched count (monotonic counter; use rate()/increase() on this _total series)
+mock_server_forward_expectations_matched_total 2.0
+# TYPE mock_server_llm_chaos_injected counter
+# HELP mock_server_llm_chaos_injected Action LLM chaos injected count (monotonic counter; use rate()/increase() on this _total series)
+mock_server_llm_chaos_injected_total 2.0
+# TYPE mock_server_requests_received counter
+# HELP mock_server_requests_received Total requests received count (monotonic counter; use rate()/increase() on this _total series)
+mock_server_requests_received_total 3.0
+# TYPE mock_server_response_expectations_matched counter
+# HELP mock_server_response_expectations_matched Response expectation matched count (monotonic counter; use rate()/increase() on this _total series)
+mock_server_response_expectations_matched_total 3.0
+# TYPE requests_received_count gauge
+# HELP requests_received_count Total requests received count
+requests_received_count 0.0
+# TYPE response_actions_count gauge
+# HELP response_actions_count Action response count
+response_actions_count 0.0
+# TYPE response_class_callback_actions_count gauge
+# HELP response_class_callback_actions_count Action response class callback count
+response_class_callback_actions_count 0.0
+# TYPE response_expectations_matched_count gauge
+# HELP response_expectations_matched_count Response expectation matched count
+response_expectations_matched_count 1.0
+# TYPE response_object_callback_actions_count gauge
+# HELP response_object_callback_actions_count Action response object callback count
+response_object_callback_actions_count 0.0
+# TYPE response_template_actions_count gauge
+# HELP response_template_actions_count Action response template count
+response_template_actions_count 0.0
+# TYPE sse_response_actions_count gauge
+# HELP sse_response_actions_count Action SSE response count
+sse_response_actions_count 0.0
+# TYPE websocket_callback_clients_count gauge
+# HELP websocket_callback_clients_count Websocket callback client count
+websocket_callback_clients_count 0.0
+# TYPE websocket_callback_forward_handlers_count gauge
+# HELP websocket_callback_forward_handlers_count Websocket callback forward handler count
+websocket_callback_forward_handlers_count 0.0
+# TYPE websocket_callback_response_handlers_count gauge
+# HELP websocket_callback_response_handlers_count Websocket callback response handler count
+websocket_callback_response_handlers_count 0.0
+# TYPE websocket_response_actions_count gauge
+# HELP websocket_response_actions_count Action WebSocket response count
+websocket_response_actions_count 0.0
+# EOF

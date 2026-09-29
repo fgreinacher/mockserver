@@ -38,8 +38,9 @@ public class NettyHttpToMockServerHttpRequestDecoder extends MessageToMessageDec
         SocketAddress localAddress = null;
         SocketAddress remoteAddress = null;
         if (ctx != null && ctx.channel() != null) {
-            preservedHeaders = PreserveHeadersNettyRemoves.preservedHeaders(ctx.channel());
-            originalRawBody = PreserveHeadersNettyRemoves.originalRawBody(ctx.channel());
+            PreserveHeadersNettyRemoves.PreservedRequest preserved = PreserveHeadersNettyRemoves.preservedRequest(ctx.channel());
+            preservedHeaders = preserved.headers();
+            originalRawBody = preserved.originalRawBody();
             localAddress = ctx.channel().localAddress();
             remoteAddress = ctx.channel().remoteAddress();
         }

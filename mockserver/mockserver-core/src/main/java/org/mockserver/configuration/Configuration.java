@@ -49,6 +49,8 @@ public class Configuration {
     private Boolean detailedMatchFailures;
     private Boolean launchUIForLogLevelDebug;
     private Boolean metricsEnabled;
+    // Memo of the JVM-wide default, read several times per request; see ResolvedDefault.
+    private volatile ResolvedDefault<Boolean> resolvedMetricsEnabled;
     private Boolean dashboardAnalyticsEnabled;
     private String dashboardAnalyticsEndpoint;
     private String dashboardAnalyticsKey;
@@ -86,6 +88,7 @@ public class Configuration {
     private Boolean redactSecretsInLog;
     private Double llmCostBudgetUsd;
     private Boolean otelPropagateTraceContext;
+    private volatile ResolvedDefault<Boolean> resolvedOtelPropagateTraceContext;
     private Boolean otelGenerateTraceId;
     private Boolean mcpEnabled;
     private Long breakpointTimeoutMillis;
@@ -221,6 +224,7 @@ public class Configuration {
 
     // default response headers
     private String defaultResponseHeaders;
+    private volatile ResolvedDefault<String> resolvedDefaultResponseHeaders;
     // memoised parse of defaultResponseHeaders() so the pipe-split parse runs once per distinct
     // resolved value rather than per HTTP request (DefaultResponseHeaders is constructed per request).
     // source and parsed result are held in a single volatile holder so they are always read/written
@@ -244,6 +248,7 @@ public class Configuration {
     private String openAPIContextPathPrefix;
     private Boolean openAPIResponseValidation;
     private Boolean validateRequestsAgainstOpenApiSpec;
+    private volatile ResolvedDefault<Boolean> resolvedValidateRequestsAgainstOpenApiSpec;
     private String validateProxyOpenAPISpec;
     private Boolean validateProxyEnforce;
     private Boolean generateRealisticExampleValues;
@@ -309,6 +314,7 @@ public class Configuration {
 
     // data plane (mocked endpoint) authentication — opt-in, default off
     private Boolean dataPlaneAuthenticationRequired;
+    private volatile ResolvedDefault<Boolean> resolvedDataPlaneAuthenticationRequired;
     private String dataPlaneBasicAuthenticationUsername;
     private String dataPlaneBasicAuthenticationPassword;
     private String dataPlaneBasicAuthenticationRealm;
@@ -587,7 +593,14 @@ public class Configuration {
 
     public Boolean metricsEnabled() {
         if (metricsEnabled == null) {
-            return ConfigurationProperties.metricsEnabled();
+            long generation = ConfigurationProperties.modificationCount();
+            ResolvedDefault<Boolean> memo = resolvedMetricsEnabled;
+            if (memo != null && memo.generation == generation) {
+                return memo.value;
+            }
+            Boolean resolved = ConfigurationProperties.metricsEnabled();
+            resolvedMetricsEnabled = new ResolvedDefault<>(generation, resolved);
+            return resolved;
         }
         return metricsEnabled;
     }
@@ -1285,7 +1298,14 @@ public class Configuration {
 
     public Boolean otelPropagateTraceContext() {
         if (otelPropagateTraceContext == null) {
-            return ConfigurationProperties.otelPropagateTraceContext();
+            long generation = ConfigurationProperties.modificationCount();
+            ResolvedDefault<Boolean> memo = resolvedOtelPropagateTraceContext;
+            if (memo != null && memo.generation == generation) {
+                return memo.value;
+            }
+            Boolean resolved = ConfigurationProperties.otelPropagateTraceContext();
+            resolvedOtelPropagateTraceContext = new ResolvedDefault<>(generation, resolved);
+            return resolved;
         }
         return otelPropagateTraceContext;
     }
@@ -1681,6 +1701,23 @@ public class Configuration {
         private final Level value;
 
         private ResolvedLogLevel(long generation, Level value) {
+            this.generation = generation;
+            this.value = value;
+        }
+    }
+
+    /**
+     * Immutable (resolved-value, generation) pair memoising a per-request property's JVM-wide default,
+     * published behind one volatile reference so a reader never sees a torn pair. The generation is
+     * read BEFORE resolving, so a concurrent property write can only cause one redundant re-resolve,
+     * never a stale value. Consulted only when the instance field is null, so instance setters (and
+     * therefore {@code PUT /mockserver/configuration}) take effect without touching the memo.
+     */
+    private static final class ResolvedDefault<T> {
+        private final long generation;
+        private final T value;
+
+        private ResolvedDefault(long generation, T value) {
             this.generation = generation;
             this.value = value;
         }
@@ -3249,7 +3286,14 @@ public class Configuration {
 
     public String defaultResponseHeaders() {
         if (defaultResponseHeaders == null) {
-            return ConfigurationProperties.defaultResponseHeaders();
+            long generation = ConfigurationProperties.modificationCount();
+            ResolvedDefault<String> memo = resolvedDefaultResponseHeaders;
+            if (memo != null && memo.generation == generation) {
+                return memo.value;
+            }
+            String resolved = ConfigurationProperties.defaultResponseHeaders();
+            resolvedDefaultResponseHeaders = new ResolvedDefault<>(generation, resolved);
+            return resolved;
         }
         return defaultResponseHeaders;
     }
@@ -3597,7 +3641,14 @@ public class Configuration {
 
     public Boolean validateRequestsAgainstOpenApiSpec() {
         if (validateRequestsAgainstOpenApiSpec == null) {
-            return ConfigurationProperties.validateRequestsAgainstOpenApiSpec();
+            long generation = ConfigurationProperties.modificationCount();
+            ResolvedDefault<Boolean> memo = resolvedValidateRequestsAgainstOpenApiSpec;
+            if (memo != null && memo.generation == generation) {
+                return memo.value;
+            }
+            Boolean resolved = ConfigurationProperties.validateRequestsAgainstOpenApiSpec();
+            resolvedValidateRequestsAgainstOpenApiSpec = new ResolvedDefault<>(generation, resolved);
+            return resolved;
         }
         return validateRequestsAgainstOpenApiSpec;
     }
@@ -4519,7 +4570,14 @@ public class Configuration {
 
     public boolean dataPlaneAuthenticationRequired() {
         if (dataPlaneAuthenticationRequired == null) {
-            return ConfigurationProperties.dataPlaneAuthenticationRequired();
+            long generation = ConfigurationProperties.modificationCount();
+            ResolvedDefault<Boolean> memo = resolvedDataPlaneAuthenticationRequired;
+            if (memo != null && memo.generation == generation) {
+                return memo.value;
+            }
+            boolean resolved = ConfigurationProperties.dataPlaneAuthenticationRequired();
+            resolvedDataPlaneAuthenticationRequired = new ResolvedDefault<>(generation, resolved);
+            return resolved;
         }
         return dataPlaneAuthenticationRequired;
     }

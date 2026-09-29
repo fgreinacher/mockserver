@@ -106,8 +106,9 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
     }
 
     private static boolean isProxyingRequest(ChannelHandlerContext ctx) {
-        if (ctx != null && ctx.channel() != null && ctx.channel().attr(PROXYING).get() != null) {
-            return ctx.channel().attr(PROXYING).get();
+        if (ctx != null && ctx.channel() != null) {
+            Boolean proxying = ctx.channel().attr(PROXYING).get();
+            return proxying != null && proxying;
         }
         return false;
     }
@@ -119,10 +120,11 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
     }
 
     private static Set<String> getLocalAddresses(ChannelHandlerContext ctx) {
-        if (ctx != null &&
-            ctx.channel().attr(LOCAL_HOST_HEADERS) != null &&
-            ctx.channel().attr(LOCAL_HOST_HEADERS).get() != null) {
-            return ctx.channel().attr(LOCAL_HOST_HEADERS).get();
+        if (ctx != null) {
+            Set<String> localAddresses = ctx.channel().attr(LOCAL_HOST_HEADERS).get();
+            if (localAddresses != null) {
+                return localAddresses;
+            }
         }
         return new HashSet<>();
     }
@@ -226,9 +228,10 @@ public class HttpRequestHandler extends SimpleChannelInboundHandler<HttpRequest>
         // Ensure the per-server WebSocketClientRegistry is available as a channel attribute
         // so that NettyResponseWriter (and other Netty handlers) can obtain it without
         // holding a process-global singleton reference (COR-06).
-        if (ctx.channel().attr(org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry.WS_REGISTRY_KEY).get() == null) {
-            ctx.channel().attr(org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry.WS_REGISTRY_KEY)
-                .set(httpState.getWebSocketClientRegistry());
+        io.netty.util.Attribute<org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry> webSocketClientRegistry =
+            ctx.channel().attr(org.mockserver.closurecallback.websocketregistry.WebSocketClientRegistry.WS_REGISTRY_KEY);
+        if (webSocketClientRegistry.get() == null) {
+            webSocketClientRegistry.set(httpState.getWebSocketClientRegistry());
         }
         ResponseWriter responseWriter = new NettyResponseWriter(configuration, mockServerLogger, ctx, httpState.getScheduler(), inFlightRequest);
         try {

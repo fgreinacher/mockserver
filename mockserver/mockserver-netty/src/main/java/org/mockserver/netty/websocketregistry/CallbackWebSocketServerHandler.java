@@ -75,9 +75,7 @@ public class CallbackWebSocketServerHandler extends ChannelInboundHandlerAdapter
                     upgradeChannel(ctx, (FullHttpRequest) msg);
                     ctx.channel().attr(CHANNEL_UPGRADED_FOR_CALLBACK_WEB_SOCKET).set(true);
                 }
-            } else if (ctx.channel().attr(CHANNEL_UPGRADED_FOR_CALLBACK_WEB_SOCKET).get() != null &&
-                ctx.channel().attr(CHANNEL_UPGRADED_FOR_CALLBACK_WEB_SOCKET).get() &&
-                msg instanceof WebSocketFrame) {
+            } else if (msg instanceof WebSocketFrame && Boolean.TRUE.equals(ctx.channel().attr(CHANNEL_UPGRADED_FOR_CALLBACK_WEB_SOCKET).get())) {
                 handleWebSocketFrame(ctx, (WebSocketFrame) msg);
             } else {
                 release = false;

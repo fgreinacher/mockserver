@@ -222,10 +222,12 @@ public class SniHandler extends AbstractSniHandler<SslContext> {
         Protocol protocol = null;
         try {
             if (ctx != null && ctx.channel() != null) {
-                if (ctx.channel().attr(NEGOTIATED_APPLICATION_PROTOCOL).get() != null) {
-                    return ctx.channel().attr(NEGOTIATED_APPLICATION_PROTOCOL).get();
-                } else if (ctx.channel().attr(UPSTREAM_SSL_HANDLER).get() != null) {
-                    SslHandler sslHandler = ctx.channel().attr(UPSTREAM_SSL_HANDLER).get();
+                Protocol negotiated = ctx.channel().attr(NEGOTIATED_APPLICATION_PROTOCOL).get();
+                if (negotiated != null) {
+                    return negotiated;
+                }
+                SslHandler sslHandler = ctx.channel().attr(UPSTREAM_SSL_HANDLER).get();
+                if (sslHandler != null) {
                     String negotiatedApplicationProtocol = sslHandler.applicationProtocol();
                     if (isNotBlank(negotiatedApplicationProtocol)) {
                         if (negotiatedApplicationProtocol.equalsIgnoreCase(ApplicationProtocolNames.HTTP_2)) {

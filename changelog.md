@@ -118,6 +118,16 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
   also returns these entries, and the request appears in their `LOG_ENTRIES` JSON and the dashboard's request pane.
 - The error for a request with a missing `Host` header, logged and returned as the body of the `400`
   response, now names only the request's method and path instead of printing the whole request.
+- **Fewer lookups on every request.** Five settings read on each request (`metricsEnabled`,
+  `dataPlaneAuthenticationRequired`, `otelPropagateTraceContext`, `validateRequestsAgainstOpenApiSpec` and
+  `defaultResponseHeaders`) are now resolved again only after the configuration changes, instead of looked
+  up on every read; a change made at runtime, through the Java API or `PUT /mockserver/configuration`,
+  still applies from the next request. The `Content-Encoding` and `Transfer-Encoding` headers and original
+  compressed body kept for each request are stored as one connection attribute instead of three, and other
+  per-request connection attributes are read once instead of two or three times. The savings are small:
+  in JMH, reading the five settings fell from 11.4-13.6 ns to 4.0-4.2 ns (about 7-9 ns saved). At a
+  fixed 20,000 requests per second on four CPUs, server CPU per request did not change measurably
+  (49.5-54.1 us before, 49.3-51.5 us after, four interleaved runs each).
 
 ### Fixed
 

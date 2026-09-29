@@ -271,9 +271,9 @@ public class Http2MultiplexChildInitializer extends ChannelInitializer<Http2Stre
         // the same handler, in the same relative position, that the HTTP/1.1 pipeline uses
         // (PortUnificationHandler.switchToHttp: codec -> preserveHeadersNettyRemoves -> decompressor).
         // It also captures the original still-compressed body bytes for rawBytes fidelity.
-        // A fresh instance per child channel: it is not @Sharable, and it is stateless anyway -- all
-        // state lives in channel attributes, which here are the stream child's own, matching where
-        // NettyHttpToMockServerHttpRequestDecoder reads them back from (ctx.channel()).
+        // A fresh instance per child channel: it is not @Sharable and holds per-channel state in fields
+        // (the raw-body accumulator and its attribute handle). It publishes to the stream child's own
+        // channel attribute, where NettyHttpToMockServerHttpRequestDecoder reads it back (ctx.channel()).
         pipeline.addLast(new PreserveHeadersNettyRemoves());
         pipeline.addLast(new HttpContentDecompressor());
         pipeline.addLast(new HttpObjectAggregator(configuration.maxRequestBodySize()));

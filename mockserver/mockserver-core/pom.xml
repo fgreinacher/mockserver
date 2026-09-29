@@ -750,6 +750,9 @@
                         <exclude>**/TcpChaosRegistryTest.java</exclude>
                         <exclude>**/MetricsTest.java</exclude>
                         <exclude>**/MetricsHandlerTest.java</exclude>
+                        <!-- Asserts the exact scrape of the process-wide Prometheus registry, so no other
+                             class may register or increment metrics while it runs -->
+                        <exclude>**/MetricsScrapeGoldenTest.java</exclude>
                         <exclude>**/HttpRequestsPropertiesMatcherTest.java</exclude>
                         <exclude>**/HttpRequestPropertiesMatcherLogTest.java</exclude>
                         <!-- Run sequentially: these render templates that evaluate several XPath
@@ -997,6 +1000,7 @@
                                 <include>**/TcpChaosRegistryTest.java</include>
                                 <include>**/MetricsTest.java</include>
                                 <include>**/MetricsHandlerTest.java</include>
+                                <include>**/MetricsScrapeGoldenTest.java</include>
                                 <include>**/HttpRequestsPropertiesMatcherTest.java</include>
                                 <include>**/HttpRequestPropertiesMatcherLogTest.java</include>
                                 <!-- XPath-in-template tests: sequential to avoid flaky timeout under contention -->

@@ -10,6 +10,7 @@ import org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager;
 import org.mockserver.socket.tls.KeyAndCertificateFactory;
 
 import org.mockserver.log.model.LogEntry;
+import org.mockserver.responseheaders.DefaultResponseHeaders;
 import org.slf4j.event.Level;
 
 import java.io.File;
@@ -147,6 +148,140 @@ public class ConfigurationTest {
             assertThat(configuration.logLevel(), equalTo(Level.INFO));
         } finally {
             ConfigurationProperties.logLevel(original);
+        }
+    }
+
+    // metricsEnabled, dataPlaneAuthenticationRequired, otelPropagateTraceContext,
+    // validateRequestsAgainstOpenApiSpec and defaultResponseHeaders are read on every request, so their
+    // JVM-wide fall-through is memoised against ConfigurationProperties.modificationCount(). Each test
+    // below changes the global value repeatedly (not just once) and reads it back twice per value, so a
+    // memo that resolved once and froze, or that refreshed only on the first change, fails.
+
+    @Test
+    public void shouldReflectEveryRuntimeChangeOfMetricsEnabled() {
+        boolean original = ConfigurationProperties.metricsEnabled();
+        try {
+            for (boolean value : new boolean[]{true, false, true, false}) {
+                ConfigurationProperties.metricsEnabled(value);
+                assertThat(configuration.metricsEnabled(), equalTo(value));
+                assertThat(configuration.metricsEnabled(), equalTo(value));
+            }
+        } finally {
+            ConfigurationProperties.metricsEnabled(original);
+        }
+    }
+
+    @Test
+    public void shouldReflectEveryRuntimeChangeOfDataPlaneAuthenticationRequired() {
+        boolean original = ConfigurationProperties.dataPlaneAuthenticationRequired();
+        try {
+            for (boolean value : new boolean[]{true, false, true, false}) {
+                ConfigurationProperties.dataPlaneAuthenticationRequired(value);
+                assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(value));
+                assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(value));
+            }
+        } finally {
+            ConfigurationProperties.dataPlaneAuthenticationRequired(original);
+        }
+    }
+
+    @Test
+    public void shouldReflectEveryRuntimeChangeOfOtelPropagateTraceContext() {
+        boolean original = ConfigurationProperties.otelPropagateTraceContext();
+        try {
+            for (boolean value : new boolean[]{true, false, true, false}) {
+                ConfigurationProperties.otelPropagateTraceContext(value);
+                assertThat(configuration.otelPropagateTraceContext(), equalTo(value));
+                assertThat(configuration.otelPropagateTraceContext(), equalTo(value));
+            }
+        } finally {
+            ConfigurationProperties.otelPropagateTraceContext(original);
+        }
+    }
+
+    @Test
+    public void shouldReflectEveryRuntimeChangeOfValidateRequestsAgainstOpenApiSpec() {
+        boolean original = ConfigurationProperties.validateRequestsAgainstOpenApiSpec();
+        try {
+            for (boolean value : new boolean[]{true, false, true, false}) {
+                ConfigurationProperties.validateRequestsAgainstOpenApiSpec(value);
+                assertThat(configuration.validateRequestsAgainstOpenApiSpec(), equalTo(value));
+                assertThat(configuration.validateRequestsAgainstOpenApiSpec(), equalTo(value));
+            }
+        } finally {
+            ConfigurationProperties.validateRequestsAgainstOpenApiSpec(original);
+        }
+    }
+
+    @Test
+    public void shouldReflectEveryRuntimeChangeOfDefaultResponseHeaders() {
+        String original = ConfigurationProperties.defaultResponseHeaders();
+        try {
+            for (String value : new String[]{"X-Memo=one", "", "X-Memo=two", "X-Memo=two|X-Other=three"}) {
+                ConfigurationProperties.defaultResponseHeaders(value);
+                assertThat(configuration.defaultResponseHeaders(), equalTo(value));
+                assertThat(configuration.defaultResponseHeaders(), equalTo(value));
+                // the per-request consumer reads the parse, which is keyed on the memoised source
+                assertThat(configuration.parsedDefaultResponseHeaders(), equalTo(DefaultResponseHeaders.parse(value)));
+            }
+        } finally {
+            ConfigurationProperties.defaultResponseHeaders(original);
+        }
+    }
+
+    @Test
+    public void shouldKeepMemoisedPerRequestPropertiesCorrectAcrossUnrelatedChangesAndInstanceOverrides() {
+        boolean originalMetricsEnabled = ConfigurationProperties.metricsEnabled();
+        boolean originalDataPlaneAuthenticationRequired = ConfigurationProperties.dataPlaneAuthenticationRequired();
+        boolean originalOtelPropagateTraceContext = ConfigurationProperties.otelPropagateTraceContext();
+        boolean originalValidateRequestsAgainstOpenApiSpec = ConfigurationProperties.validateRequestsAgainstOpenApiSpec();
+        String originalDefaultResponseHeaders = ConfigurationProperties.defaultResponseHeaders();
+        try {
+            ConfigurationProperties.dataPlaneAuthenticationRequired(true);
+            ConfigurationProperties.defaultResponseHeaders("X-Memo=true");
+            assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(true));
+            assertThat(configuration.defaultResponseHeaders(), equalTo("X-Memo=true"));
+
+            // a change to an UNRELATED property also advances the generation; the memo must re-resolve to
+            // the same value, not lose it
+            ConfigurationProperties.metricsEnabled(false);
+            assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(true));
+            assertThat(configuration.defaultResponseHeaders(), equalTo("X-Memo=true"));
+
+            // an instance override (the PUT /mockserver/configuration path) wins over the global value
+            configuration.metricsEnabled(true);
+            configuration.dataPlaneAuthenticationRequired(false);
+            configuration.otelPropagateTraceContext(false);
+            configuration.validateRequestsAgainstOpenApiSpec(false);
+            configuration.defaultResponseHeaders("X-Instance=1");
+            ConfigurationProperties.metricsEnabled(false);
+            ConfigurationProperties.dataPlaneAuthenticationRequired(true);
+            ConfigurationProperties.otelPropagateTraceContext(true);
+            ConfigurationProperties.validateRequestsAgainstOpenApiSpec(true);
+            ConfigurationProperties.defaultResponseHeaders("X-Global=2");
+            assertThat(configuration.metricsEnabled(), equalTo(true));
+            assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(false));
+            assertThat(configuration.otelPropagateTraceContext(), equalTo(false));
+            assertThat(configuration.validateRequestsAgainstOpenApiSpec(), equalTo(false));
+            assertThat(configuration.defaultResponseHeaders(), equalTo("X-Instance=1"));
+
+            // clearing the override picks up the global value that changed while it was masked
+            configuration.metricsEnabled(null);
+            configuration.dataPlaneAuthenticationRequired(null);
+            configuration.otelPropagateTraceContext(null);
+            configuration.validateRequestsAgainstOpenApiSpec(null);
+            configuration.defaultResponseHeaders(null);
+            assertThat(configuration.metricsEnabled(), equalTo(false));
+            assertThat(configuration.dataPlaneAuthenticationRequired(), equalTo(true));
+            assertThat(configuration.otelPropagateTraceContext(), equalTo(true));
+            assertThat(configuration.validateRequestsAgainstOpenApiSpec(), equalTo(true));
+            assertThat(configuration.defaultResponseHeaders(), equalTo("X-Global=2"));
+        } finally {
+            ConfigurationProperties.metricsEnabled(originalMetricsEnabled);
+            ConfigurationProperties.dataPlaneAuthenticationRequired(originalDataPlaneAuthenticationRequired);
+            ConfigurationProperties.otelPropagateTraceContext(originalOtelPropagateTraceContext);
+            ConfigurationProperties.validateRequestsAgainstOpenApiSpec(originalValidateRequestsAgainstOpenApiSpec);
+            ConfigurationProperties.defaultResponseHeaders(originalDefaultResponseHeaders);
         }
     }
 
