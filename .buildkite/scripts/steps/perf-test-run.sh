@@ -49,6 +49,22 @@ bk_upload_artifact() {
 }
 
 K6_IMAGE="grafana/k6:1.7.1@sha256:4fd3a694926b064d3491d9b02b01cde886583c4931f1223816e3d9a7bdfa7e0f"
+# --- OPT-IN release comparison (docs/code/performance-measurement.md) ------------
+# PERF_RELEASE_COMPARISON=<version> measures that published release on this rig. The run
+# is config_profile=release-<version>, so never baselined or published. Relaxed for it
+# only: snapshot freshness, the revision-label grace date, and GC/JDK read via jcmd when
+# the image predates jvm_runtime_info. The clustered A/B defaults off (its image is the
+# snapshot, not the release).
+PERF_RELEASE_COMPARISON="${PERF_RELEASE_COMPARISON:-}"
+if [ -n "$PERF_RELEASE_COMPARISON" ]; then
+  if ! [[ "$PERF_RELEASE_COMPARISON" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: PERF_RELEASE_COMPARISON='$PERF_RELEASE_COMPARISON' is not a release version (MAJOR.MINOR.PATCH, e.g. 8.0.0)" >&2
+    exit 1
+  fi
+  MOCKSERVER_IMAGE="${MOCKSERVER_IMAGE:-mockserver/mockserver:mockserver-${PERF_RELEASE_COMPARISON}-graaljs}"
+  PERF_CLUSTERED="${PERF_CLUSTERED:-false}"
+  echo "--- release comparison: measuring MockServer ${PERF_RELEASE_COMPARISON} ($MOCKSERVER_IMAGE); the result is recorded but never baselined or published"
+fi
 # The SUT runs the -graaljs snapshot variant so the JavaScript response-template
 # arm (regression.js item 15a) has the GraalVM JS engine available; the engine is
 # an OPTIONAL dependency absent from the plain image, and a JS template without it
@@ -128,6 +144,8 @@ PERF_STEADY_WARMUP="${PERF_STEADY_WARMUP:-30s}"
 if [ "$PERF_NETWORK_MODE" = host ]; then
   echo "--- PERF_NETWORK_MODE=host — primary path only (regression, sweep, growth, steady); multi-SUT secondary phases skipped"
   PERF_INFO_ARM=false; PERF_STREAMING=false; PERF_CLUSTERED=false; PERF_PROXY_PROFILE=false
+  # shellcheck disable=SC2034  # read by lib/perf-path-coverage.sh, sourced below
+  PERF_COVERAGE=false
 fi
 
 RUN_ID="${BUILDKITE_BUILD_ID:-local}-$$"
@@ -153,6 +171,9 @@ CLU_B="mockserver-perf-clu-b-${RUN_ID}"
 # Short, DNS-resolvable aliases for JGroups discovery - see start_clu.
 CLU_A_ALIAS="clu-a"
 CLU_B_ALIAS="clu-b"
+# shellcheck source=lib/perf-path-coverage.sh
+. "$SCRIPT_DIR/lib/perf-path-coverage.sh"
+cov_validate_env || exit 1
 
 # The clustered image is a MUTABLE snapshot tag published by the SAME job that
 # publishes the SUT image (java-docker-push-snapshot.sh), from the same shaded jar
@@ -632,6 +653,7 @@ cleanup() {
     "$INFO_SERVER" "$INFO_SWEEP_K6" "${STEADY_K6:-}" \
     "$CLU_CTRL" "$CLU_A" "$CLU_B" \
     "mockserver-mtls-${RUN_ID}" "mockserver-jdk-${RUN_ID}" >/dev/null 2>&1 || true
+  cov_cleanup
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
   [ -n "${FILE_BODY_DIR:-}" ] && rm -rf "$FILE_BODY_DIR" >/dev/null 2>&1 || true
   [ -n "${HS_CERT_DIR:-}" ] && rm -rf "$HS_CERT_DIR" >/dev/null 2>&1 || true
@@ -833,6 +855,8 @@ if [ "$PERF_NETWORK_MODE" != host ]; then
   docker network create "$NETWORK" >/dev/null
 fi
 
+# Extra `-e` pairs for the next start_mockserver call only (set by the path-coverage SUTs).
+START_EXTRA_ENV=()
 start_mockserver() {
   local name="$1" cpus="$2" alias="$3" publish="${4:-}" mem="${5:-}" mount="${6:-}" log_level="${7:-ERROR}" diag_subdir="${8:-}" no_rm="${9:-}" port="${10:-1080}"
   # log_level defaults to ERROR — the tracked baseline's level, which every existing
@@ -879,6 +903,7 @@ start_mockserver() {
     ${diag_mount_arg[@]+"${diag_mount_arg[@]}"} \
     ${publish_flag[@]+"${publish_flag[@]}"} \
     ${java_opts_arg[@]+"${java_opts_arg[@]}"} \
+    ${START_EXTRA_ENV[@]+"${START_EXTRA_ENV[@]}"} \
     -e MOCKSERVER_LOG_LEVEL="$log_level" \
     -e MOCKSERVER_DISABLE_SYSTEM_OUT=true \
     -e MOCKSERVER_METRICS_ENABLED=true \
@@ -1072,6 +1097,29 @@ JAVA_VENDOR="$(metric_label jvm_runtime_info java_vendor)"
 VM_NAME="$(metric_label jvm_runtime_info vm_name)"
 GC_IN_USE="$(metric_label jvm_runtime_info gc)"
 HEAP_MAX_BYTES="$(metric_heap_max)"
+JVM_RUNTIME_SRC="observed"
+
+# Release comparison only: a release older than jvm_runtime_info reports JDK and GC
+# through jcmd on the running SUT (GC as the -XX:+Use*GC flag, source observed-jcmd).
+# Anything still unreadable falls through to the fail-closed check below.
+release_jvm_runtime_via_jcmd() {
+  local uid gid jcmd_img="$PERF_HISTO_JDK_IMAGE" props flags tmo=()
+  command -v timeout >/dev/null 2>&1 && tmo=(timeout 60)
+  read -r uid gid <<<"$(sut_jvm_uid_gid "$SERVER")"
+  printf '%s' "$uid" | grep -qE '^[0-9]+$' || { echo "WARNING: release comparison: could not resolve the SUT JVM uid for jcmd" >&2; return 0; }
+  props="$(${tmo[@]+"${tmo[@]}"} docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$jcmd_img" jcmd 1 VM.system_properties 2>/dev/null || true)"
+  flags="$(${tmo[@]+"${tmo[@]}"} docker run --rm --pid="container:$SERVER" --user "${uid}:${gid}" "$jcmd_img" jcmd 1 VM.flags 2>/dev/null || true)"
+  jcmd_prop() { printf '%s\n' "$props" | awk -v k="$1" 'index($0, k "=") == 1 { sub("^[^=]*=", ""); gsub(/\\/, ""); print; exit }' || true; }
+  [ -n "$JDK_BUILD" ] || JDK_BUILD="$(jcmd_prop java.runtime.version)"
+  [ -n "$JAVA_VENDOR" ] || JAVA_VENDOR="$(jcmd_prop java.vendor)"
+  [ -n "$VM_NAME" ] || VM_NAME="$(jcmd_prop java.vm.name)"
+  [ -n "$GC_IN_USE" ] || GC_IN_USE="$(printf '%s' "$flags" | grep -oE -- '-XX:\+Use[A-Za-z0-9]+GC' | head -1 || true)"
+  JVM_RUNTIME_SRC="observed-jcmd"
+  echo "--- release comparison: JDK/GC read from the running SUT via jcmd (image predates jvm_runtime_info): jdk='${JDK_BUILD}' vendor='${JAVA_VENDOR}' gc='${GC_IN_USE}'"
+}
+if [ -n "$PERF_RELEASE_COMPARISON" ] && { [ -z "$JDK_BUILD" ] || [ -z "$GC_IN_USE" ]; }; then
+  release_jvm_runtime_via_jcmd
+fi
 # The immutable content id the SUT image actually resolved to (RepoDigest), or the
 # local image id when built without a digest (locally-built image). RepoDigests is
 # an IMAGE property and does NOT exist on a container, so we must resolve the
@@ -1177,6 +1225,9 @@ fi
 if [ -n "$PERF_STEADY_RATE" ]; then
   CONFIG_PROFILE="steady-${PERF_STEADY_RATE}"
 fi
+if [ -n "$PERF_RELEASE_COMPARISON" ]; then
+  CONFIG_PROFILE="release-${PERF_RELEASE_COMPARISON}"
+fi
 # k6 image digest is pinned in the K6_IMAGE ref itself (…@sha256:…).
 K6_IMAGE_DIGEST="$(printf '%s' "$K6_IMAGE" | sed -nE 's/.*@(sha256:[0-9a-f]+)$/\1/p')"
 # k6 container CPU allocation (cores * 100%) from its cpuset pin.
@@ -1191,6 +1242,9 @@ CONFIG_ERRORS=()
 [ -n "$IMAGE_DIGEST" ]      || CONFIG_ERRORS+=("image digest not resolvable — 'docker image inspect' of ${SERVER}'s image (${SERVER_IMAGE_ID:-<unresolved>}) yielded no RepoDigest or .Id")
 [ -n "$JDK_BUILD" ]        || CONFIG_ERRORS+=("JDK build (jvm_runtime_info{java_runtime_version}) not readable — image predates the jvm_runtime_info metric?")
 [ -n "$GC_IN_USE" ]        || CONFIG_ERRORS+=("GC in use (jvm_runtime_info{gc}) not readable — image predates the jvm_runtime_info metric?")
+if [ -n "$PERF_RELEASE_COMPARISON" ] && [ "$MS_VERSION" != "$PERF_RELEASE_COMPARISON" ]; then
+  CONFIG_ERRORS+=("PERF_RELEASE_COMPARISON=${PERF_RELEASE_COMPARISON} but the running SUT reports version '${MS_VERSION}' (${MOCKSERVER_IMAGE}) — the result would be labelled as a release it did not measure")
+fi
 awk -v v="$HEAP_MAX_BYTES" 'BEGIN{exit !(v+0>0)}' || CONFIG_ERRORS+=("resolved heap (jvm_memory_max_bytes{area=\"heap\"}) not a positive value: '${HEAP_MAX_BYTES}'")
 [ -n "$LOG_LEVEL_VAL" ]     || CONFIG_ERRORS+=("MOCKSERVER_LOG_LEVEL not recordable (neither container env nor shell)")
 [ -n "$DISABLE_SYSOUT_VAL" ] || CONFIG_ERRORS+=("MOCKSERVER_DISABLE_SYSTEM_OUT not recordable (neither container env nor shell)")
@@ -1315,7 +1369,11 @@ if [ -n "$IMAGE_REVISION" ]; then
   fi
 else
   PROVENANCE_OK="null"
-  if [ "$GRACE_VALID" != true ]; then
+  if [ -n "$PERF_RELEASE_COMPARISON" ]; then
+    # A release predates the label; it is identified by its version, verified above.
+    echo "--- provenance: release comparison — ${MOCKSERVER_IMAGE} carries no revision label; identified by its verified version ${MS_VERSION} instead"
+    add_check "source_provenance" true "release comparison: the SUT is the published ${PERF_RELEASE_COMPARISON} image, which carries no org.opencontainers.image.revision label; it is identified by the version the running JVM reports (${MS_VERSION}) and the result is never baselined (config_profile=${CONFIG_PROFILE})"
+  elif [ "$GRACE_VALID" != true ]; then
     echo "--- provenance: UNVERIFIED and grace cutoff MALFORMED ('${PROVENANCE_GRACE_UNTIL}') — SUT image carries no revision label; failing closed" >&2
     add_check "source_provenance" false "SUT image carries no org.opencontainers.image.revision label AND the provenance grace cutoff PERF_PROVENANCE_GRACE_UNTIL='${PROVENANCE_GRACE_UNTIL}' is not a valid ISO YYYY-MM-DD date — failing closed so a malformed override cannot silently keep the grace window open forever (set a well-formed future date to extend deliberately)"
   elif [[ "$TODAY_UTC" > "$PROVENANCE_GRACE_UNTIL" ]]; then
@@ -1400,9 +1458,13 @@ else
   fi
   if [ -n "$_img_epoch" ]; then
     IMAGE_AGE_DAYS=$(( ( $(date -u +%s) - _img_epoch ) / 86400 ))
+    if [ -n "$PERF_RELEASE_COMPARISON" ]; then
+      # Freshness guards the snapshot factory, which a release run does not measure.
+      IMAGE_STALE="null"
+      echo "--- image freshness: not evaluated for a release comparison (${MOCKSERVER_IMAGE} built ${IMAGE_AGE_DAYS}d ago)"
     # STRICTLY older than the bound is stale: an image built exactly PERF_MAX_IMAGE_AGE_DAYS
     # whole days ago is still within tolerance (a factory that is merely slow, not frozen).
-    if [ "$IMAGE_AGE_DAYS" -gt "$PERF_MAX_IMAGE_AGE_DAYS" ]; then
+    elif [ "$IMAGE_AGE_DAYS" -gt "$PERF_MAX_IMAGE_AGE_DAYS" ]; then
       IMAGE_STALE="true"
       echo "--- image freshness: STALE — SUT image built ${IMAGE_AGE_DAYS}d ago (${IMAGE_CREATED}), older than PERF_MAX_IMAGE_AGE_DAYS=${PERF_MAX_IMAGE_AGE_DAYS}; the snapshot pipeline may be frozen — compare will RED this run and not baseline it" >&2
     else
@@ -1424,7 +1486,8 @@ CONFIG_JSON="$(jq -n \
   --arg image_created "$IMAGE_CREATED" --arg image_age_days "$IMAGE_AGE_DAYS" \
   --argjson image_max_age_days "$IMAGE_MAX_AGE_JSON" --arg image_stale "$IMAGE_STALE" \
   --arg provenance_ok "$PROVENANCE_OK" --arg provenance_grace_until "$PROVENANCE_GRACE_UNTIL" \
-  --arg jvm_diagnostics "$PERF_JVM_DIAGNOSTICS" \
+  --arg jvm_diagnostics "$PERF_JVM_DIAGNOSTICS" --arg jvm_runtime_src "$JVM_RUNTIME_SRC" \
+  --arg release_comparison "$PERF_RELEASE_COMPARISON" \
   --arg jdk "$JDK_BUILD" --arg java_vendor "$JAVA_VENDOR" --arg vm_name "$VM_NAME" \
   --arg gc "$GC_IN_USE" --arg heap_max "$HEAP_MAX_BYTES" \
   --arg log_level "$LOG_LEVEL_VAL" --arg log_level_src "$LOG_LEVEL_SRC" \
@@ -1473,7 +1536,9 @@ CONFIG_JSON="$(jq -n \
     image_created: (if $image_created=="" then null else $image_created end),
     image_age_days: (if $image_age_days=="unknown" then null else ($image_age_days|tonumber) end),
     image_max_age_days: $image_max_age_days,
-    image_stale: ($image_stale=="true"),
+    image_stale: (if $image_stale=="null" then null else ($image_stale=="true") end),
+    # The release this run measured (PERF_RELEASE_COMPARISON), else null.
+    release_comparison: (if $release_comparison=="" then null else $release_comparison end),
     # Diagnostics tier this run was measured under. tier 1 ("standard") is inert on a
     # healthy path; "deep" adds throughput-costing tier-2 instrumentation, which is why
     # a deep run is baseline_eligible:false (recorded, never persisted) at the top level.
@@ -1505,8 +1570,8 @@ CONFIG_JSON="$(jq -n \
       image_revision:"observed", commit_under_test:$cut_src, harness_commit:"declared", provenance_ok:"observed",
       image_created:"observed", image_age_days:"observed", image_max_age_days:"declared", image_stale:"observed",
       jvm_diagnostics:"declared",
-      jdk:"observed", java_vendor:"observed", vm_name:"observed",
-      gc:"observed", heap_max_bytes:"observed",
+      jdk:$jvm_runtime_src, java_vendor:$jvm_runtime_src, vm_name:$jvm_runtime_src,
+      gc:$jvm_runtime_src, heap_max_bytes:"observed",
       log_level:$log_level_src, disable_system_out:$disable_sysout_src,
       max_event_log_size_bytes:"container-env",
       so_backlog:"container-env", config_profile:"declared", rig_profile:"declared",
@@ -1835,8 +1900,8 @@ sweep_cpu_sampler() { # k6_container_name  out_csv
 # captured value) so derive_saturation can line each rung up with its hold window.
 # Registers the sampler PID in SWEEP_SAMPLER_PID so cleanup() reaps it on an early
 # exit, and clears it once reaped.
-run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_host_path
-  local k6name="$1" target_alias="$2" out_json="$3" cpu_log="$4"
+run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_host_path  [scheme=http|https]
+  local k6name="$1" target_alias="$2" out_json="$3" cpu_log="$4" scheme="${5:-http}"
   LAST_SWEEP_T0="$(date -u +%s)"
   sweep_cpu_sampler "$k6name" "$cpu_log" & SWEEP_SAMPLER_PID=$!
   # Register this ladder so the liveness gate can stop it the instant the SUT dies.
@@ -1844,12 +1909,18 @@ run_sweep() { # k6_container_name  target_alias  out_json_host_path  cpu_log_hos
   local sweep_rc=0
   # host mode addresses the SUT on the host; bridge keeps the alias URL unchanged.
   local sweep_base="http://${target_alias}:1080"; [ "$PERF_NETWORK_MODE" = host ] && sweep_base="$SUT_BASE_HTTP"
+  # https: the path-coverage h2 ladder (k6 negotiates h2 via ALPN).
+  local proto_env=(-e "PROTO=http")
+  if [ "$scheme" = https ]; then
+    sweep_base="https://${target_alias}:1080"
+    proto_env=(-e "PROTO=https_h2" -e "INSECURE_SKIP_TLS_VERIFY=true")
+  fi
   # shellcheck disable=SC2046
   docker run --rm --name "$k6name" "${NET_CLIENT[@]}" $(cpuset_arg "$K6_CPUS") \
     -v "$REPO_ROOT/mockserver-performance-test/k6:/k6:ro" \
     -v "$OUT_DIR:/out" \
     -e "BASE_URL=$sweep_base" \
-    -e "PROTO=http" \
+    "${proto_env[@]}" \
     -e "K6_SWEEP_RATES=$SWEEP_RATES" \
     -e "K6_SWEEP_STEP=$SWEEP_STEP" \
     -e "K6_SWEEP_GAP=$SWEEP_GAP" \
@@ -2634,6 +2705,10 @@ if [ "$PERF_WORKLOAD" = "forward" ] && [ "$PERF_NETWORK_MODE" != host ]; then
     add_check "workload_forward_served_via_upstream" false "PERF_WORKLOAD=forward did not measure the forwarded path: setup_ok=${WL_SETUP_OK} (SUT reset ${SUT_RESET_CODE}, upstream reset ${UP_RESET_CODE}, upstream seed ${UP_SEED_CODE}), k6_exit=${WL_FWD_EXIT}, forward_absolute served=${WL_FWD_SAMPLES}, p50=${WL_FWD_P50}ms vs floor ${WL_MIN_P50}ms. A p50 below the floor means the SUT answered a /simple mock or a fast/shadowed upstream (~0 ms) instead of forwarding to the slow upstream, so unit-21's path was NOT exercised; refusing to record it as healthy"
   fi
 fi
+abort_if_sut_died
+
+# --- path coverage (lib/perf-path-coverage.sh): dedicated SUTs, notify-only ----------
+run_path_coverage
 abort_if_sut_died
 
 # --- item 8: laptop startup + footprint profile (notify-only) -----------------
@@ -3755,6 +3830,7 @@ jq -n \
   --argjson proxyfwd "$PROXY_FWD_JSON" \
   --argjson workload "$WORKLOAD_JSON" \
   --argjson handshake "$HANDSHAKE_JSON" \
+  --argjson path_coverage "$PATH_COVERAGE_JSON" \
   --argjson streaming "$STREAMING_JSON" \
   --argjson clustered_state "$CLUSTERED_JSON" \
   --argjson clustered_attempted "$CLUSTERED_ATTEMPTED" \
@@ -3829,6 +3905,8 @@ jq -n \
     # per-SUT CPU/alloc augmentation above). NOT part of .behaviours, so it does not
     # touch the k6 fingerprint; compare reads it as its own non-gating metric family.
     tls_handshake: ($handshake.tls_handshake // {}),
+    # Path coverage: .arms, .h2_ladder, .problems; {} when disabled. Not .behaviours.
+    path_coverage: $path_coverage,
     # item 12 — LLM/SSE streaming under concurrency: the match-p95 A/B, the
     # server-side inter-token delay-error distribution (idle vs load) and heap per
     # open stream. NOT part of .behaviours, so it does not touch the k6 fingerprint;
@@ -3993,7 +4071,10 @@ if command -v buildkite-agent >/dev/null 2>&1; then
   # master by a java-pipeline duration) would make LAST != HEAD on every quiet day
   # and dispatch the heavy run daily forever, defeating the commit-gate economy.
   # Keyed off real runs, NOT the lint build that passes on every push.
-  buildkite-agent meta-data set "perf_regression_ran_commit" "$HARNESS_COMMIT" || true
+  # A release run must not make the guard skip the next daily run of this commit.
+  if [ -z "$PERF_RELEASE_COMPARISON" ]; then
+    buildkite-agent meta-data set "perf_regression_ran_commit" "$HARNESS_COMMIT" || true
+  fi
 else
   cp "$RESULT_JSON" "$REPO_ROOT/perf-result.json"
   echo "(local run) result + sweep copied to $REPO_ROOT/perf-result.json, $REPO_ROOT/perf-sweep.json"

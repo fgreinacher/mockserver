@@ -352,9 +352,11 @@ fi
 ELIGIBLE="$(jq -r 'if has("baseline_eligible") then .baseline_eligible else true end' "$RESULT")"
 if [ "$ELIGIBLE" != "true" ]; then
   DIAG_TIER="$(jq -r '.config.jvm_diagnostics // "?"' "$RESULT")"
-  annotate "info" ":microscope: **Perf run recorded, not baselined — instrumented run** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
+  CFG_PROFILE="$(jq -r '.config.config_profile // "?"' "$RESULT")"
+  RIG_PROFILE_HEAD="$(jq -r '.config.rig_profile // "?"' "$RESULT")"
+  annotate "info" ":microscope: **Perf run recorded, not baselined — non-default run** — \`${COMMIT:0:10}\` on \`${BRANCH}\`
 
-This run set \`baseline_eligible: false\` (\`PERF_JVM_DIAGNOSTICS=${DIAG_TIER}\`): tier-2 diagnostics (GC file logging, NMT, JFR) depress throughput by design, so it was **not persisted to the baseline history and not compared** — baselining it would silently shift the series the diagnostics-tier split exists to protect. This is expected for a deliberate investigation run, so the build stays **green**."
+This run set \`baseline_eligible: false\` (\`PERF_JVM_DIAGNOSTICS=${DIAG_TIER}\`, \`config_profile=${CFG_PROFILE}\`, \`rig_profile=${RIG_PROFILE_HEAD}\`): instrumentation, a tuned server, a non-default rig, an opt-in workload or a past-release comparison each measure something other than the default-configuration series, so it was **not persisted to the baseline history and not compared**. This is expected for a deliberate run, so the build stays **green**; its numbers are in the \`perf-result.json\` artifact."
   exit 0
 fi
 
@@ -746,6 +748,19 @@ def metrics:
       {name:($k+".cpu_ms_per_handshake"),  value:$v.cpu_ms_per_handshake,  bkey:"tls_handshake.*.cpu_ms_per_handshake"},
       {name:($k+".alloc_kb_per_handshake"),value:$v.alloc_kb_per_handshake,bkey:"tls_handshake.*.alloc_kb_per_handshake"},
       {name:($k+".error_rate"),            value:$v.error_rate,            bkey:"tls_handshake.*.error_rate"} ) ),
+  # Path coverage: only the NAMED metrics are budgeted (arms carry other descriptive
+  # fields). Not .behaviours, so the k6 fingerprint is untouched; all non-gating. An absent
+  # arm or null value emits nothing, so a skipped arm never trips the missing-budget check.
+  ((.path_coverage.arms // {}) | to_entries[] | select((.value | type) == "object") | .key as $k | .value as $v |
+    ( ["p50_ms","p99_ms","error_rate","delivery_ratio","handshake_p50_ms","handshake_p99_ms",
+       "handshakes_per_s","p50_ratio","p99_ratio","handshake_p50_ratio","dropped_ratio",
+       "persisted_ratio","ring_occupancy_peak_ratio","rss_peak_mib","netty_direct_peak_mib",
+       "direct_pool_peak_mib","received_mib_per_s"][] as $m
+      | select($v | has($m))
+      | {name:("path_coverage."+$k+"."+$m), value:$v[$m], bkey:("path_coverage.*."+$m)} ) ),
+  {name:"path_coverage.h2_ladder.rig_valid_peak_achieved_rps",
+   value:((.path_coverage.h2_ladder // {}).rig_valid_peak_achieved_rps),
+   bkey:"path_coverage.h2_ladder.rig_valid_peak_achieved_rps"},
   # item 11 — HTTP/2 per-connection heap-delta (org.mockserver.benchmark.Http2Connection-
   # MemoryBenchmark), merged into the run under .h2_connection_memory by the h2-multiplex
   # step and keyed by shape: conn_1x1, conn_10x10, conn_100x10 (N connections x M concurrent

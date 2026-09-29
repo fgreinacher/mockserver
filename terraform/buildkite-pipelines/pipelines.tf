@@ -195,9 +195,10 @@ resource "buildkite_pipeline_schedule" "infra_baseline_freshness_daily" {
 # max_size = 1 (terraform/buildkite-agents, perf_max_size), so at most one perf job
 # runs at a time. A 2h soak sharing the daily regression's 04:00 window would block
 # that day's regression entirely. The daily regression (perf_regression_daily,
-# 04:00) occupies the perf queue for up to ~2.5h worst case (run 45m + microbench
-# 70m + h2-multiplex 30m + compare 10m), i.e. until ~06:35; the soak's 08:00 start
-# clears that by ~85 min and its 08:00–10:00 window is well clear of the 06:00
+# 04:00) can occupy the perf queue for up to 3h45m if every step runs to its timeout
+# (run 70m + microbench 70m + h2-multiplex 30m + allocation profile 30m + compare 10m +
+# publish 15m, per perf-test-guard.sh), i.e. until ~07:45; the soak's 08:00 start still
+# clears that, and its 08:00–10:00 window is well clear of the 06:00
 # cleanup and the 16:00 baseline-freshness check (the freshness check runs in the
 # infra pipeline, a different queue, so there is no queue contention with it in any
 # case). Sunday is the lowest-commit day, so the commit-gated daily regression most

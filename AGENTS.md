@@ -145,13 +145,15 @@ Strip the bell character too when grepping a log — lines are prefixed with a b
 
 **Before concluding a perf build is stuck waiting for an agent:** the `perf` queue runs a
 SINGLE scale-to-zero agent, and `mockserver-performance-test` has a **scheduled daily run
-at 04:00** plus Buildkite's *skip-intermediate-builds* behaviour. So a manual run can be
-(a) legitimately queued behind the daily run, which is easy to miss because the Buildkite
-UI lists only the most recent pipeline runs by default, or (b) `skipped` outright because
-a newer build was created after it. Check the agent's `job` field
-(`bk api "agents?per_page=50"`) to see what is actually holding it, and check each build's
-`state` is not `skipped` — `bk build create` reports success either way. Trigger perf runs
-ONE at a time and confirm each reaches `running`.
+at 04:00** and a **weekly soak on Sunday at 08:00** (UTC). A manual run can be legitimately
+queued behind either, which is easy to miss because the Buildkite UI lists only the most
+recent pipeline runs by default. Skip-intermediate-builds no longer applies to this
+pipeline's `master` builds (`skip_intermediate_builds_branch_filter = "!master"`, applied
+2026-09-29), but a build on any other branch can still be `skipped` by a newer one. Check the
+agent's `job` field (`bk api "agents?per_page=50"`) to see what is actually holding it, and
+check each build's `state` — `bk build create` reports success either way; when querying
+builds with `bk api`, filter by the full 40-character commit SHA. Trigger perf runs ONE at a
+time and confirm each reaches `running`.
 
 Use the API token (via `aws secretsmanager get-secret-value` + `curl`) only for build state, creating builds, and retrying jobs. Driving the Buildkite UI through the `chrome-devtools` MCP does **not** work for logs: that automation browser is a separate, logged-out profile from the developer's own browser. See [docs/infrastructure/ci-cd.md](docs/infrastructure/ci-cd.md).
 

@@ -25,8 +25,9 @@ regressions hide and stale claims get published.
 | `Http2StreamChannelBenchmark` JMH | HTTP/2 streams-per-connection throughput and latency | Daily (perf queue) | No — by explicit design |
 | `Http2ConnectionMemoryBenchmark` JMH | Retained heap per established connection (`bytes_per_connection`, shapes 1x1 / 10x10 / 100x10) | Daily (perf queue) | No — notify-only. `perf-test-compare.sh` reads `.h2_connection_memory` and annotates each shape's `bytes_per_connection` against the `h2_connection_memory.*.bytes_per_connection` budget every run; non-gating, so a move is surfaced but cannot fail the build until >=10 clean runs let a MAD-derived floor be set |
 | `load.js` | p95 / p99 gate, ramping 50 -> 500 rps | Opt-in (manual / scheduled) | Yes — k6 thresholds |
+| `coverage.js` + an HTTPS `sweep.js` ladder | Paths nothing else drives: HTTPS connection churn, client-certificate (mTLS) traffic, HTTP/2 at load, JSONPath / XPath / JSON-schema matchers over 100 candidates, disk capture under proxy load, large proxied downloads | Daily (perf queue), inside `perf-test-run.sh` | No — notify-only, `provisional` budgets |
 | `stress.js` | Ramp past the knee | Lint only | Never executes in CI |
-| `soak.js` | Sustained load over hours | Lint only | Never executes in CI |
+| `soak.js` | Sustained load over hours | Weekly (Sunday 08:00 UTC schedule, perf queue) and on demand in any build whose message contains `[perf-soak]` | Yes, for that build — k6 thresholds and a result-presence check; never compared or baselined |
 | `scripts/perf/bench_startup.py` | Launch-to-ready variant matrix | Never runs in CI | Never |
 | `inject` (`run-inject.sh`) | Load-injection ceiling | Opt-in | Never in daily pipeline |
 | `perf-test-allocprofile.sh` (deep JFR) | Allocation per request, peak direct memory, top allocation sites over the load window, retained-heap histogram | Daily (perf queue), separate step | No — `soft_fail`, never baselined; an under-sized recording is reported INVALID |
@@ -36,7 +37,7 @@ regressions hide and stale claims get published.
 ```mermaid
 flowchart TD
   guard["perf-test-guard.sh\nonly dispatches if master moved"]
-  run["perf-test-run.sh\nregression.js HTTP + HTTPS/H2\nforward.js\nproxy.js forward mode\nproxy.js handshake mode\nsweep.js\nstreaming.js\nclustered_crossing.js\ngrowth.js + resource sampler"]
+  run["perf-test-run.sh\nregression.js HTTP + HTTPS/H2\nforward.js\nproxy.js forward mode\nproxy.js handshake mode\ncoverage.js + HTTPS ladder\nsweep.js\nstreaming.js\nclustered_crossing.js\ngrowth.js + resource sampler"]
   micro["perf-test-microbench.sh\nMatchingBenchmark 2 forks\nCandidateIndexBenchmark\n7 promoted dark benchmarks\n2 proxy-path benchmarks (9b/9c)"]
   h2["perf-test-h2multiplex.sh\nHttp2StreamChannelBenchmark\nHttp2ConnectionMemoryBenchmark"]
   alloc["perf-test-allocprofile.sh\ndeep JFR run, annotation only\nnever compared or baselined"]
@@ -72,6 +73,7 @@ Everything else is reported in the Buildkite annotation but does not change the 
 - `growth.js` ratios and `live_set_bytes`
 - All promoted dark benchmark metrics
 - The proxy-path benchmark metrics (`RelayByteCopyBenchmark`, `SocksHandshakeBenchmark` — items 9b/9c), which share the `microbench_extra.*` budgets
+- Every `path_coverage.*` metric (see [Path coverage](#coveragejs--path-coverage-notify-only)), whose budgets are also marked `provisional`
 
 ## What Each Harness Actually Measures
 
@@ -202,6 +204,139 @@ Trigger a run (perf queue, one at a time):
 bk build create -p mockserver-performance-test -b master -m "[perf-run] unit21 proxy concurrency" \
   -e PERF_WORKLOAD=forward -e PERF_UPSTREAM_DELAY_MS=50
 ```
+
+### `coverage.js` — path coverage (notify-only)
+
+Six request paths that no other daily arm drove now run in the daily `perf-test-run.sh` (not in
+`PERF_NETWORK_MODE=host` runs, and not in the allocation-profile step), each against a fresh,
+dedicated SUT, and land under `.path_coverage` in `perf-result.json`. Every
+metric is notify-only with a `provisional` budget. The phase is estimated at about 7 to 8 minutes on
+the perf box (the `perf-run` step timeout went from 60 to 70 minutes to make room);
+`PERF_COVERAGE=false` turns it off and `PERF_COVERAGE_ARMS` runs a subset.
+
+```mermaid
+flowchart LR
+  cov["coverage SUT\nERROR, default config"]
+  cap["capture SUT\nWARN + persistRecordedRequestsToDisk"]
+  dl["download SUT\nforward proxy"]
+  dlup["download upstream\nprivate network, 32 MiB FILE body"]
+  up["run upstream\n/simple"]
+  k6pair["two concurrent k6\ntls + mtls"]
+  k6pair -->|"churn, keepalive"| cov
+  k6m["k6 matchers"] --> cov
+  k6h2["sweep.js over HTTPS"] -->|"h2 ladder"| cov
+  k6c["k6 capture"] -->|"HTTP_PROXY"| cap --> up
+  k6d["k6 download"] -->|"HTTP_PROXY"| dl --> dlup
+```
+
+| `PERF_COVERAGE_ARMS` group | Arms (`.path_coverage.arms.*`) | What runs | Budgeted metrics |
+|---|---|---|---|
+| `churn` | `tls_churn`, `mtls_churn` | `noConnectionReuse`: a fresh TCP + TLS handshake per request, 200/s per arm, without and with a client certificate | `p50_ms`, `p99_ms`, `handshake_p50_ms`, `handshake_p99_ms`, `handshakes_per_s`, `delivery_ratio`, `error_rate`; on `mtls_churn` also `p50_ratio`, `p99_ratio`, `handshake_p50_ratio` against `tls_churn` |
+| `keepalive` | `tls_keepalive`, `mtls_keepalive` | Reused connections (HTTP/2 via ALPN), 200/s per arm, on a server at its default `ClientAuth.OPTIONAL` | `p50_ms`, `p99_ms`, `delivery_ratio`, `error_rate`; on `mtls_keepalive` also `p50_ratio`, `p99_ratio` |
+| `matchers` | `jsonpath_100`, `xpath_100`, `jsonschema_100` | 100 expectations per matcher type on one literal `POST` path (one candidate-index bucket); the request matches only the last one registered, so every request evaluates all 100; 100/s per arm over HTTP | `p50_ms`, `p99_ms`, `delivery_ratio`, `error_rate` |
+| `h2` | `h2_2000`, `h2_8000`, `h2_16000`, plus `.h2_ladder` | `sweep.js` over HTTPS after a one-request k6 probe proves k6 negotiates `HTTP/2.0` with the SUT over ALPN; 15 s rungs, 5 s settle, judged by the daily ladder's own `derive_saturation` rig-validity rules | per rig-valid rung `p50_ms`, `p99_ms`, `delivery_ratio`; `error_rate`; `h2_ladder.rig_valid_peak_achieved_rps` |
+| `capture` | `capture_proxy` | A SUT at `WARN` persisting every recorded request to a host-mounted NDJSON file, under absolute-URI proxy load at 1,000/s to the run's upstream | `p50_ms`, `p99_ms`, `delivery_ratio`, `error_rate`, `dropped_ratio`, `persisted_ratio`, `ring_occupancy_peak_ratio` |
+| `download` | `download_32mib` | A SUT as a forward proxy relaying a 32 MiB `FILE` body from an upstream on a private network k6 is not on, 2/s with 8 VUs | `p50_ms`, `p99_ms`, `delivery_ratio`, `error_rate`, `received_mib_per_s`, `rss_peak_mib`, `netty_direct_peak_mib`, `direct_pool_peak_mib` |
+
+Arms also carry descriptive fields that are recorded but not compared: `capture_proxy` has the
+raw `dropped_log_events`, `evicted_log_entries`, `requests_received`, `persisted_records`,
+`persisted_bytes`, `ring_capacity`, `ring_occupancy_peak` and `drain_s` (seconds the ring took to
+empty before the file was counted); `download_32mib` has `rss_baseline_mib`, `rss_after_mib`,
+`heap_peak_mib`, `netty_direct_baseline_mib`, `upstream_requests` and `proxied_ratio` (downloads
+the private upstream served over requests k6 sent; a problem below 0.9); each `h2_*` rung has `rig_valid` and
+`exclude_reason`. Memory and transfer figures are binary MiB (1,048,576 bytes), hence the `_mib`
+names. A metric the image does not export (an older release has no
+`netty_direct_memory_used_bytes` or event-log ring gauges) is null and is not compared.
+
+**Why these paths.** The item 14 handshake arms measure TLS handshake time at 50/s, and their
+mTLS SUT *requires* a certificate. Nothing measured request latency under connection churn, or
+client certificates against the default server, where MockServer maps the peer certificate chain
+into every request. HTTP/2 was only ever driven at 200 rps. No arm matched on JSONPath, XPath or
+JSON schema, ran with disk capture on, or relayed a body larger than 10 MB through the proxy.
+
+**Why each tls/mtls pair is two concurrent k6 containers.** k6 presents a configured client
+certificate to every server that asks for one, and MockServer asks on every handshake, so a
+no-certificate arm cannot share a k6 process with a certificate arm. Running the pair as two
+containers at once against the same SUT keeps the ratio a like-for-like, within-run A/B.
+
+**Fail-loud probes.** Each invocation's `setup()` proves the arm measures what it is named for,
+and aborts otherwise: the TLS arms must show a non-zero handshake time and a k6-side
+`HTTP/2.0` protocol; `/cov/mtls` requires a
+client-certificate subject, so the no-certificate invocation must be refused it and the
+certificate invocation served it; each matcher must return the LAST candidate's body and must
+refuse a body that matches none; the download must deliver the whole body at the expected length,
+from an upstream only the SUT can reach. k6 still writes a summary after `setup()` aborts, so a
+result is merged only when its k6 invocation exited 0, and `coverage.js` omits any arm that
+measured no request. A missing metrics scrape on the capture or download SUT is reported as a
+problem rather than left as a silent null, and so is a capture run whose SUT received fewer
+requests than k6 sent (k6 can reach the run's upstream directly, so this proves the load went
+through the proxy), a coverage SUT that stopped running during an arm, and an h2 ladder with no
+rig-valid rung. An aborted invocation leaves its arm out of `.arms`, names it under `.path_coverage.problems`, and
+posts a `perf-path-coverage-*` warning annotation. Nothing in the phase calls `add_check`, so no
+coverage outcome can make the run invalid or red the build.
+
+**Measured-window rules.** The fixed-rate arms use `regression.js`'s shape: a warmup,
+staggered starts, `preAllocatedVUs == maxVUs`, a settle window excluded from the percentiles, and
+percentiles and `delivery_ratio` suppressed below 30 samples. `coverage.js` measures the settle
+boundary from the end of `setup()`, because k6's test clock includes setup and seeding 300
+expectations would otherwise shift the boundary by over a second. The h2 ladder publishes latency
+and delivery only for rungs `derive_saturation` calls rig-valid. The capture arm counts the
+NDJSON file only after the event-log ring drains (at most 60 s).
+
+**Dedicated SUTs.** Each group starts from an empty expectation store and event log rather than
+whatever the main SUT holds after `growth.js`, and the capture and download SUTs are fresh so
+their dropped-event counters and memory baselines belong to that arm alone. The coverage SUTs
+use the main SUT's cpuset and memory limit; the main SUT idles meanwhile.
+
+**Duration and rotation.** Each group costs roughly one to one and a half minutes (churn and
+keepalive pairs about 65 s each, matchers about 75 s, the h2 ladder about 65 s, capture and download
+about 80 s each including SUT start-up). To rotate groups across days, set `PERF_COVERAGE_ARMS`
+(comma-separated subset of `churn,keepalive,matchers,h2,capture,download`) in the scheduled
+build's environment; compare is head-driven, so an absent group emits no metrics and trips no
+missing-budget check. Rotation halves how fast each arm accrues baseline history, so the default
+runs every group. Rates, durations and sizes are tunable with `K6_COV_*` and
+`PERF_COVERAGE_H2_RATES` / `PERF_COVERAGE_H2_STEP` / `PERF_COVERAGE_H2_SETTLE_S` /
+`PERF_COVERAGE_DOWNLOAD_BYTES` / `PERF_COVERAGE_SAMPLE_INTERVAL`. The `PERF_COVERAGE_*` values are
+checked at start-up (`PERF_COVERAGE_H2_STEP` as whole seconds, e.g. `15s`, longer than the
+settle), so a typo fails the run before any measurement rather than part-way through.
+
+### Release comparison — measuring a past release on today's rig
+
+`PERF_RELEASE_COMPARISON=<version>` runs the same `perf-test-run.sh` against a published release
+image (by default `mockserver/mockserver:mockserver-<version>-graaljs`), so current numbers can be
+set against that release on the same hardware. The run is labelled
+`config_profile=release-<version>`, which makes it `baseline_eligible: false`: compare records it
+green without persisting or comparing it, and it is never published.
+
+```bash
+bk build create -p mockserver-performance-test -b master -m "[perf-run] release comparison 8.0.0" \
+  -e PERF_RELEASE_COMPARISON=8.0.0
+```
+
+Only the checks that cannot apply to a release image change:
+
+| Check | Normal run | Release comparison |
+|---|---|---|
+| Version | recorded | Must equal the running JVM's `mock_server_build_info` version, or the run fails |
+| JDK and GC | `jvm_runtime_info` metric, fail closed if absent | When the image predates that metric, read from the running SUT with `jcmd VM.system_properties` and `jcmd VM.flags`; `config.sources` says `observed-jcmd`, and GC is recorded as the `-XX:+Use*GC` flag rather than MXBean names |
+| Revision label | Absent label fails once the grace date passes | Absent label passes: the image is identified by its verified version |
+| Image freshness | Older than 7 days reds compare | Not evaluated: `config.image_stale` is null |
+| Clustered A/B | On | Off by default, because the clustered image is the current snapshot |
+| Guard bookkeeping | Records `perf_regression_ran_commit` | Does not, so the next daily run is not skipped |
+
+The run's other MockServer containers are started from the same image, so the upstreams (the
+run's upstream and the coverage download upstream) run the release too; only the clustered A/B
+uses its own image, and it is off by default here. Everything else is unchanged, including
+the path-coverage arms: an arm whose probe needs a feature
+the release lacks fails that probe and is listed under `.path_coverage.problems`, and a metric the
+release does not export is null. Compare a release run's `perf-result.json` artifact with a
+default run on the same instance type. The two images carry their own shipped defaults (8.0.0 runs
+JDK 17 at `MaxRAMPercentage=75` with the JVM's ergonomic collector, which is G1 in the 2 GB SUT
+and Serial below about 1.75 GB; the current snapshot runs JDK 25 with ZGC at 60), so the
+comparison is shipped default against shipped default, and `config` records both. The
+micro-benchmark and HTTP/2 multiplex steps build the harness commit from source, so they do not
+measure the release; the allocation-profile step reruns `perf-test-run.sh` with the same
+environment, so it profiles the release (and, like every deep run, is never baselined).
 
 ### `load.js` — absolute p95/p99 gate
 
@@ -410,11 +545,26 @@ the live repository is left out altogether, as are the health-check JVMs' GC log
 step log and posted as a `perf-diag-bundle-<run>` warning annotation; it never changes the step's
 exit code.
 
-### `stress.js` and `soak.js` — linted only, never executed by CI
+### `soak.js` — weekly and on demand, and `stress.js` — linted only
 
-Both scripts pass `k6 inspect` validation in `perf-test-lint.sh`. Neither is executed by any
-CI step. Published documentation that calls them part of how MockServer is tested is wrong:
-they are tooling that exists for optional local or scheduled use.
+`pipeline-perf-test.yml` runs `perf-test-soak.sh` (a 2-hour soak on the `perf` queue, 170-minute
+timeout) in any build whose message contains `[perf-soak]`; the marker also keeps the daily guard
+and the load test out of that build. The Buildkite schedule "Weekly performance soak"
+(`perf_soak_weekly` in `terraform/buildkite-pipelines/pipelines.tf`, cron `0 8 * * 0`, Sunday
+08:00 UTC) creates such a build every week, clear of the 04:00 daily regression on the single-agent
+`perf` queue. To run it on demand:
+
+```bash
+bk build create -p mockserver-performance-test -b master -m "manual performance soak [perf-soak]"
+```
+
+When it runs, a k6 threshold breach (data-plane p99 drift, error rate) or a missing or empty
+result reds that build; the result, `perf-soak.json`, is uploaded as its own artifact and is not
+fed to `perf-test-compare.sh`.
+
+`stress.js` passes `k6 inspect` in `perf-test-lint.sh` and is executed by no CI step. Published
+documentation that calls it part of how MockServer is tested is wrong: it is tooling for optional
+local use.
 
 ## Run Provenance
 

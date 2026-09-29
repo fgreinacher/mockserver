@@ -152,7 +152,9 @@ steps:
     # measured (open question 6), so this adds headroom rather than risking the cap;
     # trim it back once a few runs show the real duration, or set PERF_INFO_ARM=false
     # to drop the arm entirely.
-    timeout_in_minutes: 60
+    # Bumped 60 -> 70 for the path-coverage phase (~8 min estimated; PERF_COVERAGE=false
+    # or a PERF_COVERAGE_ARMS subset removes it).
+    timeout_in_minutes: 70
     agents:
       queue: "perf"
   - label: ":microscope: perf regression — micro-benchmark + scaling sweep"

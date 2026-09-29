@@ -67,6 +67,7 @@ function isLocalOrPrivateTarget(url) {
     host === '::1' ||
     host === 'host.docker.internal' ||
     host === 'mockserver' ||
+    host === 'mockserver-cov' ||
     host.endsWith('.local') ||
     host.endsWith('.internal') ||
     /^10\./.test(host) ||
@@ -625,6 +626,57 @@ export const STREAMING = {
   // Transport label folded into the result key. Fixed 'stream' (one transport).
   proto: env('PROTO_STREAM', 'stream'),
   resultPath: env('K6_STREAM_RESULT_PATH', 'streaming-result.json'),
+};
+
+// Path-coverage arms (coverage.js): request paths no other script drives. One k6
+// invocation per mode, because the modes need incompatible process-global options
+// (noConnectionReuse for churn, HTTP_PROXY for capture/download). Every arm keeps
+// the regression.js measured-window shape: warmup, stagger, preAllocatedVUs ==
+// maxVUs, settle exclusion, MIN_TAIL_SAMPLES suppression.
+export const COVERAGE = {
+  mode: env('K6_COV_MODE', 'keepalive'),
+  // httpUrl carries the control plane and the matcher arms; tlsUrl is the same SUT
+  // over TLS. The *_mtls modes load the client certificate. They are separate k6
+  // invocations because k6 presents a configured certificate to EVERY server that
+  // requests one, and MockServer requests one on every handshake (ClientAuth.OPTIONAL).
+  httpUrl: env('K6_COV_HTTP_URL', baseUrl),
+  tlsUrl: env('K6_COV_TLS_URL', baseUrl.replace(/^http:/i, 'https:')),
+  // Same rule as CONFIG, applied to the TLS target the coverage arms actually hit.
+  insecureSkipTLSVerify: bool(
+    'INSECURE_SKIP_TLS_VERIFY',
+    isLocalOrPrivateTarget(env('K6_COV_TLS_URL', baseUrl.replace(/^http:/i, 'https:'))),
+  ),
+  clientCertPath: env('K6_COV_CLIENT_CERT', ''),
+  clientKeyPath: env('K6_COV_CLIENT_KEY', ''),
+  // The mtls expectation requires a client certificate whose subject matches this,
+  // so a request that arrives without the certificate cannot be served (404/502).
+  clientCertSubject: env('K6_COV_CLIENT_SUBJECT', 'perf-cov-client'),
+  // churn: each iteration opens a fresh TCP+TLS connection, so the rate is also the
+  // client's connection-open rate. 200/s over a ~75 s invocation leaves ~15k sockets
+  // in TIME_WAIT, inside the ~28k ephemeral range of one k6 container.
+  churnRate: num('K6_COV_CHURN_RATE', 200),
+  keepaliveRate: num('K6_COV_KEEPALIVE_RATE', 200),
+  matcherRate: num('K6_COV_MATCHER_RATE', 100),
+  // Expectations registered per matcher type, all on one literal method+path so the
+  // candidate index puts them in ONE bucket; only the last-registered matches, so
+  // every request scans all of them.
+  matcherCandidates: num('K6_COV_MATCHER_CANDIDATES', 100),
+  captureRate: num('K6_COV_CAPTURE_RATE', 1000),
+  captureVUs: num('K6_COV_CAPTURE_VUS', 100),
+  upstreamHost: env('FORWARD_UPSTREAM_HOST', 'mockserver-upstream:1080'),
+  // download: absolute http:// URL of a large body on a dedicated upstream, fetched
+  // through the SUT as a forward proxy. Empty => the arm is absent.
+  downloadUrl: env('K6_COV_DOWNLOAD_URL', ''),
+  downloadBytes: num('K6_COV_DOWNLOAD_BYTES', 32 * 1024 * 1024),
+  downloadRate: num('K6_COV_DOWNLOAD_RATE', 2),
+  downloadTimeUnit: env('K6_COV_DOWNLOAD_TIME_UNIT', '1s'),
+  downloadVUs: num('K6_COV_DOWNLOAD_VUS', 8),
+  duration: env('K6_COV_DURATION', '45s'),
+  warmup: env('K6_COV_WARMUP', '15s'),
+  stagger: env('K6_COV_STAGGER', '5s'),
+  settle: env('K6_COV_SETTLE', '10s'),
+  vus: num('K6_COV_VUS', 50),
+  resultPath: env('K6_COV_RESULT_PATH', 'coverage-result.json'),
 };
 
 export { env, num, bool };

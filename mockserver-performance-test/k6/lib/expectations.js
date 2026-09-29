@@ -16,7 +16,7 @@
 import http from 'k6/http';
 import { check, fail } from 'k6';
 import { SharedArray } from 'k6/data';
-import { CONFIG, FORWARD, REGRESSION, PROXY, STREAMING } from './config.js';
+import { CONFIG, FORWARD, REGRESSION, PROXY, STREAMING, COVERAGE } from './config.js';
 
 // The 4 seeded expectations — byte-for-byte the same shapes as the legacy
 // expectations.json so recorded baselines remain comparable.
@@ -623,4 +623,163 @@ export function verifyHandshakeArms() {
       fail(`handshake_${name} arm: ${url}/simple answered but tls_handshaking=${res.timings ? res.timings.tls_handshaking : 'n/a'} ms — no TLS handshake was measured, so the handshake numbers would be meaningless.`);
     }
   }
+}
+
+// --- coverage.js: path-coverage arms --------------------------------------------
+//
+// The matcher arms register COVERAGE.matcherCandidates expectations per matcher
+// type on one literal POST path. Candidate k matches only a body whose variant is
+// k, and the request carries variant n-1, so the LAST-registered candidate is the
+// first match and every request evaluates all n body matchers.
+
+export const COVERAGE_MATCHER_TYPES = ['jsonpath', 'xpath', 'jsonschema'];
+
+function coverageOrderItems(variant) {
+  const items = [];
+  for (let i = 0; i < 10; i++) {
+    items.push({ variant: i === 5 ? variant : 100000 + i, sku: `sku-${i}`, qty: i + 1, price: 9.5 + i });
+  }
+  return items;
+}
+
+function coverageJsonBody(variant) {
+  return JSON.stringify({
+    customer: { id: 'c-42', tier: 'gold', region: 'eu-west' },
+    variant,
+    order: coverageOrderItems(variant),
+  });
+}
+
+function coverageXmlBody(variant) {
+  const items = coverageOrderItems(variant)
+    .map((it) => `<item><variant>${it.variant}</variant><sku>${it.sku}</sku><qty>${it.qty}</qty><price>${it.price}</price></item>`)
+    .join('');
+  return `<order><customer id="c-42" tier="gold" region="eu-west"/>${items}</order>`;
+}
+
+function coverageBodyMatcher(type, k) {
+  if (type === 'jsonpath') {
+    return { type: 'JSON_PATH', jsonPath: `$.order[?(@.variant == ${k})]` };
+  }
+  if (type === 'xpath') {
+    return { type: 'XPATH', xpath: `/order/item[variant='${k}']` };
+  }
+  return {
+    type: 'JSON_SCHEMA',
+    jsonSchema: { type: 'object', required: ['variant'], properties: { variant: { enum: [k] } } },
+  };
+}
+
+function coverageMatcherRequest(type, variant) {
+  return type === 'xpath'
+    ? { body: coverageXmlBody(variant), contentType: 'application/xml' }
+    : { body: coverageJsonBody(variant), contentType: 'application/json' };
+}
+
+const COVERAGE_HIT = Object.fromEntries(
+  COVERAGE_MATCHER_TYPES.map((t) => [t, coverageMatcherRequest(t, COVERAGE.matcherCandidates - 1)]),
+);
+const COVERAGE_MISS = Object.fromEntries(COVERAGE_MATCHER_TYPES.map((t) => [t, coverageMatcherRequest(t, -1)]));
+
+// Stable ids make a re-seed an in-place replace, so seeding from each mode's
+// setup() never duplicates or reorders an expectation.
+export function seedCoverage(withMatchers) {
+  const list = [
+    {
+      id: 'cov-tls',
+      httpRequest: { path: '/cov/tls' },
+      httpResponse: { statusCode: 200, body: 'cov tls' },
+      times: { unlimited: true },
+    },
+    {
+      id: 'cov-mtls',
+      httpRequest: { path: '/cov/mtls', clientCertificate: { subject: `.*${COVERAGE.clientCertSubject}.*` } },
+      httpResponse: { statusCode: 200, body: 'cov mtls' },
+      times: { unlimited: true },
+    },
+  ];
+  if (withMatchers) {
+    for (const type of COVERAGE_MATCHER_TYPES) {
+      for (let k = 0; k < COVERAGE.matcherCandidates; k++) {
+        list.push({
+          id: `cov-${type}-${k}`,
+          httpRequest: { method: 'POST', path: `/cov/${type}`, body: coverageBodyMatcher(type, k) },
+          httpResponse: { statusCode: 200, body: `matched-${type}-${k}` },
+          times: { unlimited: true },
+        });
+      }
+    }
+  }
+  const res = http.put(`${COVERAGE.httpUrl}/mockserver/expectation`, JSON.stringify(list), jsonParams());
+  if (res.status !== 201 && res.status !== 200) {
+    fail(`coverage: failed to seed ${list.length} expectations: HTTP ${res.status} ${res.body}`);
+  }
+}
+
+export function getCoverage(url, op, extraTags, params) {
+  const res = http.get(url, {
+    headers: CONFIG.keepAliveHeaders,
+    tags: { op, name: `GET ${op}`, ...(extraTags || {}) },
+    ...(params || {}),
+  });
+  check(res, { [`${op}: 200`]: (r) => r.status === 200 });
+  return res;
+}
+
+export function postCoverageMatcher(type, op, extraTags) {
+  const req = COVERAGE_HIT[type];
+  const res = http.post(`${COVERAGE.httpUrl}/cov/${type}`, req.body, {
+    headers: { 'Content-Type': req.contentType, ...CONFIG.keepAliveHeaders },
+    tags: { op, name: `POST /cov/${type}`, ...(extraTags || {}) },
+  });
+  check(res, { [`${op}: 200`]: (r) => r.status === 200 });
+  return res;
+}
+
+// Fail-loud probes, called from coverage.js setup(). Each proves the arm measures
+// the path it is named for, not a fallback that happens to answer 200. The two
+// halves of the certificate proof run in different invocations: a no-certificate
+// invocation must be REFUSED /cov/mtls, a certificate invocation must be served it.
+export function verifyCoverageTls(withCertificate) {
+  const tls = http.get(`${COVERAGE.tlsUrl}/cov/tls`);
+  if (tls.status !== 200 || !(tls.timings && tls.timings.tls_handshaking > 0)) {
+    fail(`coverage tls: GET ${COVERAGE.tlsUrl}/cov/tls returned HTTP ${tls.status} with tls_handshaking=${tls.timings ? tls.timings.tls_handshaking : 'n/a'} ms - not a TLS request to the coverage SUT`);
+  }
+  // The TLS arms are documented as HTTP/2 (ALPN); prove it from the client side.
+  if (tls.proto !== 'HTTP/2.0') {
+    fail(`coverage tls: k6 negotiated ${tls.proto} with the coverage SUT, not HTTP/2.0`);
+  }
+  const mtls = http.get(`${COVERAGE.tlsUrl}/cov/mtls`);
+  if (withCertificate && mtls.status !== 200) {
+    fail(`coverage mtls: GET ${COVERAGE.tlsUrl}/cov/mtls returned HTTP ${mtls.status} - the client certificate was not presented, or its subject did not match "${COVERAGE.clientCertSubject}"`);
+  }
+  if (!withCertificate && mtls.status === 200) {
+    fail('coverage mtls: /cov/mtls answered 200 WITHOUT a client certificate - the certificate gate is not enforced, so the mtls arms would not prove a certificate was presented');
+  }
+}
+
+export function verifyCoverageMatchers() {
+  const last = COVERAGE.matcherCandidates - 1;
+  for (const type of COVERAGE_MATCHER_TYPES) {
+    const hit = http.post(`${COVERAGE.httpUrl}/cov/${type}`, COVERAGE_HIT[type].body, {
+      headers: { 'Content-Type': COVERAGE_HIT[type].contentType },
+    });
+    if (hit.status !== 200 || String(hit.body) !== `matched-${type}-${last}`) {
+      fail(`coverage ${type}: expected the last candidate (matched-${type}-${last}) but got HTTP ${hit.status} "${hit.body}"`);
+    }
+    const miss = http.post(`${COVERAGE.httpUrl}/cov/${type}`, COVERAGE_MISS[type].body, {
+      headers: { 'Content-Type': COVERAGE_MISS[type].contentType },
+    });
+    if (miss.status === 200) {
+      fail(`coverage ${type}: a body matching NO candidate answered 200 ("${miss.body}") - the matcher is not discriminating`);
+    }
+  }
+}
+
+export function verifyCoverageProxy(url, params) {
+  const res = http.get(url, params || {});
+  if (res.status !== 200) {
+    fail(`coverage proxy: GET ${url} through the SUT proxy returned HTTP ${res.status} - check HTTP_PROXY and the upstream seed`);
+  }
+  return res;
 }

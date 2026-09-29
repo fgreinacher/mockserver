@@ -24,7 +24,7 @@ set -euo pipefail
 #
 # A short ladder + trimmed durations keep it cheap: this measures WHAT allocates, not
 # how fast. The auxiliary profiles the daily run carries (INFO-log arm, laptop,
-# streaming, proxy, clustered) are turned off — they add wall-clock without adding
+# streaming, proxy, clustered, path coverage) are turned off — they add wall-clock without adding
 # allocation-attribution value on the main serving paths (match / template / large
 # bodies / event-log), which regression.js + growth.js + a 4-rung sweep already cover.
 #
@@ -204,6 +204,7 @@ PERF_INFO_ARM="${PERF_INFO_ARM:-false}" \
 PERF_LAPTOP_PROFILE="${PERF_LAPTOP_PROFILE:-false}" \
 PERF_STREAMING="${PERF_STREAMING:-false}" \
 PERF_PROXY_PROFILE="${PERF_PROXY_PROFILE:-false}" \
+PERF_COVERAGE="${PERF_COVERAGE:-false}" \
 K6_SWEEP_RATES="${K6_SWEEP_RATES:-8000,24000,48000}" \
 PERF_LIVE_HISTO_INTERVAL_S="${PERF_LIVE_HISTO_INTERVAL_S:-30}" \
 K6_REG_DURATION="${K6_REG_DURATION:-45s}" \
