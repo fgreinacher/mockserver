@@ -14,7 +14,6 @@ import static io.netty.handler.codec.http.HttpHeaderNames.CONTENT_TYPE;
 import static io.netty.handler.codec.http.HttpHeaderNames.HOST;
 import static org.apache.commons.lang3.StringUtils.isBlank;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
-import static org.mockserver.character.Character.NEW_LINE;
 import static org.mockserver.model.Header.header;
 import static org.mockserver.model.NottableSchemaString.schemaString;
 import static org.mockserver.model.NottableString.string;
