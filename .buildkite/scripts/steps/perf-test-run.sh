@@ -1877,10 +1877,12 @@ SWEEP_CPU_LOG="$OUT_DIR/sweep-k6-cpu.csv"
 # K6_SWEEP_SETTLE, so both windows skip the same settle length; the latency window is
 # anchored at each k6 scenario's start, the CPU window at the ladder's host-side T0.
 STEP_S="$(to_secs "$SWEEP_STEP")"
+# shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 GAP_S="$(to_secs "$SWEEP_GAP")"
 SETTLE_S="${PERF_SWEEP_SETTLE_S:-3}"
 K6_CORES="$(k6_core_count "$K6_CPUS")"
 K6_PIN_PCT=$((K6_CORES * 100))
+# shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
 # Fractional drop TOLERANCE for rig-validity (see derive_saturation). A rung's
 # dropped_iterations are forgiven either when the VU pool was PINNED (a server-side
@@ -1897,6 +1899,7 @@ SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
 # only makes this filter MORE conservative - under the new pools build #347's 8,000
 # rung HAS headroom (peak 301 < pool 640), so it is the FRACTION term that correctly
 # excludes it at 1.83%, which is exactly why this threshold must stay below that.
+# shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 SWEEP_DROP_TOL="${PERF_SWEEP_DROP_TOL:-0.01}"
 # Occupancy KNEE threshold for the drop discriminator (see derive_saturation). A
 # dropped iteration means the constant-arrival executor found no free VU (active ==
@@ -1908,6 +1911,7 @@ SWEEP_DROP_TOL="${PERF_SWEEP_DROP_TOL:-0.01}"
 # and stay excluded. 0.80 sits in the widest gap of the observed occupancy ladder
 # (a pinned rung reads ~0.86-0.95; a client-limited idle pool reads ~0.01-0.02), so
 # p95 noise cannot flip a rung across it. Overridable.
+# shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 SWEEP_OCC_KNEE="${PERF_SWEEP_OCC_KNEE:-0.80}"
 
 # Background sampler of the k6 CLIENT container's CPU while a sweep runs — the
@@ -2971,8 +2975,8 @@ if [ "${PERF_STREAMING:-true}" = "true" ]; then
     # emit (jq --argjson could not parse "1.1E8"); floor tracks the live set far
     # better than an instantaneous sample on the GC saw-tooth.
     stream_heap_floor() {
-      local n="$1" i
-      for i in $(seq 1 "$n"); do
+      local n="$1"
+      for _ in $(seq 1 "$n"); do
         curl -s --max-time 4 "$STREAM_METRICS_URL" 2>/dev/null \
           | awk -F' ' '/^jvm_memory_used_bytes\{area="heap"\}/{print $2}'
         sleep 1
