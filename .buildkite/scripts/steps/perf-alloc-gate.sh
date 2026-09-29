@@ -34,8 +34,8 @@ set -euo pipefail
 #
 # gc.alloc.rate.norm is bytes allocated per op, independent of CPU speed, so an
 # absolute regression here is trustworthy on cloud CI. It is stable within a fork,
-# but a JIT escape-analysis outcome can differ ACROSS forks (the HEADERS_MISS WARN
-# rows are bimodal on amd64), so a floor must clear every mode. Some floors
+# but a JIT escape-analysis outcome can differ ACROSS forks (the HEADERS_MISS
+# rows are multimodal on amd64), so a floor must clear every mode. Some floors
 # are PROVISIONAL (see perf-budgets.json): derived from local measurement with
 # headroom rather than from >=10 notify-only runs, because these benchmarks have
 # no history yet. ResponseWrite is ALSO promoted notify-only into the daily
@@ -92,8 +92,8 @@ JMH_ARGS="${PERF_ALLOC_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p 
 # SCAN arm (4 rows): EXACT narrows to an EMPTY candidate bucket, so the rows above
 # never run the per-candidate matching scan; HEADERS_MISS puts all 100 expectations
 # in one bucket. A separate invocation because JMH crosses every -p list (adding
-# HEADERS_MISS/WARN above would also add EXACT/WARN rows). Its budgets are
-# notify-only until ~10 runs of history exist — see perf-budgets.json.
+# HEADERS_MISS/WARN above would also add EXACT/WARN rows). Its budgets gate, with
+# floors derived from this step's own artifact history — see perf-budgets.json.
 SCAN_JMH_INCLUDE="${PERF_ALLOC_SCAN_INCLUDE:-org\.mockserver\.benchmark\.MatchingBenchmark\.}"
 SCAN_JMH_ARGS="${PERF_ALLOC_SCAN_JMH_ARGS:--bm avgt -prof gc -f 1 -wi 3 -i 5 -r 1 -w 1 -p matcherType=HEADERS_MISS -p expectationCount=100 -p logLevel=INFO,WARN -p detailedMatchFailures=false,true}"
 

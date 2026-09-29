@@ -9,8 +9,8 @@ The latency tail is closed: a steady 24k run (build 473, docker bridge, no per-r
 measured client p99 0.343 ms and p99.9 1.43 ms, with no server request over 5 ms in 7.25M, so
 the 10–16 ms ladder tail was a rung-onset transient in the rig, not MockServer or the bridge.
 The ladder now excludes each rung's first 3 s from its published percentiles.
-What remains is the tuning candidates that need a rig measurement or a small change (§2), and
-confirming on the rig that the harness throughput step (item 26) is fixed.
+Every §2 tuning candidate is closed; what remains is §4, including confirming on the rig that the
+harness throughput step (item 26) is fixed.
 
 Published figures and rig measurement gates are in
 [docs/code/performance-measurement.md](../code/performance-measurement.md). The GC-default
@@ -22,7 +22,6 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 
 | # | Item | Blocked on |
 |---|---|---|
-| 2 | Tuning candidates | item 16 below |
 | 26 | Throughput step from `30917ac40` | §4 |
 | 27 | Throughput at a range of hardware sizes | §4 |
 | 28 | JFR CPU, lock and GC analysis at the ceiling | §4 |
@@ -68,14 +67,11 @@ Source: four read-only reviews of master `a81b72ddf` plus the build 464 allocati
 At up to ~59.5k rps with `MOCKSERVER_LOG_LEVEL=ERROR`: 11.8 KB allocated per request, 90% on
 worker loops, 10% on the event-log thread.
 
-### Remaining candidates
+### Outcome
 
-Candidates 2–5, 7–10, 13 and 15 from the original list landed (see `changelog.md` and git history);
-candidates 1, 6, 11 and 12 were declined (see [Decided against](#decided-against)).
-
-| # | Candidate | What is known | Next step |
-|---|---|---|---|
-| 16 | Graduate the per-merge alloc gate's `HEADERS_MISS` scan arm (four rows: INFO/WARN × `detailedMatchFailures` false/true) from notify-only to gating | Scan arm shipped: it runs on every Java build, notify-only, against provisional floors (`premerge_alloc.MatchingBenchmark_HEADERS_MISS_*`); see [performance-measurement.md](../code/performance-measurement.md#perf-alloc-gatesh--per-merge-allocation-floors) | Once ~10 gate runs exist, set each floor from their `jmh-alloc-gate.json` artifacts (median + 3 × 1.4826 × MAD) and add `gating: true` (control-class budget change, needs approval) |
+Candidates 2–5, 7–10, 13, 15 and 16 from the original list landed (see `changelog.md` and git
+history); candidates 1, 6, 11 and 12 were declined (see [Decided against](#decided-against)).
+No §2 candidate remains.
 
 ### Checked and not worth pursuing
 

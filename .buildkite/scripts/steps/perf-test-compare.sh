@@ -556,7 +556,7 @@ jq -s '.' "$BASE_DIR"/*.json > "$WORK/baseline.json"
 # which trips the global `warming up` early-exit ABOVE and skips every metric.
 # Of the four gating metrics THIS script evaluates, three are hardware-independent
 # — microbench.*.alloc_bytes_per_op, forward.error_rate and
-# churn.alloc_ratio_index_n15000 (the other four gating budget entries,
+# churn.alloc_ratio_index_n15000 (the other eight gating budget entries,
 # premerge_alloc.*, belong to perf-alloc-gate.sh and never reach this code). So
 # filtering wholesale would switch off three quarters of this control's gating
 # during precisely the migration when a regression is most likely.

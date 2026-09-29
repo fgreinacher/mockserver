@@ -18,7 +18,7 @@ regressions hide and stale claims get published.
 | `streaming.js` | LLM/SSE streaming concurrency vs match latency | Daily (perf queue) | No — notify-only |
 | `clustered_crossing.js` | Cross-node request latency in a cluster | Daily (perf queue) | **Notify-only.** `perf-test-compare.sh` reads `clustered_state.*` as notify-only metrics. This measured NOTHING until the clustered image was published to the perf queue: the run gates the A/B on `docker image inspect`, nothing pulled or built that image, so every run took the absent-image skip and emitted no `clustered_state` block to read. The snapshot push now builds `mockserver-snapshot-clustered` in the same job, from the same jar and commit as the SUT image, and the run refuses to measure if the two image revisions disagree (`clustered_skip_reason=revision_mismatch`) — a ratio computed across two commits would be arithmetically fine and describe code the measured binary never contained |
 | `MatchingBenchmark` JMH | Matcher hot-path time/op and allocation/op | Daily (perf queue) | Yes — `time_per_op` + `alloc_bytes_per_op` |
-| `perf-alloc-gate.sh` (JMH `gc.alloc.rate.norm`) | Allocation/op for matching, inbound decode and response write at pinned params, plus a matching-scan arm | Per merge (every Java pipeline build) | Yes for the four pinned rows; the four scan-arm rows are notify-only |
+| `perf-alloc-gate.sh` (JMH `gc.alloc.rate.norm`) | Allocation/op for matching, inbound decode and response write at pinned params, plus a matching-scan arm | Per merge (every Java pipeline build) | Yes, all eight rows |
 | `CandidateIndexBenchmark` JMH | Index vs scan scaling | Daily (perf queue) | No |
 | Promoted dark benchmarks (7 classes, see below) | Various hot paths | Daily (perf queue) | No — notify-only |
 | Proxy-path benchmarks (`RelayByteCopyBenchmark`, `SocksHandshakeBenchmark`) | CONNECT/relay byte cost; SOCKS handshake cost | Daily (perf queue) | No — notify-only |
@@ -405,7 +405,7 @@ are evaluated together:
 | `MatchingBenchmark`, both `detailedMatchFailures` arms | `EXACT`, 100 expectations, INFO | `MatchingBenchmark`, `MatchingBenchmark_detailed` | Yes |
 | `InboundDecodeBenchmark` | `bodySize=16384` | `InboundDecodeBenchmark` | Yes |
 | `ResponseWriteBenchmark` | `responseSize=16384`, `declareBodyCharset=false` | `ResponseWriteBenchmark` | Yes |
-| `MatchingBenchmark` scan arm, four rows | `HEADERS_MISS`, 100 expectations, {INFO, WARN} × `detailedMatchFailures` {false, true} | `MatchingBenchmark_HEADERS_MISS_<INFO\|WARN>`, plus `_detailed` for the `true` arm | No — notify-only |
+| `MatchingBenchmark` scan arm, four rows | `HEADERS_MISS`, 100 expectations, {INFO, WARN} × `detailedMatchFailures` {false, true} | `MatchingBenchmark_HEADERS_MISS_<INFO\|WARN>`, plus `_detailed` for the `true` arm | Yes |
 
 **Why the scan arm exists.** With `EXACT`, the request's path narrows through the candidate
 index to an empty bucket, so the pinned matching rows never run the per-candidate matching scan.
@@ -417,24 +417,49 @@ with detail on from about 1.45 MB/op to 0.46 MB/op, a change the pinned rows cou
 two WARN rows now take the same code path, so a regression that brings back per-candidate detail
 at WARN shows as `WARN_detailed` rising about 1 MB/op above `WARN`.
 
-**The WARN rows are bimodal on amd64.** In the gate's own image, each fork of either WARN row
-reads exactly 295,017 or exactly 439,017 B/op (1,440 B per candidate, a JIT escape-analysis
-outcome that varies per fork); arm64 reads 295,017 every time. `gc.alloc.rate.norm` is stable
-within a fork but not always across forks, so the WARN floors sit above the upper mode.
+**The scan rows are multimodal on amd64.** `gc.alloc.rate.norm` is stable within a fork but
+not always across forks: each fork lands on one of a few discrete readings, a JIT
+escape-analysis outcome. In the gate's own image each WARN fork reads about 295,019 or
+439,019 B/op (1,440 B per candidate); arm64 reads the lower mode every time. INFO has a rare
+lower mode near 2.97 MB/op. INFO with detail on has a rare lower mode (13,722,451 in PR build
+2622) and a rare upper mode about 52 KB/op above its usual 13.83 MB/op. A floor must clear the
+highest mode, not just the median.
 
-**Gating and notify-only.** A row fails the build only when its budget has `gating: true`. The
-scan-arm budgets have a provisional floor and no `gating` key, so a breach prints `:warning:` and
+**Gating and notify-only.** A row fails the build only when its budget has `gating: true`; all
+eight rows have it. A row without it would be notify-only: a breach prints `:warning:` and
 posts a separate warning annotation (`perf-alloc-gate-notify`) while the build stays green. Every
 row still needs a numeric floor: a row with no budget entry, or with no `gc.alloc.rate.norm`
 reading, fails closed whether it gates or not. The step also fails if the row count is not the
 expected 8, or if two rows route to the same budget key.
 
-**Graduation.** Each run uploads its merged JMH result, `jmh-alloc-gate.json`, as a build
-artifact. Once about 10 runs exist, replace each scan-arm floor with the median + 3 × 1.4826 × MAD
-of those runs and add `gating: true`. For a WARN row, never seat the floor below the upper mode:
-ten runs that all land on one mode give a MAD of 0 and a floor the other mode breaches. This is
-tracked as item 16 in
-[docs/plans/performance-programme.md](../plans/performance-programme.md).
+**How the scan-arm floors were set.** Each run uploads its merged JMH result,
+`jmh-alloc-gate.json`, as a build artifact. One rule sets every scan-arm floor: the highest
+reading from a master build in the window × 1.025, rounded up to the next 1,000 B. The window
+is the 23 `mockserver-java` master builds 2620–2646, every run since `c43714c57` (an unmatched
+request no longer re-checks the expectations its index scan already checked), which cut INFO
+from about 7.45 MB/op to 3.11 MB/op. Earlier runs describe code that no longer exists. The four
+dependabot PR builds in that range (2622–2625) were used only as a check, and all clear their
+floors.
+
+| Row | Median | Highest master reading (build) | Floor |
+|---|---:|---:|---:|
+| `HEADERS_MISS_INFO` | 3,110,548 | 3,115,417 (2638) | 3,194,000 |
+| `HEADERS_MISS_INFO_detailed` | 13,831,494 | 13,883,053 (2621) | 14,231,000 |
+| `HEADERS_MISS_WARN` | 439,019 | 439,019 (2640) | 450,000 |
+| `HEADERS_MISS_WARN_detailed` | 439,019 | 439,019 (2639) | 450,000 |
+
+Median + 3 × 1.4826 × MAD is not used because the rows are multimodal: the MAD describes the
+common mode only. It gives the WARN rows under 1 KB/op of headroom, and puts the
+`INFO_detailed` floor (13,837,000) below that row's rare upper mode. 2.5% above the highest
+reading clears every mode seen and still catches the regression this arm targets, about
+1 MB/op at WARN.
+
+**If a scan-arm row breaches its floor**, re-run once. A breach that recurs, even
+intermittently, is either a new higher mode (for example after a JDK or image change) or a
+small real regression, possibly one that landed a few commits earlier, so check the row across
+recent builds before calling it noise. Re-derive a floor only by applying the same rule to fresh
+artifacts from code representative of master, never with an ad-hoc value. The four pinned rows
+still carry provisional floors set from local measurement.
 
 ### `Http2StreamChannelBenchmark` JMH — notify-only by design
 
