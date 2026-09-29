@@ -6,25 +6,18 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.mockserver.test.Http2FlowControlBodies;
 import org.mockserver.client.MockServerClient;
-import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.echo.http.EchoServer;
 import org.mockserver.model.Protocol;
 import org.mockserver.netty.MockServer;
-import org.mockserver.socket.tls.PEMToFile;
+import org.mockserver.netty.MockServerCaTrustTestSupport;
 
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManagerFactory;
-import java.io.InputStream;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
-import java.security.KeyStore;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -116,7 +109,7 @@ public class Http2ThirdPartyClientConformanceIntegrationTest {
         mockServerClient = new MockServerClient("localhost", mockServerPort);
         // a real HTTPS upstream for the forward/proxy leg (matches NettyHttpsProxyHttp2IntegrationTest)
         secureEchoServer = new EchoServer(true);
-        caTrustingSslContext = caTrustingSslContext();
+        caTrustingSslContext = MockServerCaTrustTestSupport.caTrustingSslContext();
     }
 
     @AfterClass
@@ -397,37 +390,5 @@ public class Http2ThirdPartyClientConformanceIntegrationTest {
      */
     private static String largeBody(String marker) {
         return Http2FlowControlBodies.body(Http2FlowControlBodies.Size.OVER_WINDOW, marker);
-    }
-
-    /**
-     * A trust store containing MockServer's Certificate Authority certificate — proper CA-based trust,
-     * not a blanket trust-all. MockServer signs its dynamically-generated leaf certificates with this
-     * bundled CA by default (proxySetup and dynamicallyCreateCertificateAuthorityCertificate are both
-     * off), and its default certificate SANs cover {@code localhost} and {@code 127.0.0.1}, so
-     * hostname verification is left ON and passes for the origins used here.
-     */
-    private static SSLContext caTrustingSslContext() throws Exception {
-        String caPem;
-        try (InputStream in = Http2ThirdPartyClientConformanceIntegrationTest.class.getClassLoader()
-            .getResourceAsStream(ConfigurationProperties.DEFAULT_CERTIFICATE_AUTHORITY_X509_CERTIFICATE)) {
-            if (in == null) {
-                throw new IllegalStateException("could not load MockServer CA certificate from classpath: "
-                    + ConfigurationProperties.DEFAULT_CERTIFICATE_AUTHORITY_X509_CERTIFICATE);
-            }
-            caPem = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-        }
-        X509Certificate caCertificate = PEMToFile.x509FromPEM(caPem);
-
-        KeyStore trustStore = KeyStore.getInstance(KeyStore.getDefaultType());
-        trustStore.load(null, null);
-        trustStore.setCertificateEntry("mockserver-ca", caCertificate);
-
-        TrustManagerFactory trustManagerFactory =
-            TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-        trustManagerFactory.init(trustStore);
-
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, trustManagerFactory.getTrustManagers(), new SecureRandom());
-        return sslContext;
     }
 }

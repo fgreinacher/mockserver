@@ -30,16 +30,12 @@ import org.junit.Test;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.socket.tls.ForwardProxyTLSX509CertificatesTrustManager;
 
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 import java.net.InetSocketAddress;
 import java.net.ProxySelector;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.cert.X509Certificate;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -47,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.lessThanOrEqualTo;
+import static org.mockserver.netty.MockServerCaTrustTestSupport.caTrustingSslContext;
 
 /**
  * End-to-end reproduction of the HTTPS forward-proxy (CONNECT + MITM) connection-churn defect over
@@ -64,7 +61,10 @@ public class HttpsConnectForwardConnectionPoolTest {
         Configuration configuration = Configuration.configuration()
             .forwardConnectionPoolEnabled(true)
             .forwardProxyTLSX509CertificatesTrustManagerType(ForwardProxyTLSX509CertificatesTrustManager.ANY)
-            .forwardProxyTLSHostnameVerificationEnabled(false);
+            .forwardProxyTLSHostnameVerificationEnabled(false)
+            // pin the bundled CA that caTrustingSslContext() trusts, so no global property can swap it
+            .proxySetup(false)
+            .dynamicallyCreateCertificateAuthorityCertificate(false);
         MockServer mockServer = new MockServer(configuration);
         try {
             int proxyPort = mockServer.getLocalPort();
@@ -72,7 +72,7 @@ public class HttpsConnectForwardConnectionPoolTest {
 
             HttpClient client = HttpClient.newBuilder()
                 .version(HttpClient.Version.HTTP_2)
-                .sslContext(trustAllContext())
+                .sslContext(caTrustingSslContext())
                 .proxy(ProxySelector.of(new InetSocketAddress("127.0.0.1", proxyPort)))
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
@@ -99,16 +99,6 @@ public class HttpsConnectForwardConnectionPoolTest {
             mockServer.stop();
             upstream.stop();
         }
-    }
-
-    private static SSLContext trustAllContext() throws Exception {
-        SSLContext sslContext = SSLContext.getInstance("TLS");
-        sslContext.init(null, new TrustManager[]{new X509TrustManager() {
-            public void checkClientTrusted(X509Certificate[] chain, String authType) { }
-            public void checkServerTrusted(X509Certificate[] chain, String authType) { }
-            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
-        }}, new java.security.SecureRandom());
-        return sslContext;
     }
 
     /**
