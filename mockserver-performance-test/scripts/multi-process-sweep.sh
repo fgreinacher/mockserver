@@ -106,6 +106,14 @@ else
   echo ":x: CPU-topology guard lib not found at $TOPOLOGY_LIB — refusing to run a multi-process sweep without the physical-core disjointness proof" >&2
   exit 1
 fi
+SWEEP_WINDOW_LIB="${PERF_MULTI_SWEEP_WINDOW_LIB:-$REPO_ROOT/.buildkite/scripts/steps/lib/perf-sweep-window.sh}"
+if [ -r "$SWEEP_WINDOW_LIB" ]; then
+  # shellcheck source=/dev/null
+  . "$SWEEP_WINDOW_LIB"
+else
+  echo ":x: sweep latency-window check lib not found at $SWEEP_WINDOW_LIB" >&2
+  exit 1
+fi
 
 OUT_FILE="${1:-/dev/stdout}"
 
@@ -446,6 +454,16 @@ for N in "${PROCS_ARR[@]}"; do
   done
   if [ "${#PROC_FILES[@]}" -eq 0 ]; then
     SKIPPED+=("$(jq -nc --argjson n "$N" --arg r "no process produced points" '{procs:$n, reason:$r, type:"failure"}')")
+    continue
+  fi
+  # One process whose windows do not balance corrupts the aggregate, so the whole N fails.
+  WINDOW_MISMATCH=""
+  for f in "${PROC_FILES[@]}"; do
+    wm="$(sweep_window_mismatches "$f")" || WINDOW_MISMATCH="${WINDOW_MISMATCH:+$WINDOW_MISMATCH; }$(basename "$f") $wm"
+  done
+  if [ -n "$WINDOW_MISMATCH" ]; then
+    echo "ERROR: sweep latency windows inconsistent at N=$N — $WINDOW_MISMATCH" >&2
+    SKIPPED+=("$(jq -nc --argjson n "$N" --arg r "latency windows inconsistent: $WINDOW_MISMATCH" '{procs:$n, reason:$r, type:"failure"}')")
     continue
   fi
 

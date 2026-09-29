@@ -13,7 +13,8 @@
 // percentiles. Every request is tagged rate:<offered> so the per-step
 // http_req_duration / http_req_failed / http_reqs submetrics are computed in the
 // summary. The first K6_SWEEP_SETTLE of each rung (the onset transient) is
-// excluded from its latency percentiles only — see latency_window in the output.
+// excluded from its latency percentiles only — see latency_window in the output
+// and enterWindow for how a request is assigned to the settle or steady window.
 // There are deliberately NO aborting thresholds — at the top of the
 // ladder k6 may drop iterations (VU-starved) and latency/errors may degrade
 // sharply; observing that degradation IS the point.
@@ -280,6 +281,27 @@ export function setup() {
   seedExpectations();
 }
 
+// Settle/steady window, tracked per VU (each VU has its own JS runtime). `win` is a
+// VU tag set when the VU enters a rung or crosses its settle boundary, keeping a
+// per-request tag and a per-iteration exec.scenario read (which allocates) off the
+// request path, where k6 CPU caps the top rungs.
+// Relies on k6 keeping VU tags across iterations of the same scenario.
+let winRate = null;
+let steadyAtMs = 0;
+let inSteady = false;
+
+function enterWindow(rate) {
+  if (rate !== winRate) {
+    winRate = rate;
+    steadyAtMs = exec.scenario.startTime + SETTLE_MS;
+    inSteady = Date.now() >= steadyAtMs;
+    exec.vu.metrics.tags.win = `${rate}_${inSteady ? 'steady' : 'settle'}`;
+  } else if (!inSteady && Date.now() >= steadyAtMs) {
+    inSteady = true;
+    exec.vu.metrics.tags.win = `${rate}_steady`;
+  }
+}
+
 // Single exec fn for every rung; the scenario's env.SWEEP_RATE supplies the
 // offered-rate tag so the request lands in this step's submetric.
 export function matchAt() {
@@ -298,8 +320,8 @@ export function matchAt() {
   vusActiveTrend.add(active, rateTag);
 
   // Rung-relative clock: the onset window is measured from THIS scenario's start.
-  const win = `${rate}_${Date.now() - exec.scenario.startTime >= SETTLE_MS ? 'steady' : 'settle'}`;
-  const res = getSimple({ rate, win });
+  enterWindow(rate);
+  const res = getSimple(rateTag);
 
   // Stall accounting: a request slower than STALL_MS is deep-tail latency — the
   // observable signature of the hypothesised transient stall. Record its count,
@@ -307,7 +329,7 @@ export function matchAt() {
   // piled up?), and WHEN within the rung it fell (clustered vs uniform).
   const duration = res && res.timings ? res.timings.duration : 0;
   if (duration > STALL_MS) {
-    stallCounter.add(1, { rate, win });
+    stallCounter.add(1, rateTag);
     // Re-read vusActive HERE rather than reusing the iteration-start `active`. A
     // pile-up builds DURING the slow request, so the iteration-start reading
     // understates it — and a field named stall_concurrency must measure

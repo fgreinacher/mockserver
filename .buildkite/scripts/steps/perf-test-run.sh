@@ -770,6 +770,13 @@ else
   echo ":x: CPU-topology guard lib not found at $SCRIPT_DIR/lib/perf-cpu-topology.sh — refusing to run without the physical-core disjointness proof" >&2
   exit 1
 fi
+if [ -r "$SCRIPT_DIR/lib/perf-sweep-window.sh" ]; then
+  # shellcheck source=lib/perf-sweep-window.sh
+  . "$SCRIPT_DIR/lib/perf-sweep-window.sh"
+else
+  echo ":x: sweep latency-window check lib not found at $SCRIPT_DIR/lib/perf-sweep-window.sh" >&2
+  exit 1
+fi
 
 # THE GUARD. The cpusets below are chosen to be disjoint — but "disjoint" has to
 # mean disjoint in PHYSICAL cores, and for a long time it did not.
@@ -2108,6 +2115,14 @@ if awk -v v="$RIG_VALID_RUNGS" 'BEGIN{exit !(v+0>0)}'; then
 else
   SWEEP_EXCLUSIONS="$(jq -r '[.ladder[] | "\(.offered_rps): \(.exclude_reason // "?")"] | join("; ")' <<<"$SATURATION_JSON")"
   add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
+fi
+
+# Every request of a rung must land in exactly one latency window (lib/perf-sweep-window.sh);
+# otherwise the published percentiles are not the rung's post-settle window.
+if SWEEP_WINDOW_MISMATCH="$(sweep_window_mismatches "$OUT_DIR/sweep.json")"; then
+  add_check "sweep_latency_window_accounts_every_request" true "every rung: measured_sample_count + settle_excluded == sample_count"
+else
+  add_check "sweep_latency_window_accounts_every_request" false "sweep.js settle/steady windows are inconsistent, so the published percentiles cannot be trusted to cover each rung's post-settle window — ${SWEEP_WINDOW_MISMATCH}"
 fi
 
 # --- OPT-IN steady-state latency-tail experiment (performance-programme.md §1) --

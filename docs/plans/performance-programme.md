@@ -9,7 +9,8 @@ The latency tail is closed: a steady 24k run (build 473, docker bridge, no per-r
 measured client p99 0.343 ms and p99.9 1.43 ms, with no server request over 5 ms in 7.25M, so
 the 10–16 ms ladder tail was a rung-onset transient in the rig, not MockServer or the bridge.
 The ladder now excludes each rung's first 3 s from its published percentiles.
-What remains is the tuning candidates that need a rig measurement or a small change (§2).
+What remains is the tuning candidates that need a rig measurement or a small change (§2), and
+confirming on the rig that the harness throughput step (item 26) is fixed.
 
 Published figures and rig measurement gates are in
 [docs/code/performance-measurement.md](../code/performance-measurement.md). The GC-default
@@ -22,8 +23,11 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 | # | Item | Blocked on |
 |---|---|---|
 | 2 | Tuning candidates | item 16 below |
+| 26 | Throughput step from `30917ac40` | §4 |
 | 27 | Throughput at a range of hardware sizes | §4 |
 | 28 | JFR CPU, lock and GC analysis at the ceiling | §4 |
+| 29 | `vus_pool_grew` cannot detect VU pool growth | §4 |
+| 30 | `rig_valid` misses a k6 client saturating below 85% of its pin | §4 |
 
 ## Decided against
 
@@ -83,6 +87,9 @@ io_uring (blocked by Docker's default seccomp, would silently fall back); `Flush
 
 | # | Item | What is known | Next step |
 |---|---|---|---|
+| 26 | Throughput step from `30917ac40`: the rig-valid peak fell after it landed | Its per-request settle tagging cost ~10% more k6 user CPU per request (local A/B) and coincided with a drop in the rig-valid peak — on the default 13-rung ladder, runs 464–486 peaked at 59.6–59.9k and runs 491–497 at 57.0–57.3k. Runs 502–504 point at the harness, not MockServer: 504 put the build-482 image on the current harness and measured 59,805 → 58,107, which isolates the image but not the ladder (502–504 ran the 22-rung fine ladder, 482 the default 13-rung one). The fix is the VU-tag window in `sweep.js`, plus a guard that fails a run whose rungs' `measured_sample_count + settle_excluded` differs from `sample_count` | One post-merge perf run on the DEFAULT 13-rung ladder (no `K6_SWEEP_RATES` override), so it is comparable with 464–486; confirm the peak returns to ~59.5k, and only then refresh the website figures |
 | 27 | Publish throughput for a range of hardware sizes, from 1 core / 512 MB up to 6 cores / 2 GB and beyond where the rig allows, so users can size a deployment | `lib/perf-percore.sh` already pins one SUT per core count (1, 2, 4, 8, 16) with a disjoint k6, but it is opt-in (`PERF_SERVING_PERCORE=true`), never published, and sets no memory limit, so the JVM sizes its heap and the event-log budget from the whole host | Add a memory limit per point (container `-m`, so heap and event-log defaults follow it), run the matrix after #26 lands (the upper points are client-limited until then), then add a table and chart to `performance.html` |
 | 28 | Use the JFR profile the deep run already records to find where CPU goes at the ceiling, not just where memory is allocated | The daily deep run records `settings=profile` JFR (CPU samples, lock contention, GC and safepoint pauses, socket I/O), but `perf-test-allocprofile.sh` only reports `allocation-by-site` and `allocation-by-class`; at 57k rps the server used 250–410% of its 600% CPU, so the ceiling may be contention or a single-threaded stage rather than raw CPU | Analyse an existing deep-run `load.jfr` (hot methods, contention by site, GC and safepoint pauses, per-thread CPU); add any useful views to the step's annotation; turn findings into §2 candidates |
+| 29 | `sweep.js` `vus_diagnostics.vus_pool_grew` cannot detect pool growth | Its baseline (`vus_initialized_baseline`) is the sum of every rung's pool, on the assumption that k6 initialises every staggered scenario's pool up front. k6 instead reuses VUs across rungs whose schedules do not overlap, so the initialised count is far below that sum: the published result reads 6,144 initialised against a 22,272 baseline, and a local 13-rung ladder 723 against 3,132. Growth smaller than the gap reads `false` | Compute the baseline the way k6 plans VUs (the maximum, over time, of the summed pools of rungs whose schedule plus `gracefulStop` overlap), or compare each rung's own `vus_active_max` against its pool; also correct the sweep.js header comment that says every pool is pre-initialised |
+| 30 | `rig_valid` does not flag a k6 client that is saturating below 85% of its CPU pin | `derive_saturation` in `perf-test-run.sh` marks a rung client-limited only when mean k6 CPU reaches `$pin * 0.85`; in runs 502–504 k6 was already the bottleneck at 75–87% of its pin, so a harness cost change moved `rig_valid_peak` with no flag | Derive the threshold from where achieved rps stops tracking offered while the server has CPU headroom, or add a server-headroom condition; degrade-test against 502–504 (control-class change, needs approval) |
 

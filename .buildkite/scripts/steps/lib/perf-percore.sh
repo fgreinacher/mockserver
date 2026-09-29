@@ -72,6 +72,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${PERF_PERCORE_REPO_ROOT:-$(cd "$SCRIPT_DIR/../../../.." && pwd)}"
 FIGURES_JQ="$SCRIPT_DIR/perf-website-figures.jq"
+if [ -r "$SCRIPT_DIR/perf-sweep-window.sh" ]; then
+  # shellcheck source=SCRIPTDIR/perf-sweep-window.sh
+  . "$SCRIPT_DIR/perf-sweep-window.sh"
+else
+  echo ":x: sweep latency-window check lib not found at $SCRIPT_DIR/perf-sweep-window.sh" >&2
+  exit 1
+fi
 
 OUT_FILE="${1:-/dev/stdout}"
 
@@ -330,6 +337,11 @@ for C in "${CORES_ARR[@]}"; do
   if ! jq -e '.points | length > 0' "$SWEEP_JSON" >/dev/null 2>&1; then
     echo "ERROR: sweep produced no points at C=$C" >&2
     SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "sweep produced no points" '{cores:$c, reason:$r, type:"failure"}')")
+    continue
+  fi
+  if ! WINDOW_MISMATCH="$(sweep_window_mismatches "$SWEEP_JSON")"; then
+    echo "ERROR: sweep latency windows inconsistent at C=$C — $WINDOW_MISMATCH" >&2
+    SKIPPED+=("$(jq -nc --argjson c "$C" --arg r "latency windows inconsistent: $WINDOW_MISMATCH" '{cores:$c, reason:$r, type:"failure"}')")
     continue
   fi
 

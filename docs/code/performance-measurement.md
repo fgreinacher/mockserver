@@ -121,6 +121,15 @@ before. Each result records `latency_window.settle_s`; per rung, `settle_exclude
 excluded requests, `measured_sample_count` the requests behind the percentiles, `full_rung_ms`
 the whole-rung percentiles, and `stalls_post_settle` the stalls left after the window opens (set
 against `stalls`, a large remaining share at a sub-knee rung suggests the settle is too short).
+Each rung stays one scenario, so its VUs and their connections carry across the settle boundary;
+each VU switches a VU-level `win` tag (`<rate>_settle` → `<rate>_steady`) the first time it
+starts an iteration past the boundary, and the percentiles are read from the
+`{win:<rate>_steady}` submetrics. Every request therefore lands in exactly one window, and the
+harness checks it: a main sweep where any rung's `measured_sample_count + settle_excluded`
+differs from `sample_count`, or (with a settle window and no drops) either window is empty, fails
+the `sweep_latency_window_accounts_every_request` validity
+check (the run is invalid and compare fails the build), and the per-core and multi-process rigs
+record that core or process count as a failure skip (`lib/perf-sweep-window.sh`).
 
 The healthy operating ceiling is the highest rung where `achieved_rps` is within 5% of
 `offered_rps` **and** latency is within a stated multiple of the flat-ladder baseline. The peak
@@ -658,6 +667,8 @@ To publish a run's figures:
 The perf box is a `c5.12xlarge`: 48 logical CPUs, 24 physical cores (hyperthread siblings at `N` and `N+24`). All 24 physical cores are allocated across the six-vCPU server arm (6), upstream (1), and k6 (17). A ten-vCPU arm leaves only 13 physical cores for k6, which is not enough at the server's knee — measuring a ten-core arm requires k6 on a separate machine.
 
 **k6 CPU is non-monotonic in offered load.** k6 draws its peak CPU at the last healthy rung; past the knee VUs block on I/O rather than working, so client CPU falls as offered load rises above the knee. A high k6 CPU reading at a given rung therefore locates the knee rather than indicating a bad measurement. Use the mean over the steady window, not the max — the first (startup) sample is inflated and not representative.
+
+**Per-request work in `sweep.js` moves the rig's ceiling.** At the top rungs k6 already runs at 75–87% of its pin, so every microsecond k6 spends per request lowers the rate the rig can offer before the client, not MockServer, saturates. Do not add per-request tags or `k6/execution` reads to the request path (`exec.scenario`, `exec.vu` and `exec.instance` each build a new object on every access). The one deliberate exception is the `exec.instance.vusActive` sample at the start of every `matchAt` iteration, which the stall-concurrency diagnostics need. The first version of the rung-onset exclusion (`30917ac40`) tagged every request with its window and read `exec.scenario` every iteration. A local interleaved A/B measured that at ~10% more k6 user CPU per request, and it coincided with a drop in the rig-valid peak: on the default 13-rung ladder, runs 464–486 peaked at 59.6–59.9k and runs 491–497 at 57.0–57.3k. Run 504 put the build-482 image on the current harness and measured 59,805 → 58,107 with the image held fixed; that isolates the image but not the ladder, because 502–504 ran the 22-rung fine ladder and 482 the default 13-rung one. The window now uses a VU tag; whether the peak recovers is for the default-ladder confirmation run in the performance programme (item 26). Measure a harness change's k6 CPU per request with an interleaved A/B over the load window only (cgroup `cpu.stat` at setup end and teardown start), since whole-run CPU includes VU initialisation and is noisier. Do not split a rung into separate settle and steady scenarios to avoid tagging: each scenario draws its own VUs, so the steady window would start on fresh VUs opening new connections — the onset the settle exists to exclude — and the initialised VU count nearly doubles.
 
 ## Heap Profiling Pitfalls
 
