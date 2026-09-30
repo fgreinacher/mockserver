@@ -2,6 +2,7 @@ package org.mockserver.log;
 
 import com.lmax.disruptor.ExceptionHandler;
 import com.lmax.disruptor.dsl.Disruptor;
+import com.lmax.disruptor.dsl.ProducerType;
 import org.mockserver.collections.CircularConcurrentLinkedDeque;
 import org.mockserver.configuration.Configuration;
 import org.mockserver.log.model.LogEntry;
@@ -49,6 +50,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.IntFunction;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -156,6 +158,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     private RequestDefinitionSerializer requestDefinitionSerializer;
     private final boolean asynchronousEventProcessing;
     private Disruptor<LogEntry> disruptor;
+    private CoalescingWakeWaitStrategy waitStrategy;
     // Executor that runs the O(n) part of every query (retrieve / verify / clear-scan) OFF the single
     // disruptor consumer thread. The consumer thread both APPENDS log entries and — historically — ran
     // every query to completion on that same thread, so a query's O(n) scan (each entry doing a full
@@ -224,6 +227,14 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     private volatile Runnable recordedRequestFlush;
 
     public MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing) {
+        this(configuration, mockServerLogger, scheduler, asynchronousEventProcessing, MockServerEventLog::defaultWaitStrategy);
+    }
+
+    /**
+     * @param waitStrategyFactory builds the consumer wait strategy from the ring size; tests pass one that never
+     *                            polls, so only an explicit wake can deliver an entry
+     */
+    MockServerEventLog(Configuration configuration, MockServerLogger mockServerLogger, Scheduler scheduler, boolean asynchronousEventProcessing, IntFunction<CoalescingWakeWaitStrategy> waitStrategyFactory) {
         super(scheduler);
         this.configuration = configuration;
         // Bound to this server's Configuration instance (not a static method reference) so
@@ -243,7 +254,16 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             LogEntry::estimatedHeapSize,
             LogEntry::clear);
         this.maxInFlightBytes = configuration.maxEventLogSizeInBytes();
-        startRingBuffer();
+        startRingBuffer(waitStrategyFactory);
+    }
+
+    private static CoalescingWakeWaitStrategy defaultWaitStrategy(int ringBufferSize) {
+        return new CoalescingWakeWaitStrategy(
+            TimeUnit.MILLISECONDS.toNanos(1),
+            TimeUnit.MILLISECONDS.toNanos(10),
+            Math.max(1, Math.min(256, ringBufferSize / 4)),
+            TimeUnit.MILLISECONDS.toNanos(50)
+        );
     }
 
     public void add(LogEntry logEntry) {
@@ -304,7 +324,12 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
                 }
             } else if (inFlightWeight > 0) {
                 // Published: this body is now in flight until the consumer processes it (see processLogEntry).
-                inFlightBytes.addAndGet(inFlightWeight);
+                // Past a quarter of the budget, wake the consumer rather than let the backlog grow while it
+                // polls, so coalesced wake-ups never cause a byte-budget drop that prompt processing avoids.
+                long inFlight = inFlightBytes.addAndGet(inFlightWeight);
+                if (budget > 0 && inFlight > budget / 4) {
+                    waitStrategy.wakeConsumer();
+                }
             }
         } else {
             try {
@@ -475,7 +500,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         return eventLog.getMaxSize();
     }
 
-    private void startRingBuffer() {
+    private void startRingBuffer(IntFunction<CoalescingWakeWaitStrategy> waitStrategyFactory) {
         ringBufferSizeInForce = configuration.ringBufferSize();
         // Bounded pool for running query scans off the consumer thread (see logQueryExecutor field), with
         // an unbounded queue so bursts of concurrent queries queue rather than being rejected and never
@@ -492,7 +517,8 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             new LinkedBlockingQueue<>(),
             new Scheduler.SchedulerThreadFactory("EventLog-Query")
         );
-        disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"));
+        waitStrategy = waitStrategyFactory.apply(ringBufferSizeInForce);
+        disruptor = new Disruptor<>(LogEntry::new, ringBufferSizeInForce, new Scheduler.SchedulerThreadFactory("EventLog"), ProducerType.MULTI, waitStrategy);
 
         final ExceptionHandler<LogEntry> errorHandler = new ExceptionHandler<LogEntry>() {
             @Override
@@ -549,7 +575,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
      * @param scan       the O(n) body to run off the consumer thread against the snapshot
      */
     private void querySnapshot(boolean descending, Consumer<List<LogEntry>> scan) {
-        disruptor.publishEvent(new LogEntry()
+        publishControl(new LogEntry()
             .setType(RUNNABLE)
             .setConsumer(() -> {
                 final List<LogEntry> snapshot;
@@ -823,10 +849,19 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
         }
     }
 
+    /**
+     * Publish an entry a caller is waiting on, waking the consumer rather than leaving it to the next poll
+     * of {@link CoalescingWakeWaitStrategy}.
+     */
+    private void publishControl(LogEntry controlEntry) {
+        disruptor.publishEvent(controlEntry);
+        waitStrategy.wakeConsumer();
+    }
+
     private void drainDisruptor() {
         if (asynchronousEventProcessing) {
             CountDownLatch latch = new CountDownLatch(1);
-            disruptor.publishEvent(new LogEntry()
+            publishControl(new LogEntry()
                 .setType(RUNNABLE)
                 .setConsumer(latch::countDown)
             );
@@ -848,7 +883,10 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
             // flushed the final state to every listener.
             stopNotifications();
             eventLog.clear();
+            waitStrategy.wakeConsumer();
             disruptor.shutdown(2, SECONDS);
+            // shutdown's halt signal does not wake a polling consumer; wake it so the thread exits now
+            waitStrategy.wakeConsumer();
             // Shut down the query pool AFTER draining the disruptor: any query RUNNABLE still in the ring
             // gets to submit its scan, and once the pool is shut down a late submit falls back to running
             // inline (see runOffConsumer). Daemon threads, so this never blocks JVM shutdown.
@@ -868,7 +906,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
 
     public void reset() {
         CompletableFuture<String> future = new CompletableFuture<>();
-        disruptor.publishEvent(new LogEntry()
+        publishControl(new LogEntry()
             .setType(RUNNABLE)
             .setConsumer(() -> {
                 // clear() also zeroes the deque's eviction counter; re-arm the warn-once latch so a
@@ -894,7 +932,7 @@ public class MockServerEventLog extends MockServerEventLogNotifier {
     public void clear(RequestDefinition requestDefinition) {
         CompletableFuture<String> future = new CompletableFuture<>();
         final boolean markAsDeletedOnly = mockServerLogger.isEnabledForInstance(Level.INFO);
-        disruptor.publishEvent(new LogEntry()
+        publishControl(new LogEntry()
             .setType(RUNNABLE)
             .setConsumer(() -> {
                 String logCorrelationId = UUIDService.getNonSecureUUID();

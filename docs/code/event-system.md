@@ -98,6 +98,20 @@ sequenceDiagram
 
 `writeToSystemOut()` runs **before** `releaseDerivedForms()`: rendering a body to stdout decodes it, so doing that first lets the release drop that decode instead of leaving it re-cached on the retained entry (which undid the release at `INFO`, the default level). The release stays **before** `eventLog.add()` so the entry's weight reflects the released body.
 
+### Consumer Wake-ups (`CoalescingWakeWaitStrategy`)
+
+**Producers do not wake the consumer for every entry; control-plane operations still wake it at once.** The ring uses `CoalescingWakeWaitStrategy`, a MockServer-owned `WaitStrategy`, instead of the Disruptor's default `BlockingWaitStrategy`. Below the ceiling the consumer finishes each entry long before the next arrives, so with `BlockingWaitStrategy` nearly every request's first publish paid a futex wake on the Netty worker loop (about 0.7 wakes per request; ~22% of worker-loop CPU samples at the ceiling in the build 502 JFR). Conditional signalling alone (the `LiteBlockingWaitStrategy` idea) does not help, because the consumer really is asleep at almost every first publish; only waking it less often does. Measured locally at `logLevel ERROR` (4 pinned cores, Docker Desktop arm64, JDK 25), coalescing cut container CPU per request by 21–22% at 20k and 40k req/s. At `INFO` the consumer is about half busy rendering every entry and almost never sleeps, so there is no wake cost to save and no measurable change.
+
+| Consumer state | When a producer publishes |
+|---|---|
+| Running | Nothing — it re-checks the cursor before it next parks |
+| Polling: idle under 50 ms, timed park backing off 1 ms → 10 ms | Wakes it only when the backlog reaches `min(256, ringSize / 4)` entries, when the in-flight bytes pass a quarter of `maxEventLogSizeInBytes` (`add()` calls `wakeConsumer()`), or for a control-plane publish; otherwise the next poll picks the entry up |
+| Deep: idle 50 ms or more, parked with no timeout | Always wakes it, so an idle server spends no CPU on the consumer and the first entry after idle is processed at once |
+
+Every `RUNNABLE` (verify, retrieve, clear, reset, drain) is published through `publishControl()`, which calls `wakeConsumer()` after the publish, so control-plane reads see everything published before them with no added latency. Other consumers of the processed log (disk capture, stdout rendering, listeners, which are already debounced by 250 ms) see a data entry at most 10 ms after it is published.
+
+The deep park must never lose a wake-up. The consumer writes its volatile park state, issues `VarHandle.fullFence()`, then reads the cursor; a producer claims its slot with a volatile read-modify-write and only then reads the park state. The fence is load-bearing: `Sequence.get()` is a plain read plus an acquire fence, which on arm64 can be satisfied before the preceding volatile store. Removing it loses wake-ups within seconds in `CoalescingWakeWaitStrategyTest.shouldNeverLoseAWakeUpWhenPublishRacesThePark` on arm64. The strategy supports exactly one consumer thread; a second thread calling `waitFor` fails with `IllegalStateException`, because a producer only ever unparks one thread.
+
 ### LogEntry as EventTranslator
 
 `LogEntry` implements LMAX Disruptor's `EventTranslator<LogEntry>` interface. Its `translateTo()` method copies all fields from the source entry into the pre-allocated ring buffer slot, then clears the source. This avoids object allocation in the hot path. It also copies the memoised `estimatedHeapSize`, so the consumer subtracts exactly the weight `add()` counted into the in-flight byte total (see [Ring In-Flight Bounding and Drops](memory-management.md#ring-in-flight-bounding-and-drops)).

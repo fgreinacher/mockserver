@@ -550,6 +550,8 @@ The `maxEventLogSizeInBytes` budget applies in two places: the deque (retained e
 
 **Budget is recomputed per `applyConfigurationCapacity()`.** When `PUT /mockserver/configuration` changes `maxEventLogSizeInBytes` at runtime, `applyConfigurationCapacity()` updates `maxInFlightBytes` alongside the deque's `maxBytes`, so both bounds track the new value. A shrink applies to every subsequent publish; it cannot evict what is already in the ring (the ring is not resizable).
 
+**Coalesced consumer wake-ups keep a small steady backlog.** The consumer is not woken for every entry (see [Consumer Wake-ups](event-system.md#consumer-wake-ups-coalescingwakewaitstrategy)): below the ceiling up to 10 ms of entries, typically around `min(256, ringSize / 4)` (the backlog at which a producer wakes the consumer, not a limit), can wait in the ring, so `mock_server_event_log_ring_occupancy` and `..._in_flight_bytes` read above zero on a healthy server under load and return to zero within 10 ms of traffic stopping. A publish that takes the in-flight bytes past a quarter of the budget wakes the consumer immediately, so coalescing cannot cause an in-flight byte-budget drop that prompt processing would have avoided.
+
 ## Eviction and GC
 
 When the `CircularConcurrentLinkedDeque` reaches capacity (count or byte budget):

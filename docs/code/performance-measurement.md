@@ -688,6 +688,19 @@ Measures streams per connection at N = 1, 10, 100 over one h2c connection. Has n
 because run-to-run variance on this benchmark is not yet characterised. The absence of a gate
 is intentional and correct, not an oversight.
 
+### `EventLogPublishWaitStrategyBenchmark` JMH — on demand, not run by CI
+
+Measures the cost of handing an entry to the event-log consumer when the consumer is mostly idle:
+five producers each spin `thinkNanos` between publishes (default 25 µs; the recorded comparison used
+`-p thinkNanos=20000,40000`) into a ring shaped like
+`MockServerEventLog`'s, for `BlockingWaitStrategy`, `LiteBlockingWaitStrategy`,
+`PhasedBackoffWaitStrategy.withLock` and `CoalescingWakeWaitStrategy`. The JMH score is think time
+plus publish and barely moves; the figures that matter are printed per iteration: `publish_ns`
+(producer time in `tryPublishEvent`), `consumer_cpu_ns` (consumer thread CPU per entry, including
+its park and unpark) and `batches_per_entry` (how often the consumer came back from a wait). A
+benchmark with no think time measures the saturated regime, where the consumer never sleeps and
+the wait strategy barely matters.
+
 ### The seven promoted dark benchmarks
 
 These classes existed but were run by no CI step before the performance programme:
