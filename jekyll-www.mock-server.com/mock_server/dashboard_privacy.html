@@ -56,7 +56,7 @@ MockServer is run from:</p>
 
 <ul>
   <li>the official <strong>Docker images</strong> (<span class="inline_code">docker-standard</span>,
-  <span class="inline_code">docker-graaljs</span>, <span class="inline_code">docker-clustered</span>),</li>
+  <span class="inline_code">docker-graaljs</span>, <span class="inline_code">docker-clustered</span>, <span class="inline_code">docker-http3</span>),</li>
   <li>the official <strong>Helm chart</strong> deployment, or</li>
   <li>the official <strong>binary launcher</strong> bundles.</li>
 </ul>
@@ -93,7 +93,7 @@ or environment are ever included.</p>
     <tr>
       <td><span class="inline_code">app_open</span></td>
       <td>Once per page load, after all activation gates pass</td>
-      <td>App version, surface (<span class="inline_code">browser</span> or <span class="inline_code">ide-embedded</span>), colour theme (<span class="inline_code">light</span> / <span class="inline_code">dark</span> / <span class="inline_code">system</span>), artefact distribution label (<span class="inline_code">docker-standard</span> / <span class="inline_code">docker-graaljs</span> / <span class="inline_code">docker-clustered</span> / <span class="inline_code">helm</span> / <span class="inline_code">binary</span> / <span class="inline_code">unknown</span>) — set automatically by the official artefact, never by user input</td>
+      <td>App version, surface (<span class="inline_code">browser</span> or <span class="inline_code">ide-embedded</span>), colour theme (<span class="inline_code">light</span> / <span class="inline_code">dark</span> / <span class="inline_code">system</span>), artefact distribution label (<span class="inline_code">docker-standard</span> / <span class="inline_code">docker-graaljs</span> / <span class="inline_code">docker-clustered</span> / <span class="inline_code">docker-http3</span> / <span class="inline_code">helm</span> / <span class="inline_code">binary</span> / <span class="inline_code">unknown</span>) — set automatically by the official artefact, never by user input</td>
     </tr>
     <tr>
       <td><span class="inline_code">view_change</span></td>
@@ -154,7 +154,7 @@ consent note is never shown, regardless of any other setting.</p>
 <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_DASHBOARD_ANALYTICS_ENABLED=false</code></pre>
 
 <p>Analytics is active only in the official Docker images (<span class="inline_code">docker-standard</span>,
-<span class="inline_code">docker-graaljs</span>, <span class="inline_code">docker-clustered</span>), Helm chart deployments, and the official
+<span class="inline_code">docker-graaljs</span>, <span class="inline_code">docker-clustered</span>, <span class="inline_code">docker-http3</span>), Helm chart deployments, and the official
 binary launcher bundles — these artefacts have <span class="inline_code">dashboardAnalyticsEndpoint</span> and
 <span class="inline_code">dashboardAnalyticsKey</span> pre-configured. The plain downloadable JAR and any embedded /
 library / dependency use have both properties empty, so analytics is always inactive there regardless of

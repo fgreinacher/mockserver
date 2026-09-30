@@ -243,6 +243,9 @@ image:
   repository: mockserver
   snapshot: false
   pullPolicy: IfNotPresent
+  # -- Image variant, appended to the tag: "" (standard), "http3" (adds the QUIC native that
+  # HTTP/3 needs; also set mockserver.http3Port and expose that UDP port) or "graaljs".
+  variant: ""
 
 service:
   annotations: {}

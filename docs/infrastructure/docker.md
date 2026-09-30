@@ -31,6 +31,9 @@ gcr.io/distroless/java25:nonroot"]
         CLUSTERED["docker/clustered/Dockerfile
 Clustered (Infinispan)
 gcr.io/distroless/java21:nonroot"]
+        HTTP3["docker/http3/Dockerfile
+HTTP/3 (layered)
+FROM the standard image + QUIC native"]
     end
 
     subgraph "Build Images"
@@ -55,6 +58,7 @@ grafana/k6"]
 | Local | `docker/local/Dockerfile` | `gcr.io/distroless/java-base-debian12:nonroot` + jlink-trimmed Temurin 26 + AppCDS | `nonroot` | The image the release **and** snapshot pipelines actually build+push as `mockserver/mockserver:<ver>` / `:snapshot`; builds from a local JAR, bakes a baked AppCDS archive (~⅓ faster time-to-ready); no netty-tcnative (JDK TLS provider). JVM is JDK 26; the library is still compiled to the Java 17 floor (runtime-only) |
 | Webhook | `docker/webhook/Dockerfile` | `gcr.io/distroless/java25:nonroot` | `nonroot` | Kubernetes admission webhook for sidecar injection |
 | Clustered | `docker/clustered/Dockerfile` | `gcr.io/distroless/java21:nonroot` | `nonroot` | Infinispan state backend for multi-node clustering |
+| HTTP/3 | `docker/http3/Dockerfile` | `FROM ${BASE_IMAGE}` — the standard image's pushed digest | inherited (`nonroot`) | Published as `X.Y.Z-http3` / `snapshot-http3`; the standard image plus this arch's QUIC native in `/usr/lib`, the only published image that can serve HTTP/3 (see [HTTP/3 image variant](#http3-image-variant)) |
 | AOT (experimental) | `docker/aot/Dockerfile` | `gcr.io/distroless/java-base-debian12:nonroot` + jlink-trimmed Temurin 25 | `nonroot` | EXPERIMENTAL, published as opt-in `X.Y.Z-aot` / `latest-aot` tags (Docker Hub + ECR Public) from the next release; bakes a JDK 25 AOT cache (JEP 483/514) at image-build time via a training run; ~2× faster time-to-ready; JDK TLS provider (no tcnative) |
 
 ### Docker Registries
@@ -68,7 +72,7 @@ Images are published to two registries:
 | AWS ECR Public | `public.ecr.aws/mockserver/mockserver` | Avoids Docker Hub rate limits for AWS-based CI/CD |
 | AWS ECR Public | `public.ecr.aws/mockserver/mockserver-webhook` | Webhook image on ECR |
 
-Both registries receive the same tags on every push. On each merge to `master`, the legacy Buildkite pipeline (`.buildkite/scripts/steps/java-docker-push-snapshot.sh`) pushes the `:snapshot`, `:mockserver-snapshot`, `-graaljs` and `-clustered` snapshot variants (plus `:snapshot` / `:mockserver-snapshot` for the webhook image). During releases, the release pipeline (`scripts/release/components/docker.sh`) pushes `:latest`, `:X.Y.Z`, `:mockserver-X.Y.Z`, `-graaljs`, `clustered-*`, `-aot` (experimental, error-isolated), and webhook release variants. The `:latest` tag is pushed only by the release pipeline, not by the per-merge snapshot step. The `:latest` tag always points to the most recent official release, not the development branch.
+Both registries receive the same tags on every push. On each merge to `master`, the legacy Buildkite pipeline (`.buildkite/scripts/steps/java-docker-push-snapshot.sh`) pushes the `:snapshot`, `:mockserver-snapshot`, `-graaljs` and `-clustered` snapshot variants (plus `:snapshot` / `:mockserver-snapshot` for the webhook image), then `snapshot-http3` / `mockserver-snapshot-http3` (non-blocking). During releases, the release pipeline (`scripts/release/components/docker.sh`) pushes `:latest`, `:X.Y.Z`, `:mockserver-X.Y.Z`, `-graaljs`, `clustered-*`, `-aot` (experimental, error-isolated), and webhook release variants, then — last, after those are mirrored and signed — `-http3`. The `:latest` tag is pushed only by the release pipeline, not by the per-merge snapshot step. The `:latest` tag always points to the most recent official release, not the development branch.
 
 Release images are cosign-signed by digest after push (see below). Snapshot images are not signed.
 
@@ -81,6 +85,58 @@ The same variant is also published **per master merge**, from the same job, the 
 Why the snapshot tag exists at all: the daily performance run's clustered-state A/B (`perf-test-run.sh`, performance-programme item 13) measures the Infinispan-vs-in-memory state-backend ratio and needs this image on a scale-to-zero perf agent. It `docker pull`s the tag exactly as it pulls the GraalJS SUT image. **Same-commit pairing is load-bearing** — the run is attributed to the SUT image's `org.opencontainers.image.revision`, so a clustered image from a different commit would file a ratio against code the measured binary never contained. Publishing both from one job makes the pairing structural; the perf harness then re-checks the two revision labels and skips the A/B (loudly, with a recorded reason) rather than measuring a mismatched pair. `docker/clustered/Dockerfile` carries the `SOURCE_COMMIT` / `BUILD_DATE` build args for that reason.
 
 The **AOT experimental variant** (`docker/aot/Dockerfile`) is published as opt-in `X.Y.Z-aot`, `mockserver-X.Y.Z-aot`, and `latest-aot` tags (Docker Hub + ECR Public) from the next release, alongside the base and GraalJS images. Like the clustered image it is error-isolated in the release pipeline: an `-aot` build or push failure does not abort the release, since the main images have already been published by that point (the arm64 training run executes under QEMU emulation and is the most likely failure point). It copies a jlink-trimmed JDK 25 (Eclipse Temurin 25) runtime onto `gcr.io/distroless/java-base-debian12:nonroot`, runs a training start of MockServer during the image build to produce a JDK 25 AOT cache (JEP 483/514), and bakes that cache into the final image layer. At runtime the JVM loads the cache with `-XX:AOTCache=/mockserver.aot`, cutting time-to-ready by roughly half (~0.35 s vs ~0.7–0.8 s for the standard image). The AOT cache is CPU-architecture and JDK-build specific, so a separate cache is baked for each platform in a multi-arch build. When the soft-fail build succeeds, the published `-aot` tags are cosign-signed like every other release image (the signing step adds them only when the build actually pushed); it is not mirrored to GHCR. TLS uses the JDK provider rather than netty-tcnative; functional parity is complete (unlike GraalVM native-image). It can also be built from a repository checkout for local evaluation: `cd docker/aot && touch ca-bundle.pem && docker build .` (the `ca-bundle.pem` file must exist in the build context — it may be empty unless you are behind a corporate TLS-inspection proxy).
+
+### HTTP/3 image variant
+
+**Outcome:** `mockserver/mockserver:X.Y.Z-http3` (and `mockserver-X.Y.Z-http3`, `latest-http3`; per
+merge `snapshot-http3`, `mockserver-snapshot-http3`) is the standard image plus ONE file — the QUIC
+native for its architecture — so it inherits every other setting and fix by construction. No other
+published image can serve HTTP/3: they all run the shaded jar, whose relocated Netty asks for
+`libshaded_1package_netty_quiche42_linux_<arch>.so`, a name no published native has (so a stock
+`netty-codec-native-quic` jar mounted into `/libs` is never loaded either).
+
+```mermaid
+flowchart LR
+    BASE["standard image digest
+(just pushed)"] --> COPY["quic stage (BUILDPLATFORM)
+COPY /mockserver*.jar"]
+    COPY --> NAME["name: from NativeLibraryLoader's
+package, mangled as Netty does"]
+    COPY --> SRC["bytes: quiche .so bundled in the jar,
+else Maven Central + sha256"]
+    NAME --> OUT["/usr/lib/lib{prefix}netty_quiche42_linux_{arch}.so
+(ELF + arch checked)"]
+    SRC --> OUT
+    OUT --> FINAL["FROM the same digest
++ that one file"]
+```
+
+- **Base pinned by digest.** `BASE_IMAGE` is the digest just pushed (release: ECR Public, to stay off
+  the Docker Hub pull limit), so the variant is always the same build as its base.
+  `docker-validate-sync.sh` fails if `docker/http3/Dockerfile` stops ending on `FROM ${BASE_IMAGE}` or
+  re-declares an inherited `ENTRYPOINT`/`CMD`/`HEALTHCHECK`/`USER`/`ENV`/`EXPOSE`.
+- **Loaded from `/usr/lib`.** Netty tries `java.library.path` before extracting to `/tmp`, so the
+  image serves HTTP/3 with a read-only root filesystem.
+- **Base-agnostic.** A shaded base supplies the exact bytes from its own jar (no download); an
+  unshaded base (`docker/Dockerfile`, the container-test image) falls back to Maven Central with
+  the Netty version from the base jar. That path needs `ca-bundle.pem` behind a TLS-inspecting proxy.
+- **Multi-arch without emulation.** The extraction stage runs on `$BUILDPLATFORM`; the target stages
+  only copy files.
+- **Tested.** `.buildkite/scripts/steps/docker-http3-smoke.sh <http3-image> [<base-image>]` runs the
+  image read-only, makes a real HTTP/3 request with the JDK 26 HTTP/3 client trusting only the
+  server's CA and, given the base, checks that the base refuses `http3Port` and that the `-http3`
+  image with its native hidden (`-Djava.library.path=/nope`) says the native is present but failed
+  to load — each with the start-up message, one `underlying error:` line and no stack frames.
+- **Where it runs, and what a failure blocks.**
+
+  | Where | Smoke | On failure |
+  |---|---|---|
+  | Snapshot step, per merge | agent-arch `--load` build over the pushed `:snapshot` digest, before pushing `snapshot-http3` | non-blocking (plan item 41 makes it blocking): warning annotation, nothing published; the block runs last under `timeout 20m` |
+  | Release (`--execute`) | agent-arch `--load` build over the pushed release digest, before the multi-arch push | hard-fail, but LAST: every core image is already pushed, mirrored and signed, so only the `-http3` publish stops |
+  | Release dry run | local build, HTTP/3 request only (the base's message may predate this version) | blocking, last |
+  | Container-integration harness | `docker_variant_smoke_http3` over the default reference image | non-blocking |
+- **Only the standard image's features.** `-http3` layers on the standard image, so it does not
+  include GraalJS (JavaScript templates) or the clustered Infinispan state backend.
 
 ### Verifying Image Signatures
 

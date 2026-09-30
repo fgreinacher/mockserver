@@ -122,6 +122,7 @@ helm repo update</code></pre>
     <li><span class="keyword">app.proxyRemotePort</span> (no default)</li>
     <li><span class="keyword">app.jvmOptions</span> (no default)</li>
     <li><span class="keyword">image.snapshot</span> (default: false) - set <span class="keyword">true</span> to use latest snapshot version</li>
+    <li><span class="keyword">image.variant</span> (default: empty) - set <span class="keyword">http3</span> to use the image that can serve HTTP/3 (also set <span class="keyword">mockserver.http3Port</span> in your properties and expose that port as UDP on your Service), or <span class="keyword">graaljs</span> for JavaScript templates</li>
     <li><span class="keyword">podLabels</span> (default: {}) - additional labels to add to the MockServer pods</li>
     <li><span class="keyword">imagePullSecrets</span> (default: []) - list of image pull secrets for private registries</li>
 </ul>

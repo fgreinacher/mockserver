@@ -332,3 +332,48 @@ docker buildx build \
 # Leave no build-context residue for a later step / a re-used agent workspace.
 rm -rf docker/clustered/libs
 rm -f docker/clustered/mockserver-netty-jar-with-dependencies.jar docker/clustered/ca-bundle.pem
+
+# ---------------------------------------------------------------------------
+# :snapshot-http3 — the standard image plus this arch's QUIC native (docker/http3/Dockerfile),
+# built FROM the :snapshot digest pushed above so it can never drift from it. Smoke-tested with a
+# real HTTP/3 request before it is pushed. NON-BLOCKING until it has run green on CI (plan item 41): a
+# failure publishes nothing and warns, and never fails the images already pushed.
+publish_snapshot_http3() {
+  export HTTP3_SMOKE_ID="$$"
+  local base_digest base_ref smoke_tag="mockserver/mockserver:smoke-http3-$HTTP3_SMOKE_ID"
+  # On success, failure or the 20m timeout: drop the smoke image and any smoke containers.
+  trap 'docker rm -f "mockserver-http3-smoke-$HTTP3_SMOKE_ID" "mockserver-http3-refuse-$HTTP3_SMOKE_ID" >/dev/null 2>&1 || true
+        docker rmi -f "mockserver/mockserver:smoke-http3-$HTTP3_SMOKE_ID" >/dev/null 2>&1 || true' EXIT
+  trap 'exit 143' TERM INT
+  base_digest="$(docker buildx imagetools inspect "${ECR_REPO}:snapshot" | awk '/^Digest:/{print $2; exit}')"
+  if [[ "$base_digest" != sha256:* ]]; then
+    echo "could not resolve the digest of ${ECR_REPO}:snapshot" >&2
+    return 1
+  fi
+  base_ref="${ECR_REPO}@${base_digest}"
+  echo "    base: $base_ref"
+  rm -f docker/http3/ca-bundle.pem
+  docker/ensure-ca-bundle.sh docker/http3 >/dev/null
+  docker pull "$base_ref" >/dev/null || return 1
+  docker buildx build --load --build-arg BASE_IMAGE="$base_ref" --tag "$smoke_tag" docker/http3 || return 1
+  .buildkite/scripts/steps/docker-http3-smoke.sh "$smoke_tag" "$base_ref" || return 1
+  docker buildx build \
+    --platform linux/amd64,linux/arm64 \
+    --push \
+    --build-arg BASE_IMAGE="$base_ref" \
+    --tag mockserver/mockserver:snapshot-http3 \
+    --tag mockserver/mockserver:mockserver-snapshot-http3 \
+    --tag "${ECR_REPO}:snapshot-http3" \
+    --tag "${ECR_REPO}:mockserver-snapshot-http3" \
+    docker/http3
+}
+echo "--- :docker: Building, smoke-testing and pushing mockserver/mockserver:snapshot-http3 (multi-arch, non-blocking)"
+# Bounded, so a hung pull or smoke run cannot eat the step's timeout for an optional image.
+export ECR_REPO
+export -f publish_snapshot_http3
+if ! timeout 20m bash -c 'set -euo pipefail; publish_snapshot_http3'; then
+  echo "WARNING: snapshot-http3 was NOT published (non-blocking) — see the log above"
+  echo "The \`snapshot-http3\` image was **not** published by this build: its build or HTTP/3 smoke test failed (non-blocking). See the \`:docker: build and push :snapshot\` log." \
+    | buildkite-agent annotate --style warning --context snapshot-http3 || true
+fi
+rm -f docker/http3/ca-bundle.pem

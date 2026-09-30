@@ -36,7 +36,7 @@ In addition it is possible to <a href="#docker_container_customization">customis
 
 <pre class="prettyprint code"><code class="code">cosign verify --key https://www.mock-server.com/mockserver-cosign.pub mockserver/mockserver:{{ site.mockserver_version }}</code></pre>
 
-<p>A successful verification prints the signed payload and exits with status <span class="keyword">0</span>. The same key verifies the <span class="inline_code">-graaljs</span> and <span class="inline_code">clustered-</span> image variants and the ECR Public mirror. Image versions before {{ site.mockserver_version }} predate signing.</p>
+<p>A successful verification prints the signed payload and exits with status <span class="keyword">0</span>. The same key verifies the <span class="inline_code">-graaljs</span>, <span class="inline_code">-http3</span> and <span class="inline_code">clustered-</span> image variants and the ECR Public mirror. Image versions before {{ site.mockserver_version }} predate signing.</p>
 
 <a id="run_docker_container" class="anchor" href="#run_docker_container">&nbsp;</a>
 
@@ -73,6 +73,16 @@ In addition it is possible to <a href="#docker_container_customization">customis
 <p>For example:</p>
 
 <pre><code class="code">docker run -d --rm -p <span class="numeric_literal">1080</span>:<span class="numeric_literal">1080</span> mockserver/mockserver</code></pre>
+
+<a id="docker_http3" class="anchor" href="#docker_http3">&nbsp;</a>
+
+<h3>HTTP/3 (experimental)</h3>
+
+<p><a href="/mock_server/http3.html">HTTP/3</a> needs a native library that only the <span class="inline_code">-http3</span> image carries: use <span class="inline_code">mockserver/mockserver:{{ site.mockserver_version }}-http3</span> (or <span class="inline_code">latest-http3</span>, or <span class="inline_code">snapshot-http3</span> for the latest snapshot), set <span class="inline_code">MOCKSERVER_HTTP3_PORT</span>, and publish that port as <strong>UDP</strong>:</p>
+
+<pre><code class="code">docker run -d --rm -p <span class="numeric_literal">1080</span>:<span class="numeric_literal">1080</span> -p <span class="numeric_literal">8443</span>:<span class="numeric_literal">8443</span>/udp -e MOCKSERVER_HTTP3_PORT=<span class="numeric_literal">8443</span> mockserver/mockserver:{{ site.mockserver_version }}-http3</code></pre>
+
+<p>It is otherwise identical to the standard image, so it does not include the extras of the <span class="inline_code">-graaljs</span> (JavaScript templates) or <span class="inline_code">clustered-</span> images. The other images refuse to start when <span class="inline_code">http3Port</span> is set, with a message naming the <span class="inline_code">-http3</span> image; adding the native jar to <span class="inline_code">/libs</span> does not work in them.</p>
 
 <a id="docker_container_environment_variables" class="anchor" href="#docker_container_environment_variables">&nbsp;</a>
 

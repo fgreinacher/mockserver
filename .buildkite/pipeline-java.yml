@@ -352,11 +352,9 @@ steps:
   - label: ":docker: build and push :snapshot"
     if: "build.branch == 'master'"
     command: ".buildkite/scripts/steps/java-docker-push-snapshot.sh"
-    # 30 -> 45: the step now publishes a FOURTH multi-arch image, the ~620 MB
-    # `-clustered` variant (Infinispan/JGroups under /libs), on top of local,
-    # graaljs and webhook. Two platforms of the largest image is the biggest
-    # single addition this step has taken; 45m keeps headroom under registry noise.
-    timeout_in_minutes: 45
+    # 65 = 45 for the core images (local, graaljs, webhook and the ~620 MB -clustered,
+    # multi-arch) + 20 for the snapshot-http3 block, which runs last under `timeout 20m`.
+    timeout_in_minutes: 65
     retry:
       automatic:
         - exit_status: -1   # agent lost (e.g. Spot reclamation)

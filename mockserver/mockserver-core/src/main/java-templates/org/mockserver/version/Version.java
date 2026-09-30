@@ -10,6 +10,7 @@ public final class Version {
     private static final String GROUPID = "${project.groupId}";
     private static final String ARTIFACTID = "${project.artifactId}";
     private static final String GITHASH = "${git.commit.id.abbrev}";
+    private static final String NETTY_VERSION = "${netty.version}";
     private static String majorMinorVersion = null;
 
     private static String getValue(String value, String defaultValue) {
@@ -55,6 +56,16 @@ public final class Version {
      */
     public static String getGitHash() {
         return getValue(GITHASH, System.getProperty("MOCKSERVER_GITHASH", ""));
+    }
+
+    /**
+     * The Netty version MockServer was built against, or an empty string if the build did not filter it.
+     * A caller that needs the version actually on the classpath should prefer Netty's own
+     * {@code io.netty.util.Version.identify()} and use this only as the fallback, because an embedding
+     * application can manage Netty to a different version.
+     */
+    public static String getNettyVersion() {
+        return getValue(NETTY_VERSION, "");
     }
 
 }

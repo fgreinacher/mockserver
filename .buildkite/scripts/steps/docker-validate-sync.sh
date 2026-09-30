@@ -113,6 +113,32 @@ if [ "$golang_distinct" -gt 1 ]; then
   echo "WARNING: the ${#DOCKERFILES[@]} Dockerfiles pin $golang_distinct different golang images for the healthcheck stage — bring them to one digest (docs/infrastructure/docker.md, Docker HEALTHCHECK)"
 fi
 
+# Layered variants add files to the standard image and inherit everything else, so every check above
+# holds for them by construction - as long as they never re-declare what they inherit.
+LAYERED_DOCKERFILES=(
+  "docker/http3/Dockerfile"
+)
+for df in "${LAYERED_DOCKERFILES[@]}"; do
+  filepath="$REPO_ROOT/$df"
+  if [ ! -f "$filepath" ]; then
+    echo "FAIL: layered variant $df not found"
+    errors=$((errors + 1))
+    continue
+  fi
+  if [ "$(grep -iE '^[[:space:]]*FROM[[:space:]]' "$filepath" | tail -1)" != 'FROM ${BASE_IMAGE}' ]; then
+    echo "FAIL: $df must end on 'FROM \${BASE_IMAGE}' so it inherits the standard image"
+    errors=$((errors + 1))
+  fi
+  # The final stage may only COPY files in and relabel the analytics distribution.
+  final_stage="$(awk 'toupper($0) ~ /^[[:space:]]*FROM[[:space:]]/{stage=""} {stage=stage $0 "\n"} END{printf "%s", stage}' "$filepath")"
+  overrides="$(grep -iE '^[[:space:]]*(ENTRYPOINT|CMD|HEALTHCHECK|USER|ENV|EXPOSE|RUN|WORKDIR|VOLUME|STOPSIGNAL|SHELL|ADD|ONBUILD)[[:space:]]' <<<"$final_stage" \
+    | grep -vxE 'ENV MOCKSERVER_DASHBOARD_ANALYTICS_DISTRIBUTION=[a-z0-9-]+' || true)"
+  if [ -n "$overrides" ]; then
+    echo "FAIL: $df's final stage re-declares an inherited setting or runs a build step (only COPY and the analytics ENV are allowed)"
+    errors=$((errors + 1))
+  fi
+done
+
 if [ $errors -gt 0 ]; then
   echo ""
   echo "FAILED: $errors Dockerfile sync issue(s) found"

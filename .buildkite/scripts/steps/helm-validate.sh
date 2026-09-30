@@ -70,6 +70,31 @@ EOF
       errors=$((errors + 1))
     fi
 
+    # image.variant selects a published tag suffix; assert the exact rendered image so a template
+    # edit cannot silently point pods at a tag that does not exist.
+    assert_image() {
+      expected="$1"; shift
+      rendered=$(helm template test-release helm/mockserver "$@" 2>/dev/null | grep "image: mockserver/" || true)
+      if [ "$(echo $rendered)" = "image: $expected" ]; then
+        echo "PASS: $* -> $expected"
+      else
+        echo "FAILED: $* rendered \"$rendered\", expected image: $expected"
+        errors=$((errors + 1))
+      fi
+    }
+    echo "--- Asserting image.variant renders the published tag"
+    app_version=$(sed -n "s/^appVersion: *//p" helm/mockserver/Chart.yaml | tr -d "\"")
+    assert_image "mockserver/mockserver:mockserver-$app_version"
+    assert_image "mockserver/mockserver:mockserver-$app_version-http3" --set image.variant=http3
+    assert_image "mockserver/mockserver:mockserver-snapshot-graaljs" --set image.snapshot=true --set image.variant=graaljs
+    assert_image "mockserver/mockserver:custom-tag" --set image.variant=http3 --set image.repositoryNameAndTag=mockserver/mockserver:custom-tag
+    if helm template test-release helm/mockserver --set image.variant=bogus >/dev/null 2>&1; then
+      echo "FAILED: image.variant=bogus rendered; the schema enum must reject it"
+      errors=$((errors + 1))
+    else
+      echo "PASS: image.variant=bogus rejected by the schema"
+    fi
+
     if [ "$errors" -eq 0 ]; then
       echo "All Helm validations passed"
     else

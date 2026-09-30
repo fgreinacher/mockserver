@@ -300,6 +300,7 @@ updates:
       - "/docker/aot"
       - "/docker/webhook"
       - "/docker/clustered"
+      - "/docker/http3"
       - "/container_integration_tests/docker_compose_libs_classpath"
       - "/container_integration_tests/docker_compose_war_tomcat"
       - "/docker_build/maven"

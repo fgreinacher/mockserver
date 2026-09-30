@@ -30,6 +30,7 @@ decision (ZGC shipped as `ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"`) is in
 | 33–36 | Server-side memory bounds found by the 512 MiB OOM investigation | design decisions (§5) |
 | 39 | Promote the 512 MiB memory-floor container test to blocking | five green master runs on amd64 agents (§5) |
 | 40 | Perf baselines shift with the lower image heap | the first daily run after it merges (§5) |
+| 41 | Make the `snapshot-http3` publish blocking | 5 consecutive green master runs of its non-blocking smoke and push (§6) |
 
 ## Decided against
 
@@ -119,3 +120,13 @@ design change, not a one-line fix. Items 39–40 are follow-ups of the image fix
 | 39 | `docker_memory_floor_512m` runs non-blocking | It was calibrated on Apple-silicon Docker Desktop only: the `docker/Dockerfile` reference image it builds peaked at 80.5–85.7% of the 512 MiB limit against a 90% threshold. GraalJS, which the test does not build, ships at 45% because it peaked at 87–88% at 50%; at 45% it peaks at 79.2–83.1%, but its file-backed pages still dipped below the 70% line once on a contended host, and two of those runs (which predate the test's absolute 17 MiB file-page floor) would fail that floor, so the absolute floor may need per-image calibration before the GraalJS run can count toward promotion. It records a warning, not a failure, until it has run on real amd64 `default`-queue agents (the same precedent as the `root-snapshot`/`aot` smoke tests and the `docker-build-verify` step) | Promote when both hold: five consecutive green `:docker: container integration tests` runs on master with the peak recorded below 88%, and at least one green run of the same test against the GraalJS image on an amd64 `default`-queue agent (`MEMORY_FLOOR_IMAGE=<graaljs image>`). Then default `MEMORY_FLOOR_BLOCKING` to `true` in `integration_tests.sh`. If the amd64 peak sits above ~88%, lower the standard images' heap to 45% (measured 78.3–82.5%) instead. |
 | 40 | The perf baselines move when the lower image heap lands | The main perf SUT runs the GraalJS image, whose 2 GB heap falls from 1.2 GiB to 0.9 GiB (45%), with default `maxLogEntries` from ~155k to ~115.5k, so the growth ring fills sooner; the soak (standard image) and the clustered A/B nodes fall to 1.0 GiB and ~128.5k (50%). No SUT starts a health-check JVM on its CPUs every 10 s any more. Watch the first daily run for a heap `OutOfMemoryError` on the 0.9 GiB GraalJS SUT: the MB-scale arms run against a 256 MiB event-log budget, which measured at up to ~1.7× (~430 MiB) at `ERROR` | Mark the first daily run after the merge as a baseline change rather than a regression, and re-baseline the notify-only comparisons from it |
 
+## §6 — HTTP/3 packaging follow-ups (added 2026-09-30)
+
+Follow-ups to moving the QUIC natives out of the default jar. #37 and #38 closed in the change that
+added them and are listed so the item numbers stay unique; #41 remains.
+
+| # | Item | Outcome |
+|---|---|---|
+| 37 | An HTTP/3 image tag, so container users need not mount a jar | Closed: `mockserver/mockserver:<version>-http3` (+ `latest-http3`, `snapshot-http3`), multi-arch, layered on the standard image digest (`docker/http3/Dockerfile`), smoke-tested with a real HTTP/3 request; Helm `image.variant=http3`. Building it found that no published image had ever served HTTP/3 and that the documented `/libs` mount could not work there: the shaded jar's relocated Netty asks for a differently named native (see [docker.md](../infrastructure/docker.md#http3-image-variant)) |
+| 38 | Make the missing-native start-up error name every fix | Closed: `Http3NativeUnavailableException` names the image tag, Helm value, `-http3` jar and the `netty-codec-native-quic` coordinate with this runtime's Netty version and platform classifier, and the underlying error on one line, says so when the native is present but unloadable, and the CLI prints it without a stack trace (see [http3.md](../code/http3.md#lifecycle-integration)) |
+| 41 | Make the `snapshot-http3` publish blocking | Open. It runs last and non-blocking in `java-docker-push-snapshot.sh` (warning annotation on failure, `timeout 20m`) because it has not yet run on a CI agent. After 5 consecutive green master runs (no `snapshot-http3` warning annotation, image pushed), drop the `if !` wrapper so a failure reds the step, as the release publish already does |

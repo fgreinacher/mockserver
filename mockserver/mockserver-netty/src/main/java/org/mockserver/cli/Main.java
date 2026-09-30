@@ -1,6 +1,7 @@
 package org.mockserver.cli;
 
 import com.google.common.base.Joiner;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.mockserver.client.MockServerClient;
 import org.mockserver.configuration.ConfigurationProperties;
 import org.mockserver.mock.Expectation;
@@ -8,6 +9,7 @@ import org.mockserver.configuration.IntegerStringListParser;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
 import org.mockserver.netty.MockServer;
+import org.mockserver.netty.http3.Http3NativeUnavailableException;
 import org.mockserver.version.Version;
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
@@ -188,16 +190,7 @@ public class Main {
             cmd.setOut(new java.io.PrintWriter(systemOut, true));
             cmd.setErr(new java.io.PrintWriter(systemErr, true));
             cmd.setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
-                MOCK_SERVER_LOGGER.logEvent(
-                    new LogEntry()
-                        .setType(SERVER_CONFIGURATION)
-                        .setLogLevel(ERROR)
-                        .setMessageFormat("exception while starting:{}")
-                        .setThrowable(ex)
-                );
-                if (ConfigurationProperties.disableSystemOut()) {
-                    new RuntimeException("exception while starting: " + ex.getMessage()).printStackTrace(System.err);
-                }
+                logStartupFailure(ex);
                 return 1;
             });
             cmd.setParameterExceptionHandler((ex, args) -> {
@@ -220,16 +213,39 @@ public class Main {
                 System.exit(exitCode);
             }
         } catch (Throwable throwable) {
+            logStartupFailure(throwable);
+        }
+    }
+
+    /**
+     * A missing HTTP/3 native is a configuration problem whose fixes the message already spells out, so
+     * print just that message: a stack trace (and Netty's nested UnsatisfiedLinkErrors) buries the fix.
+     */
+    static void logStartupFailure(Throwable throwable) {
+        Http3NativeUnavailableException http3NativeUnavailable = ExceptionUtils.throwableOfType(throwable, Http3NativeUnavailableException.class);
+        if (http3NativeUnavailable != null) {
             MOCK_SERVER_LOGGER.logEvent(
                 new LogEntry()
                     .setType(SERVER_CONFIGURATION)
                     .setLogLevel(ERROR)
-                    .setMessageFormat("exception while starting:{}")
-                    .setThrowable(throwable)
+                    // a bare "{}" format renders nothing, and the message must not be the format (it may contain "{}")
+                    .setMessageFormat("HTTP/3 start-up failed:{}")
+                    .setArguments(http3NativeUnavailable.getMessage())
             );
             if (ConfigurationProperties.disableSystemOut()) {
-                new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
+                System.err.println(http3NativeUnavailable.getMessage());
             }
+            return;
+        }
+        MOCK_SERVER_LOGGER.logEvent(
+            new LogEntry()
+                .setType(SERVER_CONFIGURATION)
+                .setLogLevel(ERROR)
+                .setMessageFormat("exception while starting:{}")
+                .setThrowable(throwable)
+        );
+        if (ConfigurationProperties.disableSystemOut()) {
+            new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
         }
     }
 
@@ -631,16 +647,7 @@ public class Main {
                 // A genuine startup failure (e.g. a failed port bind rethrown from MockServer.createServerBootstrap).
                 // Report a non-zero exit code so a shell/CI caller can detect that the server never started.
                 exitCode = 1;
-                MOCK_SERVER_LOGGER.logEvent(
-                    new LogEntry()
-                        .setType(SERVER_CONFIGURATION)
-                        .setLogLevel(ERROR)
-                        .setMessageFormat("exception while starting:{}")
-                        .setThrowable(throwable)
-                );
-                if (ConfigurationProperties.disableSystemOut()) {
-                    new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
-                }
+                logStartupFailure(throwable);
             }
         }
     }

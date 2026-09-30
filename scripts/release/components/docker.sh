@@ -88,6 +88,9 @@ rm -f docker/graaljs/ca-bundle.pem docker/clustered/ca-bundle.pem docker/aot/ca-
 # is never built by BuildKit. Stage the bundle anyway for consistency (and so the file exists if
 # the download stage is ever built) — empty in CI is a no-op.
 "$REPO_ROOT/docker/ensure-ca-bundle.sh" docker/aot >/dev/null
+# docker/http3 only needs it for its Maven Central fallback, which the shaded release base never takes.
+rm -f docker/http3/ca-bundle.pem
+"$REPO_ROOT/docker/ensure-ca-bundle.sh" docker/http3 >/dev/null
 
 # ---- Resolve Infinispan clustered-state libs for the -clustered image ------
 # Use Maven to resolve the transitive runtime dependencies of the
@@ -347,6 +350,19 @@ if is_dry_run; then
       docker/webhook
   fi
 
+  # -http3 LAST, as in the real release: the image above plus this arch's QUIC native, smoke-tested
+  # with a real HTTP/3 request. Hard-fail: build defects surface here, not at release time.
+  docker build \
+    --build-arg BASE_IMAGE="mockserver/mockserver:$FULL_TAG" \
+    --tag "mockserver/mockserver:$FULL_TAG-http3" \
+    --tag "mockserver/mockserver:$SHORT_TAG-http3" \
+    --tag "mockserver/mockserver:latest-http3" \
+    --tag "${ECR_REPO}:$FULL_TAG-http3" \
+    --tag "${ECR_REPO}:$SHORT_TAG-http3" \
+    --tag "${ECR_REPO}:latest-http3" \
+    docker/http3
+  "$REPO_ROOT/.buildkite/scripts/steps/docker-http3-smoke.sh" "mockserver/mockserver:$FULL_TAG-http3"
+
   log_dry "skip: push to Docker Hub + ECR (built locally, not pushed)"
   log_dry "skip: mirror to ghcr.io/mock-server/mockserver (only on --execute)"
 else
@@ -560,6 +576,7 @@ else
     "$_cosign_bin" sign --yes --key "$_cosign_key_file" "$ref_by_digest" || return 1
   }
 
+  # With arguments, signs exactly those refs (the -http3 block); without, the core release images.
   cosign_sign_docker_images() {
     local rc=0
     ensure_cosign || return 1
@@ -605,7 +622,9 @@ else
     fi
     # GHCR mirror refs (same digests as Docker Hub, but cosign stores the
     # signature in the registry holding the image, so GHCR needs its own sign).
-    if [[ "$MIRROR_GHCR" == "true" ]]; then
+    if [[ $# -gt 0 ]]; then
+      images_to_sign=("$@")
+    elif [[ "$MIRROR_GHCR" == "true" ]]; then
       images_to_sign+=(
         "${GHCR_REPO}:$FULL_TAG"
         "${GHCR_REPO}:$FULL_TAG-graaljs"
@@ -628,8 +647,10 @@ else
     return $rc
   }
 
+  SIGN_DOCKER_IMAGES=false
   if aws secretsmanager describe-secret --region "$REGION" \
        --secret-id mockserver-release/cosign-key >/dev/null 2>&1; then
+    SIGN_DOCKER_IMAGES=true
     log_info "Cosign-signing pushed Docker images (mockserver-release/cosign-key found)"
     # cosign signs on the HOST (the images are already pushed to a registry).
     # cosign_sign_docker_images resolves a cosign binary via ensure_cosign,
@@ -715,6 +736,47 @@ PY
   # being granted admin; verified live). sync_dockerhub_description retries the
   # token exchange + PATCH internally, so a genuine failure aborts under set -e.
   sync_dockerhub_description
+
+  # ---- -http3 variant, LAST ------------------------------------------------
+  # The standard image digest just pushed plus this arch's QUIC native. It runs after every core
+  # image is pushed, mirrored and signed, so a failure here stops only the -http3 publish. It is
+  # still HARD (the HTTP/3 start-up error names this tag): smoke-tested on the agent's arch first,
+  # then pushed, mirrored and signed exactly like the core images.
+  echo "--- :docker: Building, smoke-testing and pushing the -http3 image variant"
+  resolve_http3_base_digest() {
+    HTTP3_BASE_DIGEST="$(docker buildx imagetools inspect "${ECR_REPO}:$FULL_TAG" | awk '/^Digest:/{print $2; exit}')"
+    [[ "$HTTP3_BASE_DIGEST" == sha256:* ]]
+  }
+  retry 3 5 -- resolve_http3_base_digest \
+    || { log_error "could not resolve the digest of ${ECR_REPO}:$FULL_TAG for the -http3 base"; exit 1; }
+  HTTP3_BASE="${ECR_REPO}@${HTTP3_BASE_DIGEST}"
+  HTTP3_SMOKE_TAG="mockserver/mockserver:smoke-http3-$$"
+  retry 3 5 -- docker pull "$HTTP3_BASE"
+  retry 3 5 -- docker buildx build --load --build-arg BASE_IMAGE="$HTTP3_BASE" --tag "$HTTP3_SMOKE_TAG" docker/http3
+  "$REPO_ROOT/.buildkite/scripts/steps/docker-http3-smoke.sh" "$HTTP3_SMOKE_TAG" "$HTTP3_BASE"
+  docker rmi -f "$HTTP3_SMOKE_TAG" >/dev/null 2>&1 || true
+  retry 3 5 -- docker buildx build \
+    --platform "linux/amd64,linux/arm64" \
+    --push \
+    --build-arg BASE_IMAGE="$HTTP3_BASE" \
+    --tag "mockserver/mockserver:$FULL_TAG-http3" \
+    --tag "mockserver/mockserver:$SHORT_TAG-http3" \
+    --tag "mockserver/mockserver:latest-http3" \
+    --tag "${ECR_REPO}:$FULL_TAG-http3" \
+    --tag "${ECR_REPO}:$SHORT_TAG-http3" \
+    --tag "${ECR_REPO}:latest-http3" \
+    docker/http3
+  HTTP3_TO_SIGN=("mockserver/mockserver:$FULL_TAG-http3" "${ECR_REPO}:$FULL_TAG-http3")
+  if [[ "$MIRROR_GHCR" == "true" ]]; then
+    for t in "$FULL_TAG-http3" "$SHORT_TAG-http3" "latest-http3"; do
+      retry 3 5 -- mirror_to_ghcr "${ECR_REPO}:$t" "${GHCR_REPO}:$t"
+    done
+    HTTP3_TO_SIGN+=("${GHCR_REPO}:$FULL_TAG-http3")
+  fi
+  if [[ "$SIGN_DOCKER_IMAGES" == "true" ]]; then
+    cosign_sign_docker_images "${HTTP3_TO_SIGN[@]}" \
+      || { log_error "cosign signing failed for the -http3 image"; exit 1; }
+  fi
 fi
 
 log_info "Docker publish complete"

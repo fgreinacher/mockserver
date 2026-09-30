@@ -48,13 +48,27 @@ sitemap:
 
 <p>When <span class="inline_code">http3Port</span> is <span class="inline_code">0</span> (the default), the HTTP/3 listener is <strong>not started</strong> and has no impact on the existing TCP/HTTP server.</p>
 
+<p>HTTP/3 also needs a native library that is not in the default artifacts (see <a href="#http3_native_requirement">native platform requirement</a>). In Docker, use the <span class="inline_code">-http3</span> image and publish the port as UDP:</p>
+
+<pre class="prettyprint lang-bash code"><code class="code">docker run -d --rm -p 1080:1080 -p 8443:8443/udp -e MOCKSERVER_HTTP3_PORT=8443 mockserver/mockserver:{{ site.mockserver_version }}-http3</code></pre>
+
 <a id="http3_lifecycle" class="anchor" href="#http3_lifecycle">&nbsp;</a>
 
 <h2>Lifecycle</h2>
 
 <p>When <span class="inline_code">http3Port</span> is configured, the HTTP/3 server starts automatically with MockServer and stops when MockServer shuts down. No separate lifecycle management is needed.</p>
 
-<p>If the native QUIC library is not available (see <a href="#http3_native_requirement">native platform requirement</a>), MockServer <strong>fails to start</strong> with an error explaining how to add it. Earlier versions logged a warning and started anyway without HTTP/3, which meant the UDP port you asked for was silently never listening; starting up and telling you is the safer behaviour. To run without HTTP/3, remove <span class="inline_code">http3Port</span>.</p>
+<p>If the native QUIC library is not available (see <a href="#http3_native_requirement">native platform requirement</a>), MockServer <strong>fails to start</strong> and prints the fixes for your version and platform, for example:</p>
+
+<pre class="code"><code class="code">HTTP/3 is enabled (http3Port=8443) but the QUIC native library for linux-x86_64 is not available, so MockServer cannot start.
+HTTP/1.1 and HTTP/2 need nothing extra; HTTP/3 is experimental and its native library ships separately.
+Fix it with one of:
+  - Docker, Docker Compose or Kubernetes: use the image mockserver/mockserver:&lt;version&gt;-http3 (Helm: --set image.variant=http3)
+  - standalone jar: run mockserver-netty-&lt;version&gt;-jar-with-dependencies-http3.jar instead of the default jar
+  - Maven or Gradle: add the runtime dependency io.netty:netty-codec-native-quic:&lt;netty version&gt;:linux-x86_64
+  - or remove http3Port to run without HTTP/3</code></pre>
+
+<p>Earlier versions logged a warning and started anyway without HTTP/3, which meant the UDP port you asked for was silently never listening &mdash; this is what every earlier Docker image did. Refusing to start and telling you is the safer behaviour. To run without HTTP/3, remove <span class="inline_code">http3Port</span>.</p>
 
 <p>The bound HTTP/3 port can be retrieved programmatically via <span class="inline_code">MockServer.getHttp3Port()</span>.</p>
 
@@ -71,9 +85,9 @@ sitemap:
     <tr><th>How you run MockServer</th><th>How to get HTTP/3</th></tr>
     </thead>
     <tbody>
+    <tr><td>Docker, Docker Compose or Kubernetes</td><td>use the <span class="inline_code">mockserver/mockserver:&lt;version&gt;-http3</span> image (<span class="inline_code">snapshot-http3</span> for the latest snapshot) &mdash; the standard image plus the native library for its architecture (<span class="inline_code">linux/amd64</span> or <span class="inline_code">linux/arm64</span>), otherwise identical. With the Helm chart, set <span class="inline_code">image.variant=http3</span>. The other images cannot load the native library, even if you add it to <span class="inline_code">/libs</span></td></tr>
     <tr><td>Standalone jar</td><td>download the <span class="inline_code">jar-with-dependencies-http3</span> classifier instead of the default jar &mdash; it is otherwise identical</td></tr>
-    <tr><td>Maven or Gradle</td><td>add a dependency on <span class="inline_code">io.netty:netty-codec-native-quic</span> with the classifier for your platform, at the same Netty version as the rest of the server</td></tr>
-    <tr><td>Docker / Kubernetes</td><td>mount <span class="inline_code">netty-codec-native-quic-&lt;version&gt;-linux-&lt;arch&gt;.jar</span> (about 3 MB) into <span class="inline_code">/libs</span>, which is already on the classpath in every image variant. Images up to this release served HTTP/3 without this step</td></tr>
+    <tr><td>Maven or Gradle</td><td>depend on <span class="inline_code">org.mock-server:mockserver-netty</span>, which already brings <span class="inline_code">io.netty:netty-codec-native-quic</span> for your platform; if you exclude it or manage Netty yourself, add it with your platform's classifier at the same Netty version as the rest of the server. <span class="inline_code">mockserver-netty-no-dependencies</span> cannot load it</td></tr>
     </tbody>
 </table>
 

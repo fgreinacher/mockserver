@@ -81,6 +81,7 @@ export type Distribution =
   | 'docker-standard'
   | 'docker-graaljs'
   | 'docker-clustered'
+  | 'docker-http3'
   | 'helm'
   | 'binary'
   | 'jar'
@@ -90,6 +91,7 @@ const DISTRIBUTIONS: ReadonlySet<string> = new Set<Distribution>([
   'docker-standard',
   'docker-graaljs',
   'docker-clustered',
+  'docker-http3',
   'helm',
   'binary',
   'jar',

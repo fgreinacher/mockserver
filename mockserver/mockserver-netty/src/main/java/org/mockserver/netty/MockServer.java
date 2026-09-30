@@ -15,6 +15,7 @@ import org.mockserver.lifecycle.LifeCycle;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.mock.action.http.HttpActionHandler;
 import org.mockserver.netty.dns.DnsRequestHandler;
+import org.mockserver.netty.http3.Http3NativeUnavailableException;
 import org.mockserver.netty.http3.Http3Server;
 import org.mockserver.proxyconfiguration.ProxyConfiguration;
 import org.mockserver.socket.NettyAllocator;
@@ -274,9 +275,10 @@ public class MockServer extends LifeCycle {
     /**
      * Fail fast, and usefully, when HTTP/3 is switched on without the QUIC native library present.
      * <p>
-     * The default standalone jar and the default Docker image deliberately omit the QUIC natives:
-     * they are the largest single item in the jar (~11 MiB across five platforms) for a feature that
-     * is experimental and does nothing unless {@code http3Port} is set. The QUIC <em>classes</em> are
+     * The default standalone jar deliberately omits the QUIC natives: they are the largest single item
+     * in the jar (~11 MiB across five platforms) for a feature that is experimental and does nothing
+     * unless {@code http3Port} is set; the default Docker images cannot load them (only the
+     * {@code -http3} image adds a loadable one). The QUIC <em>classes</em> are
      * still bundled, so this check can run at all — without them the failure would be a
      * {@code NoClassDefFoundError} from deep inside server start-up, naming a Netty class and giving
      * the reader nothing to act on.
@@ -285,10 +287,10 @@ public class MockServer extends LifeCycle {
      * response: starting without it would leave a server that silently ignores the port it was told
      * to listen on.
      * <p>
-     * Every route the message names works today. There is deliberately no mention of an {@code -http3}
-     * image tag: none is published yet, and a remedy a reader cannot follow is worse than one fewer
-     * option. Containers are pointed at {@code /libs} instead, which is already on the classpath in
-     * every image variant.
+     * The message ({@link Http3NativeUnavailableException}) names every fix with the exact image tag,
+     * jar, Maven coordinate and platform classifier for this runtime. It does NOT suggest mounting the
+     * stock native jar into a container's {@code /libs}: the published images run the shaded jar, whose
+     * relocated Netty looks for a differently-named library, so that jar is never loaded.
      */
     private void requireQuicNative(int http3Port) {
         // Http3Server.isQuicAvailable() already wraps the Netty call in catch(Throwable): loading a
@@ -303,24 +305,7 @@ public class MockServer extends LifeCycle {
         } catch (Throwable t) {
             cause = t;
         }
-        throw new IllegalStateException(quicUnavailableMessage(http3Port), cause);
-    }
-
-    /**
-     * The message is the whole point of the failure, so it is built here rather than inline: the throw
-     * itself can only be reached on a platform without the QUIC native, which is no CI agent we have, so
-     * an inline message would ship with nothing executing that reads it. Package-private so a test can
-     * assert the remedies it names without needing the native to be absent.
-     */
-    static String quicUnavailableMessage(int http3Port) {
-        return "HTTP/3 was enabled (http3Port=" + http3Port + ") but the QUIC native library is not available. "
-            + "MockServer mocks HTTP/1.1 and HTTP/2 out of the box; HTTP/3 is experimental and its native "
-            + "binaries ship separately so every other user does not pay for them. To enable it, use the "
-            + "artifact that carries them. Standalone jar: use the 'jar-with-dependencies-http3' "
-            + "classifier. Maven or Gradle: add io.netty:netty-codec-native-quic with the classifier for "
-            + "your platform, at the same Netty version as the rest of the server. Container: mount "
-            + "netty-codec-native-quic-<version>-linux-<arch>.jar into /libs, which is already on the "
-            + "server's classpath. Alternatively remove http3Port to run without HTTP/3.";
+        throw new Http3NativeUnavailableException(http3Port, cause);
     }
 
     public InetSocketAddress getRemoteAddress() {

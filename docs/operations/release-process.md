@@ -84,7 +84,7 @@ Versioned Site and Update Version References run first (sequentially), then the 
 
 | Channel | Verification |
 |---|---|
-| Docker Hub | https://hub.docker.com/r/mockserver/mockserver/tags — `<release-version>`, `<release-version>-graaljs`, and `latest` should appear; cosign signatures attached to each image digest |
+| Docker Hub | https://hub.docker.com/r/mockserver/mockserver/tags — `<release-version>`, `<release-version>-graaljs`, `<release-version>-http3`, and `latest` should appear; cosign signatures attached to each image digest |
 | npm — mockserver-node | https://www.npmjs.com/package/mockserver-node |
 | npm — mockserver-client-node | https://www.npmjs.com/package/mockserver-client-node |
 | PyPI | https://pypi.org/project/mockserver-client/ |

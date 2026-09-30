@@ -17,7 +17,7 @@ source "${SCRIPT_DIR}/docker-compose.sh"
 # `local` is single-stage and does NOT COPY a bundle, so it is excluded.
 function variant_copies_ca_bundle() {
   case "$1" in
-    root|snapshot|root-snapshot|clustered|graaljs) return 0 ;;
+    root|snapshot|root-snapshot|clustered|graaljs|http3) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -550,6 +550,31 @@ function test_arm64_build_gate() {
   return 0
 }
 
+# The -http3 variant is layered FROM the image under test, so it is built over the default image
+# here and exercised with a real HTTP/3 request; the base must also refuse http3Port with the fix.
+# Non-blocking until proven on a CI agent (it downloads the QUIC native from Maven Central here,
+# because this default image carries no bundled one).
+function smoke_test_http3() {
+  local tag="mockserver/mockserver:smoke-http3"
+  local base="mockserver/mockserver:integration_testing"
+  local variant_dir="${SCRIPT_DIR}/../docker/http3"
+  export TEST_CASE="docker_variant_smoke_http3"
+  printMessage "Smoke test (non-blocking): variant \"http3\""
+
+  local exit_code=0 ca_bundle_created
+  ca_bundle_created=$(ensure_variant_ca_bundle "http3" "${variant_dir}")
+  runCommand "docker build --build-arg BASE_IMAGE=${base} -t ${tag} ${variant_dir}" || exit_code=1
+  if [[ "${ca_bundle_created}" == "true" ]]; then
+    rm -f "${variant_dir}/ca-bundle.pem"
+  fi
+  if [[ ${exit_code} -eq 0 ]]; then
+    runCommand "${SCRIPT_DIR}/../.buildkite/scripts/steps/docker-http3-smoke.sh ${tag} ${base}" || exit_code=1
+  fi
+  runCommand "docker rmi -f ${tag} >/dev/null 2>&1 || true"
+  logTestResultNonBlocking "${exit_code}" "${TEST_CASE}"
+  return 0
+}
+
 # Smoke test for the -clustered image variant. Uses the image already built
 # by build_clustered_docker() — no rebuild needed. Verifies the container
 # starts and /mockserver/status responds 200 (Infinispan boots in LOCAL
@@ -808,6 +833,7 @@ function run_all_tests() {
         # aot is experimental and its build runs a training JVM that is flaky under
         # arm64 emulation, so it is non-blocking here as it is in the release pipeline.
         smoke_test_variant_nonblocking "aot" || true
+        smoke_test_http3 || true
       fi
       # Clustered variant: test that the -clustered image boots and responds
       # to /mockserver/status. The image is already built by build_clustered_docker().

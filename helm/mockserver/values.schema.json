@@ -19,7 +19,8 @@
       "properties": {
         "repository": { "type": "string" },
         "snapshot": { "type": "boolean" },
-        "pullPolicy": { "type": "string" }
+        "pullPolicy": { "type": "string" },
+        "variant": { "type": "string", "enum": ["", "http3", "graaljs"] }
       }
     },
     "service": {

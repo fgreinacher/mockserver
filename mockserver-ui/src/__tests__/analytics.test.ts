@@ -120,6 +120,13 @@ describe('analytics activation gates', () => {
     expect(appOpenProps.distribution).toBe('docker-graaljs');
   });
 
+  it('sends the -http3 image distribution value on app_open', async () => {
+    initAnalytics({ ...ACTIVE_CONFIG, dashboardAnalyticsDistribution: 'docker-http3' }, INIT_OPTIONS);
+    await flushMicrotasks();
+    const appOpenProps = captureMock.mock.calls.find((c) => c[0] === 'app_open')![1] as Record<string, unknown>;
+    expect(appOpenProps.distribution).toBe('docker-http3');
+  });
+
   it('normalises an out-of-allow-list distribution to unknown (privacy invariant)', async () => {
     // A free-text / unexpected value must NEVER be forwarded raw.
     initAnalytics(
