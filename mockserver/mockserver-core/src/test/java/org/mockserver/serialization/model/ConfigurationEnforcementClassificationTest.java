@@ -120,6 +120,11 @@ public class ConfigurationEnforcementClassificationTest {
             "org.mockserver.mock.HttpStateConfigurationUpdateTest#shouldResizeExpectationStoreWhenMaxExpectationsReduced");
         ENFORCEMENT_VERIFIED.put("maxExpectationsSizeInBytes",
             "org.mockserver.mock.RequestMatchersStateBackendTest#byteBudgetEvictsLargeExpectationsAndStaysUnderBudget");
+        // an instance-set limit refuses the request over it with a 503 through the real dispatch path
+        ENFORCEMENT_VERIFIED.put("maxPendingDelayedResponses",
+            "org.mockserver.mock.action.http.HttpActionHandlerOverloadTest#shouldAnswerDelayedResponseOverTheLimitWith503");
+        ENFORCEMENT_VERIFIED.put("maxQueuedTemplateActions",
+            "org.mockserver.mock.action.http.HttpActionHandlerOverloadTest#shouldAnswerTemplateOverTheQueueLimitWith503");
         ENFORCEMENT_VERIFIED.put("maxLoggedBodyBytes",
             "org.mockserver.log.MockServerEventLogCaptureTest#shouldPersistFullBodyToHookWhileTruncatingInMemoryCopy");
         ENFORCEMENT_VERIFIED.put("maximumNumberOfRequestToReturnInVerificationFailure",

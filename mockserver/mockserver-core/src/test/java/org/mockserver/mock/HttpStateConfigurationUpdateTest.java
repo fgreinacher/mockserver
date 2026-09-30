@@ -336,4 +336,30 @@ public class HttpStateConfigurationUpdateTest {
         // then
         assertThat(logger.warnings(), is(empty()));
     }
+
+    @Test
+    public void shouldApplyPutOverloadLimitsToTheRunningScheduler() {
+        // given - a real asynchronous scheduler behind the running state, with room for many delayed responses
+        configuration.maxPendingDelayedResponses(100);
+        Scheduler scheduler = new Scheduler(configuration, logger, false);
+        httpState = new HttpState(configuration, logger, scheduler);
+        try {
+            java.util.concurrent.atomic.AtomicInteger refused = new java.util.concurrent.atomic.AtomicInteger();
+            Runnable delayedResponse = Scheduler.rejectable(() -> {
+            }, refused::incrementAndGet);
+            scheduler.schedule(delayedResponse, false, org.mockserver.model.Delay.seconds(30));
+            scheduler.schedule(delayedResponse, false, org.mockserver.model.Delay.seconds(30));
+            assertThat(refused.get(), is(0));
+
+            // when - PUT /mockserver/configuration lowers the limit below the backlog
+            put(new ConfigurationDTO().setMaxPendingDelayedResponses(2));
+            scheduler.schedule(delayedResponse, false, org.mockserver.model.Delay.seconds(30));
+
+            // then - the running scheduler enforces the new limit at once
+            assertThat(refused.get(), is(1));
+            assertThat(scheduler.getPendingDelayedResponseCount(), is(2));
+        } finally {
+            scheduler.shutdown();
+        }
+    }
 }

@@ -66,7 +66,7 @@ Drift analysis is triggered asynchronously in `HttpActionHandler.writeForwardAct
 2. Filters to those with response-type actions (stubs)
 3. Passes each stub expectation + real response to `DriftAnalyzer.analyse()`
 
-The analysis runs on a scheduler thread and never blocks the response path. It is best-effort and bounded: at most `max(16, 4 x actionHandlerThreadCount)` analyses may be queued or running at once, and a forward that arrives while the backlog is full is not analysed (counted by `mock_server_dropped_drift_analyses`). The shared scheduler queue is unbounded, so without this bound a forward rate above analysis capacity would queue one closure — retaining the request and the upstream response — per forward. See [metrics.md](metrics.md#drift-analysis-shedding-and-executor-queue-gauges).
+The analysis runs on a scheduler thread and never blocks the response path. It is best-effort and bounded: at most `max(16, 4 x actionHandlerThreadCount)` analyses may be queued or running at once, and a forward that arrives while the backlog is full is not analysed (counted by `mock_server_dropped_drift_analyses`). Undelayed scheduler tasks are not bounded by the scheduler, so without this bound a forward rate above analysis capacity would queue one closure — retaining the request and the upstream response — per forward. See [metrics.md](metrics.md#overload-bounds-drift-analysis-shedding-and-executor-queue-gauges).
 
 ### Master Switch and Sampling
 

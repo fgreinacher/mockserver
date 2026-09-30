@@ -416,6 +416,45 @@
     <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.actionHandlerThreadCount="5"</code></pre>
 </div>
 
+<button id="button_configuration_max_pending_delayed_responses" class="accordion title"><strong>Maximum Pending Delayed Responses</strong></button>
+<div class="panel title">
+    <p>Maximum number of matched requests that can be waiting at the same time for a configured delay before their response is sent. This covers a response or forward <span class="inline_code">delay</span>, <span class="inline_code">globalResponseDelayMillis</span> and chaos latency.</p>
+    <p>Each waiting request is held in memory until its delay ends, so a high request rate against a slow expectation (for example 1,000 requests per second with a 10 second delay keeps 10,000 requests waiting) can use a lot of heap. When the limit is reached, further requests are answered straight away with <span class="inline_code">503 Service Unavailable</span> and a <span class="inline_code">Retry-After: 1</span> header instead of being held, so the server stays healthy.</p>
+    <p>A request answered this way has still matched its expectation: it counts towards the expectation's <span class="inline_code">times</span> (so a <span class="inline_code">once()</span> expectation is used up), may have used a rate-limit allowance, and has no response entry in the request log. A forwarded response that is waiting only for chaos latency is sent immediately without the latency instead of being refused, because the upstream has already been called.</p>
+    <p>Delayed side actions (after-actions, secondary actions and step side effects) have a separate allowance of the same size. When it is full further ones are skipped and logged, so they never cause a 503.</p>
+    <p>Rejections are reported in a WARN log line at most every 10 seconds and, when metrics are enabled (<span class="inline_code">metricsEnabled</span>), counted by the <span class="inline_code">mock_server_overload_rejections</span> metric (with <span class="inline_code">reason</span> <span class="inline_code">delayed_responses</span>, <span class="inline_code">delay_skipped</span> or <span class="inline_code">side_actions</span>); the <span class="inline_code">mock_server_pending_delayed_tasks</span> metric shows how many are currently waiting.</p>
+    <p>Raise this if you deliberately run many slow requests at once and have the heap for them; set it to <span class="inline_code">0</span> to restore the previous unlimited behaviour (not recommended).</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">maximum heap divided by 64 KB (an estimate of the memory each waiting request holds), up to 100,000 (about 8,000 for a 512 MB heap; 1,000 if the JVM reports no heap limit)</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.maxPendingDelayedResponses(int maxPendingDelayedResponses)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxPendingDelayedResponses=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.maxPendingDelayedResponses=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxPendingDelayedResponses="20000"</code></pre>
+</div>
+
+<button id="button_configuration_max_queued_template_actions" class="accordion title"><strong>Maximum Queued Template Actions</strong></button>
+<div class="panel title">
+    <p>Maximum number of response or forward templates (Velocity, Mustache or JavaScript) that can be queued waiting to be rendered.</p>
+    <p>Templates are rendered on a dedicated pool of threads (as many as <span class="inline_code">actionHandlerThreadCount</span>). If requests arrive faster than templates can be rendered they queue, and each queued request is held in memory. When the limit is reached, further templated requests are answered straight away with <span class="inline_code">503 Service Unavailable</span> and a <span class="inline_code">Retry-After: 1</span> header. As with delayed responses, the request still counts as a match for its expectation and has no response entry in the request log. Rejections are reported in a WARN log line at most every 10 seconds and, when metrics are enabled, counted by the <span class="inline_code">mock_server_overload_rejections</span> metric (with <span class="inline_code">reason="template_actions"</span>); the <span class="inline_code">mock_server_template_action_queued_tasks</span> metric shows the current queue length.</p>
+    <p>If you see these rejections at a load you expect to handle, simplify the template or raise <span class="inline_code">actionHandlerThreadCount</span> before raising this limit; set it to <span class="inline_code">0</span> to restore the previous unlimited behaviour (not recommended).</p>
+    <p>Type: <span class="keyword">int</span> Default: <span class="this_value">maximum heap divided by 64 KB, up to 100,000 (about 8,000 for a 512 MB heap; 1,000 if the JVM reports no heap limit)</span></p>
+    <p>Java Code:</p>
+    <pre class="prettyprint lang-java code"><code class="code">ConfigurationProperties.maxQueuedTemplateActions(int maxQueuedTemplateActions)</code></pre>
+    <p>System Property:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxQueuedTemplateActions=...</code></pre>
+    <p>Environment Variable:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS=...</code></pre>
+    <p>Property File:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">mockserver.maxQueuedTemplateActions=...</code></pre>
+    <p>Example:</p>
+    <pre class="code" style="padding: 2px;"><code class="code">-Dmockserver.maxQueuedTemplateActions="20000"</code></pre>
+</div>
+
 <button id="button_configuration_client_nio_event_loop_thread_count" class="accordion title"><strong>Number of Client Event Loop Threads</strong></button>
 <div class="panel title">
     <p>Number of threads for client event loop when calling downstream</p>

@@ -640,6 +640,18 @@ For workloads with very large request/response bodies (>10 KB), the automatic de
 | Max logged body bytes | `mockserver.maxLoggedBodyBytes` | `MOCKSERVER_MAX_LOGGED_BODY_BYTES` | `0` (unlimited) |
 | Ring buffer size | `mockserver.ringBufferSize` | `MOCKSERVER_RING_BUFFER_SIZE` | `min(maxLogEntries, 16384)` (rounded up to a power of two) |
 | Max expectations | `mockserver.maxExpectations` | `MOCKSERVER_MAX_EXPECTATIONS` | `min(heapAvailableKB / 10, 15000)` |
+| Max pending delayed responses | `mockserver.maxPendingDelayedResponses` | `MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES` | `min(heapAvailableKB / 64, 100000)`; `0` = unbounded |
+| Max queued template actions | `mockserver.maxQueuedTemplateActions` | `MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS` | `min(heapAvailableKB / 64, 100000)`; `0` = unbounded |
+
+The last two bound transient, not retained, memory: requests held while waiting for a delay or a template
+thread, each with its request, response writer and channel. The 64 KB per entry is an unmeasured,
+deliberately pessimistic estimate chosen so the bound holds well under the heap ceiling for ordinary
+request sizes; a request with a large body retains more. The 1,000 floor applies only when the JVM reports
+no heap ceiling. Delayed side actions have their own budget of the same size, so the worst case is bounded
+delayed tasks up to twice `maxPendingDelayedResponses`, plus up to `maxQueuedTemplateActions` queued renders,
+plus the delays that are counted but not bounded (chained SSE/WebSocket/gRPC messages, WebSocket bidi
+replies, close-socket delays and control-plane timed scenario transitions). Over a limit a request is answered `503` instead of being held (see
+[request-processing.md](request-processing.md#overload-bounds-on-delayed-and-templated-actions)).
 
 Properties are resolved in this order (first match wins):
 

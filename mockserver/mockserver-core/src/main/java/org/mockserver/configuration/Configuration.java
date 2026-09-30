@@ -145,6 +145,8 @@ public class Configuration {
     private Integer nioEventLoopThreadCount;
     private Integer soBacklog;
     private Integer actionHandlerThreadCount;
+    private Integer maxPendingDelayedResponses;
+    private Integer maxQueuedTemplateActions;
     private Integer clientNioEventLoopThreadCount;
     private Integer webSocketClientEventLoopThreadCount;
     private Long maxFutureTimeoutInMillis;
@@ -2103,6 +2105,48 @@ public class Configuration {
      */
     public Configuration actionHandlerThreadCount(Integer actionHandlerThreadCount) {
         this.actionHandlerThreadCount = actionHandlerThreadCount;
+        return this;
+    }
+
+    public Integer maxPendingDelayedResponses() {
+        if (maxPendingDelayedResponses == null) {
+            return ConfigurationProperties.maxPendingDelayedResponses();
+        }
+        return maxPendingDelayedResponses;
+    }
+
+    /**
+     * <p>Maximum number of matched requests that may be waiting at once for a configured delay (a response or
+     * action delay, {@code globalResponseDelayMillis} or chaos latency). Further such requests are answered
+     * immediately with {@code 503 Service Unavailable} instead of being held in memory.</p>
+     * <p>Default is the maximum JVM heap divided by 64 KB, capped at 100,000. A value of {@code 0} or less
+     * removes the limit (not recommended).</p>
+     *
+     * @param maxPendingDelayedResponses maximum number of delayed responses waiting at once
+     */
+    public Configuration maxPendingDelayedResponses(Integer maxPendingDelayedResponses) {
+        this.maxPendingDelayedResponses = maxPendingDelayedResponses;
+        return this;
+    }
+
+    public Integer maxQueuedTemplateActions() {
+        if (maxQueuedTemplateActions == null) {
+            return ConfigurationProperties.maxQueuedTemplateActions();
+        }
+        return maxQueuedTemplateActions;
+    }
+
+    /**
+     * <p>Maximum number of response or forward template renders that may be queued waiting for a template
+     * thread. Further templated requests are answered immediately with {@code 503 Service Unavailable}
+     * instead of being held in memory.</p>
+     * <p>Default is the maximum JVM heap divided by 64 KB, capped at 100,000. A value of {@code 0} or less
+     * removes the limit (not recommended).</p>
+     *
+     * @param maxQueuedTemplateActions maximum number of template renders waiting for a thread
+     */
+    public Configuration maxQueuedTemplateActions(Integer maxQueuedTemplateActions) {
+        this.maxQueuedTemplateActions = maxQueuedTemplateActions;
         return this;
     }
 

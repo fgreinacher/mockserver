@@ -62,6 +62,10 @@ public class Metrics {
     // Live queue depths of the shared scheduler pool and the template-action pool, set by HttpState.
     private static final AtomicReference<IntSupplier> schedulerQueueDepthSupplier = new AtomicReference<>();
     private static final AtomicReference<IntSupplier> templateActionQueueDepthSupplier = new AtomicReference<>();
+    private static final AtomicReference<IntSupplier> pendingDelayedTasksSupplier = new AtomicReference<>();
+    // Requests answered 503 because a bounded action queue was full, labelled by which bound. Null until
+    // metrics are enabled.
+    private static volatile Counter overloadRejectionsTotal;
     // Per-upstream forwarded-request observability. Histogram of forward/proxy
     // latency labeled by upstream host, plus a count labeled by host + status
     // class. Both null until metrics are enabled. Cardinality is bounded by the
@@ -265,6 +269,16 @@ public class Metrics {
                         .name("mock_server_template_action_queued_tasks")
                         .help("Response/forward template renders queued waiting for a template-action thread")
                         .callback(callback -> callback.call(readQueueDepth(templateActionQueueDepthSupplier)))
+                        .register();
+                    GaugeWithCallback.builder()
+                        .name("mock_server_pending_delayed_tasks")
+                        .help("All delayed tasks waiting for their delay, bounded or not")
+                        .callback(callback -> callback.call(readQueueDepth(pendingDelayedTasksSupplier)))
+                        .register();
+                    overloadRejectionsTotal = Counter.builder()
+                        .name("mock_server_overload_rejections")
+                        .help("Tasks refused because a bound was full, by reason (delayed_responses and template_actions answered 503, delay_skipped sent without chaos latency, side_actions dropped)")
+                        .labelNames("reason")
                         .register();
                     forwardRequestDurationSeconds = Histogram.builder()
                         .name("mock_server_forward_request_duration_seconds")
@@ -637,6 +651,7 @@ public class Metrics {
             droppedLogEventsTotal = null;
             evictedLogEntriesTotal = null;
             droppedDriftAnalysesTotal = null;
+            overloadRejectionsTotal = null;
             forwardHostLabels.clear();
             forwardHostLabelCount.set(0);
             forwardRequestDurationSeconds = null;
@@ -820,6 +835,32 @@ public class Metrics {
     public static void setSchedulerQueueDepthSuppliers(IntSupplier schedulerQueueDepth, IntSupplier templateActionQueueDepth) {
         schedulerQueueDepthSupplier.set(schedulerQueueDepth);
         templateActionQueueDepthSupplier.set(templateActionQueueDepth);
+    }
+
+    /**
+     * Set the live reader behind {@code mock_server_pending_delayed_tasks}. Called by HttpState at startup.
+     */
+    public static void setPendingDelayedTasksSupplier(IntSupplier pendingDelayedTasks) {
+        pendingDelayedTasksSupplier.set(pendingDelayedTasks);
+    }
+
+    /**
+     * Count one task refused because the bound named by {@code reason} was full ({@code delayed_responses},
+     * {@code template_actions}, {@code delay_skipped} or {@code side_actions}). No-op unless metrics are enabled.
+     */
+    public static void incrementOverloadRejections(String reason) {
+        Counter counter = overloadRejectionsTotal;
+        if (counter != null && reason != null) {
+            counter.labelValues(reason).inc();
+        }
+    }
+
+    /**
+     * Return the overload-rejection count for {@code reason}, or 0 if metrics are disabled.
+     */
+    public static long getOverloadRejectionsCount(String reason) {
+        Counter counter = overloadRejectionsTotal;
+        return counter != null ? (long) counter.labelValues(reason).get() : 0L;
     }
 
     private static int readQueueDepth(AtomicReference<IntSupplier> reference) {

@@ -5,6 +5,7 @@ import org.mockserver.configuration.Configuration;
 import org.mockserver.httpclient.SocketCommunicationException;
 import org.mockserver.log.model.LogEntry;
 import org.mockserver.logging.MockServerLogger;
+import org.mockserver.metrics.Metrics;
 import org.mockserver.mock.action.http.HttpForwardActionResult;
 import org.mockserver.model.BinaryMessage;
 import org.mockserver.model.Delay;
@@ -13,6 +14,7 @@ import org.slf4j.event.Level;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 
@@ -60,16 +62,134 @@ public class Scheduler {
     // memory-constrained SUT, each extra thread's stack brings the separately-diagnosed response-body
     // retention OOM SOONER rather than later. A fixed pool sized like the scheduler pool
     // (actionHandlerThreadCount() = max(5, cores)) gives full CPU parallelism with a fixed memory ceiling.
-    // The task QUEUE is unbounded so a render task is never rejected back onto the worker event loop; it only
-    // ever holds one pending closure per queued render. Each retains the inbound HttpRequest (body included),
-    // the action, the response writer and the channel context until drained — so a sustained arrival rate above
-    // render capacity grows this queue in proportion to in-flight requests. The large RENDERED body is produced
-    // by the task and is never queued. Rejecting instead would push work back onto the event loop, which is the
-    // pathology this exists to remove, so an unbounded queue is the least-bad choice rather than a free one.
+    // Each queued render retains its request, response writer and channel until drained, so admission is
+    // bounded by maxQueuedTemplateActions (see executeTemplateAction). A render over the bound is answered
+    // with the caller's overload response rather than run on the caller's thread: CallerRuns would put the
+    // render back on the worker event loop, the pathology this pool exists to remove.
     // Null in synchronous mode (renders then run inline, preserving WAR/servlet blocking semantics).
     private final ExecutorService templateActionExecutor;
 
     private final boolean synchronous;
+
+    private static final long OVERLOAD_LOG_INTERVAL_NANOS = TimeUnit.SECONDS.toNanos(10);
+    private static final String OVERLOAD_LOG_FORMAT = "overloaded:{}task(s) that were:{}exceeded:{}which has a limit of:{}so they were:{}"
+        + "in total since startup:{}raise that property or reduce the request rate; this is logged at most every 10 seconds per reason";
+
+    // Two independent budgets, so a backlog of fire-and-forget side actions can never 503 a response:
+    // delayed responses (incl. forwarded responses waiting for chaos latency) and delayed side actions.
+    // Delays with no fallback are counted apart, never refused: chained SSE/WebSocket/gRPC message delays and
+    // close-socket delays (one per stream or connection), WebSocket bidi replies (one set per inbound frame;
+    // shedding a frame would deliver a partial reply) and control-plane timed scenario transitions.
+    private final AtomicInteger pendingDelayedResponses = new AtomicInteger();
+    private final AtomicInteger pendingDelayedSideActions = new AtomicInteger();
+    private final AtomicInteger pendingUnboundedDelayedTasks = new AtomicInteger();
+    private final AtomicInteger queuedTemplateActions = new AtomicInteger();
+    private volatile int maxPendingDelayedResponses = Integer.MAX_VALUE;
+    private volatile int maxQueuedTemplateActions = Integer.MAX_VALUE;
+    private final OverloadLog[] overloadLogs = new OverloadLog[OverloadReason.values().length];
+
+    {
+        for (int i = 0; i < overloadLogs.length; i++) {
+            overloadLogs[i] = new OverloadLog();
+        }
+    }
+
+    /**
+     * Why a task was refused and what happened instead; {@link #metricLabel} is the {@code reason} label of
+     * {@code mock_server_overload_rejections}.
+     */
+    public enum OverloadReason {
+        DELAYED_RESPONSES("delayed_responses", "maxPendingDelayedResponses", "responses waiting for a configured delay", "answered 503 Service Unavailable"),
+        DELAY_SKIPPED("delay_skipped", "maxPendingDelayedResponses", "forwarded responses waiting for chaos latency", "sent at once without the injected latency"),
+        SIDE_ACTIONS("side_actions", "maxPendingDelayedResponses", "delayed side actions (after-actions, secondary actions, step side effects)", "dropped"),
+        TEMPLATE_ACTIONS("template_actions", "maxQueuedTemplateActions", "template renders waiting for a template thread", "answered 503 Service Unavailable");
+
+        private final String metricLabel;
+        private final String property;
+        private final String description;
+        private final String outcome;
+
+        OverloadReason(String metricLabel, String property, String description, String outcome) {
+            this.metricLabel = metricLabel;
+            this.property = property;
+            this.description = description;
+            this.outcome = outcome;
+        }
+    }
+
+    /**
+     * A task that a bounded dispatch may refuse under overload, with what to do instead. Only tasks wrapped
+     * this way are subject to the bounds; other delayed tasks are counted apart and always admitted.
+     */
+    private static final class RejectableTask implements Runnable {
+        private final Runnable task;
+        private final Runnable onRejected;
+        private final OverloadReason reason;
+
+        private RejectableTask(Runnable task, Runnable onRejected, OverloadReason reason) {
+            this.task = task;
+            this.onRejected = onRejected;
+            this.reason = reason;
+        }
+
+        @Override
+        public void run() {
+            task.run();
+        }
+    }
+
+    /**
+     * Wrap a request dispatch so that, when a bounded dispatch is full, {@code onRejected} runs (on the
+     * dispatching thread) in its place. {@code onRejected} must answer the request, e.g. with a 503.
+     */
+    public static Runnable rejectable(Runnable task, Runnable onRejected) {
+        return new RejectableTask(task, onRejected, OverloadReason.DELAYED_RESPONSES);
+    }
+
+    /**
+     * Wrap a write whose delay is optional (chaos latency on an already-forwarded response): when the delayed
+     * response budget is full it runs at once, without the delay, rather than being refused — refusing would
+     * discard an upstream response whose request has already been sent.
+     */
+    public static Runnable delayOptional(Runnable write) {
+        return new RejectableTask(write, write, OverloadReason.DELAY_SKIPPED);
+    }
+
+    /**
+     * Wrap a fire-and-forget side action (no client is waiting for it) so that, when its own delayed budget is
+     * full, it is dropped and counted rather than held; it never consumes the delayed-response budget. Never
+     * wrap one frame of a multi-frame reply: shedding it would deliver the rest of the reply silently.
+     */
+    public static Runnable sheddable(Runnable sideAction) {
+        return new RejectableTask(sideAction, () -> {
+        }, OverloadReason.SIDE_ACTIONS);
+    }
+
+    private static RejectableTask rejectableOf(Runnable command) {
+        return command instanceof RejectableTask ? (RejectableTask) command : null;
+    }
+
+    private static final class OverloadLog {
+        private final AtomicLong total = new AtomicLong();
+        private final AtomicLong rejectedSinceLastLog = new AtomicLong();
+        private final AtomicLong nextLogNanos = new AtomicLong();
+        private volatile boolean logged;
+
+        /**
+         * Record one rejection; returns how many to report when a log line is due (at most one per interval),
+         * otherwise 0.
+         */
+        long recordAndTakeIfDue(long nowNanos) {
+            total.incrementAndGet();
+            rejectedSinceLastLog.incrementAndGet();
+            long next = nextLogNanos.get();
+            if ((!logged || nowNanos - next >= 0) && nextLogNanos.compareAndSet(next, nowNanos + OVERLOAD_LOG_INTERVAL_NANOS)) {
+                logged = true;
+                return rejectedSinceLastLog.getAndSet(0);
+            }
+            return 0;
+        }
+    }
 
     public static class SchedulerThreadFactory implements ThreadFactory {
 
@@ -140,6 +260,20 @@ public class Scheduler {
             this.localCallbackExecutor = null;
             this.templateActionExecutor = null;
         }
+        applyConfigurationCapacity();
+    }
+
+    /**
+     * (Re)read {@code maxPendingDelayedResponses} and {@code maxQueuedTemplateActions} from the configuration;
+     * a value of zero or less means unbounded. Requests already admitted are unaffected by a lower limit.
+     */
+    public void applyConfigurationCapacity() {
+        this.maxPendingDelayedResponses = limitOrUnbounded(configuration.maxPendingDelayedResponses());
+        this.maxQueuedTemplateActions = limitOrUnbounded(configuration.maxQueuedTemplateActions());
+    }
+
+    private static int limitOrUnbounded(Integer limit) {
+        return limit == null || limit <= 0 ? Integer.MAX_VALUE : limit;
     }
 
     /**
@@ -152,9 +286,10 @@ public class Scheduler {
     }
 
     /**
-     * Tasks waiting in the shared scheduler pool's queue (0 in synchronous mode). The queue is
-     * unbounded because its tasks (response delays, forward continuations, callbacks) must not be
-     * dropped; best-effort work bounds its own submissions (see drift analysis in HttpActionHandler).
+     * Tasks waiting in the shared scheduler pool's queue (0 in synchronous mode), including delayed tasks
+     * whose delay has not elapsed. Delayed request dispatches are admission-bounded by
+     * {@code maxPendingDelayedResponses}; undelayed tasks (forward continuations, lazy removals) are not,
+     * because they must not be dropped. Best-effort work bounds its own submissions (see drift analysis).
      */
     public int getQueuedTaskCount() {
         return scheduler instanceof ThreadPoolExecutor ? ((ThreadPoolExecutor) scheduler).getQueue().size() : 0;
@@ -165,6 +300,87 @@ public class Scheduler {
      */
     public int getQueuedTemplateActionCount() {
         return templateActionExecutor instanceof ThreadPoolExecutor ? ((ThreadPoolExecutor) templateActionExecutor).getQueue().size() : 0;
+    }
+
+    /**
+     * All delayed tasks admitted whose delay has not yet elapsed, bounded or not (0 in synchronous mode, where
+     * delays sleep inline).
+     */
+    public int getPendingDelayedTaskCount() {
+        return pendingDelayedResponses.get() + pendingDelayedSideActions.get() + pendingUnboundedDelayedTasks.get();
+    }
+
+    /**
+     * Delayed tasks counted against the {@code maxPendingDelayedResponses} response budget.
+     */
+    public int getPendingDelayedResponseCount() {
+        return pendingDelayedResponses.get();
+    }
+
+    /**
+     * Tasks refused for {@code reason} since this scheduler started; kept whether or not metrics are enabled.
+     */
+    public long getOverloadRejectionCount(OverloadReason reason) {
+        return overloadLogs[reason.ordinal()].total.get();
+    }
+
+    private AtomicInteger delayedBudgetFor(RejectableTask rejectable) {
+        if (rejectable == null) {
+            return pendingUnboundedDelayedTasks;
+        }
+        return rejectable.reason == OverloadReason.SIDE_ACTIONS ? pendingDelayedSideActions : pendingDelayedResponses;
+    }
+
+    private void scheduleAfterDelay(Runnable command, RejectableTask rejectable, long delayMillis, Integer port) {
+        AtomicInteger pending = delayedBudgetFor(rejectable);
+        if (pending.incrementAndGet() > maxPendingDelayedResponses && rejectable != null) {
+            pending.decrementAndGet();
+            rejectForOverload(rejectable.reason, maxPendingDelayedResponses, rejectable.onRejected, port);
+            return;
+        }
+        try {
+            scheduler.schedule(() -> {
+                pending.decrementAndGet();
+                command.run();
+            }, delayMillis, MILLISECONDS);
+        } catch (RuntimeException exception) {
+            pending.decrementAndGet();
+            throw exception;
+        }
+    }
+
+    private void executeTemplateAction(Runnable command, RejectableTask rejectable, Integer port) {
+        int queued = queuedTemplateActions.incrementAndGet();
+        if (rejectable != null && queued > maxQueuedTemplateActions) {
+            queuedTemplateActions.decrementAndGet();
+            rejectForOverload(OverloadReason.TEMPLATE_ACTIONS, maxQueuedTemplateActions, rejectable.onRejected, port);
+            return;
+        }
+        try {
+            templateActionExecutor.execute(() -> {
+                queuedTemplateActions.decrementAndGet();
+                run(command, port);
+            });
+        } catch (RuntimeException exception) {
+            queuedTemplateActions.decrementAndGet();
+            throw exception;
+        }
+    }
+
+    private void rejectForOverload(OverloadReason reason, int limit, Runnable onRejected, Integer port) {
+        Metrics.incrementOverloadRejections(reason.metricLabel);
+        OverloadLog overloadLog = overloadLogs[reason.ordinal()];
+        long rejected = overloadLog.recordAndTakeIfDue(System.nanoTime());
+        if (rejected > 0 && mockServerLogger.isEnabledForInstance(Level.WARN)) {
+            mockServerLogger.logEvent(
+                new LogEntry()
+                    .setType(WARN)
+                    .setLogLevel(Level.WARN)
+                    .setMessageFormat(OVERLOAD_LOG_FORMAT)
+                    .setArguments(rejected, reason.description, reason.property, limit, reason.outcome, overloadLog.total.get())
+            );
+        }
+        run(onRejected, port);
     }
 
     public synchronized void shutdown() {
@@ -218,7 +434,7 @@ public class Scheduler {
         Integer port = getPort();
         if (scheduler != null) {
             if (delayMillis > 0) {
-                scheduler.schedule(() -> run(command, port), delayMillis, MILLISECONDS);
+                scheduleAfterDelay(() -> run(command, port), rejectableOf(command), delayMillis, port);
             } else {
                 scheduler.submit(() -> run(command, port));
             }
@@ -234,6 +450,14 @@ public class Scheduler {
         }
     }
 
+    /**
+     * Run {@code command} after the combined delay: inline when there is none, otherwise on the shared
+     * scheduler once the delay elapses. A {@link #rejectable}, {@link #delayOptional} or {@link #sheddable}
+     * command runs its fallback instead when its budget of {@code maxPendingDelayedResponses} is full; the same
+     * applies to
+     * {@link #scheduleLocalCallback} and {@link #scheduleTemplateAction}, whose template queue is additionally
+     * bounded by {@code maxQueuedTemplateActions}.
+     */
     public void schedule(Runnable command, boolean synchronous, Delay... delays) {
         long delayMillis = sampleCombinedDelayMillis(delays);
         Integer port = getPort();
@@ -248,7 +472,7 @@ public class Scheduler {
             run(command, port);
         } else {
             if (delayMillis > 0) {
-                scheduler.schedule(() -> run(command, port), delayMillis, MILLISECONDS);
+                scheduleAfterDelay(() -> run(command, port), rejectableOf(command), delayMillis, port);
             } else {
                 run(command, port);
             }
@@ -288,7 +512,7 @@ public class Scheduler {
             }
             run(command, port);
         } else if (delayMillis > 0) {
-            scheduler.schedule(() -> localCallbackExecutor.execute(() -> run(command, port)), delayMillis, MILLISECONDS);
+            scheduleAfterDelay(() -> localCallbackExecutor.execute(() -> run(command, port)), rejectableOf(command), delayMillis, port);
         } else {
             localCallbackExecutor.execute(() -> run(command, port));
         }
@@ -331,9 +555,10 @@ public class Scheduler {
             }
             run(command, port);
         } else if (delayMillis > 0) {
-            scheduler.schedule(() -> templateActionExecutor.execute(() -> run(command, port)), delayMillis, MILLISECONDS);
+            RejectableTask rejectable = rejectableOf(command);
+            scheduleAfterDelay(() -> executeTemplateAction(command, rejectable, port), rejectable, delayMillis, port);
         } else {
-            templateActionExecutor.execute(() -> run(command, port));
+            executeTemplateAction(command, rejectableOf(command), port);
         }
     }
 

@@ -352,6 +352,25 @@ public class MetricsTest {
         }
     }
 
+    @Test
+    public void countsOverloadRejectionsByReasonAndExposesPendingDelayedTasks() {
+        new Metrics(configuration().metricsEnabled(true));
+        Metrics.setPendingDelayedTasksSupplier(() -> 7);
+        try {
+            Metrics.incrementOverloadRejections("delayed_responses");
+            Metrics.incrementOverloadRejections("delayed_responses");
+            Metrics.incrementOverloadRejections("template_actions");
+
+            assertThat(Metrics.getOverloadRejectionsCount("delayed_responses"), is(2L));
+            assertThat(Metrics.getOverloadRejectionsCount("template_actions"), is(1L));
+            assertThat(scrapeCounterValue("mock_server_overload_rejections", "reason", "delayed_responses"), is(2.0));
+            assertThat(scrapeCounterValue("mock_server_overload_rejections", "reason", "template_actions"), is(1.0));
+            assertThat(scrapeGauge("mock_server_pending_delayed_tasks"), is(7.0));
+        } finally {
+            Metrics.setPendingDelayedTasksSupplier(null);
+        }
+    }
+
     private static double scrapeGauge(String name) {
         for (MetricSnapshot snapshot : PrometheusRegistry.defaultRegistry.scrape()) {
             if (snapshot.getMetadata().getName().equals(name) && snapshot instanceof GaugeSnapshot gaugeSnapshot) {

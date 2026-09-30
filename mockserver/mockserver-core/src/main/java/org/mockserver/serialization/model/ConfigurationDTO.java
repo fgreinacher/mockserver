@@ -51,6 +51,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
     private Integer nioEventLoopThreadCount;
     private Integer soBacklog;
     private Integer actionHandlerThreadCount;
+    private Integer maxPendingDelayedResponses;
+    private Integer maxQueuedTemplateActions;
     private Integer clientNioEventLoopThreadCount;
     private Integer webSocketClientEventLoopThreadCount;
     private Long maxFutureTimeoutInMillis;
@@ -394,6 +396,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
             this.nioEventLoopThreadCount = configuration.nioEventLoopThreadCount();
             this.soBacklog = configuration.soBacklog();
             this.actionHandlerThreadCount = configuration.actionHandlerThreadCount();
+            this.maxPendingDelayedResponses = configuration.maxPendingDelayedResponses();
+            this.maxQueuedTemplateActions = configuration.maxQueuedTemplateActions();
             this.clientNioEventLoopThreadCount = configuration.clientNioEventLoopThreadCount();
             this.webSocketClientEventLoopThreadCount = configuration.webSocketClientEventLoopThreadCount();
             this.maxFutureTimeoutInMillis = configuration.maxFutureTimeoutInMillis();
@@ -796,6 +800,8 @@ public class ConfigurationDTO implements DTO<Configuration> {
         configuration.nioEventLoopThreadCount(nioEventLoopThreadCount);
         configuration.soBacklog(soBacklog);
         configuration.actionHandlerThreadCount(actionHandlerThreadCount);
+        configuration.maxPendingDelayedResponses(maxPendingDelayedResponses);
+        configuration.maxQueuedTemplateActions(maxQueuedTemplateActions);
         configuration.clientNioEventLoopThreadCount(clientNioEventLoopThreadCount);
         configuration.webSocketClientEventLoopThreadCount(webSocketClientEventLoopThreadCount);
         configuration.maxFutureTimeoutInMillis(maxFutureTimeoutInMillis);
@@ -1321,6 +1327,12 @@ public class ConfigurationDTO implements DTO<Configuration> {
         }
         if (actionHandlerThreadCount != null) {
             target.actionHandlerThreadCount(actionHandlerThreadCount);
+        }
+        if (maxPendingDelayedResponses != null) {
+            target.maxPendingDelayedResponses(maxPendingDelayedResponses);
+        }
+        if (maxQueuedTemplateActions != null) {
+            target.maxQueuedTemplateActions(maxQueuedTemplateActions);
         }
         if (clientNioEventLoopThreadCount != null) {
             target.clientNioEventLoopThreadCount(clientNioEventLoopThreadCount);
@@ -2517,6 +2529,24 @@ public class ConfigurationDTO implements DTO<Configuration> {
 
     public ConfigurationDTO setActionHandlerThreadCount(Integer actionHandlerThreadCount) {
         this.actionHandlerThreadCount = actionHandlerThreadCount;
+        return this;
+    }
+
+    public Integer getMaxPendingDelayedResponses() {
+        return maxPendingDelayedResponses;
+    }
+
+    public ConfigurationDTO setMaxPendingDelayedResponses(Integer maxPendingDelayedResponses) {
+        this.maxPendingDelayedResponses = maxPendingDelayedResponses;
+        return this;
+    }
+
+    public Integer getMaxQueuedTemplateActions() {
+        return maxQueuedTemplateActions;
+    }
+
+    public ConfigurationDTO setMaxQueuedTemplateActions(Integer maxQueuedTemplateActions) {
+        this.maxQueuedTemplateActions = maxQueuedTemplateActions;
         return this;
     }
 

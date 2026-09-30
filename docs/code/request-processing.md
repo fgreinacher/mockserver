@@ -850,6 +850,96 @@ The `globalResponseDelayMillis` configuration property adds a fixed delay to all
 - Only applies to the primary response path (not after-actions or secondary actions)
 - Only applies when an expectation matches (unmatched/proxied requests are not delayed)
 
+## Overload Bounds on Delayed and Templated Actions
+
+**A matched request that must wait — for a delay, or for a template thread — is admitted only while fewer
+than a configured number are already waiting; over the limit it is answered at once with
+`503 Service Unavailable` (`Retry-After: 1`).** Each waiting task holds its request, response writer and
+channel, so before these bounds a sustained arrival rate against a delayed or templated expectation grew
+the scheduler and template queues, and the heap, without limit. Within the limits nothing changes: delays,
+ordering and threads are exactly as before.
+
+```mermaid
+flowchart TD
+    D["HttpActionHandler dispatch\n(wrapped: rejectable / delayOptional / sheddable)"] --> DL{"delay > 0?"}
+    DL -->|No| RUN["run inline / hop to pool"]
+    DL -->|Yes| PD{"its budget\n< maxPendingDelayedResponses?"}
+    PD -->|No| FB["fallback on the dispatching thread:\n503 / write without latency / drop\n+ counter + rate-limited WARN"]
+    PD -->|Yes| TIMER["ScheduledThreadPoolExecutor timer"]
+    TIMER --> TPL{"template action?"}
+    RUN --> TPL
+    TPL -->|No| WRITE["run the action"]
+    TPL -->|Yes| TQ{"queued renders\n< maxQueuedTemplateActions?"}
+    TQ -->|No| FB
+    TQ -->|Yes| POOL["template-action pool"]
+```
+
+| Wrapper | Used for | Budget | Over the limit | Metric `reason` |
+|---------|----------|--------|----------------|-----------------|
+| `Scheduler.rejectable(task, onRejected)` | Every request dispatch that can carry a delay: the delayed write in `writeResponseActionResponse` (all mock-response actions), each action type's action/global delay (callbacks, the forward family, SSE, LLM, WebSocket, gRPC streaming, `error`), templates | Delayed responses (`maxPendingDelayedResponses`) | `503`, expectation post-processed | `delayed_responses` |
+| same, template stage | Response/forward template renders waiting for a thread | Template queue (`maxQueuedTemplateActions`) | `503` | `template_actions` |
+| `Scheduler.delayOptional(write)` | Chaos latency on an already-forwarded response | Delayed responses | The upstream response is written at once, without the latency | `delay_skipped` |
+| `Scheduler.sheddable(task)` | Delayed fire-and-forget side actions: after-actions and non-blocking before-actions, secondary actions, step side effects | Delayed side actions (its own budget, same limit) | Dropped | `side_actions` |
+| none | Chained per-message SSE/WebSocket/gRPC delays and close-socket delays (one per stream or connection); WebSocket bidi replies (one delayed task per frame of each reply set, one set per inbound frame); control-plane timed scenario transitions | Not bounded; counted in `mock_server_pending_delayed_tasks` only | Always admitted | — |
+
+Defaults for both properties are the heap ceiling / 64 KB, capped at 100,000; the 1,000 floor applies only
+when the JVM reports no heap ceiling. `0` removes a limit.
+
+**Rationale for the choices.**
+
+- *Admission control, not an event-loop timer.* Moving delays to `eventLoop().schedule` or a
+  `HashedWheelTimer` was rejected: Netty's scheduled-task queue is an unbounded binary heap like
+  `ScheduledThreadPoolExecutor`'s `DelayedWorkQueue`, and `HashedWheelTimer` is unbounded unless given
+  `maxPendingTimeouts`, so neither bounds anything by itself. The memory is in the closure each entry
+  retains, whatever holds it. An event-loop timer would also run the fire-time work (event logging, OpenAPI
+  response validation, breakpoint matching) on the I/O thread, and `CallerRunsPolicy` for a full template
+  queue would render on the worker event loop — the stall the template-action pool exists to prevent.
+- *Chaos latency on a forwarded response degrades instead of refusing.* By the time it applies the upstream
+  request has been sent; a 503 would invite a client retry that repeats a non-idempotent upstream call, and
+  for a streaming upstream the response writer would never subscribe, leaving the upstream connection open.
+- *Side actions are shed on their own budget.* No client waits for them, so dropping one under overload
+  (as drift analysis already does) is the least harmful outcome, and a separate budget means a webhook
+  backlog can never make an unrelated mock answer 503. The worst case held is therefore bounded delayed
+  tasks up to twice `maxPendingDelayedResponses`, plus up to `maxQueuedTemplateActions` queued renders, plus
+  the unbounded per-stream delays in the last row.
+- *WebSocket bidi replies are not shed.* Each frame of a reply set is its own delayed task, and a client is
+  waiting for the whole set (a realtime LLM turn, for example), so shedding at the budget boundary would
+  deliver a partial reply silently. Bounding them needs the matcher's whole reply set admitted or refused
+  atomically, closing the socket with status 1013 (try again later) on refusal — plan row 34a.
+- *Admission counters, not bounded queues,* so both limits resize at runtime
+  (`Scheduler.applyConfigurationCapacity()`, called from `HttpState.applyConfigurationUpdate`) at the cost
+  of one increment and one compare per delayed dispatch. Undelayed dispatches allocate no wrapper
+  (`HttpActionHandler.rejectableIfDelayed`, and the empty-delay check in `writeResponseActionResponse`);
+  templates are always wrapped because the queue bound applies without a delay.
+
+**What a refused request has already done.** Refusal happens at dispatch, after matching, so for a request
+answered `503`: the expectation's match was counted (a `Times.once()` expectation refused once is used up);
+when the refusal is of the delayed write, the rate-limit token was taken and chaos fault metrics were
+counted; and no `EXPECTATION_RESPONSE` entry is logged for it (the request itself is logged as received).
+Refusals are reported by `mock_server_overload_rejections` (only when `metricsEnabled`), by
+`Scheduler.getOverloadRejectionCount(reason)` (always), and by a WARN at most every 10 seconds per reason
+carrying the count since the previous line and the running total — so rejections after the last line are
+not logged until the next one.
+
+In synchronous (WAR/servlet) mode delays sleep on the request thread, nothing is queued and no bound applies.
+
+**Other executors on the request path** and whether each is bounded:
+
+| Executor / queue | Work | Bounded by |
+|------------------|------|-----------|
+| Shared scheduler, undelayed tasks | Forward continuations, lazy `once()` removal, before-actions, undelayed side actions | **Not bounded** — must-run work that cannot be answered with a 503; tracked by `mock_server_scheduler_queued_tasks` |
+| Shared scheduler, drift analysis | Best-effort forwarded-response drift analysis | Self-bounded to `max(16, 4 x actionHandlerThreadCount)`; excess dropped and counted |
+| `ScenarioManager` timed transitions (`submitAsync`) | One delayed transition per control-plane `PUT /mockserver/scenario` carrying `transitionAfterMs`; a later one for the same scenario turns earlier ones into no-ops | **Not bounded** — driven by the control plane, not by matched requests; each holds only scenario names |
+| Local-callback pool | Class callbacks | No queue (`SynchronousQueue`); threads deliberately unbounded to avoid the recursive loopback self-deadlock ([optimisation-safety.md](optimisation-safety.md) hazard 5). Its delay stage is bounded above |
+| JavaScript watchdog (`PolyglotRunner`) | Template timeout | One per in-flight JavaScript render, so bounded by the template pool |
+| `MatchingTimeoutExecutor`, `WasmRuntime` | Regex/XPath matching, WASM rules | `SynchronousQueue` with a thread cap and `AbortPolicy` |
+| Breakpoint timeout schedulers | Held-exchange timeouts | `breakpointMaxHeld` |
+| `LoadScenarioOrchestrator` scheduler | VU pacing and think time | One pending task per virtual user (`loadGenerationMaxVirtualUsers`) |
+| `ForwardRetryPolicy` backoff (`CompletableFuture.delayedExecutor`) | Forward retries | In-flight forwards x `forwardProxyRetryCount` |
+| `ChaosExperimentOrchestrator` scheduler | Experiment stage timers | Control plane, one per experiment stage |
+| WebSocket bidi replies (`HttpWebSocketResponseActionHandler`) | Delayed reply frames to each inbound frame | **Not bounded** — counted in the gauge; see the rationale above |
+| `TcpChaosHandler` (`eventLoop().schedule`) | TCP latency/bandwidth fault injection | **Not bounded** — one scheduled read (holding its `ByteBuf`) per inbound read while a TCP latency profile is active; opt-in fault injection |
+
 ## Proxy Forwarding
 
 When no expectation matches and the channel is in proxy mode, `HttpActionHandler` forwards via `NettyHttpClient`:

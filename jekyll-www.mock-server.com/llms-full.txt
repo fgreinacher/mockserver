@@ -903,6 +903,16 @@ Number of threads for the action handler pool (serializing responses, handling d
 - Default: max(5, available processors)
 - Environment variable: MOCKSERVER_ACTION_HANDLER_THREAD_COUNT
 
+**maxPendingDelayedResponses**
+Maximum matched requests waiting for a configured delay (response/action delay, global delay, chaos latency) at once. Further ones are answered immediately with 503 Service Unavailable (the match still counts towards the expectation's times) and counted by the mock_server_overload_rejections metric when metrics are enabled. Delayed side actions (after-actions, secondary actions, step side effects) have their own allowance of the same size and are skipped when it is full; a forwarded response waiting for chaos latency is sent without the latency.
+- Default: max heap / 64 KB, capped at 100000 (0 = unbounded)
+- Environment variable: MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES
+
+**maxQueuedTemplateActions**
+Maximum response/forward template renders queued for a template thread. Further templated requests are answered immediately with 503 Service Unavailable.
+- Default: max heap / 64 KB, capped at 100000 (0 = unbounded)
+- Environment variable: MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS
+
 **clientNioEventLoopThreadCount**
 Number of threads for client event loop when calling downstream.
 - Default: 5
@@ -2467,6 +2477,8 @@ Or by expectation IDs:
 | MOCKSERVER_MAX_WEB_SOCKET_EXPECTATIONS | mockserver.maxWebSocketExpectations | 1500 |
 | MOCKSERVER_NIO_EVENT_LOOP_THREAD_COUNT | mockserver.nioEventLoopThreadCount | 5 |
 | MOCKSERVER_ACTION_HANDLER_THREAD_COUNT | mockserver.actionHandlerThreadCount | max(5, cpus) |
+| MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES | mockserver.maxPendingDelayedResponses | auto |
+| MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS | mockserver.maxQueuedTemplateActions | auto |
 | MOCKSERVER_MAX_SOCKET_TIMEOUT | mockserver.maxSocketTimeout | 20000 |
 | MOCKSERVER_SOCKET_CONNECTION_TIMEOUT | mockserver.socketConnectionTimeout | 20000 |
 | MOCKSERVER_MAX_FUTURE_TIMEOUT | mockserver.maxFutureTimeout | 90000 |

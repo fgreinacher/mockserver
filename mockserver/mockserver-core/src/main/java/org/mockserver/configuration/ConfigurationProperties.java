@@ -124,6 +124,8 @@ public class ConfigurationProperties {
     private static final String MOCKSERVER_NIO_EVENT_LOOP_THREAD_COUNT = "mockserver.nioEventLoopThreadCount";
     private static final String MOCKSERVER_SO_BACKLOG = "mockserver.soBacklog";
     private static final String MOCKSERVER_ACTION_HANDLER_THREAD_COUNT = "mockserver.actionHandlerThreadCount";
+    private static final String MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES = "mockserver.maxPendingDelayedResponses";
+    private static final String MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS = "mockserver.maxQueuedTemplateActions";
     private static final String MOCKSERVER_CLIENT_NIO_EVENT_LOOP_THREAD_COUNT = "mockserver.clientNioEventLoopThreadCount";
     private static final String MOCKSERVER_WEB_SOCKET_CLIENT_EVENT_LOOP_THREAD_COUNT = "mockserver.webSocketClientEventLoopThreadCount";
     private static final String MOCKSERVER_MAX_FUTURE_TIMEOUT = "mockserver.maxFutureTimeout";
@@ -2504,6 +2506,65 @@ public class ConfigurationProperties {
      */
     public static void actionHandlerThreadCount(int count) {
         setProperty(MOCKSERVER_ACTION_HANDLER_THREAD_COUNT, "" + count);
+    }
+
+    // Estimated heap retained by one pending (delayed or queued) action: the inbound request, the response
+    // and the channel it will be written to. Deliberately pessimistic, so the default bound holds well
+    // under the heap ceiling for ordinary request sizes.
+    static final long PENDING_ACTION_ESTIMATED_KB = 64;
+    static final int PENDING_ACTION_DEFAULT_CAP = 100_000;
+    static final int PENDING_ACTION_DEFAULT_FLOOR = 1_000;
+
+    /**
+     * Default for {@link #maxPendingDelayedResponses()} and {@link #maxQueuedTemplateActions()}: the heap
+     * ceiling divided by {@link #PENDING_ACTION_ESTIMATED_KB}, capped at {@link #PENDING_ACTION_DEFAULT_CAP}.
+     */
+    static int defaultMaxPendingActions(long heapAvailableInKB) {
+        return heapBasedDefaultOrFloor(heapAvailableInKB, PENDING_ACTION_ESTIMATED_KB, PENDING_ACTION_DEFAULT_CAP, PENDING_ACTION_DEFAULT_FLOOR);
+    }
+
+    public static int maxPendingDelayedResponses() {
+        return readIntegerProperty(MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES, "MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES", defaultMaxPendingActions(heapAvailableInKB()));
+    }
+
+    /**
+     * <p>Maximum number of matched requests that may be waiting at once for a configured delay (a response or
+     * action delay, {@code globalResponseDelayMillis} or chaos latency) before their response is written. Delayed
+     * side actions (after-actions, secondary actions, step side effects) have a separate
+     * allowance of the same size and are dropped, not answered 503, when it is full.</p>
+     * <p>Each waiting request holds its request, response and connection in memory until the delay ends, so
+     * without a limit a sustained request rate against a delayed expectation grows memory without bound.
+     * When the limit is reached further such requests are answered immediately with
+     * {@code 503 Service Unavailable}, counted by the {@code mock_server_overload_rejections} metric and
+     * reported by a rate-limited WARN log.</p>
+     * <p>Default is the maximum JVM heap divided by 64 KB, capped at 100,000. A value of {@code 0} or less
+     * removes the limit (not recommended).</p>
+     *
+     * @param maxPendingDelayedResponses maximum number of delayed responses waiting at once
+     */
+    public static void maxPendingDelayedResponses(int maxPendingDelayedResponses) {
+        setProperty(MOCKSERVER_MAX_PENDING_DELAYED_RESPONSES, "" + maxPendingDelayedResponses);
+    }
+
+    public static int maxQueuedTemplateActions() {
+        return readIntegerProperty(MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS, "MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS", defaultMaxPendingActions(heapAvailableInKB()));
+    }
+
+    /**
+     * <p>Maximum number of response or forward template renders (Velocity, Mustache or JavaScript) that may
+     * be queued waiting for a template thread. Template renders run on a dedicated pool of
+     * {@code actionHandlerThreadCount} threads; when requests arrive faster than templates can be rendered
+     * they queue, each holding its request and connection in memory.</p>
+     * <p>When the limit is reached further templated requests are answered immediately with
+     * {@code 503 Service Unavailable}, counted by the {@code mock_server_overload_rejections} metric and
+     * reported by a rate-limited WARN log.</p>
+     * <p>Default is the maximum JVM heap divided by 64 KB, capped at 100,000. A value of {@code 0} or less
+     * removes the limit (not recommended).</p>
+     *
+     * @param maxQueuedTemplateActions maximum number of template renders waiting for a thread
+     */
+    public static void maxQueuedTemplateActions(int maxQueuedTemplateActions) {
+        setProperty(MOCKSERVER_MAX_QUEUED_TEMPLATE_ACTIONS, "" + maxQueuedTemplateActions);
     }
 
     public static int clientNioEventLoopThreadCount() {

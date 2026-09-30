@@ -435,6 +435,7 @@ public class HttpState {
             mockServerLog.getMaxRetainedEntries()));
         if (scheduler != null) {
             Metrics.setSchedulerQueueDepthSuppliers(scheduler::getQueuedTaskCount, scheduler::getQueuedTemplateActionCount);
+            Metrics.setPendingDelayedTasksSupplier(scheduler::getPendingDelayedTaskCount);
         }
         Metrics.setExpectationStoreStatsSupplier(() -> new Metrics.ExpectationStoreStats(
             requestMatchers.getExpectationBytes(),
@@ -6721,7 +6722,9 @@ public class HttpState {
      * <ul>
      *     <li><b>Resizable properties are resized in place</b> — {@code maxLogEntries} /
      *     {@code maxEventLogSizeInBytes} (event log deque), {@code maxExpectations} (expectation
-     *     store) and {@code controlPlaneAuditMaxEntries} (audit ring). A shrink evicts immediately.</li>
+     *     store) and {@code controlPlaneAuditMaxEntries} (audit ring). A shrink evicts immediately.
+     *     {@code maxPendingDelayedResponses} and {@code maxQueuedTemplateActions} are re-read by the
+     *     scheduler; a lower limit refuses new arrivals and never cancels admitted ones.</li>
      *     <li><b>Genuinely init-only properties are reported, not silently dropped</b> —
      *     {@code ringBufferSize} (the LMAX disruptor ring is a fixed power-of-two array sized at
      *     construction) and {@code maxWebSocketExpectations} (the local callback registries are
@@ -6747,6 +6750,9 @@ public class HttpState {
         mockServerLog.applyConfigurationCapacity();
         requestMatchers.applyConfigurationCapacity();
         org.mockserver.mock.audit.AuditStore.getInstance().setMaxSize(configuration.controlPlaneAuditMaxEntries());
+        if (scheduler != null) {
+            scheduler.applyConfigurationCapacity();
+        }
 
         if (suppliedConfiguration == null) {
             return;
