@@ -106,7 +106,10 @@ cpusets_physically_disjoint() {
         return 0
       fi
       prev="$(printf '%s\n' "$seen" | awk -v k="$key" '$1==k {print $2; exit}')"
-      if [ -n "$prev" ]; then
+      # A role may own both hyperthreads of a core; only a core shared by two roles is contention.
+      if [ "$prev" = "$role" ]; then
+        continue
+      elif [ -n "$prev" ]; then
         dupe="$dupe\n    physical core $key is used by BOTH $prev and $role (via cpu$cpu)"
       else
         seen="$seen$key $role"$'\n'
