@@ -457,6 +457,31 @@ Production images are built for both `linux/amd64` and `linux/arm64` using Build
 
 See [CI/CD](ci-cd.md) for full pipeline details.
 
+### Platform ARGs and native libraries
+
+**Every `ARG TARGETARCH` / `TARGETOS` / `TARGETPLATFORM` (and the `BUILD*` equivalents) is bare — never give one a default, and never fall back to a literal (`${TARGETARCH:-amd64}`).** A stage-level default such as `ARG TARGETARCH=amd64` *overrides* the value BuildKit injects, so on the arm64 leg of `docker buildx build --platform linux/amd64,linux/arm64` the stage still sees `amd64`. The release and snapshot pushes pass no `--build-arg TARGETARCH`, so the arm64 images copied the x86_64 `netty-tcnative` `.so` into `/usr/lib`.
+
+- **In target-platform stages that download or trim natives, the stage's own `uname -m` is the authority.** These are the `download` / `copy` / `tcnative` stages of the download-mode Dockerfiles (`docker/Dockerfile`, `docker/root`, `docker/root-snapshot`, `docker/snapshot`), `docker/graaljs` and `docker/clustered`, plus `docker/Dockerfile`'s `jarprep`. They run on the platform being built (buildx emulates a foreign one), so `uname -m` is the image's arch. `case "$(uname -m)"` maps `x86_64` and `aarch64|arm64` explicitly and fails on anything else. A non-empty `TARGETARCH` that disagrees with it fails the build, so `--platform linux/arm64 --build-arg TARGETARCH=amd64` is rejected. It is never used to choose the native.
+- **After download or trim, each `.so` in the stage has its ELF `e_machine` compared with the `uname`-derived value** using `od -An -tu2 -j18 -N2` (62 = x86-64, 183 = AArch64). A mismatch fails the build.
+- **`BUILDPLATFORM` stages are the exception.** The `healthcheck` and `-http3` `quic` stages run on the build machine and cross-target, so there `uname -m` is the wrong arch. They take the arch from `TARGETARCH` and check the output's ELF machine against it.
+- **`.buildkite/scripts/steps/docker-validate-sync.sh`** checks every Dockerfile under `docker/`. It joins `\` continuations into logical instructions and drops comment lines. It fails on:
+  - a platform `ARG` given a default (including through a continuation), an `ENV` that sets one, or a fallback that is neither empty nor a command substitution (`${TARGETARCH:-amd64}`, `${TARGETARCH:-${DEF}}`);
+  - a target-platform `RUN` that mentions `netty-tcnative` or runs `zip -d` but does not carry, **in that same `RUN`**, the arch-check markers:
+    - the `case "$(uname -m)"` mapping with a `*)` arm that exits 1;
+    - the `[ "$TARGETARCH" != "$STAGE_ARCH" ]` cross-check exiting 1;
+    - the `ACTUAL="$(od -An -tu2 -j18 -N2 "$so")"` read;
+    - the `[ "${ACTUAL##* }" != "$ELF_MACHINE" ]` comparison exiting 1.
+
+    Markers inside a shell function or a single-quoted `echo` do not count, and `STAGE_ARCH` / `ELF_MACHINE` may not be reassigned outside the `case`;
+  - a stage named `download`, `copy`, `tcnative` or `jarprep` with no such `RUN`, unless it calls `mockserver-jarprep.sh`. `docker/aot`'s `download` and `copy` stages are exempt because it ships no tcnative;
+  - `docker/jarprep/mockserver-jarprep.sh`, when present, missing any of the same markers;
+  - a `healthcheck` stage that drops `GOARCH="${TARGETARCH:-…}"` or its ELF check.
+
+  This checks that the markers are present. It cannot prove the check actually runs: for example, a loop over no files still passes.
+- **`.buildkite/scripts/steps/docker-build-verify.sh`** builds the reference image *without* `--build-arg TARGETARCH`, as the pushes do. It then reads the ELF machine of the image's `/usr/lib` tcnative `.so` and asserts that both `OpenSsl.isAvailable` and `Epoll.isAvailable` are true in the image JVM.
+
+**Where the `/usr/lib` tcnative `.so` matters.** It is the native-TLS fallback when `docker run --read-only` stops Netty extracting the jar's own copy. That applies to `docker/Dockerfile`, which runs the unshaded jar-with-dependencies. The released 8.0.0 reference Dockerfile, built for arm64, fell back to JDK TLS under `--read-only`. The pushed `graaljs` and `clustered` images run the shaded `mockserver-netty-no-dependencies` jar. Its relocated netty cannot load the stock tcnative `.so`, so those images use JDK TLS on both arches, whichever arch of `.so` they carry.
+
 ## Local Docker Operations
 
 ```bash

@@ -217,12 +217,10 @@ trigger_if_changed "^(mockserver-vscode/|mockserver-jetbrains/)" "mockserver-edi
 trigger_if_changed "^mockserver/mockserver-maven-plugin/" "mockserver-maven-plugin" "MockServer Maven Plugin"
 trigger_if_changed "^mockserver-performance-test/" "mockserver-performance-test" "MockServer Performance Test"
 # docker/** routes here too (not only container_integration_tests/**): the
-# container-tests pipeline OWNS the real image build+verify (docker-build-verify.sh)
-# so a Dockerfile/build-context change is actually built and its native tcnative
-# path exercised. Previously the only image build lived in a master-only,
-# Java-pipeline-gated step, so a docker/**-only change was never built by anything.
-# docker/** still also triggers mockserver-infra for the static docker-validate-sync
-# lint — the two are complementary (fast static lint + real build).
+# container-tests Helm step builds docker/Dockerfile and docker/clustered, so a
+# Dockerfile/build-context change is actually built (docker-build-verify.sh's
+# runtime checks are not wired in yet; see pipeline-container-tests.yml).
+# docker/** also triggers mockserver-infra for the static docker-validate-sync lint.
 trigger_if_changed "^(container_integration_tests/|docker/)" "mockserver-container-tests" "MockServer Container Tests"
 trigger_if_changed "^jekyll-www.mock-server.com/" "mockserver-website" "MockServer Website"
 trigger_if_changed "^docker_build/maven/" "mockserver-build-image" "MockServer Build Image"

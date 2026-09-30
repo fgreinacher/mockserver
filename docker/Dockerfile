@@ -35,17 +35,30 @@ ARG REPOSITORY_URL=https://repo1.maven.org/maven2/org/mock-server/mockserver-net
 RUN wget --max-redirect=10 -O mockserver-netty-jar-with-dependencies.jar "$REPOSITORY_URL" \
     && wget --max-redirect=10 -qO- "${REPOSITORY_URL}.sha256" > /tmp/expected.sha256 \
     && echo "$(cat /tmp/expected.sha256)  mockserver-netty-jar-with-dependencies.jar" | sha256sum -c -
-ARG TARGETARCH=amd64
+# Bare, no default (a default overrides BuildKit's per-leg value); the stage's own uname -m is the authority.
+ARG TARGETARCH
 RUN NETTY_TCNATIVE="$(unzip -p mockserver-netty-jar-with-dependencies.jar META-INF/mockserver-tcnative.version | tr -d '[:space:]')" \
     && if [ -z "$NETTY_TCNATIVE" ]; then echo "ERROR: META-INF/mockserver-tcnative.version missing or empty in mockserver-netty-jar-with-dependencies.jar" >&2; exit 1; fi \
-    && if [ "$TARGETARCH" = "amd64" ]; \
-    then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \
-    else TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-aarch_64.jar"; \
-    fi \
+    && case "$(uname -m)" in \
+         x86_64)        STAGE_ARCH=amd64; TCNATIVE_ARCH=x86_64;   ELF_MACHINE=62 ;; \
+         aarch64|arm64) STAGE_ARCH=arm64; TCNATIVE_ARCH=aarch_64; ELF_MACHINE=183 ;; \
+         *) echo "ERROR: no netty-tcnative build for stage arch '$(uname -m)'" >&2; exit 1 ;; \
+       esac \
+    && if [ -n "${TARGETARCH:-}" ] && [ "$TARGETARCH" != "$STAGE_ARCH" ]; then \
+         echo "ERROR: TARGETARCH='$TARGETARCH' but this stage runs on $STAGE_ARCH - declare 'ARG TARGETARCH' without a default" >&2; exit 1; \
+       fi \
+    && TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-$TCNATIVE_ARCH.jar" \
     && wget -O netty-tcnative-boringssl-static.jar "$TCNATIVE_URL" \
     && wget -qO- "${TCNATIVE_URL}.sha256" > /tmp/expected-tcnative.sha256 \
-    && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c -
-RUN unzip netty-tcnative-boringssl-static.jar
+    && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c - \
+    && unzip netty-tcnative-boringssl-static.jar \
+    && for so in META-INF/native/*.so; do \
+         [ -f "$so" ] || { echo "ERROR: no native .so in netty-tcnative-boringssl-static.jar" >&2; exit 1; }; \
+         ACTUAL="$(od -An -tu2 -j18 -N2 "$so")"; \
+         if [ "${ACTUAL##* }" != "$ELF_MACHINE" ]; then \
+           echo "ERROR: $so ELF machine ${ACTUAL##* }, expected $ELF_MACHINE for $TCNATIVE_ARCH" >&2; exit 1; \
+         fi; \
+       done
 
 # build image — copies JAR from context, downloads tcnative from Maven Central
 FROM alpine:3.24 AS copy
@@ -67,18 +80,31 @@ RUN if [ -s /tmp/local-ca.pem ]; then \
 # BusyBox wget ignores /etc/wgetrc, so this is a safe no-op there.
 RUN printf 'tries=5\ntimeout=60\nwaitretry=10\nretry_on_host_error=on\nretry_connrefused=on\n' >> /etc/wgetrc
 COPY mockserver-netty-jar-with-dependencies.jar .
-ARG TARGETARCH=amd64
+# Bare, no default (a default overrides BuildKit's per-leg value); the stage's own uname -m is the authority.
+ARG TARGETARCH
 # Audit finding F-DKR-06: SHA256-verify tcnative download from Maven Central.
 RUN NETTY_TCNATIVE="$(unzip -p mockserver-netty-jar-with-dependencies.jar META-INF/mockserver-tcnative.version | tr -d '[:space:]')" \
     && if [ -z "$NETTY_TCNATIVE" ]; then echo "ERROR: META-INF/mockserver-tcnative.version missing or empty in mockserver-netty-jar-with-dependencies.jar" >&2; exit 1; fi \
-    && if [ "$TARGETARCH" = "amd64" ]; \
-    then TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-x86_64.jar"; \
-    else TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-aarch_64.jar"; \
-    fi \
+    && case "$(uname -m)" in \
+         x86_64)        STAGE_ARCH=amd64; TCNATIVE_ARCH=x86_64;   ELF_MACHINE=62 ;; \
+         aarch64|arm64) STAGE_ARCH=arm64; TCNATIVE_ARCH=aarch_64; ELF_MACHINE=183 ;; \
+         *) echo "ERROR: no netty-tcnative build for stage arch '$(uname -m)'" >&2; exit 1 ;; \
+       esac \
+    && if [ -n "${TARGETARCH:-}" ] && [ "$TARGETARCH" != "$STAGE_ARCH" ]; then \
+         echo "ERROR: TARGETARCH='$TARGETARCH' but this stage runs on $STAGE_ARCH - declare 'ARG TARGETARCH' without a default" >&2; exit 1; \
+       fi \
+    && TCNATIVE_URL="https://repo1.maven.org/maven2/io/netty/netty-tcnative-boringssl-static/$NETTY_TCNATIVE/netty-tcnative-boringssl-static-$NETTY_TCNATIVE-linux-$TCNATIVE_ARCH.jar" \
     && wget -O netty-tcnative-boringssl-static.jar "$TCNATIVE_URL" \
     && wget -qO- "${TCNATIVE_URL}.sha256" > /tmp/expected-tcnative.sha256 \
-    && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c -
-RUN unzip netty-tcnative-boringssl-static.jar
+    && echo "$(cat /tmp/expected-tcnative.sha256)  netty-tcnative-boringssl-static.jar" | sha256sum -c - \
+    && unzip netty-tcnative-boringssl-static.jar \
+    && for so in META-INF/native/*.so; do \
+         [ -f "$so" ] || { echo "ERROR: no native .so in netty-tcnative-boringssl-static.jar" >&2; exit 1; }; \
+         ACTUAL="$(od -An -tu2 -j18 -N2 "$so")"; \
+         if [ "${ACTUAL##* }" != "$ELF_MACHINE" ]; then \
+           echo "ERROR: $so ELF machine ${ACTUAL##* }, expected $ELF_MACHINE for $TCNATIVE_ARCH" >&2; exit 1; \
+         fi; \
+       done
 
 FROM ${source} AS intermediate
 
@@ -94,8 +120,8 @@ FROM ${source} AS intermediate
 # load its own arch's ELF .so — the macOS blobs are Mach-O (.jnilib) and the Windows
 # ones are PE (.dll), object formats an ELF loader physically cannot map, and the
 # wrong-arch linux .so is just as unusable. Dropping them removes ~13 MiB from the
-# compressed image download with zero loss of function. Keyed on the same TARGETARCH
-# used above to fetch the matching tcnative.
+# compressed image download with zero loss of function. Keyed on this stage's own
+# uname -m (a disagreeing TARGETARCH fails the build), like the tcnative download above.
 #
 # The KEEP filter is the "*<arch>.so" SUFFIX, and that shape is deliberate: the linux
 # natives for one arch are differently-named files —
@@ -150,7 +176,8 @@ FROM ${source} AS intermediate
 # this), and it keeps the deterministic single-pass `zip -@` simple.
 FROM intermediate AS jarprep
 RUN apk add --no-cache zip unzip
-ARG TARGETARCH=amd64
+# Bare, no default (a default overrides BuildKit's per-leg value); the stage's own uname -m is the authority.
+ARG TARGETARCH
 WORKDIR /jarprep
 # FIVE native families are trimmed, not one. netty's live under META-INF/native/ and are matched by
 # ARCH SUFFIX; zstd-jni, snappy, JNA and lz4-java each use their own directory layout and are matched by
@@ -171,18 +198,23 @@ WORKDIR /jarprep
 #   how a broken filter for one of the other four would go unnoticed. lz4-java was found only by
 #   listing what SURVIVED a trim run - it had been invisible in the by-owner breakdown.
 RUN set -eu; \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-      ARCH=x86_64; \
-      KEEP_ZSTD="linux/amd64/"; \
-      KEEP_SNAPPY="org/xerial/snappy/native/Linux/x86_64/"; \
-      KEEP_JNA="com/sun/jna/linux-x86-64/"; \
-      KEEP_LZ4="net/jpountz/util/linux/amd64/"; \
-    else \
-      ARCH=aarch_64; \
-      KEEP_ZSTD="linux/aarch64/"; \
-      KEEP_SNAPPY="org/xerial/snappy/native/Linux/aarch64/"; \
-      KEEP_JNA="com/sun/jna/linux-aarch64/"; \
-      KEEP_LZ4="net/jpountz/util/linux/aarch64/"; \
+    case "$(uname -m)" in \
+      x86_64) \
+        STAGE_ARCH=amd64; ARCH=x86_64; ELF_MACHINE=62; \
+        KEEP_ZSTD="linux/amd64/"; \
+        KEEP_SNAPPY="org/xerial/snappy/native/Linux/x86_64/"; \
+        KEEP_JNA="com/sun/jna/linux-x86-64/"; \
+        KEEP_LZ4="net/jpountz/util/linux/amd64/" ;; \
+      aarch64|arm64) \
+        STAGE_ARCH=arm64; ARCH=aarch_64; ELF_MACHINE=183; \
+        KEEP_ZSTD="linux/aarch64/"; \
+        KEEP_SNAPPY="org/xerial/snappy/native/Linux/aarch64/"; \
+        KEEP_JNA="com/sun/jna/linux-aarch64/"; \
+        KEEP_LZ4="net/jpountz/util/linux/aarch64/" ;; \
+      *) echo "ERROR: no native trim rule for stage arch '$(uname -m)'"; exit 1 ;; \
+    esac; \
+    if [ -n "${TARGETARCH:-}" ] && [ "$TARGETARCH" != "$STAGE_ARCH" ]; then \
+      echo "ERROR: TARGETARCH='$TARGETARCH' but this stage runs on $STAGE_ARCH - declare 'ARG TARGETARCH' without a default"; exit 1; \
     fi; \
     cp /mockserver-netty-jar-with-dependencies.jar app.jar; \
     for e in $(unzip -l app.jar 'META-INF/native/*' | awk '/META-INF\/native\/.+[^\/]$/{print $NF}'); do \
@@ -199,6 +231,12 @@ RUN set -eu; \
     trim_prefix "$KEEP_JNA"    'com/sun/jna/*'; \
     trim_prefix "$KEEP_LZ4"    'net/jpountz/util/*'; \
     mkdir ex && (cd ex && unzip -q ../app.jar) && rm app.jar; \
+    find ex -type f -name '*.so' > /tmp/natives.txt; \
+    [ -s /tmp/natives.txt ] || { echo "ERROR: no .so native survived the trim"; exit 1; }; \
+    while read -r so; do \
+      ACTUAL="$(od -An -tu2 -j18 -N2 "$so")"; \
+      if [ "${ACTUAL##* }" != "$ELF_MACHINE" ]; then echo "ERROR: $so ELF machine ${ACTUAL##* }, expected $ELF_MACHINE for $ARCH"; exit 1; fi; \
+    done < /tmp/natives.txt; \
     find ex -exec touch -h -t 200001010000.00 {} +; \
     ( cd ex; \
       find . -type f | sed 's#^\./##' | LC_ALL=C sort > /tmp/all.txt; \
@@ -216,10 +254,10 @@ RUN set -eu; \
     unzip -l deps.jar 'META-INF/native/*' | grep -q "libnetty_transport_native_epoll_$ARCH.so" || { echo "ERROR: no netty epoll $ARCH native survived the trim"; exit 1; }; \
     unzip -l deps.jar 'META-INF/native/*' | grep -q "libnetty_tcnative_linux_$ARCH.so" || { echo "ERROR: no netty tcnative $ARCH native survived the trim"; exit 1; }; \
     if unzip -l deps.jar 'META-INF/native/*' | grep -q "quiche"; then echo "ERROR: a quiche native is present - this image builds from the DEFAULT jar, which must not carry QUIC natives"; exit 1; fi; \
-    unzip -l deps.jar | grep -q "${KEEP_ZSTD}libzstd-jni" || { echo "ERROR: no zstd native for $TARGETARCH survived the trim"; exit 1; }; \
-    unzip -l deps.jar | grep -q "${KEEP_SNAPPY}libsnappyjava" || { echo "ERROR: no snappy native for $TARGETARCH survived the trim"; exit 1; }; \
-    unzip -l deps.jar | grep -q "${KEEP_JNA}libjnidispatch" || { echo "ERROR: no JNA native for $TARGETARCH survived the trim"; exit 1; }; \
-    unzip -l deps.jar | grep -q "${KEEP_LZ4}liblz4-java" || { echo "ERROR: no lz4 native for $TARGETARCH survived the trim"; exit 1; }
+    unzip -l deps.jar | grep -q "${KEEP_ZSTD}libzstd-jni" || { echo "ERROR: no zstd native for $ARCH survived the trim"; exit 1; }; \
+    unzip -l deps.jar | grep -q "${KEEP_SNAPPY}libsnappyjava" || { echo "ERROR: no snappy native for $ARCH survived the trim"; exit 1; }; \
+    unzip -l deps.jar | grep -q "${KEEP_JNA}libjnidispatch" || { echo "ERROR: no JNA native for $ARCH survived the trim"; exit 1; }; \
+    unzip -l deps.jar | grep -q "${KEEP_LZ4}liblz4-java" || { echo "ERROR: no lz4 native for $ARCH survived the trim"; exit 1; }
 
 FROM eclipse-temurin:26-jdk-noble AS appcds-build
 

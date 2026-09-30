@@ -16,6 +16,15 @@ DOCKERFILES=(
 
 errors=0
 
+# Joins '\' continuations into one logical instruction per line, as Docker does; a comment or blank
+# line inside a continuation is dropped, a top-level comment line is kept.
+logical_lines() {
+  awk '/^[[:space:]]*#/ && buf == "" { print; next }
+    buf != "" && /^[[:space:]]*(#|$)/ { next }
+    { if (sub(/\\$/, "")) { buf = buf $0 " "; next } print buf $0; buf = "" }
+    END { if (buf != "") print buf }' "$1"
+}
+
 for df in "${DOCKERFILES[@]}"; do
   filepath="$REPO_ROOT/$df"
   if [ ! -f "$filepath" ]; then
@@ -65,10 +74,7 @@ for df in "${DOCKERFILES[@]}"; do
     # restricted-method WARNINGs on every start. Every CDS dump and AppCDS/AOT training command must
     # match the ENTRYPOINT, or CDS logs a flag mismatch at [error] level on every start. Checked per
     # command after joining '\' continuations, so reflowing a RUN instruction cannot hide one.
-    logical="$(awk '/^[[:space:]]*#/ && buf == "" { print; next }
-      buf != "" && /^[[:space:]]*(#|$)/ { next }
-      { if (sub(/\\$/, "")) { buf = buf $0 " "; next } print buf $0; buf = "" }
-      END { if (buf != "") print buf }' "$filepath")"
+    logical="$(logical_lines "$filepath")"
     entrypoint_lines="$(grep -E '^ENTRYPOINT ' <<<"$logical" || true)"
     if ! grep -qF '"--enable-native-access=ALL-UNNAMED"' <<<"$entrypoint_lines"; then
       echo "FAIL: $df ENTRYPOINT must pass \"--enable-native-access=ALL-UNNAMED\""
@@ -127,8 +133,9 @@ for df in "${DOCKERFILES[@]}"; do
     errors=$((errors + 1))
   fi
   stage="$(awk '/ AS healthcheck$/ {in_stage=1; next} /^FROM / {in_stage=0} in_stage' "$REPO_ROOT/$df")"
-  if ! grep -qx 'ARG TARGETARCH' <<<"$stage" || ! grep -q 'GOARCH="\$GOARCH"' <<<"$stage"; then
-    echo "FAIL: $df healthcheck stage must declare a bare 'ARG TARGETARCH' (no default) and build with GOARCH=\"\$GOARCH\""
+  if ! grep -qx 'ARG TARGETARCH' <<<"$stage" || ! grep -q 'GOARCH="\$GOARCH"' <<<"$stage" \
+     || ! grep -qF 'GOARCH="${TARGETARCH:-' <<<"$stage" || ! grep -qF 'od -An -tu2 -j18 -N2' <<<"$stage"; then
+    echo "FAIL: $df healthcheck stage must declare a bare 'ARG TARGETARCH', derive GOARCH=\"\${TARGETARCH:-...}\", build with GOARCH=\"\$GOARCH\" and check the binary's ELF machine (od -An -tu2 -j18 -N2)"
     errors=$((errors + 1))
   fi
   golang_froms="${golang_froms}${pinned}"$'\n'
@@ -163,6 +170,104 @@ for df in "${LAYERED_DOCKERFILES[@]}"; do
     errors=$((errors + 1))
   fi
 done
+
+# A default on a stage-level BuildKit platform ARG (ARG TARGETARCH=amd64), an ENV of one, or a non-empty
+# fallback such as ${TARGETARCH:-amd64} OVERRIDES the arch BuildKit injects on each buildx leg: the arm64
+# images shipped x86_64 natives. Scans EVERY Dockerfile under docker/ on '\'-joined logical lines with
+# comment lines dropped. Every target-platform RUN that fetches or trims natives must carry, IN THAT RUN,
+# the uname case (with an exiting '*)' arm), the TARGETARCH cross-check and the od ELF comparison, each
+# failing with 'exit 1'. This is a marker check: it proves the checks are present, not that they run.
+NATIVE_CHECK_AWK='
+  function fail(msg) { print "  stage " stage ": " msg }
+  function strip_funcs(s,    out, rest, i, n, c, depth) {
+    out = ""
+    while (match(s, /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[(][)][[:space:]]*[{]/)) {
+      out = out substr(s, 1, RSTART - 1); rest = substr(s, RSTART + RLENGTH); depth = 1; n = length(rest)
+      for (i = 1; i <= n && depth > 0; i++) { c = substr(rest, i, 1); if (c == "{") depth++; else if (c == "}") depth-- }
+      s = substr(rest, i)
+    }
+    return out s
+  }
+  function exits_before_fi(s,    t) {
+    t = substr(s, RSTART + RLENGTH)
+    if (match(t, /[;[:space:]]fi([;[:space:]]|$)/)) t = substr(t, 1, RSTART)
+    return t ~ /exit 1([^0-9]|$)/
+  }
+  function check_run(s,    cb, e, outside, arms, n, i, wild) {
+    s = strip_funcs(s)
+    gsub("(echo|printf)[[:space:]]+" sq "[^" sq "]*" sq, "", s)
+    if (!match(s, /case "[$][(]uname -m[)]" in/)) {
+      fail("no arch taken from case \"$(uname -m)\" in")
+    } else {
+      cb = substr(s, RSTART + RLENGTH); e = index(cb, "esac")
+      outside = substr(s, 1, RSTART - 1) (e ? substr(cb, e + 4) : "")
+      cb = e ? substr(cb, 1, e - 1) : cb
+      n = split(cb, arms, ";;"); wild = 0
+      for (i = 1; i <= n; i++) if (arms[i] ~ /^[[:space:]]*[*][)]/) wild = (arms[i] ~ /exit 1([^0-9]|$)/) ? 1 : -1
+      if (wild < 1) fail("the uname case has no *) arm that exits 1")
+      if (outside ~ /(^|[^[:alnum:]_])(STAGE_ARCH|ELF_MACHINE)=/) fail("STAGE_ARCH or ELF_MACHINE is reassigned outside the uname case")
+    }
+    if (!match(s, /if \[ -n "[$][{]TARGETARCH:-[}]" \] && \[ "[$]TARGETARCH" != "[$]STAGE_ARCH" \]; then/) || !exits_before_fi(s))
+      fail("no if [ -n \"${TARGETARCH:-}\" ] && [ \"$TARGETARCH\" != \"$STAGE_ARCH\" ]; then ... exit 1")
+    if (s !~ /(;|do)[[:space:]]+ACTUAL="[$][(]od -An -tu2 -j18 -N2 "[$]so"[)]";/)
+      fail("no ACTUAL=\"$(od -An -tu2 -j18 -N2 \"$so\")\" read of each .so")
+    if (!match(s, /if \[ "[$][{]ACTUAL##[*] [}]" != "[$]ELF_MACHINE" \]; then/) || !exits_before_fi(s))
+      fail("no if [ \"${ACTUAL##* }\" != \"$ELF_MACHINE\" ]; then ... exit 1")
+  }
+  function end_stage() {
+    if (stage != "" && !buildplatform && !natives && stage ~ /^(download|copy|tcnative|jarprep)$/ && !((file ":" stage) in exempt))
+      fail("is a native-stage name but fetches or trims no natives with the arch-check markers")
+  }
+  BEGIN { n = split(exempt_list, x, " "); for (i = 1; i <= n; i++) exempt[x[i]] = 1 }
+  /^[[:space:]]*#/ { next }
+  toupper($1) == "FROM" { end_stage(); stage = tolower($NF); buildplatform = ($0 ~ /--platform=[$][{]?BUILDPLATFORM/); natives = 0; next }
+  buildplatform || toupper($1) != "RUN" { next }
+  /mockserver-jarprep[.]sh/ { natives = 1; next }
+  /netty-tcnative|zip( -q)? -d / { natives = 1; check_run($0) }
+  END { end_stage() }'
+# docker/aot ships no tcnative (JDK TLS), so its download/copy stages legitimately carry no markers.
+NATIVE_FREE_STAGES="docker/aot/Dockerfile:download docker/aot/Dockerfile:copy"
+all_dockerfiles="$(find "$REPO_ROOT/docker" -type f -name 'Dockerfile*' | LC_ALL=C sort)"
+if [ -z "$all_dockerfiles" ]; then
+  echo "FAIL: found no Dockerfile under docker/ — the platform-ARG check scanned nothing"
+  errors=$((errors + 1))
+fi
+while IFS= read -r filepath; do
+  [ -n "$filepath" ] || continue
+  df="${filepath#"$REPO_ROOT"/}"
+  code="$(logical_lines "$filepath" | awk '!/^[[:space:]]*#/ { print NR ": " $0 }')"
+  defaulted="$(grep -iE '^[0-9]+: *(ARG|ENV)[[:space:]](.*[[:space:]])?(TARGET|BUILD)(ARCH|OS|PLATFORM|VARIANT)[=[:space:]]' <<<"$code" || true)"
+  if [ -n "$defaulted" ]; then
+    echo "FAIL: $df gives a BuildKit platform ARG a default (or sets it with ENV), which overrides the per-platform value — declare it bare:"
+    echo "$defaulted" | cut -c1-200
+    errors=$((errors + 1))
+  fi
+  fallback="$(grep -E '[$][{](TARGET|BUILD)(ARCH|OS|PLATFORM|VARIANT):?[-=]([^$}]|[$][^(])' <<<"$code" || true)"
+  if [ -n "$fallback" ]; then
+    echo "FAIL: $df falls back to a fixed or variable arch/OS, which pins every buildx leg to it — fall back to \$(uname -m) or \$(go env ...) instead:"
+    echo "$fallback" | cut -c1-200
+    errors=$((errors + 1))
+  fi
+  unchecked="$(logical_lines "$filepath" | awk -v sq="'" -v file="$df" -v exempt_list="$NATIVE_FREE_STAGES" "$NATIVE_CHECK_AWK")"
+  if [ -n "$unchecked" ]; then
+    echo "FAIL: $df fetches or trims native .so files without the arch-check markers in the same RUN:"
+    echo "$unchecked"
+    errors=$((errors + 1))
+  fi
+done <<<"$all_dockerfiles"
+
+# The shared jar-prep script (docker/jarprep/, when present) trims natives outside any Dockerfile, so a
+# stage that calls it is only as safe as the script: it must carry the same three markers.
+JARPREP_SCRIPT="$REPO_ROOT/docker/jarprep/mockserver-jarprep.sh"
+if [ -f "$JARPREP_SCRIPT" ]; then
+  jarprep_code="$(grep -v '^[[:space:]]*#' "$JARPREP_SCRIPT" || true)"
+  for marker in 'case "$(uname -m)" in' '!= "$STAGE_ARCH" ]' 'od -An -tu2 -j18 -N2' '!= "$ELF_MACHINE" ]'; do
+    if ! grep -qF -- "$marker" <<<"$jarprep_code"; then
+      echo "FAIL: docker/jarprep/mockserver-jarprep.sh is missing the arch-check marker: $marker"
+      errors=$((errors + 1))
+    fi
+  done
+fi
 
 if [ $errors -gt 0 ]; then
   echo ""

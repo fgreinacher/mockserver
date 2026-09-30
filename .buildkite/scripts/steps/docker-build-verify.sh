@@ -19,9 +19,9 @@
 #
 # WHAT IT ASSERTS (fails closed — non-zero exit — on any):
 #   * the two-jar tcnative stamp derive check passes (delegated);
-#   * the runtime image contains the arch-correct tcnative .so under /usr/lib/
-#     (a wrong-arch .so — the classic-builder TARGETARCH=amd64 trap on arm64 —
-#     is a failure, not a pass);
+#   * the runtime image contains the arch-correct tcnative .so under /usr/lib/,
+#     named for this host's arch AND carrying the matching ELF e_machine (a
+#     wrong-arch .so is a failure, not a pass);
 #   * the native TLS provider actually LOADS in the image's own JVM
 #     (OpenSsl.isAvailable() == true — proving the image reproduces source=download's
 #     real native-TLS behaviour. NOTE the assembly jar BUNDLES the per-platform
@@ -30,6 +30,8 @@
 #     stamps are caught upstream by verify-tcnative-stamp.sh and the Dockerfile's own
 #     empty-check, and assert_so_present below separately asserts the arch-correct
 #     /usr/lib .so exists);
+#   * the native epoll transport loads (Epoll.isAvailable) — the jarprep trim keeps
+#     only this arch's natives, so a wrong-arch trim degrades epoll to NIO silently;
 #   * native TLS STILL loads under `docker run --read-only` (no --tmpfs /tmp) — the
 #     one check that actually exercises the /usr/lib .so's purpose: with a read-only
 #     /tmp Netty cannot extract the jar-bundled native, so BoringSSL survives only
@@ -41,12 +43,11 @@
 #     — the guard that the jlink runtime kept jdk.management (com.sun.management.ThreadMXBean).
 #
 # ARCH TRAP
-#   BuildKit auto-injects TARGETARCH, but the classic builder does NOT and the
-#   Dockerfiles default `ARG TARGETARCH=amd64`. On an arm64 host that silently
-#   fetches the x86_64 .so, which then fails to load. We DETECT the host arch and
-#   pass --build-arg TARGETARCH explicitly as a guard. (The images now need BuildKit
-#   anyway: the healthcheck stage's `FROM --platform=$BUILDPLATFORM` does not parse
-#   under the classic builder.)
+#   The image is built WITHOUT --build-arg TARGETARCH, exactly as the release and
+#   snapshot pushes build it, so the arch comes from BuildKit's own injection. A
+#   stage-level default (`ARG TARGETARCH=amd64`) overrides that injection — it is
+#   how the arm64 images shipped x86_64 natives — and passing the arg here would hide
+#   it. We DETECT the host arch only to know which .so and ELF machine to expect.
 #
 # CA STAGING
 #   docker/ensure-ca-bundle.sh stages ca-bundle.pem into the build context (the
@@ -91,10 +92,10 @@ IN_IMAGE_JAVA="/usr/lib/jvm/temurin25-trimmed/bin/java"
 # HealthCheck invocation (org.mockserver.cli.HealthCheck lives in the own-classes jar).
 IN_IMAGE_JAR="/mockserver.jar:/mockserver-deps.jar"
 
-# ── Detect host arch → docker TARGETARCH + the .so the runtime must contain ─────
+# ── Detect host arch → the .so and ELF machine the runtime must contain ─────────
 case "$(uname -m)" in
-  x86_64|amd64)  TARGETARCH=amd64; SO_PATH='usr/lib/libnetty_tcnative_linux_x86_64.so' ;;
-  arm64|aarch64) TARGETARCH=arm64; SO_PATH='usr/lib/libnetty_tcnative_linux_aarch_64.so' ;;
+  x86_64|amd64)  HOST_ARCH=amd64; ELF_MACHINE=62;  SO_PATH='usr/lib/libnetty_tcnative_linux_x86_64.so' ;;
+  arm64|aarch64) HOST_ARCH=arm64; ELF_MACHINE=183; SO_PATH='usr/lib/libnetty_tcnative_linux_aarch_64.so' ;;
   *) echo "+++ :bangbang: unsupported host arch '$(uname -m)' — cannot map to a tcnative .so, failing closed" >&2; exit 1 ;;
 esac
 SO_PATH="${DOCKER_VERIFY_SO_OVERRIDE:-$SO_PATH}"
@@ -215,6 +216,18 @@ assert_so_present() {
     fail "arch-correct tcnative .so missing from image — a wrong-arch or absent native would break TLS, failing closed"
   fi
   echo "    :white_check_mark: found $found"
+  # The file NAME says nothing about its contents, so read the ELF e_machine (62 x86-64, 183 AArch64).
+  local so_dir actual
+  so_dir="$(mktemp -d)"
+  CLEANUP+=( "dir:$so_dir" )
+  cid="$(docker create "$IMAGE_TAG")" || fail "docker create '$IMAGE_TAG' failed"
+  CLEANUP+=( "container:$cid" )
+  docker cp -L "$cid:/$SO_PATH" "$so_dir/native.so" >/dev/null || fail "could not copy /$SO_PATH out of the image"
+  docker rm -f "$cid" >/dev/null 2>&1 || true
+  actual="$(od -An -tu2 -j18 -N2 "$so_dir/native.so" | tr -d '[:space:]')"
+  [ "$actual" = "$ELF_MACHINE" ] \
+    || fail "/$SO_PATH has ELF machine '${actual:-unreadable}', expected $ELF_MACHINE for $HOST_ARCH — wrong-arch native, failing closed"
+  echo "    :white_check_mark: ELF machine $actual matches $HOST_ARCH"
 }
 
 # ── Compile the OpenSsl.isAvailable probe once, into a throwaway dir ─────────────
@@ -243,6 +256,15 @@ public class TlsProviderProbe {
             System.exit(3);
         }
         System.out.println("PROBE: OpenSsl.versionString=" + k.getMethod("versionString").invoke(null));
+        if ("true".equals(System.getenv("PROBE_EPOLL"))) {
+            Class<?> e = Class.forName("io.netty.channel.epoll.Epoll");
+            boolean epoll = (Boolean) e.getMethod("isAvailable").invoke(null);
+            System.out.println("PROBE: Epoll.isAvailable=" + epoll);
+            if (!epoll) {
+                System.out.println("PROBE: Epoll.unavailabilityCause=" + e.getMethod("unavailabilityCause").invoke(null));
+                System.exit(4);
+            }
+        }
     }
 }
 JAVA
@@ -278,10 +300,10 @@ run_provider_probe() {
 # by assert_native_provider_readonly below, not here (with a writable /tmp Netty
 # just extracts the native from the jar and never touches /usr/lib).
 assert_native_provider() {
-  echo "--- :lock: asserting the native TLS provider loads in the image JVM (OpenSsl.isAvailable)"
-  run_provider_probe \
-    || fail "native TLS provider did not load (OpenSsl.isAvailable=false) — the .so is missing, wrong-arch, or a version mismatch, failing closed"
-  echo "    :white_check_mark: native TLS provider is available in the image JVM"
+  echo "--- :lock: asserting the native TLS provider and epoll transport load in the image JVM (OpenSsl.isAvailable, Epoll.isAvailable)"
+  run_provider_probe -e PROBE_EPOLL=true \
+    || fail "native TLS provider or epoll transport did not load — a native is missing, wrong-arch, or a version mismatch, failing closed"
+  echo "    :white_check_mark: native TLS provider and epoll transport are available in the image JVM"
 }
 
 # ── Assert native TLS survives a READ-ONLY rootfs — the /usr/lib copy's whole job ─
@@ -389,10 +411,9 @@ else
     CLEANUP+=( "file:$DOCKER_CONTEXT/ca-bundle.pem" )
   fi
 
-  echo "--- :docker: building source=copy image (TARGETARCH=$TARGETARCH) → $IMAGE_TAG"
+  echo "--- :docker: building source=copy image (host arch $HOST_ARCH, no TARGETARCH build-arg) → $IMAGE_TAG"
   docker build --no-cache \
     --build-arg source=copy \
-    --build-arg "TARGETARCH=$TARGETARCH" \
     -t "$IMAGE_TAG" \
     "$DOCKER_CONTEXT" \
     || fail "docker build failed"
