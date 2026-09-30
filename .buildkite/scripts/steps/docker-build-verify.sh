@@ -44,8 +44,9 @@
 #   BuildKit auto-injects TARGETARCH, but the classic builder does NOT and the
 #   Dockerfiles default `ARG TARGETARCH=amd64`. On an arm64 host that silently
 #   fetches the x86_64 .so, which then fails to load. We DETECT the host arch and
-#   pass --build-arg TARGETARCH explicitly so the build is correct under either
-#   builder.
+#   pass --build-arg TARGETARCH explicitly as a guard. (The images now need BuildKit
+#   anyway: the healthcheck stage's `FROM --platform=$BUILDPLATFORM` does not parse
+#   under the classic builder.)
 #
 # CA STAGING
 #   docker/ensure-ca-bundle.sh stages ca-bundle.pem into the build context (the

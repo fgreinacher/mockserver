@@ -88,15 +88,22 @@ for df in "${DOCKERFILES[@]}"; do
   fi
 done
 
-# Every image compiles the probe from a digest-pinned golang image (hard check). They should all
-# pin the SAME one so scanners see one Go stdlib version; Dependabot's healthcheck-golang group
-# bumps them in one PR, but a partial bump is only warned about so it cannot wedge that PR red.
+# Every image compiles the probe from a digest-pinned golang image (hard check) on the BUILD
+# platform, cross-compiling to TARGETARCH: Go crashes under QEMU, so the stage must never run as the
+# emulated leg of a multi-arch build. A defaulted 'ARG TARGETARCH=…' would pin one arch, so require
+# the bare form. They should all pin the SAME image so scanners see one Go stdlib version;
+# Dependabot's healthcheck-golang group bumps them in one PR, but a partial bump is only warned about.
 golang_froms=""
 for df in "${DOCKERFILES[@]}"; do
-  pinned="$(grep -E '^FROM golang:[^ ]+@sha256:[0-9a-f]{64} AS healthcheck$' "$REPO_ROOT/$df" || true)"
+  pinned="$(grep -E '^FROM --platform=\$BUILDPLATFORM golang:[^ ]+@sha256:[0-9a-f]{64} AS healthcheck$' "$REPO_ROOT/$df" || true)"
   pinned_count="$(grep -c . <<<"$pinned" || true)"
   if [ "$pinned_count" -ne 1 ]; then
-    echo "FAIL: $df must have exactly one digest-pinned 'FROM golang:<tag>@sha256:<digest> AS healthcheck' (found $pinned_count)"
+    echo "FAIL: $df must have exactly one digest-pinned 'FROM --platform=\$BUILDPLATFORM golang:<tag>@sha256:<digest> AS healthcheck' (found $pinned_count)"
+    errors=$((errors + 1))
+  fi
+  stage="$(awk '/ AS healthcheck$/ {in_stage=1; next} /^FROM / {in_stage=0} in_stage' "$REPO_ROOT/$df")"
+  if ! grep -qx 'ARG TARGETARCH' <<<"$stage" || ! grep -q 'GOARCH="\$GOARCH"' <<<"$stage"; then
+    echo "FAIL: $df healthcheck stage must declare a bare 'ARG TARGETARCH' (no default) and build with GOARCH=\"\$GOARCH\""
     errors=$((errors + 1))
   fi
   golang_froms="${golang_froms}${pinned}"$'\n'

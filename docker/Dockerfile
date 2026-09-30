@@ -267,14 +267,27 @@ RUN /runtime/bin/java -XX:+UseZGC -XX:ArchiveClassesAtExit=/mockserver.jsa \
 # HEALTHCHECK probe — a ~2 MB static binary, NOT a second JVM: a probe JVM started inside the
 # container's memory cgroup every 10s pushed a 512 MiB container over its limit under load. Source:
 # docker/healthcheck/mockserver-healthcheck.go (copied byte-identically into each image context).
-# Built natively for the target platform (no cross-compile), so it is right under either builder.
-FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS healthcheck
+# Cross-compiled on the BUILD platform: the Go toolchain crashes under QEMU emulation, so it must
+# never run as the non-native leg of a multi-arch build. Needs BuildKit (the classic builder has no
+# BUILDPLATFORM). The ELF e_machine check fails the build on a wrong-arch binary.
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS healthcheck
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY healthcheck/ ./
 RUN CGO_ENABLED=0 GOTOOLCHAIN=local go vet mockserver-healthcheck.go mockserver-healthcheck_test.go \
  && CGO_ENABLED=0 GOTOOLCHAIN=local go test mockserver-healthcheck.go mockserver-healthcheck_test.go
-RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
-      -o /mockserver-healthcheck mockserver-healthcheck.go
+RUN GOOS="${TARGETOS:-$(go env GOOS)}" \
+ && GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
+ && case "$GOARCH" in amd64) ELF_MACHINE=62 ;; arm64) ELF_MACHINE=183 ;; \
+      *) echo "ERROR: no ELF machine check for GOARCH=$GOARCH" >&2; exit 1 ;; esac \
+ && CGO_ENABLED=0 GOTOOLCHAIN=local GOOS="$GOOS" GOARCH="$GOARCH" \
+      go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+      -o /mockserver-healthcheck mockserver-healthcheck.go \
+ && ACTUAL="$(od -An -tu2 -j18 -N2 /mockserver-healthcheck)" \
+ && if [ "${ACTUAL##* }" != "$ELF_MACHINE" ]; then \
+      echo "ERROR: /mockserver-healthcheck ELF machine ${ACTUAL##* }, expected $ELF_MACHINE for $GOARCH" >&2; exit 1; \
+    fi
 
 # runtime image — distroless base + trimmed JDK 26 runtime + jar + AppCDS archive + tcnative .so
 # (digest-pinned per repo convention; update the digest together with the Temurin 25 build, since
