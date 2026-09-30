@@ -429,9 +429,9 @@ function smoke_test_variant_nonblocking() {
   return 0
 }
 
-# Assert that the Docker HEALTHCHECK defined in the Dockerfile transitions the
-# container to "healthy" within a reasonable period. Every Dockerfile ships
-# HEALTHCHECK ... org.mockserver.cli.HealthCheck but no test has exercised it.
+# Assert that the Docker HEALTHCHECK defined in the Dockerfile (the bundled
+# /mockserver-healthcheck probe) transitions the container to "healthy" within a
+# reasonable period.
 function test_healthcheck() {
   local tag="mockserver/mockserver:integration_testing"
   local container="healthcheck-test"
@@ -790,6 +790,14 @@ function run_all_tests() {
       # HEALTHCHECK and non-root user assertions on the default image.
       test_healthcheck || true
       test_nonroot_user || true
+      # The shipped image must survive sustained load at the documented 512 MiB floor. Non-blocking
+      # until it has passed on real amd64 default-queue agents (docs/plans/performance-programme.md
+      # item 39); MEMORY_FLOOR_BLOCKING=true makes a failure red.
+      if [[ "${MEMORY_FLOOR_BLOCKING:-false}" == "true" ]]; then
+        test "docker_memory_floor_512m"
+      else
+        test "docker_memory_floor_512m" non_blocking
+      fi
       if [[ "${SKIP_VARIANT_TESTS:-}" != "true" ]]; then
         smoke_test_variant "root" || true
         smoke_test_variant "snapshot" || true

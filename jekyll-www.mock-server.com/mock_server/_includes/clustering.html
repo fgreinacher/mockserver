@@ -12,7 +12,7 @@
 
 <p>The production-grade approach uses an embedded <a target="_blank" href="https://infinispan.org/" rel="noopener noreferrer">Infinispan</a> state backend that replicates state synchronously across all nodes over JGroups. Expectations, scenario state, CRUD entity stores, and chaos profiles are visible on every node immediately after any write, and per-expectation <span class="inline_code">Times</span> match limits are enforced cluster-wide. No shared filesystem is required.</p>
 
-<p>Clustering requires the <span class="inline_code">mockserver-state-infinispan</span> module on the classpath. The pre-built <span class="inline_code">-clustered</span> Docker image (<span class="inline_code">mockserver/mockserver:clustered-{{ site.mockserver_version }}</span>) bundles this module and its JGroups dependencies; the default image does not. It is enabled with three properties:</p>
+<p>Clustering requires the <span class="inline_code">mockserver-state-infinispan</span> module on the classpath. The pre-built <span class="inline_code">-clustered</span> Docker image (<span class="inline_code">mockserver/mockserver:clustered-{{ site.mockserver_version }}</span>) bundles this module and its JGroups dependencies; the default image does not. Give a clustered node <strong>at least 768&nbsp;MiB</strong> of container memory (1&nbsp;GiB is a comfortable starting point): Infinispan and JGroups need more memory outside the heap than a single node, and at the 512&nbsp;MiB that suits the other images a clustered node under load runs out of memory. It is enabled with three properties:</p>
 
 <table class="table table-bordered table-striped">
     <thead>

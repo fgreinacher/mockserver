@@ -160,7 +160,14 @@ WARMUP_DURATION="${PERF_PERCORE_WARMUP_DURATION:-8s}"
 
 SERVER_MEMORY="${PERF_PERCORE_MEMORY:-1g}"
 # Event-log retention parameters for the per-rung residence arithmetic. The default mirrors
-# the product's min(heapKB/8, 250000) on the images' 60% heap of SERVER_MEMORY.
+# the product's min(heapKB/8, 250000) on the image's MaxRAMPercentage heap of SERVER_MEMORY,
+# read from the image's ENTRYPOINT; 45 (the GraalJS image this rig runs) if it cannot be read.
+percore_image_heap_pct() {
+  local pct
+  pct="$(docker image inspect -f '{{json .Config.Entrypoint}}' "$MOCKSERVER_IMAGE" 2>/dev/null \
+    | grep -oE 'MaxRAMPercentage=[0-9]+' | head -1 | cut -d= -f2 || true)"
+  echo "${pct:-45}"
+}
 percore_default_max_log_entries() {
   local mem="$1" bytes
   case "$mem" in
@@ -168,7 +175,7 @@ percore_default_max_log_entries() {
     *[mM]) bytes=$(( ${mem%[mM]} * 1024 * 1024 )) ;;
     *) echo 250000; return ;;
   esac
-  local entries=$(( (bytes * 60 / 100 / 1024 - 20480) / 8 ))
+  local entries=$(( (bytes * $(percore_image_heap_pct) / 100 / 1024 - 20480) / 8 ))
   [ "$entries" -gt 250000 ] && entries=250000
   [ "$entries" -lt 1000 ] && entries=1000
   echo "$entries"

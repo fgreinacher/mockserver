@@ -69,11 +69,12 @@ app:
   serviceAccountName: default
   runAsUser: 65534
   # Extra JVM flags delivered via JAVA_TOOL_OPTIONS. The image already caps the
-  # heap at 60% of the container memory limit (-XX:MaxRAMPercentage=60.0 in the
-  # ENTRYPOINT), so a memory limit alone is often sufficient. Budget ~1.5x the
-  # heap you want (the process needs that much RSS). To change the cap,
+  # heap at 50% of the container memory limit (-XX:MaxRAMPercentage=50.0 in the
+  # ENTRYPOINT; 45% in -graaljs), so a memory limit alone is often sufficient (512Mi minimum; 768Mi for
+  # a clustered node with the Infinispan backend).
+  # To change the cap,
   # set an explicit -Xmx — that disables MaxRAMPercentage:
-  #   jvmOptions: "-Xmx512m"
+  #   jvmOptions: "-XX:+UseZGC -Xmx512m"   # keep the collector: jvmOptions replaces the image default
   # Note: setting a different -XX:MaxRAMPercentage via jvmOptions has NO effect:
   # JAVA_TOOL_OPTIONS is prepended before the ENTRYPOINT args, so the ENTRYPOINT
   # flag is applied last and wins. Use -Xmx to override the heap cap instead.
@@ -283,16 +284,16 @@ With `create=true` (default) the Secret is created from the inline PEM values (`
 
 ### JVM Heap Tuning (`app.jvmOptions`)
 
-The MockServer Docker image starts the JVM with `-XX:MaxRAMPercentage=60.0` in its `ENTRYPOINT`, which caps the heap at 60% of the container's `resources.limits.memory`. MockServer's in-memory request/expectation ring buffers size off the heap, so setting a memory limit is strongly recommended. The cap is 60% (not higher) because the process needs roughly **1.5× its heap** in real memory — the heap plus metaspace, thread stacks, GC bookkeeping and Netty's pooled off-heap network buffers, none counted by `-Xmx`. A committed 1,536 MiB heap was measured at ~2,271 MiB RSS under load, so 75% could not fit a 2 GiB limit. **Budget `resources.limits.memory` at about 1.5× the heap you intend**, and expect exit code 137 with `OOMKilled: true` (no `OutOfMemoryError` — the kernel killed the process) if the limit is too tight; the fix is more memory or a smaller heap, never a bigger heap.
+The MockServer Docker image starts the JVM with `-XX:MaxRAMPercentage=50.0` in its `ENTRYPOINT` (`45.0` in the `-graaljs` image, whose GraalJS runtime needs more memory outside the heap), which caps the heap at that share of the container's `resources.limits.memory`. MockServer's in-memory request/expectation ring buffers size off the heap, so setting a memory limit is strongly recommended, and **512Mi is the smallest supported limit** (768Mi for a `-clustered` node with the Infinispan backend — see `clustering` in `values.yaml`). The cap is 50% (45% for `-graaljs`) because the process needs substantial memory outside the heap — metaspace, thread stacks, GC bookkeeping, Netty's pooled off-heap network buffers and kernel socket buffers, none counted by `-Xmx` — and most of it does not shrink with the heap. A committed 1,536 MiB heap was measured at ~2,271 MiB RSS under load, so 75% could not fit a 2 GiB limit; and ZGC (the image default) grows to its full heap under load and keeps it, in memory the kernel cannot reclaim, so 60% was OOM-killed at 512 MiB under load (see [docker.md → Heap Cap](docker.md#heap-cap)). **Budget `resources.limits.memory` at about 1.5× the heap you intend for heaps of a gigabyte or more, and at least 2× below that** — the non-heap memory is largely fixed (~150–175 MiB of JVM native memory plus kernel socket buffers per connection), so it is a bigger share of a small container; at the 512Mi floor the image's own 50% cap is what fits, and expect exit code 137 with `OOMKilled: true` (no `OutOfMemoryError` — the kernel killed the process) if the limit is too tight; the fix is more memory or a smaller heap, never a bigger heap.
 
-`app.jvmOptions` is delivered to the JVM via the `JAVA_TOOL_OPTIONS` environment variable (`deployment.yaml`). The JVM **prepends** `JAVA_TOOL_OPTIONS` flags before the command-line args, so the `ENTRYPOINT`'s `-XX:MaxRAMPercentage=60.0` is evaluated last. The primary use case is overriding the heap cap with an explicit `-Xmx`, which disables `MaxRAMPercentage` regardless of flag order:
+`app.jvmOptions` is delivered to the JVM via the `JAVA_TOOL_OPTIONS` environment variable (`deployment.yaml`). The JVM **prepends** `JAVA_TOOL_OPTIONS` flags before the command-line args, so the `ENTRYPOINT`'s `-XX:MaxRAMPercentage` is evaluated last. The primary use case is overriding the heap cap with an explicit `-Xmx`, which disables `MaxRAMPercentage` regardless of flag order:
 
 ```yaml
 app:
-  jvmOptions: "-Xmx512m"
+  jvmOptions: "-XX:+UseZGC -Xmx512m"
 resources:
   limits:
-    memory: 768Mi  # keep -Xmx + JVM overhead + OS inside the limit (~1.5x -Xmx)
+    memory: 1Gi  # keep -Xmx + JVM overhead + socket buffers inside the limit
 ```
 
 Setting a different `-XX:MaxRAMPercentage` via `jvmOptions` has no effect: because `JAVA_TOOL_OPTIONS` is prepended, the `ENTRYPOINT`'s flag appears last and wins. Use `-Xmx` to pin a specific heap size instead.

@@ -4,6 +4,11 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 
+/**
+ * Readiness probe: {@code PUT /mockserver/status} on localhost, exit 0 only on HTTP 200. Used by the
+ * image-build training runs. The images' Docker HEALTHCHECK runs a static binary instead
+ * (docker/healthcheck/mockserver-healthcheck.go) that mirrors this class — change both together.
+ */
 public class HealthCheck {
 
     private static final int TIMEOUT_MILLIS = 3000;

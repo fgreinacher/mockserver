@@ -189,7 +189,7 @@ cov_validate_env || exit 1
 CLU_IMAGE="${PERF_CLUSTERED_IMAGE:-mockserver/mockserver:mockserver-snapshot-clustered}"
 SAMPLE_INTERVAL="${PERF_SAMPLE_INTERVAL:-5}"
 # Hard memory bound for the SUT (item: measure growth against a realistic heap).
-# Unbounded on a 32 GB box, MaxRAMPercentage=60 yields a ~19 GB heap that barely
+# Unbounded on a 32 GB box, the GraalJS image's MaxRAMPercentage=45 yields a ~14 GB heap that barely
 # GCs, so a slow leak is invisible and the "live set" is unobservable. A bounded
 # heap that actually cycles is what the documented central-deployment guidance
 # runs, and is what makes the saw-tooth floor (see the live-set ratio below) mean
@@ -199,8 +199,8 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # --- event-log body-byte budget: the OOM guard that keeps the run alive ---------
 # WHY THIS EXISTS (build #249 died here). MockServer records every request AND its
 # response in a COUNT-bounded event-log ring of maxLogEntries entries, holding the
-# FULL body of each. On the 2 GB SUT the heap is MaxRAMPercentage=60% ~= 1.2 GB, so
-# maxLogEntries = min(heapKB/8, 250000) ~= 155,000. An entry lives for the ring's
+# FULL body of each. On the 2 GB GraalJS SUT the heap is MaxRAMPercentage=45% ~= 0.9 GiB, so
+# maxLogEntries = min(heapKB/8, 250000) ~= 115,500. An entry lives for the ring's
 # residence = maxLogEntries / total_ACHIEVED_insertion_rps, and — this is the trap —
 # residence LENGTHENS without bound as achieved throughput FALLS. The MB-scale
 # regression arms (large_1mb/large_10mb/large_file, k6 item 15d) then retain, per arm,
@@ -210,7 +210,7 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 #     large_1mb    0.5/s     1 MB    -> 0.5 x 172 x  1 MB  ~=  86 MB
 #     large_file   0.5/s    ~1 MB    -> 0.5 x 172 x  1 MB  ~=  86 MB   (its ~1 MB RESPONSE)
 #     large(4KB)   200/s     4 KB    -> 200 x 172 x  4 KB  ~= 137 MB
-# ~480 MB of large bodies looks safe under 1.2 GB — but ONLY at residence 172 s. When
+# ~480 MB of large bodies looks safe under 0.9 GiB — but ONLY at residence 172 s. When
 # the SUT contends (the pre-fix JavaScript contagion, or the EXTRA body throughput the
 # 2026-09-17 dispatch-pool fixes eec183f7e/7fbae1350 now ADMIT), total achieved rps
 # collapses, residence 2x/4x/10x, and every figure above scales with it — there is no
@@ -223,17 +223,18 @@ SERVER_MEMORY="${PERF_SERVER_MEMORY:-2g}"
 # body-byte budget, evicting oldest-first until total logged body bytes fit, in
 # addition to the count bound. Retention is then capped at the budget REGARDLESS of
 # residence, so no rate x residence product can run away however far throughput falls.
-# 256 MiB is the documented starting point for a 2 GB heap; actual live heap is a small
-# multiple (headers/metadata) ~= 0.5-1 GB, under the 1.2 GB heap.
+# 256 MiB is the documented starting point for a 2 GB container. At ERROR the whole log (retained
+# entries plus ring backlog) measures at most ~1.7x its budget (docs/code/memory-management.md),
+# ~430 MiB, leaving more than half of the 0.9 GiB heap for everything else.
 # WHY NOT SHRINK maxLogEntries INSTEAD: growth.js runs on THIS SAME SUT and must fill
-# the DEFAULT ~155k ring to reproduce the issue #2329 O(n)-eviction slope; a smaller
+# the DEFAULT ~115.5k ring to reproduce the issue #2329 O(n)-eviction slope; a smaller
 # ring would never fill and would hide the bug. The byte budget does NOT corrupt growth
 # because growth loads only the tiny /simple body (~hundreds of bytes) — its total
-# retained bytes across ~155k entries stay in the tens of MB, far below 256 MiB, so the
+# retained bytes across ~115.5k entries stay in the tens of MB, far below 256 MiB, so the
 # byte budget never fires for growth and its count-bounded fill is untouched. Applied to
 # EVERY SUT that runs regression.js with the MB arms: the main SUT here and the clustered
 # A/B nodes (start_clu) — the clustered image runs the same large_1mb/large_10mb arms on
-# a 1.2 GB heap and was at the identical risk.
+# a 1.0 GiB heap and was at the identical risk.
 # Set-ness must be captured BEFORE the default below overwrites it: the CONFIG_PROFILE
 # trigger needs to know whether the caller set it, not what it resolved to.
 PERF_MAX_EVENT_LOG_BYTES_SET="${PERF_MAX_EVENT_LOG_BYTES+set}"
@@ -309,7 +310,7 @@ SAMPLE_LOG="$OUT_DIR/samples.csv"
 #     ceiling JFR window            the sweep rungs from the knee to the top, cut to /diag/sut/ceiling.jfr
 PERF_JVM_DIAGNOSTICS="${PERF_JVM_DIAGNOSTICS:-standard}"   # standard = tier 1 only; deep = tier 1 + tier 2
 PERF_DIAG_SAMPLE_INTERVAL="${PERF_DIAG_SAMPLE_INTERVAL:-2}" # dense enough to see the cliff APPROACH, not just its aftermath
-# Heap dumps are large (a 1.2 GiB heap dumps ~1 GiB); upload only when gzipped size is within this
+# Heap dumps are large (a dump can approach the 0.9 GiB heap); upload only when gzipped size is within this
 # cap so a diagnostics run never tries to push a multi-GB artifact. The raw dump always stays on the
 # volume/artifact-of-last-resort logic below decides upload.
 PERF_HEAPDUMP_MAX_UPLOAD_MB="${PERF_HEAPDUMP_MAX_UPLOAD_MB:-512}"
@@ -359,10 +360,10 @@ tier1_jvm_opts() {
 # INVESTIGATION run wants: the per-GC-event trajectory to a file (the fine-grained approach-to-the-cliff
 # evidence), NMT, and JFR. JFR repository on the mounted volume so the chunk files survive a hard
 # ExitOnOutOfMemoryError exit. No filename/dumponexit: the SUT never exits gracefully (SIGKILL or
-# os::_exit), and the image HEALTHCHECK JVM inherits JAVA_TOOL_OPTIONS, so a named dump file would
-# only ever hold a sub-second health-check recording. dump_load_window_jfr() captures the SUT's.
-# The GC log is per-PID (%p) for the same reason: a shared name lets every health-check JVM rotate
-# the SUT's log away. The SUT is pid 1, so its log is gc-1.log.
+# os::_exit), and on images older than the static /mockserver-healthcheck probe the HEALTHCHECK JVM
+# inherits JAVA_TOOL_OPTIONS, so a named dump file could hold a sub-second health-check recording.
+# dump_load_window_jfr() captures the SUT's. The GC log is per-PID (%p) for the same reason (an older
+# image's health-check JVM would rotate a shared log away). The SUT is pid 1, so its log is gc-1.log.
 tier2_jvm_opts() {
   local sub="$1"
   # -XX:+UnlockDiagnosticVMOptions MUST precede PrintNMTStatistics (it is a diagnostic flag; the JVM
@@ -438,7 +439,7 @@ PERF_INFO_ARM="${PERF_INFO_ARM:-true}"
 # Upload the surviving JVM-internals diagnostics as Buildkite artifacts. Small evidence (GC log,
 # the dense resource-trajectory CSV, the followed server logs, docker-inspect .State, any tier-2 NMT
 # print + JFR chunks) always goes up as one tarball. Heap dumps are handled separately and SIZE-CAPPED
-# (a 1.2 GiB heap dumps ~1 GiB): each is gzipped and uploaded only if within PERF_HEAPDUMP_MAX_UPLOAD_MB,
+# (a dump can approach the 0.9 GiB heap): each is gzipped and uploaded only if within PERF_HEAPDUMP_MAX_UPLOAD_MB,
 # otherwise it is left named in the log with its size rather than pushing a multi-GB artifact. Safe to
 # call more than once (guarded by a marker file). No-op when buildkite-agent is absent (local runs keep
 # the evidence in $DIAG_DIR on disk).
@@ -516,7 +517,7 @@ dump_load_window_jfr() {
 }
 
 # GNU tar exits 1 when a file changed while it was being read — the live SUT's gc.log and JFR chunk,
-# or a health-check JVM's short-lived JFR repository. The archive is still complete, so rc 1 is
+# or (on older images) a health-check JVM's short-lived JFR repository. The archive is still complete, so rc 1 is
 # accepted once the archive verifies; any other failure is reported, never swallowed.
 package_diag_bundle() { # out_path -> 0 when a verified archive was written
   local out="$1" rc=0 err excludes=(--exclude='*.hprof' --exclude='*.hprof.gz')
@@ -524,7 +525,7 @@ package_diag_bundle() { # out_path -> 0 when a verified archive was written
   # repository is the main source of mid-read changes. Without one the repository is the fallback.
   [ "$(jq -r '.jfr // empty' "$DIAG_DIR/load-window.json" 2>/dev/null)" = "sut/load.jfr" ] \
     && excludes+=(--exclude='./sut/jfr-repo')
-  # Per-PID GC logs other than pid 1 (the SUT) belong to health-check JVMs.
+  # Per-PID GC logs other than pid 1 (the SUT) belong to an older image's health-check JVMs.
   local f
   for f in "$DIAG_DIR"/*/gc-*.log*; do
     [ -e "$f" ] || continue
@@ -3097,8 +3098,8 @@ abort_if_sut_died
 # residence = maxLogEntries / total_ACHIEVED_rps (LONGER, without bound, as achieved
 # throughput falls). k6 drives ONLY the entry node (control, or cluster node A), so
 # ONLY that node's ring fills with request bodies — exactly like the main SUT, and it
-# gets the SAME PERF_CLUSTERED_MEMORY (2 GB default -> ~1.2 GB heap,
-# maxLogEntries ~= 155,000). The per-arm rate x residence x body figures
+# gets the SAME PERF_CLUSTERED_MEMORY (2 GB default -> 1.0 GiB heap,
+# maxLogEntries ~= 128,500). The per-arm rate x residence x body figures
 # (large_10mb@0.1rps -> ~172 MB, large_1mb@0.5rps -> ~86 MB,
 # large-4KB@200rps -> ~137 MB) hold ONLY at residence ~172 s; they run away as this node
 # contends. So the clustered nodes get the SAME maxEventLogSizeInBytes body-byte OOM
@@ -3230,7 +3231,7 @@ JGROUPS_XML
     # (match/forward/template/template_mustache/large/large_1mb/large_10mb) run
     # UNCHANGED — only env differs, the sanctioned parameterisation. start_clu also
     # carries the maxEventLogSizeInBytes body-byte OOM guard (below), for the same
-    # reason the main SUT does: these MB arms run here too, on a 1.2 GB clustered
+    # reason the main SUT does: these MB arms run here too, on a 1.0 GiB clustered
     # heap. The budget is identical on control and cluster, so it evicts symmetrically
     # and cannot bias the within-run clustered/control ratio item 13 measures.
     # The JGroups discovery string, and the guard that validates WHAT ACTUALLY GOES TO DNS.

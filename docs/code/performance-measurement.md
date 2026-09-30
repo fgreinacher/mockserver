@@ -801,9 +801,9 @@ flowchart LR
   cmp --> pub["perf-website-publish.sh\nhw_matrix in perf_figures.json\n+ perf-hw-matrix.json chart data"]
 ```
 
-**What each point is.** A fresh SUT on the snapshot image, pinned with `--cpuset-cpus` to C
+**What each point is.** A fresh SUT on the GraalJS snapshot image, pinned with `--cpuset-cpus` to C
 logical CPUs on C distinct physical cores, with `--memory` and `--memory-swap` both set to the
-point's limit and no `-Xmx`, so the image's `MaxRAMPercentage=60` sizes the heap and the
+point's limit and no `-Xmx`, so the GraalJS image's `MaxRAMPercentage=45` sizes the heap and the
 event-log bounds follow the heap exactly as in a user's container. Log level is `ERROR`, as in
 the rest of the rig. k6 takes one thread on each remaining physical core (never the SUT's
 hyperthread siblings), minus one reserved core; where sysfs topology is unreadable (a macOS
@@ -1088,18 +1088,16 @@ These non-obvious constraints apply when analysing MockServer's heap and saturat
 
 `jdk.ObjectCount` (`object-statistics`) and `jdk.OldObjectSample` (`memory-leaks-by-class`) emit nothing under ZGC and populate normally under G1 — verified on JDK 25 with the same program. Use `jcmd GC.class_histogram` instead; it works under both collectors.
 
-### `JAVA_TOOL_OPTIONS` also reaches the image health check
+### `JAVA_TOOL_OPTIONS` reached the image health check on older images
 
-The images' Docker `HEALTHCHECK` starts `java … org.mockserver.cli.HealthCheck` inside the SUT container
-every 10 seconds with the container's environment, so every diagnostic flag passed through
-`JAVA_TOOL_OPTIONS` applies to those short-lived JVMs too. A JFR `filename=` therefore holds a
-health-check JVM's sub-second recording, never the SUT's — the SUT is force-removed at teardown and
-never dumps on exit — which is why the deep run takes its recording with `jcmd JFR.dump` and sets no
-`filename`. The same applies to the GC log: with one shared file name, each health-check JVM rotates
-the SUT's live log aside at start-up, and once the five rotation slots are used it can overwrite it.
-The deep run therefore names the log per process (`gc-%p.log`); the SUT is pid 1, so its log is
-`gc-1.log`, and the health-check JVMs' logs are left out of the bundle. The health-check JVMs still pay
-NMT and JFR start-up cost inside the SUT's CPU allocation.
+Images built before the static `/mockserver-healthcheck` probe ran `java … org.mockserver.cli.HealthCheck`
+inside the SUT container every 10 seconds with the container's environment, so every diagnostic flag
+passed through `JAVA_TOOL_OPTIONS` applied to those short-lived JVMs too: a JFR `filename=` held a
+health-check JVM's sub-second recording, and with one shared GC-log name each health-check JVM rotated
+the SUT's live log aside. The deep run therefore takes its recording with `jcmd JFR.dump`, sets no
+`filename`, and names the GC log per process (`gc-%p.log`; the SUT is pid 1, so its log is `gc-1.log`).
+Current images run a static probe that ignores `JAVA_TOOL_OPTIONS`, so these precautions are now only
+needed when measuring an older image; they are harmless otherwise.
 
 ### `jcmd` attach needs an exact uid match
 

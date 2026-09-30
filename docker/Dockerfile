@@ -264,6 +264,18 @@ RUN /runtime/bin/java -XX:+UseZGC -XX:ArchiveClassesAtExit=/mockserver.jsa \
     kill -TERM "$SERVER_PID" && wait "$SERVER_PID" || true; \
     ls -l /mockserver.jsa
 
+# HEALTHCHECK probe — a ~2 MB static binary, NOT a second JVM: a probe JVM started inside the
+# container's memory cgroup every 10s pushed a 512 MiB container over its limit under load. Source:
+# docker/healthcheck/mockserver-healthcheck.go (copied byte-identically into each image context).
+# Built natively for the target platform (no cross-compile), so it is right under either builder.
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS healthcheck
+WORKDIR /src
+COPY healthcheck/ ./
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go vet mockserver-healthcheck.go mockserver-healthcheck_test.go \
+ && CGO_ENABLED=0 GOTOOLCHAIN=local go test mockserver-healthcheck.go mockserver-healthcheck_test.go
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+      -o /mockserver-healthcheck mockserver-healthcheck.go
+
 # runtime image — distroless base + trimmed JDK 26 runtime + jar + AppCDS archive + tcnative .so
 # (digest-pinned per repo convention; update the digest together with the Temurin 25 build, since
 # the baked AppCDS archive is specific to the JDK build it was trained with — same base+digest as
@@ -284,7 +296,7 @@ EXPOSE 1080
 
 # copy in trimmed runtime, jar, AppCDS archive, and (unlike docker/local) the netty-tcnative .so
 # NOTE: the /usr/lib/jvm/temurin25-trimmed path name is HISTORICAL and does NOT track the JDK
-# version - this image ships JDK 26. It is referenced by the ENTRYPOINT and HEALTHCHECK below
+# version - this image ships JDK 26. It is referenced by the ENTRYPOINT below
 # and by sibling Dockerfiles, so it is left as-is rather than churned; read the FROM line above
 # for the actual version.
 COPY --from=appcds-build /runtime /usr/lib/jvm/temurin25-trimmed
@@ -305,11 +317,11 @@ COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 # don't run MockServer as root
 USER nonroot
 
-# -XX:MaxRAMPercentage=60.0 caps the JVM heap at 60% of the container memory limit so the
-# in-memory request/expectation rings size off a bounded heap. A committed heap costs ~1.48x its
-# size in real RSS (Netty direct arenas, G1 metadata, thread stacks), so a 75% cap OOM-SIGKILLed a
-# 2 GiB container under load; 60% keeps peak RSS near ~88% of the limit. Only applies when the user
-# has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
+# -XX:MaxRAMPercentage=50.0 caps the JVM heap at half the container memory limit so the in-memory
+# request/expectation rings size off a bounded heap. The other half is not slack: under load ZGC
+# grows to its full heap in memory the kernel cannot reclaim, and native JVM memory and kernel
+# socket buffers do not shrink with the heap, so 60% was OOM-killed at the 512 MiB floor. Only
+# applies when the user has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
 # that disables MaxRAMPercentage. A different MaxRAMPercentage via JAVA_TOOL_OPTIONS does NOT take
 # effect: it is prepended before these args, so this entrypoint flag is applied last and wins.
 # -XX:SharedArchiveFile loads the baked AppCDS archive. -Xshare:auto (the JVM default) means a
@@ -324,11 +336,12 @@ USER nonroot
 # AppCDS archive above is trained under ZGC to match this default; a non-ZGC override starts without it. ZGC is generational on JDK 26 — no -XX:+ZGenerational (obsolete
 # post-JDK 23). See docs/code/startup-performance.md and the memory programme.
 ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"
-ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver.jar:/mockserver-deps.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=50.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver.jar:/mockserver-deps.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 
+COPY --from=healthcheck /mockserver-healthcheck /mockserver-healthcheck
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
-  CMD ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-cp", "/mockserver.jar:/mockserver-deps.jar", "org.mockserver.cli.HealthCheck"]
+  CMD ["/mockserver-healthcheck"]
 
 CMD []

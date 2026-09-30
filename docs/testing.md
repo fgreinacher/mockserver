@@ -382,12 +382,12 @@ There are 6 production Docker image variants. Only the main nonroot variant is t
 - Command-line argument passing (`-serverPort`)
 - Multi-container networking (bridge network between client and server)
 - HTTP/2 support (via `nghttp` in the forward-with-override test)
+- The image `HEALTHCHECK` reaching healthy (`docker_healthcheck`), and the shipped image surviving sustained load inside the documented 512 MiB floor (`docker_memory_floor_512m`)
 
 ### What Docker Features Are NOT Tested
 
 | Feature | Status |
 |---------|--------|
-| Health checks | No `HEALTHCHECK` instruction in any Dockerfile. `MOCKSERVER_LIVENESS_HTTP_GET_PATH` exists but is disabled by default. |
 | Graceful shutdown (signal handling) | No test verifies `docker stop` drains connections or persists state. |
 | Multi-arch (ARM64) | CI builds `linux/amd64,linux/arm64` but integration tests only run on native arch. |
 | JVM options (`JVM_OPTIONS` env var) | Supported by Helm chart but never tested via Docker Compose. |

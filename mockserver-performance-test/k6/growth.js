@@ -4,7 +4,7 @@
 // maxLogEntries — CPU/latency climb as the log fills, never recovering).
 //
 // Shape: a sustained `load` scenario on the match hot path runs for the whole
-// duration at a rate high enough to fill the DEFAULT ~155k log early; two
+// duration at a rate high enough to fill the DEFAULT ~115.5k log early; two
 // low-rate latency probes (window:first at the start, window:last at the end)
 // measure the latency slope. perf-test-run.sh samples the CPU/heap trajectory in
 // parallel; perf-test-compare.sh pairs them and flags a slope (end/start ratio)

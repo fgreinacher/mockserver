@@ -220,8 +220,8 @@ export const REGRESSION = {
   // MEMORY CEILING — retained-heap arithmetic, and why RATE ALONE WAS NOT ENOUGH.
   // MockServer records every request (and its response) in an in-memory event-log
   // ring of `maxLogEntries` entries, holding the FULL body of each. On the 2 GB CI
-  // SUT the heap is MaxRAMPercentage=60% ≈ 1.2 GB, so maxLogEntries =
-  // min(heapKB/8, 250000) ≈ 155,000. The ring is COUNT-bounded, so an entry lives for
+  // GraalJS SUT the heap is MaxRAMPercentage=45% ≈ 0.9 GiB, so maxLogEntries =
+  // min(heapKB/8, 250000) ≈ 115,500. The ring is COUNT-bounded, so an entry lives for
   // the last `maxLogEntries / total_ACHIEVED_rps` seconds (the residence), and the
   // steady-state bytes an arm retains at rate r with body B are r × residence × B.
   //   PER ARM (at residence 172 s, i.e. total ACHIEVED ≈ 901 rps, a HEALTHY server):
@@ -229,7 +229,7 @@ export const REGRESSION = {
   //     large_1mb  @ 0.5 rps → 0.5 × 172 ×  1 MB ≈  86 MB
   //     large_file @ 0.5 rps → 0.5 × 172 ×  1 MB ≈  86 MB   (its ~1 MB RESPONSE)
   //     large(4KB) @ 200 rps → 200 × 172 ×  4 KB ≈ 137 MB
-  //   ~480 MB of large bodies looks safe under 1.2 GB — BUT residence is NOT a
+  //   ~480 MB of large bodies looks safe under 0.9 GiB — BUT residence is NOT a
   // constant. residence = maxLogEntries / total_ACHIEVED_rps, and achieved rps is not
   // the offered 901: when the server contends it falls, and residence LENGTHENS
   // WITHOUT BOUND (2×/4×/10× → ∞ as achieved rps → 0), scaling every figure above
@@ -247,7 +247,7 @@ export const REGRESSION = {
   // the historical arms' latencies) and the run length bounded — NOT as the OOM guard.
   // The warmup NEVER touches these arms (regression.js excludes them from warmupOp),
   // so nothing accumulates before measurement either.
-  // `growth` needs the default ~155,000-entry ring to fill (issue #2329 O(n) eviction),
+  // `growth` needs the default ~115,500-entry ring to fill (issue #2329 O(n) eviction),
   // so the COUNT bound cannot be shrunk — which is exactly why the guard is a BYTE
   // budget, not a smaller ring: growth loads only the tiny /simple body, so its total
   // retained bytes stay in the tens of MB, far below 256 MiB, and the byte budget never
@@ -391,12 +391,12 @@ export const SWEEP = {
 // Resource-growth scenario tunables (growth.js). A sustained constant-load run
 // whose purpose is to surface "X increases over time" regressions (e.g. issue
 // #2329: O(n) log eviction once the request log fills to maxLogEntries). The
-// rate is high enough to fill the DEFAULT ~155k log within the run; low-rate
+// rate is high enough to fill the DEFAULT ~115.5k log within the run; low-rate
 // latency probes at the start and end measure the latency slope, paired with the
 // CPU/heap trajectory sampled by perf-test-run.sh. Do NOT shrink maxLogEntries
 // for this run — a smaller log would never fill and would hide the bug.
 export const GROWTH = {
-  rate: num('K6_GROWTH_RATE', 800), // fill load (req/s) — fills the ~155k log in ~80s
+  rate: num('K6_GROWTH_RATE', 800), // fill load (req/s) — fills the ~115.5k log in ~70s
   // Keep K6_GROWTH_DURATION >= 3 × K6_GROWTH_PROBE so the first/last probe
   // windows have a clear gap between them and the ratio measures a real slope.
   duration: env('K6_GROWTH_DURATION', '6m'),
@@ -483,8 +483,8 @@ export const PROXY = {
   // ~8 bytes ("UPSTREAM") and request is header-only — so at r rps the retained
   // bytes are r × residence × ~200 B (entry + small body). With residence ≈
   // maxLogEntries/total_rps and total forward rps ≈ 400 (2 arms × 200), residence ≈
-  // 155000/400 ≈ 390 s and retention ≈ 400 × 390 × 200 B ≈ 31 MB — negligible
-  // against the 1.2 GB SUT heap, so no rate throttling / heavy flag is needed. (This
+  // 115500/400 ≈ 290 s and retention ≈ 400 × 290 × 200 B ≈ 23 MB — negligible
+  // against the 0.9 GiB SUT heap, so no rate throttling / heavy flag is needed. (This
   // is why the forward arms relay a SMALL body deliberately: a proxy relaying MB
   // bodies would need the same rate-bounding the large_* arms use.)
   rate: num('K6_PROXY_RATE', 200),
@@ -571,15 +571,15 @@ export const PROXY = {
 // response action, whose events list is the streamed body). An entry lives for
 // residence ≈ maxLogEntries / total_offered_rps seconds — which LENGTHENS as
 // total rps falls, so a low stream-start rate does NOT help retention, it hurts.
-// On the 2 GB CI SUT maxLogEntries = min(heapKB/8, 250000) ≈ 155,000. Stream-start
+// On the 2 GB CI SUT maxLogEntries = min(heapKB/8, 250000) ≈ 115,500. Stream-start
 // rate = concurrency / stream_duration_s where stream_duration_s ≈ tokens ×
 // delay: at the defaults (concurrency 100, tokens 200, delay 20 ms ⇒ 4 s/stream)
 // that is 25 streams/s; with the match arm at 200 rps total_rps ≈ 225, residence
-// ≈ 155000/225 ≈ 690 s (the ring does not fill inside the window). Retained
+// ≈ 115500/225 ≈ 510 s (the ring does not fill inside the window). Retained
 // streaming bytes ≈ stream_start_rate × min(residence, window_s) × tokens ×
 // bytesPerToken. At the defaults over a ~90 s window: 25 × 90 × 200 × ~30 B ≈
 // 13.5 MB, plus match entries ≈ 200 × 90 × ~200 B ≈ 3.6 MB — negligible against
-// the 1.2 GB heap. bytesPerToken is kept tiny on purpose (a short "t<idx>" data
+// the 0.9 GiB heap. bytesPerToken is kept tiny on purpose (a short "t<idx>" data
 // field); RAISE concurrency/tokens/delay only with the product above re-checked
 // against PERF_SERVER_MEMORY, exactly as regression.js's large_* arms.
 export const STREAMING = {

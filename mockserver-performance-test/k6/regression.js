@@ -80,7 +80,7 @@ import {
 // driven at 50/s regardless of its measured rate. That is fine for the small-body
 // full-rate arms (match/forward/template*/large-4KB), but it would drive the
 // MB-scale `large_1mb`/`large_10mb`/`large_file` arms at 50/s for the whole 30 s
-// warmup and, because the ~155k-entry log ring does not evict inside that window,
+// warmup and, because the ~115.5k-entry log ring does not evict inside that window,
 // accumulate multiple GB of retained bodies and OOM the SUT before measurement
 // even starts. So the MB-scale arms are DELIBERATELY not warmed (no `warm`): at
 // <=2 rps a cold first cohort cannot form a connection storm (Finding 3's whole

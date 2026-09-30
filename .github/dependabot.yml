@@ -311,6 +311,13 @@ updates:
       - "dependencies"
       - "docker"
     groups:
+      # The eight server images each build the HEALTHCHECK probe from the same pinned golang image;
+      # one PR across every directory (digest bumps included) keeps them on one Go toolchain.
+      # Listed first because an update joins the first group it matches.
+      healthcheck-golang:
+        patterns:
+          - "golang"
+        group-by: dependency-name
       docker-minor-and-patch:
         update-types:
           - "minor"

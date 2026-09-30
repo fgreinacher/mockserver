@@ -378,6 +378,8 @@ For a cluster of two or more nodes, also set:
 
 All nodes must be on the same JGroups network (multicast or unicast depending on the JGroups stack) and use the same `clusterName`.
 
+**Memory floor: 768 MiB per node.** With `stateBackend=infinispan` the `-clustered` image (JDK 21, heap capped at 50% of the container limit) needs more memory outside the heap than a single node. Under the `docker_memory_floor_512m` load profile (16,000 req/s over ~4,500 connections, one core) a node at 512 MiB peaked at 98% of its limit with the JVM's file-backed pages evicted to 10% of idle, while 768 MiB peaked at 83% and 1 GiB at 73%. Give clustered nodes at least 768 MiB (1 GiB recommended); the other images' 512 MiB floor does not apply. See [docker.md → Heap Cap](../infrastructure/docker.md#heap-cap).
+
 ## Distributed Chaos (G11)
 
 When the state backend is clustered, all three chaos registries (Service/HTTP, TCP, gRPC) replicate their profiles across the fleet. A chaos profile registered via the REST API on node A is automatically visible on node B's hot-path registry without additional configuration.

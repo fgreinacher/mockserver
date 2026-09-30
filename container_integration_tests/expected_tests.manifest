@@ -63,6 +63,7 @@ docker docker_compose_libs_classpath
 docker docker_compose_graceful_shutdown
 docker docker_compose_metrics
 docker docker_healthcheck
+docker docker_memory_floor_512m
 docker docker_nonroot_user
 docker docker_variant_smoke_clustered
 docker docker_arm64_build_gate

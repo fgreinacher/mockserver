@@ -91,7 +91,7 @@ The table below shows the computed defaults for different JVM heap configuration
 | 2 GB | 2,076,672 | 250,000 (capped) | 15,000 (capped) | 303,787,008 (289.7 MiB) | 177,209,344 (169.0 MiB) |
 | 4 GB | 4,173,824 | 250,000 (capped) | 15,000 (capped) | 610,570,240 (582.3 MiB) | 356,165,632 (339.7 MiB) |
 
-With the default Docker image (no `-Xmx` set, JVM defaults to ~256 MB), users get roughly **30,000 log entries**.
+The Docker images size the heap at 50% of the container memory limit (`-XX:MaxRAMPercentage=50.0`, unless `-Xmx` is set), so a 512 MiB, 1 GiB, 2 GiB or 4 GiB container uses the 256 MB, 512 MB, 1 GB or 2 GB row — roughly **30,000 log entries** at the 512 MiB floor (768 MiB for a `-clustered` node with the Infinispan backend). The GraalJS image uses 45%, so its heap is 232 MiB, 462 MiB, 922 MiB or 1,844 MiB at those limits, giving `maxLogEntries` of 27,136, 56,576, 115,456 or 233,472 and an `INFO` `maxEventLogSizeInBytes` of 17.7, 36.8, 75.2 or 152.0 MiB. See [docker.md → Heap Cap](../infrastructure/docker.md#heap-cap).
 
 #### Log entries per request — budget for the expectation count, not a constant
 

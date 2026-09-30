@@ -82,6 +82,16 @@ RUN unzip netty-tcnative-boringssl-static.jar
 
 FROM ${source} AS intermediate
 
+# HEALTHCHECK probe — a ~2 MB static binary, NOT a second JVM: a probe JVM started inside the
+# container's memory cgroup every 10s pushed a 512 MiB container over its limit under load. Source:
+# docker/healthcheck/mockserver-healthcheck.go (copied byte-identically into each image context).
+# Built natively for the target platform (no cross-compile), so it is right under either builder.
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS healthcheck
+WORKDIR /src
+COPY mockserver-healthcheck.go ./
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+      -o /mockserver-healthcheck mockserver-healthcheck.go
+
 # runtime image https://console.cloud.google.com/gcr/images/distroless/global/java25
 FROM gcr.io/distroless/java25:debug-nonroot@sha256:92702d2e60d0e35495baff8650889c3d5b830f062b7f312924f9e77d85682d1d
 
@@ -104,11 +114,11 @@ COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_*.so /usr/lib/
 # don't run MockServer as root
 USER nonroot
 
-# -XX:MaxRAMPercentage=60.0 caps the JVM heap at 60% of the container memory limit so the
-# in-memory request/expectation rings size off a bounded heap. A committed heap costs ~1.48x its
-# size in real RSS (Netty direct arenas, G1 metadata, thread stacks), so a 75% cap OOM-SIGKILLed a
-# 2 GiB container under load; 60% keeps peak RSS near ~88% of the limit. Only applies when the user
-# has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
+# -XX:MaxRAMPercentage=50.0 caps the JVM heap at half the container memory limit so the in-memory
+# request/expectation rings size off a bounded heap. The other half is not slack: under load ZGC
+# grows to its full heap in memory the kernel cannot reclaim, and native JVM memory and kernel
+# socket buffers do not shrink with the heap, so 60% was OOM-killed at the 512 MiB floor. Only
+# applies when the user has NOT set an explicit heap; to change the cap set an explicit -Xmx (via JAVA_TOOL_OPTIONS) —
 # that disables MaxRAMPercentage. A different MaxRAMPercentage via JAVA_TOOL_OPTIONS does NOT take
 # effect: it is prepended before these args, so this entrypoint flag is applied last and wins.
 # Garbage collector: ZGC is the default, supplied via the JAVA_TOOL_OPTIONS env var below, NOT a
@@ -118,11 +128,12 @@ USER nonroot
 # Switch to G1 with -e JAVA_TOOL_OPTIONS=-XX:+UseG1GC; keep -XX:+UseZGC if you set it for -Xmx etc.
 # JDK 25 ZGC is generational — no -XX:+ZGenerational (obsolete post-JDK 23).
 ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"
-ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+ENTRYPOINT ["java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=50.0", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 
+COPY --from=healthcheck /mockserver-healthcheck /mockserver-healthcheck
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
-  CMD ["java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]
+  CMD ["/mockserver-healthcheck"]
 
 CMD []

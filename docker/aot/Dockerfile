@@ -84,6 +84,16 @@ RUN /runtime/bin/java -XX:AOTCacheOutput=/mockserver.aot \
     kill -TERM "$SERVER_PID" && wait "$SERVER_PID" || true; \
     ls -l /mockserver.aot
 
+# HEALTHCHECK probe — a ~2 MB static binary, NOT a second JVM: a probe JVM started inside the
+# container's memory cgroup every 10s pushed a 512 MiB container over its limit under load. Source:
+# docker/healthcheck/mockserver-healthcheck.go (copied byte-identically into each image context).
+# Built natively for the target platform (no cross-compile), so it is right under either builder.
+FROM golang:1.27-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS healthcheck
+WORKDIR /src
+COPY mockserver-healthcheck.go ./
+RUN CGO_ENABLED=0 GOTOOLCHAIN=local go build -trimpath -buildvcs=false -ldflags="-s -w -buildid=" \
+      -o /mockserver-healthcheck mockserver-healthcheck.go
+
 # runtime image — distroless base + trimmed JDK 25 runtime + jar + AOT cache
 # (digest-pinned per repo convention; update the digest together with the Temurin 25 build,
 # since the baked AOT cache is specific to the JDK build it was trained with)
@@ -99,17 +109,18 @@ COPY --from=aot-build /mockserver.aot /
 
 USER nonroot
 
-# -XX:MaxRAMPercentage=60.0 caps the JVM heap at 60% of the container memory limit (60 not 75
-# because a committed heap costs ~1.48x its size in real RSS, so a 75% cap OOM-killed a 2 GiB
-# container under load). -XX:AOTCache loads the baked cache; if the cache is incompatible (e.g.
+# -XX:MaxRAMPercentage=50.0 caps the JVM heap at half the container memory limit, as in the sibling
+# images: native JVM memory and kernel socket buffers need the rest (512 MiB is the supported floor).
+# -XX:AOTCache loads the baked cache; if the cache is incompatible (e.g.
 # different CPU arch) the JVM logs a warning and starts normally.
 # GC: kept on the JDK default (G1), unlike the sibling server images' -XX:+UseZGC — see the training
 # stage above. To trade start-up for ZGC's lower tail latency, pass -XX:+UseZGC via JAVA_TOOL_OPTIONS.
-ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=60.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=50.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 
+COPY --from=healthcheck /mockserver-healthcheck /mockserver-healthcheck
 HEALTHCHECK --interval=10s --timeout=5s --start-period=120s --retries=3 \
-  CMD ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-cp", "/mockserver-netty-jar-with-dependencies.jar", "org.mockserver.cli.HealthCheck"]
+  CMD ["/mockserver-healthcheck"]
 
 CMD []

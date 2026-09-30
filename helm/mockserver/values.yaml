@@ -20,11 +20,13 @@ app:
   propertiesFileName: "mockserver.properties"
   readOnlyRootFilesystem: false
   # -- Extra JVM options, passed verbatim via the JAVA_TOOL_OPTIONS environment variable.
-  # Empty by default. The Docker image already caps the heap at 60% of the container memory
-  # limit (-XX:MaxRAMPercentage=60.0), so the in-memory request/expectation rings size off a
-  # bounded heap. The cap is 60% because the process needs ~1.5x its heap in real memory (heap
-  # plus metaspace, thread stacks and Netty off-heap buffers), so budget resources.limits.memory
-  # below at ~1.5x the heap you want. To change the cap, set an explicit -Xmx here — that disables
+  # Empty by default. The Docker image already caps the heap at 50% of the container memory
+  # limit (-XX:MaxRAMPercentage=50.0; 45% in the -graaljs image, whose JavaScript engine needs
+  # more non-heap memory), so the in-memory request/expectation rings size off a bounded heap.
+  # The rest is needed outside the heap (metaspace, thread stacks, GC
+  # bookkeeping, Netty off-heap buffers, kernel socket buffers); 512Mi is the smallest supported
+  # resources.limits.memory below (768Mi for a clustered node with the Infinispan backend — see
+  # clustering below). To change the cap, set an explicit -Xmx here — that disables
   # the image's MaxRAMPercentage. (A different MaxRAMPercentage set via jvmOptions has NO effect:
   # the image's entrypoint flag is applied last and wins.) MockServer's in-memory log ring sizes
   # off the heap, so always pair a heap setting with a matching resources.limits.memory below.
@@ -33,7 +35,7 @@ app:
   # default entirely — so a non-empty jvmOptions that omits a collector drops ZGC. Include the
   # collector when you set jvmOptions for another reason (e.g. "-XX:+UseZGC -Xmx512m"), or set
   # "-XX:+UseG1GC" to switch to G1.
-  # Example - set an explicit heap (overrides the image's 60% MaxRAMPercentage; must fit inside
+  # Example - set an explicit heap (overrides the image's MaxRAMPercentage; must fit inside
   # resources.limits.memory) while KEEPING ZGC:
   #   jvmOptions: "-XX:+UseZGC -Xmx512m"
   jvmOptions: ""
@@ -313,10 +315,10 @@ podLabels: {}
 
 # -- Pod resource requests and limits, rendered verbatim into the container spec.
 # Empty by default (no requests/limits — the pod can consume unbounded node memory).
-# Setting a memory limit is strongly recommended: the JVM caps its heap at 60% of the
-# memory limit (-XX:MaxRAMPercentage=60.0 in the image), and MockServer's in-memory
-# request/expectation rings size off that heap. The process needs ~1.5x its heap in real
-# memory, so budget the limit at ~1.5x the heap you want. Without a limit the JVM sizes off
+# Setting a memory limit is strongly recommended: the JVM caps its heap at 50% of the
+# memory limit (-XX:MaxRAMPercentage=50.0 in the image; 45% in -graaljs), and MockServer's in-memory
+# request/expectation rings size off that heap. The rest of the limit is needed outside the
+# heap, so do not go below 512Mi (768Mi for a clustered node with the Infinispan backend). Without a limit the JVM sizes off
 # total node memory and can be OOM-killed under load. Set app.jvmOptions to tune the heap.
 # Example:
 #   resources:
@@ -446,6 +448,8 @@ webhook:
 # which includes the Infinispan/JGroups libraries. The default image does NOT
 # support clustering — setting clustering.enabled without switching to the
 # -clustered image will fail at startup with a ClassNotFoundException.
+# Give clustered pods a resources.limits.memory of at least 768Mi (1Gi recommended):
+# Infinispan/JGroups need more non-heap memory, and 512Mi is OOM-killed under load.
 #
 # When enabled the chart:
 #   1. Creates a headless Service for JGroups DNS_PING pod discovery
