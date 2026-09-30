@@ -1245,7 +1245,11 @@ EXTRA="$(jq -r '
        else "" end) as $fginfra
   | ([ (.sweep_tail.rungs // [])[] | select(.client_over_5ms_frac != null or .server_over_5ms_frac != null)
        | "| \(.offered_rps) | \(.client_over_5ms_frac | pct) | \(.server_over_5ms_frac | pct) |" ]) as $tail
-  | ((if ($ex|length) > 0 then "\n**Sweep rungs excluded (k6 client not sound — not a server ceiling):**\n" + ($ex|join("\n")) else "" end)
+  | ((.saturation.server_headroom_test // null) as $sht
+     | if $sht == null or $sht == "active" then ""
+       else "\n\n:warning: **Sweep server-headroom test was \($sht)**: rungs without server CPU samples were judged by the k6 CPU test alone, so a client-limited rung may count as rig-valid." end) as $shtnote
+  | ((if ($ex|length) > 0 then "\n**Sweep rungs excluded (the measurement is not a server ceiling: load generator, idle-pool drops, errors, or a limit other than server CPU):**\n" + ($ex|join("\n")) else "" end)
+    + $shtnote
     + (if ($dr|length) > 0 then "\n\n**Delivery ratio** (throughput/offered; a shortfall with dropped>0 is a CLIENT/VU limit, not a server regression):\n" + ($dr|join("\n")) else "" end)
     + $fginfra
     + (if ($tail|length) > 0 then "\n\n**Where the tail is** (share of requests over 5 ms per rung; notify-only): k6 after the settle window, beside the MockServer request-duration histogram, which times only the request handler, from the decoded request to the response hand-off. A client tail with no server tail is outside the handler: the rig, the network, or MockServer event-loop queueing, decode or flush. Tell them apart with k6 CPU against its pin (the excluded-rung reasons) and per-worker event-loop CPU (the deep run ceiling per-thread table).\n\n| Offered rps | k6 > 5 ms | Server > 5 ms |\n|---:|---:|---:|\n" + ($tail|join("\n")) else "" end))

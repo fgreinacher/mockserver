@@ -169,16 +169,22 @@ def chart_knee(sweep, out_dir):
              label="achieved", zorder=4)
     hc = _healthy_ceiling(pts)
     peak = max(achieved)
+    # A lower bound: no rate above the ceiling was measured validly (the rig or a non-CPU
+    # limit stopped the ladder). With no plotted rung above the ceiling there is no overload.
+    lower = bool(sweep.get("headline_lower_bound"))
+    overload = hc is not None and any(p["offered_rps"] > hc["offered_rps"] for p in pts)
     if hc is not None:
         axR.axhline(hc["achieved_rps"], color=BLUE, lw=1.0, ls=":", alpha=0.7, zorder=1)
-        axR.annotate(f"healthy ceiling ≈ {hc['offered_rps'] / 1000:.0f}k req/s",
-                     xy=(hc["offered_rps"], hc["achieved_rps"]), xytext=(0, 8),
-                     textcoords="offset points", ha="center", va="bottom",
-                     color=BLUE, fontsize=10)
-    axR.axhline(peak, color=RED, lw=1.0, ls=":", alpha=0.5, zorder=1)
-    axR.annotate(f"overload peak ≈ {peak / 1000:.0f}k (degraded)",
-                 xy=(offered[-1], peak), xytext=(0, 8), textcoords="offset points",
-                 ha="right", va="bottom", color=RED, fontsize=9)
+        axR.annotate(f"healthy ceiling {'≥' if lower else '≈'} {hc['offered_rps'] / 1000:.0f}k req/s"
+                     + ("\n(higher rates not measured validly)" if lower else ""),
+                     xy=(hc["offered_rps"], hc["achieved_rps"]), xytext=(-100, -55) if lower else (0, 8),
+                     textcoords="offset points", ha="right" if lower else "center",
+                     va="top" if lower else "bottom", color=BLUE, fontsize=10)
+    if overload:
+        axR.axhline(peak, color=RED, lw=1.0, ls=":", alpha=0.5, zorder=1)
+        axR.annotate(f"overload peak ≈ {peak / 1000:.0f}k (degraded)",
+                     xy=(offered[-1], peak), xytext=(0, 8), textcoords="offset points",
+                     ha="right", va="bottom", color=RED, fontsize=9)
     _grid(axR)
     axR.xaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v / 1000)}k"))
     axR.yaxis.set_major_formatter(mticker.FuncFormatter(lambda v, _: f"{int(v / 1000)}k"))

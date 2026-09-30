@@ -544,6 +544,9 @@ WINDOW_MISMATCH="$(sweep_window_mismatches "$WORK/sweep.json")" || true
 # common pin, stands in for the single client (every process must have headroom).
 K6_CORES="$(cpu_count "${K6_SETS[0]}")"
 K6_PIN_PCT=$(( K6_CORES * 100 ))
+# Physical cores of that pin, so derive_saturation lowers its CPU ceiling for hyperthread pairs.
+# shellcheck disable=SC2034  # read by derive_saturation
+K6_PHYS_CORES="$(phys_core_count "${K6_SETS[0]}")"; K6_PHYS_CORES="${K6_PHYS_CORES:-null}"
 PINS=""
 for ((i=0;i<N;i++)); do PINS="${PINS:+$PINS }${K6_PREFIX}-main-p${i}=$(( $(cpu_count "${K6_SETS[$i]}") * 100 ))"; done
 { echo "ts,cpu_pct"

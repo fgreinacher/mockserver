@@ -157,6 +157,66 @@ k6 CPU headroom is judged on the **mean** over the rung's steady window, with th
 MAX made one cold-read spike look like sustained client saturation, and a high percentile of a
 window holding ~4 samples is effectively the max.
 
+**Client-limited rungs (`client_limited`).** A rung is excluded as client-limited when either:
+
+| Test | Condition | Why |
+|---|---|---|
+| k6 CPU | mean k6 CPU above 85% of k6's capacity (`client_cpu_ceiling_pct`) | With no hyperthread siblings in k6's pin this is 85% of the pin, as before. When the pin holds both siblings of a core, a sibling is counted as a quarter of a core, so the ceiling on a fully paired pin is ~62% of the logical pin |
+| Short with server headroom | the rung dropped more than the 1% tolerance, **and** the SUT's mean CPU over the same window was below 85% of its pin, **and** either k6 was at least half its CPU ceiling, or a lower rung already met this test (`client_limited_from_rps`) and k6 is still at a quarter of its ceiling | In runs 502–504 k6 was the bottleneck at 44–82% of its pin on the rungs this flags, below the 85% test (the one 87% rung is flagged by the k6 CPU test), while the SUT used 250–410% of its 600%. A short rung with an idle VU pool is already excluded by the drop rule, so the k6-busy clause matters for pinned-pool rungs: it keeps one that is server-limited with an idle client rig-valid. The carry-up covers k6 CPU falling past its own knee as VUs block; its quarter-ceiling floor stops it blaming an idle client. The exclusion reason says "short with server CPU headroom; client or non-CPU limit (unattributed)", because the test cannot tell the two apart |
+
+Each rung records `server_cpu_pct` (from `diag-samples.csv`), `server_cpu_samples` and
+`client_limited`. Both the k6 and the server CPU windows start at k6's own rung start
+(`points[].start_epoch_ms`) when the sweep records it, otherwise at the ladder's host-side T0, so
+the two tests judge the same seconds. `.saturation.server_headroom_test`
+says whether the second test ran: `active` (every rung had at least two server CPU samples, the
+minimum it judges on; the diag sampler gives 2–4 per 12 s window), `partial` (some rungs had fewer,
+so the test was off for them) or `off`. Only the main ERROR ladder has a server CPU
+log. The INFO-arm and HTTPS/h2 path-coverage ladders run against SUTs the sampler does not watch, so
+they, and any run with an unpinned SUT, read `off` and only the k6 CPU test applies.
+`lib/perf-percore.sh` (per-core, hardware matrix) keeps its own 85%-of-pin rule.
+
+**Published figures from a client-limited run.** `perf-website-figures.jq` publishes rig-valid
+rungs only. When no rung above the healthy ceiling is rig-valid (or there is none), no overload
+was measured: `headline.no_measured_overload` is true, the `peak_*` fields are null, and the page
+and chart omit the overload sentences and peak. When, in addition, the next rung up was
+client-limited, `headline.lower_bound` is set (with `lower_bound_reason`): the rig, or a limit
+other than server CPU, stopped the ladder, so the page and chart show the ceiling as "at least" /
+"≥". A rig-valid but unhealthy rung above the ceiling is a measured overload, so that run is
+neither. `perf-website-publish.sh` holds (fails the soft-fail step, emits no patch, keeps the
+committed figures) when a lower bound would *lower* the committed `headline.healthy_ceiling_rps`,
+or when the committed file exists but that field is absent or not a number; it refuses a
+committed file that is not valid JSON ("COMMITTED FIGURES UNREADABLE"). With no committed file,
+or a lower bound that matches or raises it, it publishes normally. Because the server-headroom
+test cannot tell a client limit from a non-CPU server limit, **the hold also withholds a real
+server regression of that kind.** Read a "HELD" annotation alongside the compare step's
+`rig_valid_peak_achieved_rps` trend and `saturation.client_limited_from_rps`: a client-limited
+region that starts at a lower rung than before points at the server. Until #31's multi-process
+k6 measures past the client knee, expect the hold on every daily publish run.
+
+Known limits of the server-headroom test:
+
+- **A server limited by something other than CPU** (a lock, one saturated thread, transient
+  stalls) also reads below 85% and is labelled client-limited. At high rates k6 is always busy,
+  so the k6-busy clause cannot separate the two there. The effect is conservative: excluding a
+  rung can only lower `rig_valid_peak_achieved_rps`, so a server regression still shows as a
+  drop, only with the wrong reason text. The 2-core-server runs 448–450 show why the clause
+  matters: their short knee rungs had the SUT at 51–83% of its pin and k6 at 18–32% of its
+  ceiling. Without the clause they would be labelled client-limited.
+- **The SUT's idle CPU is partly caused by the client not sending.** That is the case the test is
+  meant to catch, not a false positive.
+- **`rig_valid_peak_achieved_rps` is now roughly ladder-quantised.** On this rig the client limits
+  every rung from ~44–52k up, so the peak is the highest rung below that with drops under 1%:
+  39.7–47.7k in the six-core runs 451–511, against 55.9–59.9k under the previous rule. It still moves with
+  harness cost (the client-limited region starts lower), but every such move now comes with
+  `client_limited` rungs saying so. Only more client capacity separates the two.
+
+**VU-pool growth check.** `vus_diagnostics.vus_pool_grew` compares k6's initialised VU count
+(`vus_max`) with `vus_initialized_baseline`, the count k6 plans before the test starts: the largest
+sum of rung pools whose reservations (start to start + step + the 30 s default `gracefulStop`)
+overlap. k6 reuses VUs across rungs that do not overlap, so the baseline is not the sum of all pools
+(6,144 on the default ladder, not 16,800); each of the 30 stored runs from 441 to 504 initialised exactly its
+planned count. With `preAllocatedVUs == maxVUs` it must read `false`.
+
 **Ladder granularity.** A 2,000-rps gap between rungs cannot reliably locate a knee. In build
 420 (2026-09-24) the 38,000-rps rung dipped just below the ratio floor (0.949 vs 0.950); without
 finer rungs at 39,000 and 41,000, the reported healthy ceiling would have been ~36,000 rather than
@@ -190,7 +250,10 @@ accept-to-flush (or decode-to-flush) timer would close the gap; it is not built.
 starts above the cleanly-served region reports `saturation_rps=0` — every rung is already in
 overload, so none qualifies as the healthy ceiling — which looks like a defect and is not. The
 default ladder (500, 1,000, 2,000, 4,000, 8,000, 16,000, 24,000, 32,000, 36,000, 40,000, 44,000,
-48,000, 64,000 rps) begins well below the knee for exactly this reason.
+48,000, 64,000 rps) begins well below the knee for exactly this reason. A manual `K6_SWEEP_RATES`
+ladder must also start below the client knee (~44k on this rig): if every rung is client-limited, no
+rung is rig-valid and the run fails `sweep_client_had_headroom` (the 44–64k ladder of run 447 would
+now fail this way).
 
 ### `rw-multi-k6-sweep.sh` — the knee curve from N merged k6 processes (opt-in, item 31)
 
@@ -276,9 +339,10 @@ gating validity.
   process's CPU scaled to one pin, the summed drops and the busiest process's `vus_active_p95`
   against its own pool; its CPU windows start at the earliest measured rung-0 start.
   `.per_process[].per_rung` records each process's CPU mean, fraction of pin and drop fraction.
-  **Hyperthread caveat:** the pin counts vCPUs, so a process on 4 physical cores with both
-  hyperthreads has an 800% pin it cannot reach; the 85%-of-pin client-saturation test then trips
-  later than on the single-process rig. This is plan item 30's blind spot, made wider.
+  **Hyperthreads:** a process on 4 physical cores with both hyperthreads has an 800% pin it
+  cannot reach, so the harness passes `K6_PHYS_CORES` and the k6 CPU test uses the
+  hyperthread-aware ceiling (62.5% of that pin; see [Client-limited rungs](#sweepjs--throughput-vs-latency-knee)).
+  The harness passes no server CPU log, so its `server_headroom_test` reads `off`.
 - **Placement.** SUT, Prometheus and every k6 process are proven physically disjoint by
   `lib/perf-cpu-topology.sh`. On the 48-vCPU rig the defaults are SUT on physical cores 0–5,
   Prometheus on core 23 (vCPUs 23,47), and four k6 processes on four physical cores each, both
@@ -759,8 +823,9 @@ k6 headroom at the ceiling, and `lower_bound` with its reasons:
 | `server_cpu_not_saturated` | the SUT never reached 85% of its CPU pin on any rung, so the load path may have been the limit |
 | `cpu_unverified` | the SUT or k6 CPU samples needed to rule out the first two are missing |
 
-`client_cpu_limited` inherits the rig-valid 85%-of-pin rule, which misses a k6 client that
-saturates below 85% (programme item 30), so an unflagged point can still be client-limited;
+`client_cpu_limited` uses `lib/perf-percore.sh`'s own 85%-of-pin rule, not `derive_saturation`'s
+server-headroom test (see [Client-limited rungs](#sweepjs--throughput-vs-latency-knee)), so it misses
+a k6 client that saturates below 85% and an unflagged point can still be client-limited;
 `server_cpu_not_saturated` usually catches that case from the server side.
 
 An OOM-killed SUT is kept (the container runs without `--rm`) and reported with its status; a
@@ -956,7 +1021,10 @@ default 30, or a headline metric moved more than `PUBLISH_MOVE_PCT`, default 10%
 refresh to a fresh local branch and attaches that commit as a `git format-patch` artifact
 (`website-figures-<UTC-timestamp>.patch`, applied with `git am`) alongside the regenerated
 `perf_figures.json`, `perf-sweep.json`, `perf-result.json` and chart PNGs. A build with no drift
-emits nothing. **Nothing applies the patch automatically** — publishing a customer-facing figure
+emits nothing. A refresh whose healthy ceiling is a client-limited lower bound *below* the
+committed one is held instead: the step fails with a "HELD" annotation and emits no patch (see
+[Published figures from a client-limited run](#sweepjs--throughput-vs-latency-knee)).
+**Nothing applies the patch automatically** — publishing a customer-facing figure
 is a deliberate human step.
 
 To publish a run's figures:
@@ -997,7 +1065,7 @@ The perf box is a `c5.12xlarge`: 48 logical CPUs, 24 physical cores (hyperthread
 
 **k6 CPU is non-monotonic in offered load.** k6 draws its peak CPU at the last healthy rung; past the knee VUs block on I/O rather than working, so client CPU falls as offered load rises above the knee. A high k6 CPU reading at a given rung therefore locates the knee rather than indicating a bad measurement. Use the mean over the steady window, not the max — the first (startup) sample is inflated and not representative.
 
-**Per-request work in `sweep.js` moves the rig's ceiling.** At the top rungs k6 already runs at 75–87% of its pin, so every microsecond k6 spends per request lowers the rate the rig can offer before the client, not MockServer, saturates. Do not add per-request tags or `k6/execution` reads to the request path (`exec.scenario`, `exec.vu` and `exec.instance` each build a new object on every access). The one deliberate exception is the `exec.instance.vusActive` sample at the start of every `matchAt` iteration, which the stall-concurrency diagnostics need. The first version of the rung-onset exclusion (`30917ac40`) tagged every request with its window and read `exec.scenario` every iteration. A local interleaved A/B measured that at ~10% more k6 user CPU per request, and it coincided with a drop in the rig-valid peak: on the default 13-rung ladder, runs 464–486 peaked at 59.6–59.9k and runs 491–497 at 57.0–57.3k. Run 504 put the build-482 image on the current harness and measured 59,805 → 58,107 with the image held fixed; that isolates the image but not the ladder, because 502–504 ran the 22-rung fine ladder and 482 the default 13-rung one. The window now uses a VU tag; whether the peak recovers is for the default-ladder confirmation run in the performance programme (item 26). Measure a harness change's k6 CPU per request with an interleaved A/B over the load window only (cgroup `cpu.stat` at setup end and teardown start), since whole-run CPU includes VU initialisation and is noisier. Do not split a rung into separate settle and steady scenarios to avoid tagging: each scenario draws its own VUs, so the steady window would start on fresh VUs opening new connections — the onset the settle exists to exclude — and the initialised VU count nearly doubles.
+**Per-request work in `sweep.js` moves the rig's ceiling.** At the top rungs k6 already runs at 44–87% of its pin (which `derive_saturation` now flags as client-limited while the SUT has CPU headroom), so every microsecond k6 spends per request lowers the rate the rig can offer before the client, not MockServer, saturates. Do not add per-request tags or `k6/execution` reads to the request path (`exec.scenario`, `exec.vu` and `exec.instance` each build a new object on every access). The one deliberate exception is the `exec.instance.vusActive` sample at the start of every `matchAt` iteration, which the stall-concurrency diagnostics need. The first version of the rung-onset exclusion (`30917ac40`) tagged every request with its window and read `exec.scenario` every iteration. A local interleaved A/B measured that at ~10% more k6 user CPU per request, and it coincided with a drop in the rig-valid peak: on the default 13-rung ladder, runs 464–486 peaked at 59.6–59.9k and runs 491–497 at 57.0–57.3k. Run 504 put the build-482 image on the current harness and measured 59,805 → 58,107 with the image held fixed; that isolates the image but not the ladder, because 502–504 ran the 22-rung fine ladder and 482 the default 13-rung one. The window now uses a VU tag; whether the peak recovers is for the default-ladder confirmation run in the performance programme (item 26). Measure a harness change's k6 CPU per request with an interleaved A/B over the load window only (cgroup `cpu.stat` at setup end and teardown start), since whole-run CPU includes VU initialisation and is noisier. Do not split a rung into separate settle and steady scenarios to avoid tagging: each scenario draws its own VUs, so the steady window would start on fresh VUs opening new connections — the onset the settle exists to exclude — and the initialised VU count nearly doubles.
 
 ## Heap Profiling Pitfalls
 
@@ -1027,6 +1095,8 @@ NMT and JFR start-up cost inside the SUT's CPU allocation.
 ### Saturation-series comparability break
 
 Widening k6's cpuset (from cores 7–10 to 7–23, to give the client enough headroom at the server's default 6-core config) changed the rig. The hardware-mismatch guard keys on `instance_type`, which did not change, so nothing in the tooling flags it. Stored `saturation_rps` and sweep latencies from before this change are not comparable with those after it. Similarly, adding rungs to the default ladder introduces ladder-position history that has no prior comparable points. When reviewing a stored run's `saturation_rps` against an older run, confirm both used the same k6 cpuset and the same ladder rungs.
+
+The client-limited server-headroom test is a third break, in `rig_valid_peak_achieved_rps`, `saturation_rps` and the published healthy ceiling (which counts only rig-valid rungs). A run from before it has no `client_limited` field in `.saturation.ladder`; re-deriving the six-core runs 451–511 under the new test lowers their rig-valid peak from 55.9–59.9k to 39.7–47.7k and their healthy ceiling from 40–60k to a lower bound of 40–48k, which the publish step holds rather than publish over the committed 60k. The metric is notify-only, so the first run after the change annotates a drop rather than failing.
 
 The rung-onset exclusion is a second break, in latency only. Sweep percentiles from a run whose `.sweep` has no `latency_window` include each rung's onset, which dominated the tail at moderate load (ladder p99 10.6 ms against a steady-state 0.343 ms at 24,000 rps); never compare the two. `achieved_rps`, drops, errors, `rig_valid_peak_achieved_rps` and `saturation_rps` compare across it freely (their accounting did not change); the healthy ceiling does not, because it is gated on p50. The compare step enforces this for the metrics it budgets from sweep p50s — `serving_percore.*.healthy_ceiling_rps`, `.rps_per_core`, `.healthy_ceiling_p50_ms`, `serving_hw_matrix.*.healthy_ceiling_rps`, `.healthy_ceiling_p50_ms`, `serving_multiproc_aggregate_healthy_ceiling_rps` and `serving_multiproc_scales_with_procs` (a ratio of two healthy ceilings): each compares only against runs whose block carries the same `sweep.latency_settle_s` and stays `:new:` until `MIN_BASELINE` such runs exist, and while it does the annotation says so ("sweep latency baseline reset"). The same fingerprint resets them again if the settle is ever changed. The website publish step treats a changed `source.sweep_latency_settle_s` as drift, so the first post-change run emits a refresh patch rather than leaving onset-inflated tails on the page.
 

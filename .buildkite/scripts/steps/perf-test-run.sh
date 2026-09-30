@@ -1871,17 +1871,22 @@ SWEEP_CPU_LOG="$OUT_DIR/sweep-k6-cpu.csv"
 # Ladder schedule + client-pin constants, derived ONCE and reused by every sweep
 # (the ERROR baseline below AND the INFO publication arm). They depend only on the
 # static ladder/pin config, never on a sweep's output, so hoisting them here keeps
-# the two sweeps' saturation derivation identical (a fair ERROR-vs-INFO comparison
-# requires the SAME knee methodology). SETTLE_S / err-eps are the same tunables the
+# the two sweeps' saturation constants identical. The rules are not: only the ERROR
+# sweep passes a server CPU log, so derive_saturation's server-headroom client-limited
+# test is off for the INFO sweep (see its server_headroom_test). SETTLE_S / err-eps are the same tunables the
 # derivation used inline before this was factored out. SETTLE_S also sets sweep.js's
 # K6_SWEEP_SETTLE, so both windows skip the same settle length; the latency window is
-# anchored at each k6 scenario's start, the CPU window at the ladder's host-side T0.
+# anchored at each k6 scenario's start, and so are the CPU windows when the sweep records
+# it (start_epoch_ms), else they fall back to the ladder's host-side T0.
 STEP_S="$(to_secs "$SWEEP_STEP")"
 # shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 GAP_S="$(to_secs "$SWEEP_GAP")"
 SETTLE_S="${PERF_SWEEP_SETTLE_S:-3}"
 K6_CORES="$(k6_core_count "$K6_CPUS")"
 K6_PIN_PCT=$((K6_CORES * 100))
+# The SUT's CPU pin, for derive_saturation's server-headroom test (0 = unpinned: test off).
+# shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
+SERVER_PIN_PCT=$(( $(k6_core_count "$SERVER_CPUS") * 100 ))
 # shellcheck disable=SC2034  # read by lib/perf-derive-saturation.sh
 SWEEP_ERR_EPS="${PERF_SWEEP_ERROR_EPS:-0.01}"
 # Fractional drop TOLERANCE for rig-validity (see derive_saturation). A rung's
@@ -2000,7 +2005,7 @@ echo "--- sweep.js (throughput-vs-latency knee curve; ladder=$SWEEP_RATES)"
 run_sweep "$SWEEP_K6" "$SERVER_ALIAS" "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG"
 abort_if_sut_died
 SWEEP_T0="$LAST_SWEEP_T0"
-SATURATION_JSON="$(derive_saturation "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG" "$SWEEP_T0")"
+SATURATION_JSON="$(derive_saturation "$OUT_DIR/sweep.json" "$SWEEP_CPU_LOG" "$SWEEP_T0" "$DIAG_SAMPLE_LOG")"
 PEAK_ACHIEVED_RPS="$(jq -r '.rig_valid_peak_achieved_rps' <<<"$SATURATION_JSON")"
 SATURATION_RPS="$(jq -r '.saturation_rps' <<<"$SATURATION_JSON")"
 echo "--- rig_valid_peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURATION_RPS (client pin=${K6_PIN_PCT}%, cores=$K6_CORES)"
@@ -2024,11 +2029,14 @@ echo "--- rig_valid_peak_achieved_rps=$PEAK_ACHIEVED_RPS saturation_rps=$SATURAT
 # client CPU that was in fact 13.6% utilised. Each rung already carries the real reason;
 # print it instead of guessing.
 RIG_VALID_RUNGS="$(jq -r '.rig_valid_rungs // 0' <<<"$SATURATION_JSON")"
+# A server-headroom test that did not run on every rung is said so, not left implicit.
+SRV_TEST="$(jq -r '.server_headroom_test // "off"' <<<"$SATURATION_JSON")"
+SRV_TEST_NOTE=""; [ "$SRV_TEST" = active ] || SRV_TEST_NOTE="; server-headroom client-limited test ${SRV_TEST} (only the k6 CPU test judged the rungs it did not cover)"
 if awk -v v="$RIG_VALID_RUNGS" 'BEGIN{exit !(v+0>0)}'; then
-  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no client-limited drops, low errors (rig_valid_peak_achieved_rps=${PEAK_ACHIEVED_RPS})"
+  add_check "sweep_client_had_headroom" true "${RIG_VALID_RUNGS} rung(s) measured with client headroom, no client-limited drops, low errors (rig_valid_peak_achieved_rps=${PEAK_ACHIEVED_RPS})${SRV_TEST_NOTE}"
 else
   SWEEP_EXCLUSIONS="$(jq -r '[.ladder[] | "\(.offered_rps): \(.exclude_reason // "?")"] | join("; ")' <<<"$SATURATION_JSON")"
-  add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}"
+  add_check "sweep_client_had_headroom" false "every sweep rung was excluded, so no server throughput figure is trustworthy. Per-rung reasons — ${SWEEP_EXCLUSIONS}${SRV_TEST_NOTE}"
 fi
 
 # Every request of a rung must land in exactly one latency window (lib/perf-sweep-window.sh);
@@ -2294,7 +2302,7 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
     # arm to measured:false rather than aborting the (ERROR-baseline) run.
     run_regression "http"     "http://${INFO_SERVER_ALIAS}:1080"  "false" "info-regression-http.json"  || { echo "WARNING: INFO regression http failed — INFO arm degraded" >&2; INFO_MEASURED=false; }
     run_regression "https_h2" "https://${INFO_SERVER_ALIAS}:1080" "true"  "info-regression-https.json" || { echo "WARNING: INFO regression https_h2 failed — INFO arm degraded" >&2; INFO_MEASURED=false; }
-    # Knee curve at INFO (same ladder + saturation methodology as the ERROR sweep).
+    # Knee curve at INFO (same ladder as the ERROR sweep; no server-headroom test, see below).
     echo "--- INFO-log-level arm: sweep.js (knee curve at INFO)"
     run_sweep "$INFO_SWEEP_K6" "$INFO_SERVER_ALIAS" "$OUT_DIR/info-sweep.json" "$OUT_DIR/info-sweep-k6-cpu.csv" \
       || { echo "WARNING: INFO sweep failed — INFO knee degraded" >&2; INFO_MEASURED=false; }
@@ -2311,8 +2319,9 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
   [ -n "$INFO_LOG_LEVEL_VAL" ] || { INFO_LOG_LEVEL_VAL="INFO"; INFO_LOG_LEVEL_SRC="declared"; }
 
   # Merge the http + https_h2 behaviours (guarded to {} on any missing/unparsable
-  # file), derive the INFO saturation with the SHARED derive_saturation (identical
-  # knee methodology to the ERROR arm), then assemble the self-describing block.
+  # file), derive the INFO saturation with the SHARED derive_saturation, then assemble the
+  # self-describing block. No server CPU log is passed (the diag sampler watches the ERROR
+  # SUT), so only the k6 CPU client-limited test applies here, unlike the ERROR arm.
   INFO_BEHAVIOURS="$(jq -sc '(.[0].behaviours // {}) + (.[1].behaviours // {})' \
     "$OUT_DIR/info-regression-http.json" "$OUT_DIR/info-regression-https.json" 2>/dev/null || echo '{}')"
   jq -e . >/dev/null 2>&1 <<<"$INFO_BEHAVIOURS" || INFO_BEHAVIOURS='{}'
@@ -2352,7 +2361,8 @@ if [ "$PERF_INFO_ARM" = "true" ]; then
       behaviours: $behaviours,
       # The knee curve at INFO + its derived saturation (rig_valid_peak_achieved_rps here
       # is the rig-valid peak — max achieved over rig-valid rungs, a property of the k6 rig,
-      # see derive_saturation; saturation_rps is the ladder-quantised knee).
+      # see derive_saturation; saturation_rps is the ladder-quantised knee). Its
+      # server_headroom_test is "off", so it is not comparable with the ERROR-arm peak.
       sweep: { proto: ($sweep.proto // "http"), latency_window: ($sweep.latency_window // null), points: ($sweep.points // []) },
       saturation: $saturation,
       rig_valid_peak_achieved_rps: ($saturation.rig_valid_peak_achieved_rps // null),

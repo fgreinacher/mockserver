@@ -44,13 +44,12 @@ def round3: (. * 1000 | round) / 1000;
 # number-delimiter filter). Integer part only — latencies are small and unformatted.
 def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
 
-# Rungs the RUN ITSELF judged rig-valid, keyed by offered_rps. A rung excluded by
-# derive_saturation measured the load generator, not the server - a k6 scheduling stall
-# with an idle VU pool - so publishing it states a server figure the run declined to
-# stand behind. Everything below is computed over rig-valid rungs only, which matters
-# for the headline as much as the table: peak is a max over these, so an excluded rung
-# can no longer become the published peak. An artifact with no saturation.ladder (an
-# older producer) carries no rig-validity to filter on, so all rungs are kept.
+# Rungs the RUN ITSELF judged rig-valid, keyed by offered_rps. derive_saturation excludes
+# a rung that was client-limited (k6 CPU, or short while the SUT had CPU headroom), that
+# dropped iterations with an idle VU pool, or that returned errors, so it states no server
+# figure the run stands behind. Everything below, headline and peak included, is computed
+# over rig-valid rungs only. An artifact with no saturation.ladder (an older producer)
+# carries no rig-validity to filter on, so all rungs are kept.
 (.sweep.points // []) as $pts
 | ((.saturation.ladder // []) | map(select(.rig_valid == true) | .offered_rps)) as $rv_offered
 | (((.saturation.ladder // []) | length) == 0) as $no_rig_info
@@ -72,6 +71,13 @@ def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
              and .achieved_rps >= ($keep * .offered_rps)
              and ($lat_thresh != null) and (.p50_ms != null) and (.p50_ms <= $lat_thresh)) ] as $healthy
 | ($healthy | max_by(.offered_rps)) as $hc
+# No rig-valid rung above the ceiling (or none at all) means no overload was measured, so
+# no peak_* is published. It is a lower bound when, in addition, the next rung up was
+# client-limited: the rig (or a non-CPU limit) stopped the ladder, not a measured overload.
+| (if $hc == null then [] else [ (.saturation.ladder // [])[] | select(.offered_rps > $hc.offered_rps) ]
+   | sort_by(.offered_rps) end) as $above
+| ($above | all(.rig_valid != true)) as $no_measured_overload
+| ($no_measured_overload and ($above | length) > 0 and ($above[0].client_limited == true)) as $lower_bound
 # peak ACHIEVED rung across the whole ladder — the top of the overload curve.
 | ($s | max_by(.achieved_rps)) as $pk
 | .config as $c
@@ -277,12 +283,17 @@ def commafy: (. // 0 | floor | tostring) | gsub("(?<=\\d)(?=(\\d{3})+$)"; ",");
       healthy_ceiling_achieved_rps: ($hc.achieved_rps | round2),
       healthy_ceiling_p50_ms: ($hc.p50_ms | round3),
       healthy_ceiling_p95_ms: ($hc.p95_ms | round3),
-      peak_achieved_rps: (if $pk == null then null else ($pk.achieved_rps | round2) end),
-      peak_achieved_rps_display: (if $pk == null then null else ($pk.achieved_rps | commafy) end),
-      peak_offered_rps: (if $pk == null then null else ($pk.offered_rps) end),
-      peak_p50_ms: (if $pk == null then null else ($pk.p50_ms | round3) end),
-      peak_p95_ms: (if $pk == null then null else ($pk.p95_ms | round3) end),
-      server_cores: ($a.server_cpus // null)
+      # No degraded peak to publish when no overload above the ceiling was measured.
+      peak_achieved_rps: (if $pk == null or $no_measured_overload then null else ($pk.achieved_rps | round2) end),
+      peak_achieved_rps_display: (if $pk == null or $no_measured_overload then null else ($pk.achieved_rps | commafy) end),
+      peak_offered_rps: (if $pk == null or $no_measured_overload then null else ($pk.offered_rps) end),
+      peak_p50_ms: (if $pk == null or $no_measured_overload then null else ($pk.p50_ms | round3) end),
+      peak_p95_ms: (if $pk == null or $no_measured_overload then null else ($pk.p95_ms | round3) end),
+      server_cores: ($a.server_cpus // null),
+      no_measured_overload: $no_measured_overload,
+      lower_bound: $lower_bound,
+      lower_bound_reason: (if $lower_bound | not then null
+        else "no rate above it was measured validly: from \($above[0].offered_rps | commafy) req/s offered the load generator, or a limit other than MockServer's CPU, cut delivery short, so a single instance may sustain more" end)
     } end),
     # ---- the full ladder, each rung flagged degraded past the healthy ceiling -
     throughput_ladder: [ $s[]

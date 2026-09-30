@@ -250,6 +250,9 @@ if ! jq -e '.headline != null and (.headline.healthy_ceiling_rps != null)' "$WOR
   fail "NO HEALTHY CEILING" \
     "No sweep rung qualified as a healthy ceiling (achieved within $(awk -v k="$KEEP_FRAC" 'BEGIN{printf "%.0f", (1-k)*100}')% of offered, zero errors, p50 within ${LAT_MULT}x the flat-region p50). The run may have been overloaded at every rung. Refusing to publish a headline that does not exist."
 fi
+if [ -f "$DATA_FILE" ] && ! jq -e . "$DATA_FILE" >/dev/null 2>&1; then
+  fail "COMMITTED FIGURES UNREADABLE" "The committed \`${DATA_FILE#"$REPO_ROOT"/}\` is not valid JSON, so the refresh cannot be compared with (or held against) what is published. Refusing; repair or restore the committed file."
+fi
 # The hardware-size table (item 27) comes only from a manual matrix run, so a daily
 # run carries none: keep the committed table rather than blanking it. It has its own
 # source block, so the page still says which run measured it.
@@ -323,6 +326,20 @@ fi
 REASON_STR="$(printf '%s; ' "${REASONS[@]}")"
 echo "--- trigger: ${REASON_STR}"
 
+# HOLD: a headline capped by the load generator or a non-CPU limit (headline.lower_bound)
+# must not replace a higher committed one; nor one whose committed ceiling is missing or not
+# a number (fail closed). A lower bound that matches or raises it publishes, marked "at least".
+if jq -e '.headline.lower_bound == true' "$WORK/candidate.json" >/dev/null 2>&1 && [ -f "$DATA_FILE" ]; then
+  OLD_HC="$(jq -r '.headline.healthy_ceiling_rps | if type == "number" then . else "invalid" end' "$DATA_FILE" 2>/dev/null || echo invalid)"
+  if [ "$OLD_HC" = invalid ] || awk -v n="$HC" -v o="$OLD_HC" 'BEGIN{exit !(n+0 < o+0)}'; then
+    annotate "error" ":raised_hand: **Website perf publish: HELD — new headline is a lower bound set by the load generator or a non-CPU limit (#31 multi-k6 needed)**
+
+The latest run \`${NEWEST_KEY}\` gives a healthy ceiling of ${HC} req/s against a committed ${OLD_HC} req/s, but $(jq -r '.headline.lower_bound_reason' "$WORK/candidate.json"). Publishing it could report the rig's limit as a drop in MockServer's throughput, so the committed figures were left unchanged and no patch was emitted. **This hold also withholds a real server regression whose limit is not CPU (a lock, one saturated thread).** Check the compare step's \`rig_valid_peak_achieved_rps\` trend and \`saturation.client_limited_from_rps\`: a fall that starts at a lower rung than before points at the server. Expect this hold on every daily run until more client capacity (multi-process k6, programme item 31) measures past the client knee."
+    echo "HELD: candidate healthy ceiling ${HC} is a lower bound; committed ${OLD_HC}"
+    exit 1
+  fi
+fi
+
 if [ "$DRY_RUN" = "true" ]; then
   annotate "warning" ":memo: **Website perf publish (dry-run) WOULD emit a patch artifact.** Reason: ${REASON_STR%; }
 Candidate healthy_ceiling ${HC}, peak ${PK}, behaviours ${BEH}, from \`${NEWEST_KEY}\`. No files written, no branch, no commit, no patch (dry-run)."
@@ -351,9 +368,10 @@ cp "$WORK/candidate.json" "$DATA_FILE"
 # a rung excluded by derive_saturation measured the load generator, not the server, so
 # plotting it would draw a curve the run declined to stand behind. An artifact with no
 # saturation.ladder carries no rig-validity to filter on, so all points are kept.
-jq '((.saturation.ladder // []) | map(select(.rig_valid == true) | .offered_rps)) as $rv
+jq --argjson lower_bound "$(jq '.headline.lower_bound == true' "$WORK/candidate.json")" \
+   '((.saturation.ladder // []) | map(select(.rig_valid == true) | .offered_rps)) as $rv
     | (((.saturation.ladder // []) | length) == 0) as $no_rig_info
-    | {proto: (.sweep.proto // "http"),
+    | {proto: (.sweep.proto // "http"), headline_lower_bound: $lower_bound,
        points: [ (.sweep.points // [])[] | select($no_rig_info or (.offered_rps | IN($rv[]))) ]}' \
   "$WORK/run.json" > "$CHART_DATA_DIR/perf-sweep.json"
 # The full run record is copied verbatim - it carries its own rig_valid flags and
@@ -412,7 +430,7 @@ annotate "success" ":memo: **Website perf figures refreshed — patch emitted as
 
 - **Source run:** \`${NEWEST_KEY}\`
 - **Trigger:** ${REASON_STR%; } (largest headline move ${MAX_MOVE}%, window ${MOVE_PCT}%)
-- **Healthy ceiling:** ${HC} req/s (headline) · **peak achieved:** ${PK} req/s (labelled degraded)
+- **Healthy ceiling:** $(jq -r 'if .headline.lower_bound == true then "at least \(.headline.healthy_ceiling_rps) req/s (headline, a lower bound: \(.headline.lower_bound_reason)) · no overload peak (no higher rate measured validly)" else "\(.headline.healthy_ceiling_rps) req/s (headline) · **peak achieved:** \(.headline.peak_achieved_rps) req/s (labelled degraded)" end' "$WORK/candidate.json")
 - **Per-behaviour percentiles:** ${BEH}
 - **Throughput by hardware size:** ${HW_ORIGIN}
 
