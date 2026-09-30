@@ -61,6 +61,31 @@ for df in "${DOCKERFILES[@]}"; do
       echo "FAIL: $df must set exactly one '-XX:MaxRAMPercentage=${expected_pct}' heap cap in ENTRYPOINT (found: ${entrypoint_pcts:-none})"
       errors=$((errors + 1))
     fi
+    # Netty's epoll/tcnative and JNA load native libraries; without this flag JDK 24+ prints
+    # restricted-method WARNINGs on every start. Every CDS dump and AppCDS/AOT training command must
+    # match the ENTRYPOINT, or CDS logs a flag mismatch at [error] level on every start. Checked per
+    # command after joining '\' continuations, so reflowing a RUN instruction cannot hide one.
+    logical="$(awk '/^[[:space:]]*#/ && buf == "" { print; next }
+      buf != "" && /^[[:space:]]*(#|$)/ { next }
+      { if (sub(/\\$/, "")) { buf = buf $0 " "; next } print buf $0; buf = "" }
+      END { if (buf != "") print buf }' "$filepath")"
+    entrypoint_lines="$(grep -E '^ENTRYPOINT ' <<<"$logical" || true)"
+    if ! grep -qF '"--enable-native-access=ALL-UNNAMED"' <<<"$entrypoint_lines"; then
+      echo "FAIL: $df ENTRYPOINT must pass \"--enable-native-access=ALL-UNNAMED\""
+      errors=$((errors + 1))
+    fi
+    archive_cmds="$(grep -E '^RUN ' <<<"$logical" | tr '&;|' '\n\n\n' \
+      | grep -E "(^|[[:space:]/\"'])java[\"']?,?[[:space:]].*(-XX:(ArchiveClassesAtExit|AOTCacheOutput)=|-Xshare:dump)" || true)"
+    if grep -qE -- '-XX:(SharedArchiveFile|AOTCache)=' <<<"$entrypoint_lines" && [ -z "$archive_cmds" ]; then
+      echo "FAIL: $df ENTRYPOINT loads a CDS/AOT archive but no RUN instruction dumps or trains one"
+      errors=$((errors + 1))
+    fi
+    missing_flag="$(grep -vF -- '--enable-native-access=ALL-UNNAMED' <<<"$archive_cmds" | grep -E '[^[:space:]]' || true)"
+    if [ -n "$missing_flag" ]; then
+      echo "FAIL: $df CDS dump / AppCDS / AOT training command must pass --enable-native-access=ALL-UNNAMED to match the ENTRYPOINT:"
+      echo "$missing_flag" | sed 's/^[[:space:]]*/    /'
+      errors=$((errors + 1))
+    fi
   fi
 done
 

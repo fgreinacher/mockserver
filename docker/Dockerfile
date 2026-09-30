@@ -243,7 +243,7 @@ RUN "$JAVA_HOME/bin/jlink" \
       --add-modules java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management \
       --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
       --output /runtime \
- && /runtime/bin/java -XX:+UseZGC -Xshare:dump
+ && /runtime/bin/java -XX:+UseZGC --enable-native-access=ALL-UNNAMED -Xshare:dump
 
 # Training run (dynamic AppCDS, JEP 350): start the server with -XX:ArchiveClassesAtExit, wait until
 # the status endpoint answers via the bundled HealthCheck (which also drives the post-bind warmup),
@@ -254,7 +254,7 @@ RUN "$JAVA_HOME/bin/jlink" \
 # under ZGC above and the dynamic archive layers on it, so training under the same collector keeps
 # the archive mappable. Under a non-ZGC override (e.g. JAVA_TOOL_OPTIONS=-XX:+UseG1GC) the archive is
 # not loaded: -Xshare:auto logs a CDS error and the JVM starts without it (slower cold start, still works).
-RUN /runtime/bin/java -XX:+UseZGC -XX:ArchiveClassesAtExit=/mockserver.jsa \
+RUN /runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:+UseZGC -XX:ArchiveClassesAtExit=/mockserver.jsa \
       -cp /mockserver.jar:/mockserver-deps.jar org.mockserver.cli.Main -p 1080 & \
     SERVER_PID=$!; \
     for i in $(seq 1 240); do \
@@ -349,7 +349,7 @@ USER nonroot
 # AppCDS archive above is trained under ZGC to match this default; a non-ZGC override starts without it. ZGC is generational on JDK 26 — no -XX:+ZGenerational (obsolete
 # post-JDK 23). See docs/code/startup-performance.md and the memory programme.
 ENV JAVA_TOOL_OPTIONS="-XX:+UseZGC"
-ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=50.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver.jar:/mockserver-deps.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=50.0", "-XX:SharedArchiveFile=/mockserver.jsa", "-cp", "/mockserver.jar:/mockserver-deps.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 

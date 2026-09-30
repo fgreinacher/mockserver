@@ -302,6 +302,23 @@
                             </arguments>
                         </configuration>
                     </execution>
+                    <!-- Fail the build if the epoll natives are not under the name relocated netty
+                         loads, which would silently put every Docker image on NIO. Bound to package
+                         (after shade) so the package-only Docker jar builds are guarded too. -->
+                    <execution>
+                        <id>assert-shaded-epoll-natives</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>exec</goal>
+                        </goals>
+                        <configuration>
+                            <skip>false</skip>
+                            <executable>src/packaging/assert-shaded-epoll-natives.sh</executable>
+                            <arguments>
+                                <argument>${project.build.directory}/${project.build.finalName}.jar</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

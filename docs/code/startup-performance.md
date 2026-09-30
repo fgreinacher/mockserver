@@ -131,6 +131,7 @@ normally.
 
 - Build stage: `eclipse-temurin:26-jdk-noble` with a jlink-trimmed runtime (same module set as the jlink binary bundle: `java.se,jdk.unsupported,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.naming.dns,jdk.zipfs,jdk.management`, `--compress=zip-6` — the JDK-21+ form; the legacy numeric `--compress=2` was removed after JDK 17). `jdk.management` is what makes the `jvm_memory_allocated_bytes` Prometheus metric fire (`com.sun.management.ThreadMXBean`); `java.se` aggregates only `java.*` modules and does not pull it in.
 - `java -Xshare:dump` first creates the base CDS archive — a jlink image does not ship one, and the dynamic app archive layers on top of it.
+- The base dump, the training run and the ENTRYPOINT all pass `--enable-native-access=ALL-UNNAMED` (see [docker.md](../infrastructure/docker.md), Native access). The flag is recorded in the archive: a base archive dumped without it makes every start log `[error][cds] Mismatched values for property jdk.module.enable.native.access` and disable optimized module handling, though the dynamic archive's classes still load.
 - Training run: `java -XX:ArchiveClassesAtExit=/mockserver.jsa -jar ... -serverPort 1080`, polled via the bundled `org.mockserver.cli.HealthCheck`, then clean `SIGTERM`; the build fails if the archive was not produced.
 - Runtime: distroless java-base-debian12 (digest-pinned by INDEX digest, same digest as `docker/aot`), trimmed JDK 26, jar, and archive. Entrypoint adds `-XX:SharedArchiveFile=/mockserver.jsa` with default `-Xshare:auto` semantics — if the archive is unusable (e.g. wrong JDK build) the JVM logs a warning and starts normally, making this safe for the default image.
 - `TieredStopAtLevel=1` is intentionally NOT set — it would cap peak throughput for load-injection users. It remains a Testcontainers/ephemeral tip only.
@@ -168,7 +169,7 @@ Source: `mockserver-netty/.../lifecycle/LifeCycle.java` (`forwardClientGroup`, `
 The `-aot` Docker variant (`docker/aot/Dockerfile`) bakes a Leyden AOT cache (JEP 483/514/515) into the image at build time:
 
 - **Build stage** (`eclipse-temurin:25-jdk-noble`): jlink produces a trimmed JDK 25 runtime with the same module set as the binary bundle.
-- **Training run** (JEP 514 one-step): `java -XX:AOTCacheOutput=/mockserver.aot -jar /mockserver.jar -p 1080`, polled via `HealthCheck`, terminated with `SIGTERM`.
+- **Training run** (JEP 514 one-step): `java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=/mockserver.aot -jar /mockserver.jar -p 1080` (the flag matches the ENTRYPOINT), polled via `HealthCheck`, terminated with `SIGTERM`.
 - **Runtime stage** (distroless java-base-debian12, digest-pinned): trimmed JDK 25, jar, and cache. Entrypoint: `-XX:AOTCache=/mockserver.aot`. If the cache is incompatible (wrong CPU arch or JDK build), the JVM logs a warning and continues — the same graceful fallback as `-Xshare:auto`.
 
 The AOT cache is CPU-architecture and JDK-build specific; multi-arch builds produce independent caches. Netty-tcnative is omitted; TLS uses the JDK provider (functionally identical, slightly lower TLS handshake throughput).

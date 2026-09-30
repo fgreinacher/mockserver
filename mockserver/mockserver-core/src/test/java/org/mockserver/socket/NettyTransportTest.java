@@ -6,14 +6,21 @@ import io.netty.channel.socket.nio.NioDatagramChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import org.junit.Test;
+import org.slf4j.Logger;
 
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
 import static org.hamcrest.Matchers.is;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 
 /**
  * Tests for {@link NettyTransport} transport-selection utility.
@@ -152,5 +159,35 @@ public class NettyTransportTest {
         } finally {
             group.shutdownGracefully();
         }
+    }
+
+    @Test
+    public void selectionShouldBeLoggedOnlyOnce() {
+        Logger logger = mock(Logger.class);
+        AtomicBoolean logged = new AtomicBoolean(false);
+
+        NettyTransport.logSelectionOnce(logged, logger, true, "native epoll transport");
+        NettyTransport.logSelectionOnce(logged, logger, true, "NIO transport (second group)");
+
+        verify(logger, times(1)).info("using {}", "native epoll transport");
+        verify(logger, never()).info("using {}", "NIO transport (second group)");
+    }
+
+    @Test
+    public void selectionShouldBeLoggedAtDebugWhenNotInfo() {
+        Logger logger = mock(Logger.class);
+
+        NettyTransport.logSelectionOnce(new AtomicBoolean(false), logger, false, "NIO transport (x)");
+
+        verify(logger).debug("using {}", "NIO transport (x)");
+        verifyNoMoreInteractions(logger);
+    }
+
+    @Test
+    public void nioFallbackShouldBeInfoOnLinuxOrWhenDisabledAndDebugOtherwise() {
+        assertTrue("epoll wanted but unavailable on Linux -> INFO", NettyTransport.nioSelectionLoggedAtInfo(true, true));
+        assertFalse("epoll wanted but unavailable off Linux -> DEBUG", NettyTransport.nioSelectionLoggedAtInfo(true, false));
+        assertTrue("epoll switched off on Linux -> INFO", NettyTransport.nioSelectionLoggedAtInfo(false, true));
+        assertTrue("epoll switched off off Linux -> INFO", NettyTransport.nioSelectionLoggedAtInfo(false, false));
     }
 }

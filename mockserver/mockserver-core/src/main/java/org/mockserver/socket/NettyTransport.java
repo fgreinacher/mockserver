@@ -11,7 +11,9 @@ import io.netty.channel.socket.nio.NioSocketChannel;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Locale;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Transport-selection utility that picks the highest-performance Netty transport
@@ -43,6 +45,10 @@ public final class NettyTransport {
      * {@code true} only when the native epoll library loaded successfully.
      */
     private static final boolean EPOLL_AVAILABLE = probeEpollAvailable();
+
+    private static final boolean IS_LINUX = System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("linux");
+
+    private static final AtomicBoolean SELECTION_LOGGED = new AtomicBoolean(false);
 
     private NettyTransport() {
         // utility class
@@ -104,16 +110,64 @@ public final class NettyTransport {
      * (and its graceful NIO fallback) can be unit-tested on non-Linux hosts.
      */
     static EventLoopGroup newEventLoopGroup(int nThreads, ThreadFactory threadFactory, boolean useNativeTransport, boolean epollAvailable) {
+        String nioReason;
         if (decide(useNativeTransport, epollAvailable)) {
             try {
                 EventLoopGroup group = new io.netty.channel.epoll.EpollEventLoopGroup(nThreads, threadFactory);
                 LOG.debug("created EpollEventLoopGroup with {} threads", nThreads);
+                logSelectionOnce(SELECTION_LOGGED, LOG, true, "native epoll transport");
                 return group;
             } catch (NoClassDefFoundError | UnsatisfiedLinkError | Exception e) {
                 LOG.warn("failed to create EpollEventLoopGroup, falling back to NIO: {}", e.getMessage());
+                nioReason = "EpollEventLoopGroup creation failed: " + e.getMessage();
+            }
+        } else if (!useNativeTransport) {
+            nioReason = "native transport disabled by useNativeTransport=false";
+        } else {
+            nioReason = "native epoll transport unavailable: " + epollUnavailabilityCause();
+        }
+        logSelectionOnce(SELECTION_LOGGED, LOG, nioSelectionLoggedAtInfo(useNativeTransport, IS_LINUX), "NIO transport (" + nioReason + ")");
+        return new NioEventLoopGroup(nThreads, threadFactory);
+    }
+
+    /**
+     * A NIO fallback is worth an INFO line on Linux, where epoll was expected and its absence is
+     * usually a packaging fault, or when the user switched epoll off; elsewhere NIO is the only
+     * option, so DEBUG.
+     */
+    static boolean nioSelectionLoggedAtInfo(boolean useNativeTransport, boolean linux) {
+        return !useNativeTransport || linux;
+    }
+
+    /**
+     * Logs the transport the first event-loop group was created with, once per JVM ({@code logged}
+     * is the JVM-wide flag outside tests). Only the server lifecycle creates groups through this
+     * class, so client-only users never see the line.
+     */
+    static void logSelectionOnce(AtomicBoolean logged, Logger logger, boolean info, String transport) {
+        if (logged.compareAndSet(false, true)) {
+            if (info) {
+                logger.info("using {}", transport);
+            } else {
+                logger.debug("using {}", transport);
             }
         }
-        return new NioEventLoopGroup(nThreads, threadFactory);
+    }
+
+    private static String epollUnavailabilityCause() {
+        try {
+            Throwable cause = io.netty.channel.epoll.Epoll.unavailabilityCause();
+            if (cause == null) {
+                return "unknown";
+            }
+            Throwable root = cause;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            return String.valueOf(root.getMessage());
+        } catch (NoClassDefFoundError | UnsatisfiedLinkError e) {
+            return "epoll classes not on the classpath";
+        }
     }
 
     /**
@@ -197,7 +251,7 @@ public final class NettyTransport {
         try {
             boolean available = io.netty.channel.epoll.Epoll.isAvailable();
             if (available) {
-                LOG.info("Netty epoll transport is available; will use native transport when enabled");
+                LOG.debug("Netty epoll transport is available; will use native transport when enabled");
             } else {
                 LOG.debug("Netty epoll transport is not available on this platform; using NIO");
             }

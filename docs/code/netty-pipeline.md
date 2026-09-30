@@ -37,6 +37,10 @@ The transport selection is consistent across the entire data path: server bootst
 
 Epoll transport is required for transparent-proxy `SO_ORIGINAL_DST` resolution, which needs `EpollSocketChannel` children to extract the raw file descriptor.
 
+The first event-loop group the server creates logs the transport once at INFO: `using native epoll transport`, `using NIO transport (native transport disabled by useNativeTransport=false)`, or, on Linux only, `using NIO transport (native epoll transport unavailable: <cause>)` (DEBUG on macOS/Windows, where NIO is the only option). Grep a container's start-up log for `using native epoll transport` or `using NIO transport` to see which transport it runs.
+
+**Shaded jar natives.** The `mockserver-netty-no-dependencies` shaded jar — the jar every published Docker image (`docker/local`, `-graaljs`, `-clustered`, `-aot`) is built from — relocates `io.netty` to `shaded_package.io.netty`. Relocated netty loads its JNI library by a package-mangled name (`libshaded_1package_netty_transport_native_epoll_<arch>.so`), so the shared shade configuration in `mockserver/pom.xml` relocates the epoll `.so` resource paths to that name. Before this, the natives kept netty's own name, `Epoll.isAvailable()` was `false`, and every published image silently ran NIO (the fallback logged only at DEBUG). `mockserver-netty-no-dependencies/src/packaging/assert-shaded-epoll-natives.sh` fails the `package` phase if either arch's `.so` is missing under the mangled name or still present under the unrelocated one. Only epoll is renamed: the tcnative and QUIC natives in the shaded jars keep their unrelocated names and so still do not load from the jar itself (the `-http3` image installs its QUIC native under the mangled name in a separate layer; see [http3.md](http3.md)). Likewise the shaded jar relocates JNA (`com.sun.jna` to `shaded_package.com.sun.jna`), whose JNI entry points are bound to the unrelocated class names, so the JNA-based original-destination resolvers (`SoOriginalDstResolver`, `EbpfOriginalDestinationResolver`) still do not work from the shaded jar or the images built from it, even on epoll: transparent proxying there falls back to the conntrack resolver (item 42 in [performance-programme.md](../plans/performance-programme.md)).
+
 **Intentionally left on NIO:** `Http3Server` (QUIC/datagram, separate experimental transport with its own `NioEventLoopGroup`), `McpToolRegistry`'s internal client, and `EchoServer` (test infrastructure).
 
 | Property | Default | Env var | System property |
@@ -54,6 +58,8 @@ On Linux CI the **full existing integration-test suite** exercises the epoll tra
 To force NIO on Linux for comparison testing, set `useNativeTransport=false` via system property (`-Dmockserver.useNativeTransport=false`) or environment variable (`MOCKSERVER_USE_NATIVE_TRANSPORT=false`).
 
 Dedicated activation tests in `EpollTransportIntegrationTest` (`mockserver-netty`) verify the channel and event-loop-group types at runtime. These tests are gated by `Assume.assumeTrue(Epoll.isAvailable())` and skip cleanly on macOS/Windows.
+
+This coverage runs against the **unshaded** module classpath, so it cannot see a shaded-jar packaging fault; that is what `assert-shaded-epoll-natives.sh` (above) is for.
 
 ### Key Bootstrap Configuration
 

@@ -1405,6 +1405,14 @@
                                         <pattern>org.snakeyaml</pattern>
                                         <shadedPattern>shaded_package.org.snakeyaml</shadedPattern>
                                     </relocation>
+                                    <relocation>
+                                        <!-- Relocated netty loads its JNI library by a package-mangled name
+                                             (shaded_package. -> shaded_1package_), so the epoll .so must be renamed
+                                             to match or Epoll.isAvailable() is false and the server silently runs NIO.
+                                             assert-shaded-epoll-natives.sh guards this over the shaded jar. -->
+                                        <pattern>META-INF/native/libnetty_transport_native_epoll_</pattern>
+                                        <shadedPattern>META-INF/native/libshaded_1package_netty_transport_native_epoll_</shadedPattern>
+                                    </relocation>
                                 </relocations>
                                 <filters>
                                     <filter>

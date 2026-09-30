@@ -74,7 +74,7 @@ RUN "$JAVA_HOME/bin/jlink" \
 # GC: this variant intentionally stays on the JDK default collector (G1), NOT the -XX:+UseZGC the
 # other server images set — ZGC's fixed start-up cost defeats this variant's minimal-time-to-ready
 # purpose. Do not add -XX:+UseZGC here. See docs/code/startup-performance.md for the measurements.
-RUN /runtime/bin/java -XX:AOTCacheOutput=/mockserver.aot \
+RUN /runtime/bin/java --enable-native-access=ALL-UNNAMED -XX:AOTCacheOutput=/mockserver.aot \
       -jar /mockserver-netty-jar-with-dependencies.jar -p 1080 & \
     SERVER_PID=$!; \
     for i in $(seq 1 240); do \
@@ -128,7 +128,7 @@ USER nonroot
 # different CPU arch) the JVM logs a warning and starts normally.
 # GC: kept on the JDK default (G1), unlike the sibling server images' -XX:+UseZGC — see the training
 # stage above. To trade start-up for ZGC's lower tail latency, pass -XX:+UseZGC via JAVA_TOOL_OPTIONS.
-ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "-XX:MaxRAMPercentage=50.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
+ENTRYPOINT ["/usr/lib/jvm/temurin25-trimmed/bin/java", "-Dfile.encoding=UTF-8", "--enable-native-access=ALL-UNNAMED", "-XX:MaxRAMPercentage=50.0", "-XX:AOTCache=/mockserver.aot", "-cp", "/mockserver-netty-jar-with-dependencies.jar:/libs/*", "-Dmockserver.propertyFile=/config/mockserver.properties", "org.mockserver.cli.Main"]
 
 ENV SERVER_PORT=1080
 

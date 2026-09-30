@@ -167,6 +167,23 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
   agents). If you override the health check yourself, `["CMD", "/mockserver-healthcheck"]` is the
   command to call — the images have no shell or `curl`.
 
+- **The Docker images now use the native Linux epoll transport, as `useNativeTransport` (default
+  `true`) always said they did.** Every published image is built from the shaded
+  `mockserver-netty-no-dependencies` jar, where Netty is relocated and so looks for its epoll library
+  under a renamed file the jar did not contain. Epoll was reported unavailable only at DEBUG, and every
+  image ran the Java NIO transport. The shaded jar now carries the library under the name Netty
+  expects, and the build fails if it does not. The same applies to the other shaded jars that embed
+  the server (`mockserver-junit-rule-no-dependencies`, `mockserver-junit-jupiter-no-dependencies` and
+  `mockserver-spring-test-listener-no-dependencies`): on Linux their embedded server now runs on epoll
+  too. MockServer also logs the transport it chose at start-up (`using native epoll transport`, or
+  `using NIO transport (...)` with the reason). CPU per request did not change measurably: at a fixed
+  20,000 and 40,000 requests per second on four CPUs (linux/arm64 container, seven interleaved runs
+  per transport, `logLevel=ERROR`), server CPU per request was 52.4 and 41.0 us on epoll against 52.9
+  and 42.0 us on NIO (medians; the run-to-run ranges overlap), with system time about half of it on
+  both. Set `useNativeTransport=false` to go back to NIO. Every server image also passes
+  `--enable-native-access=ALL-UNNAMED`, so images on Java 24 or later no longer print four
+  `WARNING: A restricted method in java.lang.System has been called` lines at start-up when a native
+  library loads.
 - **MockServer could start on a port another application was already using on 127.0.0.1, so requests
   to localhost reached that application instead of MockServer.** Some operating systems, macOS among
   them, let MockServer's listener share a port with another application's 127.0.0.1-only listener and

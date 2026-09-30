@@ -168,5 +168,6 @@ With `transparentProxyTproxy=true`, iptables uses `-j TPROXY` instead of `-j RED
 ## Limitations
 
 - **SO_ORIGINAL_DST requires Linux + epoll**: On macOS or Windows, or with NIO transport, the resolver returns null and conntrack (also Linux-only) is tried next. Both fall through to dns-intent on non-Linux hosts.
+- **Published images and the shaded jar fall back to conntrack**: the `mockserver/mockserver` images and `mockserver-netty-no-dependencies` relocate JNA, so the SO_ORIGINAL_DST and eBPF lookups cannot run there even on epoll and the lookup falls back to conntrack (plan item 42 in `docs/plans/performance-programme.md`).
 - **Conntrack lookup is O(n) with a cap**: The `/proc/net/nf_conntrack` scan is capped at 200,000 lines. If the table exceeds this, MockServer falls back to Host-header resolution via dns-intent.
 - **iptables required without the webhook**: Without the admission webhook, an init container or external mechanism must configure traffic redirection. With the webhook enabled, iptables rules are injected automatically into opted-in pods.
