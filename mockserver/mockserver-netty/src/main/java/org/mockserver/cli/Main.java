@@ -190,7 +190,7 @@ public class Main {
             cmd.setOut(new java.io.PrintWriter(systemOut, true));
             cmd.setErr(new java.io.PrintWriter(systemErr, true));
             cmd.setExecutionExceptionHandler((ex, commandLine, parseResult) -> {
-                logStartupFailure(ex);
+                logStartupFailure(ex, ConfigurationProperties.disableSystemOut());
                 return 1;
             });
             cmd.setParameterExceptionHandler((ex, args) -> {
@@ -213,7 +213,7 @@ public class Main {
                 System.exit(exitCode);
             }
         } catch (Throwable throwable) {
-            logStartupFailure(throwable);
+            logStartupFailure(throwable, ConfigurationProperties.disableSystemOut());
         }
     }
 
@@ -221,7 +221,7 @@ public class Main {
      * A missing HTTP/3 native is a configuration problem whose fixes the message already spells out, so
      * print just that message: a stack trace (and Netty's nested UnsatisfiedLinkErrors) buries the fix.
      */
-    static void logStartupFailure(Throwable throwable) {
+    static void logStartupFailure(Throwable throwable, boolean disableSystemOut) {
         Http3NativeUnavailableException http3NativeUnavailable = ExceptionUtils.throwableOfType(throwable, Http3NativeUnavailableException.class);
         if (http3NativeUnavailable != null) {
             MOCK_SERVER_LOGGER.logEvent(
@@ -232,7 +232,7 @@ public class Main {
                     .setMessageFormat("HTTP/3 start-up failed:{}")
                     .setArguments(http3NativeUnavailable.getMessage())
             );
-            if (ConfigurationProperties.disableSystemOut()) {
+            if (disableSystemOut) {
                 System.err.println(http3NativeUnavailable.getMessage());
             }
             return;
@@ -244,7 +244,7 @@ public class Main {
                 .setMessageFormat("exception while starting:{}")
                 .setThrowable(throwable)
         );
-        if (ConfigurationProperties.disableSystemOut()) {
+        if (disableSystemOut) {
             new RuntimeException("exception while starting: " + throwable.getMessage()).printStackTrace(System.err);
         }
     }
@@ -647,7 +647,7 @@ public class Main {
                 // A genuine startup failure (e.g. a failed port bind rethrown from MockServer.createServerBootstrap).
                 // Report a non-zero exit code so a shell/CI caller can detect that the server never started.
                 exitCode = 1;
-                logStartupFailure(throwable);
+                logStartupFailure(throwable, ConfigurationProperties.disableSystemOut());
             }
         }
     }
