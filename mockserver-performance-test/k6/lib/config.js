@@ -335,8 +335,9 @@ export const SWEEP = {
   //     500 (measured peak 34) and 1,000 (UNMEASURED; interpolated 65-81 between
   //     the 500 and 2,000 rows) both floor to 96 — above 81 with margin. 64 was too
   //     low for 1k, so it was raised.
-  //   * vuCeiling 2048 caps k6 pre-initialisation (k6 pre-inits EVERY staggered
-  //     scenario's pool up front) on the high rungs, where the falling ratio makes
+  //   * vuCeiling 2048 caps k6 pre-initialisation (k6 pre-inits the peak sum of the
+  //     pools of rungs whose reservations overlap — see sweep.js
+  //     plannedVusBaseline) on the high rungs, where the falling ratio makes
   //     a flat 0.08 over-provision (32k -> 2560, 48k -> 3840, 64k -> 5120). 2048
   //     still exceeds the 32,000 rung's measured peak (1,283) with ~60% margin, and
   //     48k/64k sit above the ~36k knee so they saturate and are EXCLUDED from

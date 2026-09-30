@@ -672,8 +672,8 @@ for PI in "${!P_CORES[@]}"; do
             # constraint (198 VUs idle) and the drops need another explanation; a max
             # ABOVE the preAllocatedVUs pool is the only per-rung proof the pool grew.
             # (Whole-run pool growth is in the top-level .vus_diagnostics block, not
-            # here — k6 pre-inits the pool of every staggered scenario so growth
-            # cannot be attributed to one rung.) stall_time_buckets shows WHEN in the rung
+            # here — k6 shares initialised VUs across rungs whose reservations overlap,
+            # so growth cannot be attributed to one rung.) stall_time_buckets shows WHEN in the rung
             # deep-tail requests fell — clustered => transient stall (the standing
             # hypothesis), uniform => steady limit — a proxy for drop timing (a
             # dropped iteration never runs code, so drops cannot be timestamped).

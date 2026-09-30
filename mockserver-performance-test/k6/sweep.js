@@ -45,13 +45,13 @@
 //                           cannot explain its drops.
 //   * vus_diagnostics     — a WHOLE-RUN block (not per rung): did the initialized
 //                           VU pool ever grow past its baseline, and how much
-//                           concurrency did the whole ladder ever demand? Pool
-//                           growth is a whole-test property here because k6
-//                           pre-initializes EVERY staggered arrival-rate scenario's
-//                           pool up front, so the global initialized count is the
-//                           SUM of the per-rung pools from the start; growth is any
-//                           excess above that baseline (impossible with a fixed
-//                           per-rung pool, so it now reads as a fix-verification).
+//                           concurrency did the whole ladder ever demand? k6
+//                           initializes VUs up front to its PLANNED peak (see
+//                           plannedVusBaseline) and reuses them across rungs whose
+//                           reservations do not overlap, so the baseline is that
+//                           planned peak, not the sum of the pools; growth is any
+//                           excess above it (impossible with a fixed per-rung pool,
+//                           so it now reads as a fix-verification).
 //   * stalls / stall_*    — count of deep-tail requests (> K6_SWEEP_STALL_MS) and
 //                           the VU concurrency at those moments — the stall
 //                           hypothesis's own signature.
@@ -81,7 +81,7 @@ import { seedExpectations, resetMockServer, getSimple } from './lib/expectations
 // Sum a k6 duration string to seconds (supports compound forms like "1m30s").
 function toSeconds(d) {
   const str = String(d).trim();
-  const tokenRe = /(\d+)(ms|s|m|h)/g;
+  const tokenRe = /(\d+(?:\.\d+)?)(ms|s|m|h)/g;
   let total = 0;
   let matched = false;
   let token;
@@ -160,10 +160,35 @@ function poolForRate(rate) {
 // rate -> fixed pool, computed once and reused by buildScenarios AND the
 // vus_diagnostics baseline so the two never disagree.
 const POOLS = new Map(RATES.map((r) => [r, poolForRate(r)]));
-// Sum of every rung's pool: k6 pre-initializes EVERY staggered scenario's pool up
-// front, so this is the run's total pre-initialized VU baseline (the no-growth
-// expectation — a fixed per-rung pool can never grow past it).
-const INIT_BASELINE = RATES.reduce((sum, r) => sum + POOLS.get(r), 0);
+
+// The VU count k6 initializes before the test starts, computed as k6 v1.7.1 plans it
+// (ScenarioConfigs.GetFullExecutionRequirements + GetMaxPlannedVUs): each scenario
+// reserves its planned VUs from startTime to startTime + duration + gracefulStop (30s
+// default), and k6 initializes the peak of the overlapping reservations' sum. A
+// reservation ending at the instant another starts is released first, as in k6.
+// null for an executor this does not model, so vus_pool_grew reads null, not false.
+function plannedVusBaseline(scenarios) {
+  const events = [];
+  for (const sc of Object.values(scenarios)) {
+    const planned = sc.preAllocatedVUs !== undefined ? sc.preAllocatedVUs : sc.vus;
+    const span = sc.duration || sc.maxDuration;
+    if (planned === undefined || span === undefined) {
+      return null;
+    }
+    // Whole milliseconds, so fractional steps cannot turn a tie into an overlap.
+    const start = Math.round(toSeconds(sc.startTime || '0s') * 1000);
+    const end = start + Math.round((toSeconds(span) + toSeconds(sc.gracefulStop || '30s')) * 1000);
+    events.push([start, planned], [end, -planned]);
+  }
+  events.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  let current = 0;
+  let peak = 0;
+  for (const [, delta] of events) {
+    current += delta;
+    peak = Math.max(peak, current);
+  }
+  return peak;
+}
 
 // --- VU-pool diagnostics tunables --------------------------------------------
 // A request slower than STALL_MS is counted as a "stall" — deep-tail latency well
@@ -322,13 +347,17 @@ function setupTimeout() {
   return `${Math.max(60, Math.ceil((START_AT_MS - Date.now()) / 1000) + 60)}s`;
 }
 
+const SCENARIOS = buildScenarios();
+// The no-growth expectation for k6's initialized VU count (vus_max).
+const INIT_BASELINE = plannedVusBaseline(SCENARIOS);
+
 export const options = {
   insecureSkipTLSVerify: CONFIG.insecureSkipTLSVerify,
   // handleSummary reads these stats off each submetric's `values`; p(50)/p(99)/
   // p(99.9) are NOT in k6's default trend set, so declare them or they come back
   // null.
   summaryTrendStats: ['avg', 'min', 'med', 'p(50)', 'p(90)', 'p(95)', 'p(99)', 'p(99.9)', 'max'],
-  scenarios: buildScenarios(),
+  scenarios: SCENARIOS,
   thresholds: sweepThresholds(),
   ...(START_AT_MS > 0 ? { setupTimeout: setupTimeout() } : {}),
 };
@@ -404,8 +433,8 @@ export function matchAt() {
   // `vus` gauge) is deliberate: a stall-driven pile-up lasts only a few ms and the
   // 1 Hz gauge misses it, so this is the sensitive instrument for the stall
   // question. (Pool-SIZE growth is a whole-test property — see vus_diagnostics in
-  // handleSummary — not something a per-rung sample can isolate, because k6
-  // pre-initializes every staggered scenario's pool up front.)
+  // handleSummary — not something a per-rung sample can isolate, because k6 shares
+  // initialized VUs across rungs.)
   const active = exec.instance.vusActive;
   vusActiveTrend.add(active, rateTag);
 
@@ -569,18 +598,16 @@ export function handleSummary(data) {
     });
   }
   // Whole-run VU gauges straight from k6's built-ins. vus_max = k6's own max
-  // INITIALIZED (allocated) VU count for the entire run, summed across every
-  // scenario's pool; vus = max concurrently-active VUs for the entire run, but
+  // INITIALIZED (allocated) VU count for the entire run, shared across rungs;
+  // vus = max concurrently-active VUs for the entire run, but
   // sampled at only 1 Hz so it UNDERSTATES the brief stall pile-ups the per-rung
   // vus_active_max (per-iteration) catches — kept only as a coarse cross-check.
   const vusMaxG = data.metrics.vus_max;
   const vusG = data.metrics.vus;
   const vusInitGlobalMax = vusMaxG && vusMaxG.values ? round(vusMaxG.values.max, 0) : null;
-  // k6 pre-initializes EVERY staggered arrival-rate scenario's pool at test start,
-  // so with no growth the global initialized count sits at exactly the SUM of the
-  // per-rung pools (INIT_BASELINE). Anything above that is real pool growth — which
-  // a fixed per-rung pool (preAllocatedVUs == maxVUs) can never produce, so
-  // vus_pool_grew must read false.
+  // With no growth vus_max sits at exactly k6's planned peak (INIT_BASELINE). Anything
+  // above it is a VU allocated mid-run — which a fixed per-rung pool
+  // (preAllocatedVUs == maxVUs) can never produce, so vus_pool_grew must read false.
   const initBaseline = INIT_BASELINE;
   const out = {
     proto: SWEEP.proto,
@@ -610,15 +637,16 @@ export function handleSummary(data) {
       pool_per_rung: Object.fromEntries(RATES.map((r) => [String(r), POOLS.get(r)])),
       flat_override: FLAT_SET ? FLAT_PRE : null,
       rung_count: points.length,
-      // The no-growth expectation for the global initialized count.
+      // The no-growth expectation for the global initialized count: k6's planned
+      // peak of overlapping rung reservations (see plannedVusBaseline).
       vus_initialized_baseline: initBaseline,
       // The actual global initialized high-water for the whole run.
       vus_initialized_global_max: vusInitGlobalMax,
       // The bottom-line answer to "did the pool ever grow?": true iff the global
-      // initialized count exceeded the sum of the per-rung pools. With the fixed
-      // per-rung pool (preAllocatedVUs == maxVUs) this MUST read false — it is now a
-      // regression guard: a true here means the invariant was somehow bypassed.
-      vus_pool_grew: vusInitGlobalMax === null ? null : vusInitGlobalMax > initBaseline,
+      // initialized count exceeded k6's planned peak. With the fixed per-rung pool
+      // (preAllocatedVUs == maxVUs) this MUST read false — it is now a regression
+      // guard: a true here means the invariant was somehow bypassed.
+      vus_pool_grew: vusInitGlobalMax === null || initBaseline === null ? null : vusInitGlobalMax > initBaseline,
       // Coarse (1 Hz) whole-run peak active VUs; per-rung vus_active_max is the
       // sensitive figure — expect this to be LOWER when stalls are brief.
       vus_concurrent_overall_max: vusG && vusG.values ? round(vusG.values.max, 0) : null,
@@ -627,7 +655,7 @@ export function handleSummary(data) {
       step_seconds: STEP_SECONDS,
       bucket_width_ms: round(BUCKET_WIDTH_MS, 0),
       note:
-        'Item 18. Per rung: is vus_active_max below that rung pool_per_rung (VUs idle -> pool shortage cannot explain the drops) and do stall_time_buckets cluster (transient stall) or spread evenly (steady limit)? Whole-run: vus_pool_grew says whether the initialized count ever exceeded the sum of the per-rung pools. Each rung now has a FIXED pool (preAllocatedVUs == maxVUs) sized to its offered rate from the build #347 peaks, so the ramp can no longer fire: expect vus_pool_grew=false and vus_active_max < the rung pool on every sub-knee rung; a sub-knee rung that still drops means that rung pool needs re-sizing, not that the ramp returned.',
+        'Item 18. Per rung: is vus_active_max below that rung pool_per_rung (VUs idle -> pool shortage cannot explain the drops) and do stall_time_buckets cluster (transient stall) or spread evenly (steady limit)? Whole-run: vus_pool_grew says whether the initialized count ever exceeded the k6 planned peak (vus_initialized_baseline: the largest sum of rung pools whose startTime..startTime+duration+gracefulStop reservations overlap). Each rung now has a FIXED pool (preAllocatedVUs == maxVUs) sized to its offered rate from the build #347 peaks, so the ramp can no longer fire: expect vus_pool_grew=false and vus_active_max < the rung pool on every sub-knee rung; a sub-knee rung that still drops means that rung pool needs re-sizing, not that the ramp returned.',
     },
   };
   const json = JSON.stringify(out, null, 2);
