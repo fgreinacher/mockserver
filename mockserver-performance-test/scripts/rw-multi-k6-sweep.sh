@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Top-level only (no errtrace): names the failing step instead of exiting silently.
-trap 'echo ":x: rw-multi-k6: failed (exit $?) at line $LINENO: $BASH_COMMAND" >&2' ERR
+# ERR fires only for top-level commands (no errtrace: it misfires inside $(...)). The EXIT trap
+# reads $BASH_COMMAND first: the command running when it exited (for a pipeline, its last stage).
+LAST_ERR=""
+trap 'LAST_ERR="exit $? at line $LINENO: $BASH_COMMAND"; echo ":x: rw-multi-k6: failed ($LAST_ERR)" >&2' ERR
 
 # rw-multi-k6-sweep.sh [out.json] — the sweep.js ladder from N independent k6 processes
 # started at one instant, merged in Prometheus (native histograms). Opt-in, never published;
@@ -53,6 +55,19 @@ DEGRADE="${PERF_RW_DEGRADE:-}"
 # Test hook for the fail-closed cut gates: "<proc>:query" corrupts that process's cut
 # query; "<proc>:empty" moves its boundary past every sample (a null cut, no failure).
 CUT_FAULT="${PERF_RW_TEST_CUT_FAULT:-}"
+SOFT_STEPS="xcheck_phase merge_main sweep_json saturation headline per_process cross_check"
+if [ -n "${PERF_RW_TEST_NULL_RUNG:-}" ]; then
+  case ",$RATES," in
+    *",$PERF_RW_TEST_NULL_RUNG,"*) ;;
+    *) echo ":x: PERF_RW_TEST_NULL_RUNG='$PERF_RW_TEST_NULL_RUNG' is not a rung of PERF_RW_RATES ($RATES)" >&2; exit 2 ;;
+  esac
+fi
+if [ -n "${PERF_RW_TEST_FAIL_STEP:-}" ]; then
+  case " $SOFT_STEPS " in
+    *" $PERF_RW_TEST_FAIL_STEP "*) ;;
+    *) echo ":x: PERF_RW_TEST_FAIL_STEP='$PERF_RW_TEST_FAIL_STEP' is not a step; valid: $SOFT_STEPS" >&2; exit 2 ;;
+  esac
+fi
 
 # Rig-validity tunables — the same names and defaults perf-test-run.sh passes to
 # derive_saturation, so both methods judge a rung by one rule.
@@ -143,13 +158,66 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/perf-rw.XXXXXX")"
 chmod 0777 "$WORK"
 ALL_NAMES=""
 OWN_NETWORK=""
-cleanup() {
+RESULT_WRITTEN=0
+# An abort still leaves an invalid result naming the failed step, plus whatever the main
+# phase merged, so a rig run is never reduced to `{}`.
+write_fallback_result() { # rc failed_command
+  local rc="$1" err merged="$WORK/main-merged.json" out
+  if [ -n "$LAST_ERR" ]; then err="$LAST_ERR"
+  # Deliberate default: TERM/INT set LAST_ERR, but another path could still exit 0 here.
+  elif [ "$rc" -eq 0 ]; then err="terminated (signal?) while running: $2"
+  else err="exit $rc: $2"; fi
+  [ -s "$merged" ] || merged=/dev/null
+  fallback_json() { # merged_file
+    jq -n --arg err "$err" --argjson n "${N:-0}" --slurpfile merged "$1" \
+      --arg hook_cut "${PERF_RW_TEST_CUT_FAULT:-}" --arg hook_step "${PERF_RW_TEST_FAIL_STEP:-}" --arg hook_null "${PERF_RW_TEST_NULL_RUNG:-}" '
+      {attempted:true, valid:false, headline:null,
+       invalid_reasons:["rw_harness_completed: the harness aborted before assembling its result (\($err))"],
+       validity:{valid:false, checks:[{name:"rw_harness_completed", ok:false, detail:$err}]},
+       method:{method:"remote_write_multi_k6", procs:$n,
+               test_hooks:({cut_fault:$hook_cut, fail_step:$hook_step, null_rung:$hook_null} | with_entries(select(.value != "")))},
+       main_merged:($merged[0] // null)}'
+  }
+  # An unreadable merged file must not leave the output empty: retry without it.
+  out="$(fallback_json "$merged" 2>/dev/null)" || out=""
+  [ -n "$out" ] || out="$(fallback_json /dev/null 2>/dev/null)" || true
+  printf '%s\n' "$out" > "$OUT_FILE" 2>/dev/null || true
+}
+cleanup() { # rc failed_command
+  local rc="$1"
+  if [ "$RESULT_WRITTEN" != 1 ] && [ "$OUT_FILE" != /dev/stdout ]; then write_fallback_result "$rc" "$2"; fi
+  # JSON, CSV and text files, full k6 logs and the Prometheus log (taken before the
+  # containers go). Guarded: a copy failure must not skip cleanup or change the exit code.
+  if [ -n "${PERF_RW_DEBUG_DIR:-}" ] && [ -d "$WORK" ]; then
+    {
+      mkdir -p "$PERF_RW_DEBUG_DIR"
+      cp "$WORK"/*.json "$WORK"/*.csv "$WORK"/*.txt "$WORK"/*.yml "$WORK"/*.log "$PERF_RW_DEBUG_DIR"/
+    } 2>/dev/null || true
+    { docker logs "$PROM_NAME" > "$PERF_RW_DEBUG_DIR/prometheus.log" 2>&1; } 2>/dev/null || true
+  fi
+  # Background samplers (a failed soft step can orphan one, reparented away from $$) are
+  # recorded as "PID start-time"; one is killed only if that PID still has the same start
+  # time, i.e. it is the same process, never a reused PID in this or another run.
+  if [ -f "$WORK/pids.txt" ]; then
+    local pid started
+    while read -r pid started; do
+      [ -n "$started" ] && [ "$(proc_start "$pid")" = "$started" ] && kill "$pid" 2>/dev/null || true
+    done < "$WORK/pids.txt"
+  fi
+  # Names started inside a soft-step subshell only reach the registry file.
+  [ -f "$WORK/containers.txt" ] && ALL_NAMES="$ALL_NAMES $(tr '\n' ' ' < "$WORK/containers.txt")"
   # shellcheck disable=SC2086
   [ -n "$ALL_NAMES" ] && docker rm -f $ALL_NAMES >/dev/null 2>&1 || true
   [ -n "$OWN_NETWORK" ] && docker network rm "$OWN_NETWORK" >/dev/null 2>&1 || true
   if [ -n "${PERF_RW_KEEP_WORK:-}" ]; then echo "--- work dir kept: $WORK" >&2; else rm -rf "$WORK"; fi
 }
-trap cleanup EXIT
+trap 'cleanup "$?" "$BASH_COMMAND"' EXIT
+# Name a cancellation (e.g. Buildkite's SIGTERM) and still run cleanup. Subshells reset these.
+trap 'LAST_ERR="terminated by SIGTERM while running: $BASH_COMMAND"; exit 143' TERM
+trap 'LAST_ERR="interrupted by SIGINT while running: $BASH_COMMAND"; exit 130' INT
+die() { LAST_ERR="$1"; echo ":x: $1" >&2; exit 1; } # a deliberate stop the fallback can name
+proc_start() { ps -o lstart= -p "$1" 2>/dev/null | awk '{$1=$1; print}'; } # "" if gone or unsupported
+record_pid() { echo "$1 $(proc_start "$1")" >> "$WORK/pids.txt"; }
 
 echo "--- item 31 remote-write multi-k6 sweep: N=$N rates=$RATES step=$SWEEP_STEP gap=$SWEEP_GAP settle=${SETTLE_S}s push=${PUSH_S}s quiet=${QUIET_S}s window=$WINDOW_MODE server=$SERVER_CPUS prometheus=$PROM_CPUS k6=${K6_SETS[*]} target=${TARGET_URL:-<launch SUT>} degrade=${DEGRADE:-none}" >&2
 
@@ -157,8 +225,7 @@ echo "--- item 31 remote-write multi-k6 sweep: N=$N rates=$RATES step=$SWEEP_STE
 PAIRS=(server "$SERVER_CPUS" prometheus "$PROM_CPUS")
 for ((i=0;i<N;i++)); do PAIRS+=("k6_$i" "${K6_SETS[$i]}"); done
 if ! cpusets_physically_disjoint "${PAIRS[@]}" >&2; then
-  echo ":x: SUT / Prometheus / k6 cpusets are not physically disjoint — refusing to measure contention" >&2
-  exit 1
+  die "SUT / Prometheus / k6 cpusets are not physically disjoint — refusing to measure contention"
 fi
 
 # --- network, Prometheus, SUT --------------------------------------------------
@@ -186,14 +253,17 @@ docker run -d --name "$PROM_NAME" --network "$NETWORK" --network-alias "$PROM_NA
   --web.enable-remote-write-receiver --enable-feature=native-histograms \
   --query.lookback-delta=2h >/dev/null
 # Resolved per call: a Prometheus restart moves the published host port.
-prom_url() { echo "http://$(docker port "$PROM_NAME" 9090/tcp 2>/dev/null | head -1)"; }
+# PERF_RW_PUBLISHED_HOST: where published ports are reachable when this script itself runs in
+# a container (e.g. host.docker.internal); default is the address docker reports.
+published() { local hp; hp="$(docker port "$1" "$2" 2>/dev/null | head -1)"; echo "${PERF_RW_PUBLISHED_HOST:-${hp%:*}}:${hp##*:}"; }
+prom_url() { echo "http://$(published "$PROM_NAME" 9090/tcp)"; }
 PROM_URL="$(prom_url)"
 RW_URL="http://${PROM_NAME}:9090/api/v1/write"
 for _ in $(seq 1 60); do
   curl -sf "$PROM_URL/-/ready" >/dev/null 2>&1 && break
   sleep 1
 done
-curl -sf "$PROM_URL/-/ready" >/dev/null || { echo ":x: Prometheus did not become ready" >&2; exit 1; }
+curl -sf "$PROM_URL/-/ready" >/dev/null || die "Prometheus did not become ready at $PROM_URL"
 
 wait_ready() {
   local url="$1" code
@@ -213,21 +283,24 @@ if [ -z "$TARGET_URL" ]; then
     "$MOCKSERVER_IMAGE" -serverPort 1080 >/dev/null
   SUT_CONTAINER="$SUT_NAME"
   TARGET_URL="http://${SUT_NAME}:1080"
-  CURL_URL="http://$(docker port "$SUT_NAME" 1080/tcp | head -1)"
+  CURL_URL="http://$(published "$SUT_NAME" 1080/tcp)"
 else
   CURL_URL="${PERF_RW_TARGET_CURL_URL:-$TARGET_URL}"
 fi
-wait_ready "$CURL_URL" || { echo ":x: SUT not ready at $CURL_URL" >&2; exit 1; }
+wait_ready "$CURL_URL" || die "SUT not ready at $CURL_URL"
 
 # --- Prometheus query helpers ------------------------------------------------
 # Fail closed without aborting: a failed query is recorded in $PROM_FAILURES (which fails
 # the rw_prometheus_queries_ok gate) and reads as an empty result ("[]" / "null"), never "".
 PROM_FAILURES="$WORK/prom-query-failures.txt"
-: > "$PROM_FAILURES"
+PROM_WARNINGS="$WORK/prom-query-warnings.txt"
+: > "$PROM_FAILURES"; : > "$PROM_WARNINGS"
 promq() { # expr -> JSON result array ("[]" on failure)
   local body out
   if body="$(curl -sf --max-time 30 --data-urlencode "query=$1" "$(prom_url)/api/v1/query")" \
      && out="$(jq -ce '.data.result | arrays' <<<"$body")"; then
+    # An empty result with a PromQL warning (e.g. mixed float/histogram) is otherwise silent.
+    jq -r --arg q "$1" '((.warnings // []) + (.infos // []))[] | "\($q) :: \(.)"' <<<"$body" >> "$PROM_WARNINGS" 2>/dev/null || true
     echo "$out"
   else
     echo ":x: Prometheus query failed (container $PROM_NAME down or restarted?): $1" >&2
@@ -244,6 +317,32 @@ nn() { [ -n "$1" ] && echo "$1" || echo null; } # "" -> null for bash-side consu
 
 usage_usec() { docker exec "$1" cat /sys/fs/cgroup/cpu.stat 2>/dev/null | awk '$1=="usage_usec"{print $2}'; }
 sleep_until() { while [ "$(date +%s)" -lt "$1" ]; do sleep 0.2; done; }
+
+# Report-only or post-measurement steps run in an errexit subshell: a failure is recorded
+# (rw_assembly_steps_ok) and a default used, so the result is still written.
+# PERF_RW_TEST_FAIL_STEP=<name> forces that step to fail (degrade test).
+ASSEMBLY_FAILURES=""
+# Invariant: every failed step reaches ASSEMBLY_FAILURES, so rw_assembly_steps_ok fails.
+note_step_failure() {
+  ASSEMBLY_FAILURES="${ASSEMBLY_FAILURES:+$ASSEMBLY_FAILURES, }$1"
+  echo ":x: rw-multi-k6: step '$1' failed; recorded as a failed check, continuing" >&2
+}
+soft() { # name cmd...
+  local name="$1"; shift
+  if [ "${PERF_RW_TEST_FAIL_STEP:-}" = "$name" ]; then note_step_failure "$name"; return 0; fi
+  ( "$@" ) & local pid=$!
+  wait "$pid" || note_step_failure "$name"
+}
+soft_capture() { # var default name cmd...  (stdout of cmd -> var)
+  local var="$1" def="$2" name="$3"; shift 3
+  local out="$WORK/.step-$name.out"
+  if [ "${PERF_RW_TEST_FAIL_STEP:-}" != "$name" ]; then
+    ( "$@" ) > "$out" & local pid=$!
+    if wait "$pid" && [ -s "$out" ]; then printf -v "$var" '%s' "$(cat "$out")"; return 0; fi
+  fi
+  note_step_failure "$name"
+  printf -v "$var" '%s' "$def"
+}
 
 # --- one synchronised ladder ---------------------------------------------------
 # run_phase <phase> <n> <agg_rates_csv> <window_mode> <lean> <cpusets;...>
@@ -264,7 +363,7 @@ run_phase() {
   for ((i=0;i<n;i++)); do
     local kname="${K6_PREFIX}-${phase}-p${i}"
     names="${names:+$names }$kname"
-    ALL_NAMES="$ALL_NAMES $kname"
+    ALL_NAMES="$ALL_NAMES $kname"; echo "$kname" >> "$WORK/containers.txt"
     docker run -d --name "$kname" --network "$NETWORK" --cpuset-cpus="${set_arr[$i]}" \
       -v "$K6_DIR:/k6:ro" -v "$WORK:/out" \
       -e "BASE_URL=$TARGET_URL" -e "PROTO=http" \
@@ -291,6 +390,7 @@ run_phase() {
             ($1 in keep){ gsub(/%/,"",$2); printf "%s %s %s\n", t, $1, $2 }' >> "$cpu_log"
       sleep "${PERF_RW_SAMPLE_INTERVAL:-1}"
     done ) & local sampler=$!
+  record_pid "$sampler"
 
   # cgroup CPU at the ladder's start and end: k6 CPU per request over the load
   # window only (VU initialisation and the summary are excluded).
@@ -298,6 +398,7 @@ run_phase() {
     for k in $names; do echo "$k start $(usage_usec "$k")"; done
     sleep_until "$ladder_end_s"
     for k in $names; do echo "$k end $(usage_usec "$k")"; done ) > "$WORK/${phase}-cgroup.txt" 2>/dev/null & local cgroup_pid=$!
+  record_pid "$cgroup_pid"
 
   local degrade_pid=""
   if [ "$phase" = main ] && [ -n "$DEGRADE" ]; then
@@ -518,24 +619,42 @@ if [ "$XCHECK" = true ]; then
   for a in "${_all[@]}"; do [ "$a" -le "$XCHECK_MAX_RPS" ] && XRATES="${XRATES:+$XRATES,}$a"; done
   XRATES="${PERF_RW_XCHECK_RATES:-$XRATES}"
 fi
-if [ -n "$XRATES" ]; then
+xcheck_phase() {
   run_phase xcheck 1 "$XRATES" vu_tag false "$XCHECK_CPUS"
   merge_phase xcheck vu_tag xcheck-by-tag
   merge_phase xcheck wallclock xcheck-by-time
-fi
+}
+[ -n "$XRATES" ] && soft xcheck_phase xcheck_phase
 
 run_phase main "$N" "$RATES" "$WINDOW_MODE" true "$(IFS=';'; echo "${K6_SETS[*]}")"
-merge_phase main "$WINDOW_MODE" main-merged
+soft merge_main merge_phase main "$WINDOW_MODE" main-merged
+# Without the merge there is nothing to judge: keep an empty ladder so every gate still runs
+# (rw_rungs_measured and rw_assembly_steps_ok then fail with the reason).
+[ -s "$WORK/main-merged.json" ] || jq -nc --slurpfile meta "$WORK/main-meta.json" '{meta:$meta[0], points:[]}' > "$WORK/main-merged.json"
+# Series inventory for diagnosis only; not via promq, so it never affects a gate.
+{ curl -sf --max-time 30 --data-urlencode 'query=count by (__name__, proc, rate) ({__name__=~"k6_http_req.*"})' \
+    "$(prom_url)/api/v1/query" | jq -c '[.data.result[] | {name:.metric.__name__, proc:.metric.proc, rate:.metric.rate, series:(.value[1]|tonumber)}]' \
+    > "$WORK/prom-series-inventory.json"; } 2>/dev/null || true
+# Degrade hook: PERF_RW_TEST_NULL_RUNG=<aggregate rate> blanks that rung's merged count, as
+# when a rung's histogram query returns nothing.
+if [ -n "${PERF_RW_TEST_NULL_RUNG:-}" ]; then
+  jq --argjson r "$PERF_RW_TEST_NULL_RUNG" '.points |= map(if .nominal_agg_offered_rps == $r then .achieved_rps = null | .sample_count = null else . end)' \
+    "$WORK/main-merged.json" > "$WORK/main-merged.tmp" && mv "$WORK/main-merged.tmp" "$WORK/main-merged.json"
+fi
 
 # --- assemble the sweep.json-shaped result --------------------------------------
 MAIN_META="$WORK/main-meta.json"
+build_sweep_json() {
 jq --argjson settle "$SETTLE_S" --argjson step "$STEP_S" --arg w "$WINDOW_MODE" '
   {proto:"http",
    latency_window:{settle_s:$settle, measured_s:($step-$settle), mode:$w, cut:"prometheus"},
    points:[ .points[] | del(.per_process, .nominal_agg_offered_rps, .per_process_pool, .start_skew_ms, .skew_ok, .accounting_ok, .settle_cut_ok, .cut_excess_ok, .cut_measured) ],
    vus_diagnostics:{pool_per_rung:(reduce .points[] as $p ({}; . + {($p.offered_rps|tostring): $p.per_process_pool})),
                     note:"pool_per_rung is PER PROCESS, keyed by the aggregate offered rate; vus_active_p95 is the busiest process"}}
-' "$WORK/main-merged.json" > "$WORK/sweep.json"
+' "$WORK/main-merged.json"
+}
+soft_capture SWEEP_OUT '{"proto":"http","points":[]}' sweep_json build_sweep_json
+printf '%s\n' "$SWEEP_OUT" > "$WORK/sweep.json"
 
 WINDOW_MISMATCH=""
 WINDOW_MISMATCH="$(sweep_window_mismatches "$WORK/sweep.json")" || true
@@ -558,10 +677,11 @@ for ((i=0;i<N;i++)); do PINS="${PINS:+$PINS }${K6_PREFIX}-main-p${i}=$(( $(cpu_c
 # shellcheck disable=SC2034  # read by derive_saturation
 SWEEP_RATES="$(jq -r '[.points[].offered_rps] | join(",")' "$WORK/sweep.json")"
 # CPU windows start from the earliest MEASURED rung-0 start, not the requested instant.
-T0_S="$(jq -r '[.points[0].per_process[].rung_start_epoch_ms | select(. != null)]
+T0_S="$(jq -r '[(.points[0].per_process // [])[] | .rung_start_epoch_ms | select(. != null)]
   | if length == 0 then "null" else (min / 1000 | floor) end' "$WORK/main-merged.json")"
 [ "$T0_S" = null ] && T0_S="$(jq -r '.start_at_s' "$MAIN_META")"
-SATURATION_JSON="$(derive_saturation "$WORK/sweep.json" "$WORK/main-k6-cpu.csv" "$T0_S")"
+soft_capture SATURATION_JSON '{"ladder":[],"rig_valid_peak_achieved_rps":null,"saturation_rps":null}' saturation \
+  derive_saturation "$WORK/sweep.json" "$WORK/main-k6-cpu.csv" "$T0_S"
 # derive_saturation reads a rung with no CPU sample as 0% (headroom), so count them here.
 RUNG_COUNT="$(jq '.points | length' "$WORK/sweep.json")"
 CPU_SAMPLES="[]"
@@ -575,8 +695,9 @@ NOW_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 SYNTH="$(jq -nc --slurpfile s "$WORK/sweep.json" --argjson sat "$SATURATION_JSON" --arg ts "$NOW_ISO" \
   --argjson scpus "$(cpu_count "$SERVER_CPUS")" '
   {schema_version:2, timestamp_utc:$ts, config:{}, agent:{server_cpus:$scpus}, sweep:$s[0], saturation:$sat}')"
-HEADLINE="$(jq -c --arg now "$NOW_ISO" --argjson lat_mult 3 --argjson keep "$KEEP" --arg fix_date "2026-09-16" \
-  -f "$FIGURES_JQ" <<<"$SYNTH" | jq -c '.headline')"
+headline_of() { jq -c --arg now "$NOW_ISO" --argjson lat_mult 3 --argjson keep "$KEEP" --arg fix_date "2026-09-16" \
+  -f "$FIGURES_JQ" <<<"$SYNTH" | jq -c '.headline'; }
+soft_capture HEADLINE null headline headline_of
 
 # --- per-process, CPU and Prometheus cost ---------------------------------------
 cpu_stats() { # csv name from_s to_s -> {mean,max,samples}
@@ -584,30 +705,34 @@ cpu_stats() { # csv name from_s to_s -> {mean,max,samples}
     END{ if(c) printf "{\"mean\":%.1f,\"max\":%.1f,\"samples\":%d}", s/c, m, c; else printf "{\"mean\":null,\"max\":null,\"samples\":0}" }' "$1"
 }
 L0="$(jq -r '.start_at_s' "$MAIN_META")"; L1="$(jq -r '.ladder_end_s' "$MAIN_META")"
-MAIN_COST="$(cpu_cost_json main)"
-PER_PROCESS="[]"
-for ((i=0;i<N;i++)); do
-  c="${K6_PREFIX}-main-p${i}"
-  pin=$(( $(cpu_count "${K6_SETS[$i]}") * 100 ))
-  per_rung="[]"
-  for ((k=0;k<RUNG_COUNT;k++)); do
-    ws=$(( T0_S + k * (STEP_S + GAP_S) + SETTLE_S )); we=$(( T0_S + k * (STEP_S + GAP_S) + STEP_S ))
-    per_rung="$(jq -c --argjson st "$(cpu_stats "$WORK/main-cpu.csv" "$c" "$ws" "$we")" --argjson pin "$pin" \
-      --argjson k "$k" --argjson i "$i" --slurpfile m "$WORK/main-merged.json" '
-      . + [{offered_rps:$m[0].points[$k].offered_rps, cpu_pct_mean:$st.mean, cpu_pct_max:$st.max, cpu_samples:$st.samples,
-            cpu_frac_of_pin:(if $st.mean == null then null else (($st.mean / $pin) * 1000 | round) / 1000 end),
-            drop_fraction:$m[0].points[$k].per_process[$i].drop_fraction}]' <<<"$per_rung")"
+build_per_process() {
+  local MAIN_COST PER_PROCESS="[]" c pin per_rung ws we i k
+  MAIN_COST="$(cpu_cost_json main)"
+  for ((i=0;i<N;i++)); do
+    c="${K6_PREFIX}-main-p${i}"
+    pin=$(( $(cpu_count "${K6_SETS[$i]}") * 100 ))
+    per_rung="[]"
+    for ((k=0;k<RUNG_COUNT;k++)); do
+      ws=$(( T0_S + k * (STEP_S + GAP_S) + SETTLE_S )); we=$(( T0_S + k * (STEP_S + GAP_S) + STEP_S ))
+      per_rung="$(jq -c --argjson st "$(cpu_stats "$WORK/main-cpu.csv" "$c" "$ws" "$we")" --argjson pin "$pin" \
+        --argjson k "$k" --argjson i "$i" --slurpfile m "$WORK/main-merged.json" '
+        . + [{offered_rps:$m[0].points[$k].offered_rps, cpu_pct_mean:$st.mean, cpu_pct_max:$st.max, cpu_samples:$st.samples,
+              cpu_frac_of_pin:(if $st.mean == null then null else (($st.mean / $pin) * 1000 | round) / 1000 end),
+              drop_fraction:$m[0].points[$k].per_process[$i].drop_fraction}]' <<<"$per_rung")"
+    done
+    PER_PROCESS="$(jq -c --argjson i "$i" --arg set "${K6_SETS[$i]}" --argjson pin "$pin" --argjson per_rung "$per_rung" \
+      --argjson cpu "$(cpu_stats "$WORK/main-cpu.csv" "$c" "$L0" "$L1")" --argjson cost "$MAIN_COST" \
+      --argjson exit "$(jq ".exit_codes[$i] // null" "$MAIN_META")" --slurpfile s <(cat "$WORK/main-p${i}.json" 2>/dev/null || echo 'null') '
+      . + [{index:$i, cpuset:$set, pin_pct:$pin, exit_code:$exit,
+            summary_present:($s[0] != null),
+            cpu_pct_over_ladder:$cpu, cpu_us_per_request:$cost[$i].cpu_us_per_request, requests:$cost[$i].requests,
+            setup_end_minus_start_at_ms:(if $s[0].wallclock.start_at_ms and $s[0].wallclock.setup_end_ms
+                                         then ($s[0].wallclock.setup_end_ms - $s[0].wallclock.start_at_ms) else null end),
+            per_rung:$per_rung}]' <<<"$PER_PROCESS")"
   done
-  PER_PROCESS="$(jq -c --argjson i "$i" --arg set "${K6_SETS[$i]}" --argjson pin "$pin" --argjson per_rung "$per_rung" \
-    --argjson cpu "$(cpu_stats "$WORK/main-cpu.csv" "$c" "$L0" "$L1")" --argjson cost "$MAIN_COST" \
-    --argjson exit "$(jq ".exit_codes[$i] // null" "$MAIN_META")" --slurpfile s <(cat "$WORK/main-p${i}.json" 2>/dev/null || echo 'null') '
-    . + [{index:$i, cpuset:$set, pin_pct:$pin, exit_code:$exit,
-          summary_present:($s[0] != null),
-          cpu_pct_over_ladder:$cpu, cpu_us_per_request:$cost[$i].cpu_us_per_request, requests:$cost[$i].requests,
-          setup_end_minus_start_at_ms:(if $s[0].wallclock.start_at_ms and $s[0].wallclock.setup_end_ms
-                                       then ($s[0].wallclock.setup_end_ms - $s[0].wallclock.start_at_ms) else null end),
-          per_rung:$per_rung}]' <<<"$PER_PROCESS")"
-done
+  echo "$PER_PROCESS"
+}
+soft_capture PER_PROCESS '[]' per_process build_per_process
 SUT_CPU="$( [ -n "$SUT_CONTAINER" ] && cpu_stats "$WORK/main-cpu.csv" "$SUT_CONTAINER" "$L0" "$L1" || echo '{"mean":null,"max":null}')"
 PROM_CPU="$(cpu_stats "$WORK/main-cpu.csv" "$PROM_NAME" "$L0" "$L1")"
 # Send failures and slow flushes both invalidate: k6 warns a slow flush may drop samples.
@@ -617,42 +742,60 @@ SLOW_FLUSHES="$( { grep -hoE 'took [0-9.]+(ms|s) while flush period' "$WORK"/*-p
 
 # --- cross-check ------------------------------------------------------------------
 CROSS='{"attempted":false}'
-if [ -n "$XRATES" ]; then
-  CROSS="$(jq -nc --slurpfile pub "$WORK/xcheck-p0.json" --slurpfile bytime "$WORK/xcheck-by-time.json" \
+# Report-only comparisons: rungs with no single-process counterpart (above the cross-check
+# cap) or with a missing figure are labelled, never divided. Missing inputs fail the step.
+build_cross() {
+  jq -nc --slurpfile pub "$WORK/xcheck-p0.json" --slurpfile bytime "$WORK/xcheck-by-time.json" \
     --slurpfile bytag "$WORK/xcheck-by-tag.json" --slurpfile main "$WORK/main-merged.json" \
     --argjson xcost "$(cpu_cost_json xcheck)" \
     --argjson t50 "$XTOL_P50" --argjson t95 "$XTOL_P95" --argjson t99 "$XTOL_P99" --argjson abs "$XTOL_ABS_MS" \
     --argjson ra "$RTOL_ACHIEVED" --argjson r50 "$RTOL_P50" --argjson r95 "$RTOL_P95" --argjson r99 "$RTOL_P99" '
-    def within($a; $b; $tol): ($a != null and $b != null) and ((($a - $b)|fabs) <= ([($tol * ([$a, $b]|max)), $abs]|max));
+    def num: type == "number";
+    def within($a; $b; $tol): ($a|num) and ($b|num) and ((($a - $b)|fabs) <= ([($tol * ([$a, $b]|max)), $abs]|max));
+    def ratio($a; $o): if ($a|num) and ($o|num) and $o > 0 then $a / $o else null end;
+    def r3: if . == null then null else (. * 1000 | round) / 1000 end;
     def cmp($x; $y; $t5; $t9; $t99): {
         p50:{published:$x.p50_ms, remote_write:$y.p50_ms, ok:within($x.p50_ms; $y.p50_ms; $t5)},
         p95:{published:$x.p95_ms, remote_write:$y.p95_ms, ok:within($x.p95_ms; $y.p95_ms; $t9)},
         p99:{published:$x.p99_ms, remote_write:$y.p99_ms, ok:within($x.p99_ms; $y.p99_ms; $t99)}};
-    ($pub[0].points) as $P
+    ($pub[0].points // []) as $P
     | [ range(0; $P|length) as $k
-        | ($P[$k]) as $x | ($bytime[0].points[$k]) as $t | ($bytag[0].points[$k]) as $g
+        | ($P[$k]) as $x | (($bytime[0].points // [])[$k] // {}) as $t | (($bytag[0].points // [])[$k] // {}) as $g
         | {offered_rps:$x.offered_rps,
-           counts:{published:$x.sample_count, prometheus:$t.sample_count, ok:($x.sample_count == $t.sample_count)},
+           counts:{published:$x.sample_count, prometheus:$t.sample_count,
+                   ok:(($x.sample_count|num) and $x.sample_count == $t.sample_count)},
            measured_counts:{published:$x.measured_sample_count, by_tag:$g.measured_sample_count, by_time:$t.measured_sample_count},
            by_time:cmp($x; $t; $t50; $t95; $t99),
            by_tag:cmp($x; $g; $t50; $t95; $t99)}
         | . + {ok:(.counts.ok and .by_time.p50.ok and .by_time.p95.ok and .by_time.p99.ok)} ] as $same
-    | [ $main[0].points[] as $m
-        | ($P[] | select(.offered_rps == $m.nominal_agg_offered_rps)) as $x
-        | {offered_rps:$x.offered_rps, main_offered_rps:$m.offered_rps,
-           achieved_ratio:{single:(($x.achieved_rps/$x.offered_rps)*1000|round/1000), multi:(($m.achieved_rps/$m.offered_rps)*1000|round/1000),
-                           ok:((($x.achieved_rps/$x.offered_rps) - ($m.achieved_rps/$m.offered_rps))|fabs <= $ra)},
-           latency:cmp($x; $m; $r50; $r95; $r99)}
-        | . + {ok:(.achieved_ratio.ok and .latency.p50.ok and .latency.p95.ok and .latency.p99.ok)} ] as $run
+    | [ ($main[0].points // [])[] as $m
+        | ([ $P[] | select(.offered_rps == $m.nominal_agg_offered_rps) ] | first) as $x
+        | if $x == null then
+            {offered_rps:$m.nominal_agg_offered_rps, main_offered_rps:$m.offered_rps, status:"no counterpart", ok:null}
+          else
+            ratio($x.achieved_rps; $x.offered_rps) as $rs | ratio($m.achieved_rps; $m.offered_rps) as $rm
+            | {offered_rps:$x.offered_rps, main_offered_rps:$m.offered_rps,
+               status:(if $rs == null or $rm == null then "incomplete" else "compared" end),
+               achieved_ratio:{single:($rs|r3), multi:($rm|r3),
+                               ok:($rs != null and $rm != null and (($rs - $rm)|fabs) <= $ra)},
+               latency:cmp($x; $m; $r50; $r95; $r99)}
+            | . + {ok:(.achieved_ratio.ok and .latency.p50.ok and .latency.p95.ok and .latency.p99.ok)}
+          end ] as $run
+    | ([ $run[] | select(.status != "no counterpart") ]) as $cmp
     | {attempted:true,
-       note:"same_requests: one k6 in the published summary mode ALSO remote-writing; its summary percentiles vs the Prometheus merge cut by time (the method under test) and by VU tag (histogram resolution only). cross_run: the N-process rungs vs that single-process run at the same aggregate offered rate (separate runs, so run-to-run noise).",
+       note:"same_requests: one k6 in the published summary mode ALSO remote-writing; its summary percentiles vs the Prometheus merge cut by time (the method under test) and by VU tag (histogram resolution only). cross_run: the N-process rungs vs that single-process run at the same aggregate offered rate (separate runs, so run-to-run noise); rungs above the cross-check cap have no counterpart.",
        tolerances:{same_requests:{p50:$t50, p95:$t95, p99:$t99, abs_ms:$abs},
                    cross_run:{achieved_ratio:$ra, p50:$r50, p95:$r95, p99:$r99, abs_ms:$abs}},
        same_requests:{rungs:$same, equivalent:(($same|length) > 0 and all($same[]; .ok)),
-                      accounting_ok:all($bytime[0].points[]; .accounting_ok)},
-       cross_run:{rungs:$run, agrees:(($run|length) > 0 and all($run[]; .ok))},
-       single_process_cpu_us_per_request:$xcost[0].cpu_us_per_request}
-    | . + {equivalent:(.same_requests.equivalent and .same_requests.accounting_ok and .cross_run.agrees)}')"
+                      accounting_ok:(($bytime[0].points // []) as $bp | ($bp|length) > 0 and all($bp[]; .accounting_ok))},
+       cross_run:{rungs:$run, agrees:(($cmp|length) > 0 and all($cmp[]; .ok)),
+                  compared:([ $run[] | select(.status == "compared") ] | length),
+                  no_counterpart:([ $run[] | select(.status == "no counterpart") ] | length)},
+       single_process_cpu_us_per_request:($xcost[0].cpu_us_per_request // null)}
+    | . + {equivalent:(.same_requests.equivalent and .same_requests.accounting_ok and .cross_run.agrees)}'
+}
+if [ -n "$XRATES" ]; then
+  soft_capture CROSS '{"attempted":true,"error":"cross-check assembly failed (see rw_assembly_steps_ok)"}' cross_check build_cross
 fi
 
 # --- validity (fail closed) ---------------------------------------------------------
@@ -660,12 +803,19 @@ VALIDITY="$(jq -nc --slurpfile m "$WORK/main-merged.json" --argjson pp "$PER_PRO
   --argjson cross "$CROSS" --argjson rwfail "${RW_FAILURES:-0}" --argjson cpusamples "$CPU_SAMPLES" \
   --argjson slow "$SLOW_FLUSHES" \
   --argjson promfail "$(wc -l < "$PROM_FAILURES" | tr -d ' ')" --arg promfirst "$(head -1 "$PROM_FAILURES")" \
-  --argjson push "$PUSH_S" '
+  --argjson push "$PUSH_S" --argjson n "$N" --arg stepfail "$ASSEMBLY_FAILURES" \
+  --argjson want "$(jq '.agg_rates | length' "$MAIN_META")" '
   def check($name; $ok; $detail): {name:$name, ok:$ok, detail:(if $ok then "ok" else $detail end)};
   ($m[0].points) as $P
-  | [ check("rw_accounting"; all($P[]; .accounting_ok);
+  | [ check("rw_assembly_steps_ok"; $stepfail == "";
+        "step(s) failed and were replaced by defaults: \($stepfail); the result was still written"),
+      check("rw_rungs_measured"; ($P|length) == $want
+            and all($P[]; (.sample_count|type) == "number" and (.achieved_rps|type) == "number" and (.p50_ms|type) == "number");
+        "expected \($want) rungs with a count, achieved rps and p50; missing at " + ([ $P[] | select(((.sample_count|type) == "number" and (.achieved_rps|type) == "number" and (.p50_ms|type) == "number")|not) | "\(.offered_rps) (count=\(.sample_count), achieved=\(.achieved_rps), p50=\(.p50_ms))" ] | join(", ")) + " (\($P|length) rung(s) merged)"),
+      check("rw_accounting"; all($P[]; .accounting_ok);
         "Prometheus request counts differ from the processes own counts (a lost remote-write flush or a missing process summary) at " + ([ $P[] | select(.accounting_ok|not) | "\(.offered_rps) [" + ([ .per_process[] | select(.accounted|not) | "\(.proc) summary=\(.summary_count) prometheus=\(.prometheus_count) hist=\(.prometheus_histogram_count)" ] | join(", ")) + "]" ] | join("; "))),
-      check("rw_processes_exited_cleanly"; all($pp[]; .summary_present and .exit_code == 0);
+      check("rw_processes_exited_cleanly"; ($pp|length) == $n and all($pp[]; .summary_present and .exit_code == 0);
+        "\($pp|length)/\($n) process entries; " +
         ([ $pp[] | select((.summary_present and .exit_code == 0)|not) | "p\(.index) exit=\(.exit_code) summary=\(.summary_present)" ] | join(", "))),
       check("rw_start_skew_within_bound"; all($P[]; .skew_ok);
         "over bound (or unknown: a process reported no rung start) at " + ([ $P[] | select(.skew_ok|not) | "\(.offered_rps): \(.start_skew_ms // "unknown") ms" ] | join(", "))),
@@ -699,7 +849,9 @@ jq -n --argjson synth "$SYNTH" --argjson headline "$HEADLINE" --slurpfile m "$WO
   --arg scpus "$SERVER_CPUS" --arg pcpus "$PROM_CPUS" --arg k6img "$K6_IMAGE" --arg promimg "$PROM_IMAGE" \
   --arg msimg "$MOCKSERVER_IMAGE" --argjson host_cores "$HOST_CORES" --argjson acct_tol "$ACCOUNT_TOL" \
   --argjson cpusamples "$CPU_SAMPLES" --argjson t0 "$T0_S" \
-  --argjson slow "$SLOW_FLUSHES" --argjson rwfail "${RW_FAILURES:-0}" '
+  --argjson slow "$SLOW_FLUSHES" --argjson rwfail "${RW_FAILURES:-0}" \
+  --arg hook_cut "${PERF_RW_TEST_CUT_FAULT:-}" --arg hook_step "${PERF_RW_TEST_FAIL_STEP:-}" --arg hook_null "${PERF_RW_TEST_NULL_RUNG:-}" \
+  --argjson promwarn "$(head -n 50 "$PROM_WARNINGS" | jq -R . | jq -sc .)" '
   ($m[0].points) as $P
   | $synth + {
       rig_valid_peak_achieved_rps: $synth.saturation.rig_valid_peak_achieved_rps,
@@ -720,7 +872,8 @@ jq -n --argjson synth "$SYNTH" --argjson headline "$HEADLINE" --slurpfile m "$WO
         server_cpus: $scpus, prometheus_cpus: $pcpus, host_cores: $host_cores,
         k6_image: $k6img, prometheus_image: $promimg, mockserver_image: $msimg,
         cpu_window_t0_s: $t0,
-        degrade: (if $degrade == "" then null else $degrade end)
+        degrade: (if $degrade == "" then null else $degrade end),
+        test_hooks: ({cut_fault:$hook_cut, fail_step:$hook_step, null_rung:$hook_null} | with_entries(select(.value != "")))
       },
       accounting: [ $P[] | {offered_rps, ok:.accounting_ok, per_process:[ .per_process[] | {proc, summary_count, prometheus_count, prometheus_histogram_count, accounted} ]} ],
       windows: [ $P[] | {offered_rps, start_skew_ms, skew_ok, settle_cut_ok,
@@ -730,11 +883,13 @@ jq -n --argjson synth "$SYNTH" --argjson headline "$HEADLINE" --slurpfile m "$WO
                | [ range(0; length) as $k | .[$k] + {k6_cpu_samples: $cpusamples[$k]} ],
       per_process: $pp,
       remote_write: {send_failures: $rwfail, slow_flushes: $slow},
+      prometheus: {query_warnings: $promwarn},
       cpu: {sut_pct_over_ladder:$sutcpu, prometheus_pct_over_ladder:$promcpu,
             k6_cpu_us_per_request_mean: ([ $pp[] | .cpu_us_per_request | select(. != null) ] | if length == 0 then null else (add / length * 10 | round) / 10 end)},
       cross_check: $cross
     }' > "$WORK/result.json"
 cp "$WORK/result.json" "$OUT_FILE"
+RESULT_WRITTEN=1
 
 echo "--- rw-multi-k6: valid=$(jq -r '.valid' "$WORK/result.json") healthy_ceiling=$(jq -r '.headline_if_valid.healthy_ceiling_rps // "null"' "$WORK/result.json") rig_valid_peak=$(jq -r '.rig_valid_peak_achieved_rps' "$WORK/result.json") skew_max_ms=$(jq -r '.method.observed_max_start_skew_ms' "$WORK/result.json") k6_us_per_req=$(jq -r '.cpu.k6_cpu_us_per_request_mean' "$WORK/result.json") cross_check_equivalent=$(jq -r '.cross_check.equivalent | if . == null then "n/a" else tostring end' "$WORK/result.json")" >&2
 if [ "$(jq -r '.valid' "$WORK/result.json")" != true ]; then

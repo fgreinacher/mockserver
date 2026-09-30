@@ -297,6 +297,8 @@ each process's own count"]
 | `rw_start_skew_within_bound` | Each rung's `exec.scenario.startTime` agrees across processes within `PERF_RW_MAX_SKEW_MS` (100) |
 | `rw_settle_cut_within_bound` | Each process's settle cut lands between its settle boundary and 2 push intervals after it (wall-clock mode) |
 | `rw_settle_cut_measured` | In wall-clock mode every process has a measured cut and cut excess; a missing one (no sample after the boundary, a failed query, a dead process) fails rather than passes |
+| `rw_rungs_measured` | Every ladder rung was merged with a number for its count, achieved rps and p50 |
+| `rw_assembly_steps_ok` | The cross-check phase and every post-measurement step (merge, sweep assembly, rig validity, headline, per-process detail, cross-check comparison) completed. A failing step is replaced by a default and named here, so the result is still written |
 | `rw_prometheus_queries_ok` | Every Prometheus query succeeded. A failed query is recorded and read as an empty result, so the run completes and reports this reason instead of aborting |
 | `rw_settle_cut_excess_bounded` | The requests each process completed between its settle boundary and its cut (the counter at the cut minus the counter at the boundary) are no more than its offered rate over 2 push intervals (+`PERF_RW_WINDOW_TOL`, 5%). It measures what a late cut dropped from the steady window directly, so a rung whose throughput collapses under saturation does not trip it |
 | `rw_window_accounts_every_request` | Every merged rung's settle + measured counts equal its request count (`lib/perf-sweep-window.sh`); true by construction in wall-clock mode, so the two gates above carry the window |
@@ -308,7 +310,24 @@ each process's own count"]
 `cross_check.cross_run` separately compares the N-process rungs with that single-process run at
 the same aggregate rate (achieved ratio within 0.02; p50/p95/p99 within 20/35/60%) — two separate
 runs, so it carries run-to-run noise and is reported, with `cross_check.equivalent`, rather than
-gating validity.
+gating validity. Rungs above `PERF_RW_XCHECK_MAX_RPS` are listed with `status: "no counterpart"`,
+and a rung with a missing figure as `"incomplete"`; neither is divided or compared.
+
+**Once inputs are validated and an output file is given, a result is always written.** A soft step that fails (the cross-check phase, or any
+post-measurement step: `xcheck_phase`, `merge_main`, `sweep_json`, `saturation`, `headline`,
+`per_process`, `cross_check`, the only values `PERF_RW_TEST_FAIL_STEP` accepts) is recorded by
+`rw_assembly_steps_ok` and replaced by a default. If the harness still aborts, its exit trap writes
+`valid: false` with an `rw_harness_completed` check naming the command running when it exited (for
+a pipeline, its last stage; read from `$BASH_COMMAND` before the trap runs anything, so it works
+inside functions too), plus the main phase's merged rungs. A deliberate stop names its own reason,
+and SIGTERM / SIGINT (a cancelled build) are recorded as such, exiting 143 / 130 after cleanup.
+Unknown `PERF_RW_TEST_FAIL_STEP` or `PERF_RW_TEST_NULL_RUNG` values are rejected at startup with
+exit 2. The first 50 Prometheus query warnings (for example an
+empty result from mixing float and histogram samples) are kept under `.prometheus.query_warnings`,
+and `.method.test_hooks` records any test hook that was set. In `perf-test-run.sh` a non-zero exit
+or an invalid result also uploads `serving-rw-multik6-work.tgz` (`PERF_RW_DEBUG_DIR`): the
+harness's JSON, CSV and text files, the full k6 logs, the Prometheus server log and a series
+inventory (`prom-series-inventory.json`).
 
 **Why these choices.**
 
@@ -349,6 +368,9 @@ gating validity.
   hyperthreads (`7-10,31-34` … `19-22,43-46`), which keeps the SUT's siblings idle. Override with
   `PERF_RW_SERVER_CPUS`, `PERF_RW_PROM_CPUS`, `PERF_RW_K6_CPUSETS` (`;`-separated) and
   `PERF_RW_PROCS`.
+- **Running the harness inside a container.** `PERF_RW_PUBLISHED_HOST` (for example
+  `host.docker.internal`) replaces the host of the ports the harness itself publishes (its
+  Prometheus and, when it launches one, the SUT). It does not touch `PERF_RW_TARGET_CURL_URL`.
 
 **k6 CPU per request** (cgroup `usage_usec` over the load window, one k6 on 4 vCPUs at 8,000 rps,
 three interleaved rounds on a laptop shared with other load, so ±8 µs noise):
@@ -385,6 +407,13 @@ PERF_RW_DEGRADE=stall_prometheus PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .
 # cut-gate self-tests: a failed cut query, and a null cut on a live process
 PERF_RW_TEST_CUT_FAULT=main-p1:query PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-cutq.json
 PERF_RW_TEST_CUT_FAULT=main-p1:empty PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-cute.json
+# main ladder above the cross-check cap: must stay valid, top rungs "no counterpart"
+PERF_RW_PROCS=2 PERF_RW_RATES=1500,3000,6000 PERF_RW_XCHECK_MAX_RPS=3000 ... rw-multi-k6-sweep.sh .tmp/rw-cap.json
+# the result is written, invalid, when a merged rung is blank or a step fails
+PERF_RW_TEST_NULL_RUNG=1500 ... rw-multi-k6-sweep.sh .tmp/rw-null.json
+PERF_RW_TEST_FAIL_STEP=cross_check ... rw-multi-k6-sweep.sh .tmp/rw-failstep.json   # or any step named above
+# a hard abort inside a function still leaves an invalid result naming the failed command (exit 125)
+PERF_RW_K6_IMAGE=grafana/k6:does-not-exist PERF_RW_XCHECK=false ... rw-multi-k6-sweep.sh .tmp/rw-abort.json
 ```
 
 ### `forward.js` — forward connection-pool guard
