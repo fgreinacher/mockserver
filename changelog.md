@@ -58,6 +58,8 @@ The latency and healthy-ceiling figures above, Before and After, were measured w
   requests as previously exposed to that LLM service.
 - **The Node Testcontainers module's lockfile now resolves `undici` 7.30.0**, which fixes a denial of service
   from an unhandled error in WebSocket `permessage-deflate` decompression (Dependabot alert 581).
+- **The Node Testcontainers module's lockfile now resolves `brace-expansion` 5.0.12**, which fixes three
+  denial-of-service issues in brace-pattern expansion (Dependabot alerts 582, 584 and 586).
 
 ### Added
 
